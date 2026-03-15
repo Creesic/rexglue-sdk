@@ -39,6 +39,9 @@ if(REXGLUE_USE_VULKAN)
         volk vulkan-headers vulkan-memory-allocator
         spirv-headers spirv-tools glslang
     )
+    if(APPLE)
+        list(APPEND REQUIRED_SUBMODULES MoltenVK)
+    endif()
 endif()
 
 
@@ -194,6 +197,9 @@ if(REXGLUE_USE_VULKAN)
     # volk
     set(VOLK_INSTALL ON CACHE BOOL "" FORCE)
     set(VOLK_PULL_IN_VULKAN OFF CACHE BOOL "" FORCE)
+    if(APPLE)
+        set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_METAL_EXT CACHE STRING "" FORCE)
+    endif()
     add_subdirectory(volk)
     target_link_libraries(volk PUBLIC Vulkan::Headers)
     target_link_libraries(volk_headers INTERFACE Vulkan::Headers)
@@ -280,6 +286,9 @@ if(REXGLUE_USE_VULKAN)
     set(SPIRV_WERROR OFF CACHE BOOL "" FORCE)
     set(SKIP_SPIRV_TOOLS_INSTALL ON CACHE BOOL "" FORCE)
     add_subdirectory(spirv-tools)
+    if(NOT TARGET SPIRV-Tools::SPIRV-Tools)
+        add_library(SPIRV-Tools::SPIRV-Tools ALIAS SPIRV-Tools-static)
+    endif()
     target_compile_options(SPIRV-Tools-static PRIVATE -w)
 
     # glslang/SPIRV - SPIR-V code generation for shader translation
@@ -298,6 +307,13 @@ if(REXGLUE_USE_VULKAN)
     # Create alias for older glslang versions that don't provide it
     if(NOT TARGET glslang::SPIRV)
         add_library(glslang::SPIRV ALIAS SPIRV)
+    endif()
+    if(APPLE)
+        enable_language(OBJC)
+        enable_language(OBJCXX)
+        set(MVK_USE_METAL_PRIVATE_API OFF CACHE BOOL "" FORCE)
+        add_subdirectory(MoltenVK)
+        target_compile_definitions(MoltenVK PUBLIC MVK_HIDE_VULKAN_SYMBOLS=0)
     endif()
 endif()
 
