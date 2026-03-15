@@ -5,12 +5,12 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 #=============================================================================
 # Architecture detection
 #=============================================================================
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
-    set(IS_ARM64 FALSE)
-    set(IS_X86_64 TRUE)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|ARM64)$")
+if(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(aarch64|arm64)$")
     set(IS_ARM64 TRUE)
     set(IS_X86_64 FALSE)
+elseif(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(x86_64|amd64)$")
+    set(IS_ARM64 FALSE)
+    set(IS_X86_64 TRUE)
 else()
     set(IS_ARM64 FALSE)
     set(IS_X86_64 FALSE)
