@@ -4,7 +4,11 @@
 # SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
-project({{ names.snake_case }} LANGUAGES CXX)
+set({{ names.upper_case }}_LANGUAGES CXX)
+if(APPLE)
+    list(APPEND {{ names.upper_case }}_LANGUAGES OBJC OBJCXX)
+endif()
+project({{ names.snake_case }} LANGUAGES {{ cmake_var(names.upper_case ~ "_LANGUAGES") }})
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
