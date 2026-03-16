@@ -133,6 +133,23 @@ Result<void> MigrateProject(const MigrateOptions& opts, const CliContext& ctx) {
     REXLOG_INFO("  generated/rexglue.cmake is already up to date");
   }
 
+  // --- SDK-managed file: keep presets in sync with the current template ---
+  fs::path cmake_presets_path = root / "CMakePresets.json";
+  std::string new_cmake_presets = registry.render("init/cmake_presets", jsonStr);
+  std::string old_cmake_presets = read_file_content(cmake_presets_path);
+
+  if (old_cmake_presets != new_cmake_presets) {
+    if (fs::exists(cmake_presets_path) && !backup_file(cmake_presets_path)) {
+      return Err<void>(ErrorCategory::IO, "Failed to back up CMakePresets.json");
+    }
+    if (!write_file(cmake_presets_path, new_cmake_presets)) {
+      return Err<void>(ErrorCategory::IO, "Failed to write CMakePresets.json");
+    }
+    REXLOG_INFO("  Updated CMakePresets.json");
+  } else {
+    REXLOG_INFO("  CMakePresets.json is already up to date");
+  }
+
   // --- User-owned files: create only if missing (or --force) ---
   std::string app_header_name = names.snake_case + "_app.h";
   fs::path app_header_path = root / "src" / app_header_name;
