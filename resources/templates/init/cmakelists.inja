@@ -4,26 +4,25 @@
 # SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
-set({{ names.upper_case }}_LANGUAGES CXX)
+project({{ names.snake_case }} LANGUAGES CXX)
+
 if(APPLE)
-    list(APPEND {{ names.upper_case }}_LANGUAGES OBJC OBJCXX)
+    enable_language(OBJC OBJCXX)
 endif()
-project({{ names.snake_case }} LANGUAGES {{ cmake_var(names.upper_case ~ "_LANGUAGES") }})
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(generated/rexglue.cmake)
 
-# Sources
-set({{ names.upper_case }}_SOURCES
-    src/main.cpp
-)
-
 if(WIN32)
-    add_executable({{ names.snake_case }} WIN32 {{ cmake_var(names.upper_case ~ "_SOURCES") }})
+    add_executable({{ names.snake_case }} WIN32
+        src/main.cpp
+    )
 else()
-    add_executable({{ names.snake_case }} {{ cmake_var(names.upper_case ~ "_SOURCES") }})
+    add_executable({{ names.snake_case }}
+        src/main.cpp
+    )
 endif()
 
 rexglue_setup_target({{ names.snake_case }})

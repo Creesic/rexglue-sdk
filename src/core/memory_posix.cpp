@@ -26,7 +26,7 @@
 #include <rex/platform.h>
 #include <rex/string.h>
 
-#if REX_PLATFORM_MACOS && !defined(MAP_ANON)
+#if REX_PLATFORM_MAC && !defined(MAP_ANON)
 #define MAP_ANON 0x1000
 #endif
 
@@ -213,7 +213,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
   // - New allocation: mmap with MAP_FIXED_NOREPLACE (never silently replace)
   const uint32_t prot_requested = ToPosixProtectFlags(access);
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   // On macOS, fixed guest memory often already exists as a shared file view.
   // "Committing" into that range must only change protection, otherwise
   // MAP_FIXED will replace the shared mapping with private anonymous pages and
@@ -252,7 +252,7 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
 
   // Build flags - always use MAP_FIXED_NOREPLACE for fixed addresses
   int flags = MAP_PRIVATE;
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   flags |= MAP_ANON;
 #else
   flags |= MAP_ANONYMOUS;

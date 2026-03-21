@@ -41,6 +41,12 @@ void InputSystem::Shutdown() {
 }
 
 void InputSystem::AddDriver(std::unique_ptr<InputDriver> driver) {
+  if (is_active_callback_) {
+    driver->set_is_active_callback(is_active_callback_);
+  }
+  if (window_) {
+    driver->OnWindowAvailable(window_);
+  }
   drivers_.push_back(std::move(driver));
 }
 
@@ -52,6 +58,7 @@ void InputSystem::AttachWindow(rex::ui::Window* window) {
 }
 
 void InputSystem::SetActiveCallback(std::function<bool()> callback) {
+  is_active_callback_ = callback;
   for (auto& driver : drivers_) {
     driver->set_is_active_callback(callback);
   }
@@ -162,7 +169,7 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
 std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
   auto input = std::make_unique<InputSystem>(nullptr);
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   // On macOS, SDL's GameController startup can block while AppKit/GameController
   // frameworks are still being brought up. Delay attaching the SDL driver until
   // the Cocoa window and UI loop are live.
@@ -201,7 +208,7 @@ std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
 
 X_STATUS AttachDefaultInputDrivers(InputSystem& input_system, rex::ui::Window* window,
                                    bool tool_mode) {
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   if (tool_mode) {
     return X_STATUS_SUCCESS;
   }

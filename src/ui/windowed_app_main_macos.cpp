@@ -22,6 +22,7 @@
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
+#include <rex/input/sdl/sdl_bootstrap.h>
 #include <rex/logging.h>
 #include <rex/ui/windowed_app.h>
 #include <rex/ui/windowed_app_context_macos.h>
@@ -38,6 +39,10 @@ bool ShouldSkipAppleInjectedArgument(const char* argument) {
 }  // namespace
 
 extern "C" int main(int argc, char** argv) {
+  // ReXGlue owns the macOS entry point, so make SDL usable before any deferred
+  // input or audio subsystem initialization happens later in startup.
+  rex::input::sdl::PrepareSDLForCustomMain();
+
   std::vector<char*> filtered_argv;
   filtered_argv.reserve(static_cast<size_t>(argc));
   for (int i = 0; i < argc; ++i) {

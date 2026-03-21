@@ -8,8 +8,21 @@ set(REXSDK_VERSION "" CACHE STRING "Override SDK version (leave empty for defaul
 
 # Find SDK
 set(REXSDK_DIR "" CACHE PATH "Path to rexglue-sdk source tree")
-if(REXSDK_DIR)
-    add_subdirectory("{{ cmake_var("REXSDK_DIR") }}" rexglue-sdk)
+set(_REXSDK_SOURCE_DIR "{{ cmake_var("REXSDK_DIR") }}")
+
+if(NOT _REXSDK_SOURCE_DIR)
+    get_filename_component(_REXSDK_LOCAL_SOURCE_DIR
+        "{{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}/.."
+        ABSOLUTE
+    )
+    if(EXISTS "{{ cmake_var("_REXSDK_LOCAL_SOURCE_DIR") }}/src/rexglue/CMakeLists.txt"
+       AND EXISTS "{{ cmake_var("_REXSDK_LOCAL_SOURCE_DIR") }}/cmake/rexglue_helpers.cmake")
+        set(_REXSDK_SOURCE_DIR "{{ cmake_var("_REXSDK_LOCAL_SOURCE_DIR") }}")
+    endif()
+endif()
+
+if(_REXSDK_SOURCE_DIR)
+    add_subdirectory("{{ cmake_var("_REXSDK_SOURCE_DIR") }}" rexglue-sdk)
 else()
     if(REXSDK_VERSION)
         find_package(rexglue {{ cmake_var("REXSDK_VERSION") }} EXACT QUIET CONFIG)

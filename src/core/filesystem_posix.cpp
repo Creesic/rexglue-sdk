@@ -54,7 +54,7 @@ std::filesystem::path to_path(const std::u16string_view source) {
 namespace filesystem {
 
 std::filesystem::path GetExecutablePath() {
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   uint32_t buffer_size = 0;
   _NSGetExecutablePath(nullptr, &buffer_size);
   std::string buffer(buffer_size, '\0');
@@ -105,7 +105,7 @@ FILE* OpenFile(const std::filesystem::path& path, const std::string_view mode) {
 }
 
 bool Seek(FILE* file, int64_t offset, int origin) {
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   return fseeko(file, off_t(offset), origin) == 0;
 #else
   return fseeko64(file, off64_t(offset), origin) == 0;
@@ -113,7 +113,7 @@ bool Seek(FILE* file, int64_t offset, int origin) {
 }
 
 int64_t Tell(FILE* file) {
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   return int64_t(ftello(file));
 #else
   return int64_t(ftello64(file));

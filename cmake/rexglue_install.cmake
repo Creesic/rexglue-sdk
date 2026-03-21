@@ -53,10 +53,11 @@ install(TARGETS ${REXGLUE_INSTALL_TARGETS}
 
 # MoltenVK's upstream CMake target graph is not export-safe in this vendored
 # layout, so install the runtime separately on Apple platforms.
-if(APPLE AND TARGET MoltenVK)
-    install(TARGETS MoltenVK
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+if(APPLE AND REXGLUE_USE_VULKAN)
+    include(${CMAKE_SOURCE_DIR}/cmake/rexglue_moltenvk.cmake)
+    rexglue_find_moltenvk_library(REXGLUE_MOLTENVK_LIBRARY REQUIRED)
+    install(FILES "${REXGLUE_MOLTENVK_LIBRARY}"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
 endif()
 
@@ -164,6 +165,13 @@ install(FILES
     ${CMAKE_SOURCE_DIR}/cmake/rexglue_helpers.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rexglue
 )
+
+if(APPLE)
+    install(FILES
+        ${CMAKE_SOURCE_DIR}/cmake/rexglue_moltenvk.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rexglue
+    )
+endif()
 
 # Export targets with rex:: namespace
 install(EXPORT rexglueTargets

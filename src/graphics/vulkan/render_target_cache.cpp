@@ -624,7 +624,7 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
   create_direct_resolve_pipeline_layout(descriptor_set_layout_sampled_image_x2_,
                                         &direct_resolve_pipeline_layout_depth_);
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   REXGPU_INFO("VulkanRenderTargetCache::Initialize stage=resolve_copy_pipelines_lazy");
 #else
   REXGPU_INFO("VulkanRenderTargetCache::Initialize stage=resolve_copy_pipelines_eager");
@@ -675,7 +675,7 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
       Shutdown();
       return false;
     }
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
     REXGPU_INFO("VulkanRenderTargetCache::Initialize stage=host_depth_store_pipelines_lazy");
 #else
     REXGPU_INFO("VulkanRenderTargetCache::Initialize stage=host_depth_store_pipelines_eager");

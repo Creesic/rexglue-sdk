@@ -4,19 +4,14 @@
 set(REXAUDIO_SOURCES
     audio_driver.cpp
     audio_system.cpp
+    sdl/sdl_audio_system.cpp
+    sdl/sdl_audio_driver.cpp
     xma_context.cpp
     xma_decoder.cpp
     xma_register_file.cpp
     # NOP backend (always available)
     nop/nop_audio_system.cpp
 )
-
-if(NOT APPLE)
-    list(APPEND REXAUDIO_SOURCES
-        sdl/sdl_audio_system.cpp
-        sdl/sdl_audio_driver.cpp
-    )
-endif()
 
 add_library(rexaudio STATIC ${REXAUDIO_SOURCES})
 add_library(rex::audio ALIAS rexaudio)
@@ -28,9 +23,6 @@ target_include_directories(rexaudio PUBLIC
 
 target_link_libraries(rexaudio
     PUBLIC rexcore
+    PUBLIC SDL3::SDL3
     PRIVATE libavcodec libavutil
 )
-
-if(NOT APPLE)
-    target_link_libraries(rexaudio PUBLIC SDL3::SDL3)
-endif()

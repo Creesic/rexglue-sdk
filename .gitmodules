@@ -63,6 +63,3 @@
 [submodule "thirdparty/inja"]
 	path = thirdparty/inja
 	url = https://github.com/pantor/inja.git
-[submodule "thirdparty/MoltenVK"]
-	path = thirdparty/MoltenVK
-	url = https://github.com/KhronosGroup/MoltenVK

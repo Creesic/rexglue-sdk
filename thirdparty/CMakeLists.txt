@@ -5,6 +5,10 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 #=============================================================================
 # Architecture detection
 #=============================================================================
+if(APPLE)
+    include(${REXGLUE_ROOT}/cmake/rexglue_moltenvk.cmake)
+endif()
+
 if(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(aarch64|arm64)$")
     set(IS_ARM64 TRUE)
     set(IS_X86_64 FALSE)
@@ -39,9 +43,6 @@ if(REXGLUE_USE_VULKAN)
         volk vulkan-headers vulkan-memory-allocator
         spirv-headers spirv-tools glslang
     )
-    if(APPLE)
-        list(APPEND REQUIRED_SUBMODULES MoltenVK)
-    endif()
 endif()
 
 
@@ -314,9 +315,8 @@ if(REXGLUE_USE_VULKAN)
     if(APPLE)
         enable_language(OBJC)
         enable_language(OBJCXX)
-        set(MVK_USE_METAL_PRIVATE_API OFF CACHE BOOL "" FORCE)
-        add_subdirectory(MoltenVK)
-        target_compile_definitions(MoltenVK PUBLIC MVK_HIDE_VULKAN_SYMBOLS=0)
+        rexglue_find_moltenvk_library(REXGLUE_MOLTENVK_LIBRARY REQUIRED)
+        message(STATUS "Using MoltenVK from Vulkan SDK: ${REXGLUE_MOLTENVK_LIBRARY}")
     endif()
 endif()
 

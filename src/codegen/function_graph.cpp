@@ -350,7 +350,7 @@ void emit_weak_function_forwarder(std::string& out, const std::string& name) {
   emit_println(out, "PPC_EXTERN_FUNC(__imp__{});", name);
   emit_println(out, "PPC_WEAK_FUNC({}) {{", name);
   emit_println(out, "\t__imp__{}(ctx, base);", name);
-  emit_println(out, "}");
+  emit_println(out, "}}");
 #else
   emit_println(out, "__attribute__((alias(\"__imp__{}\"))) PPC_WEAK_FUNC({});", name, name);
 #endif

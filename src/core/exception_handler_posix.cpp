@@ -96,7 +96,7 @@ static void ForwardUnhandledSignal(int signal_number, siginfo_t* signal_info, vo
 
 static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
                                      void* signal_context) {
-#if REX_PLATFORM_MACOS && REX_ARCH_ARM64
+#if REX_PLATFORM_MAC && REX_ARCH_ARM64
   mcontext_t mcontext = reinterpret_cast<ucontext_t*>(signal_context)->uc_mcontext;
 #else
   mcontext_t& mcontext = reinterpret_cast<ucontext_t*>(signal_context)->uc_mcontext;
@@ -128,7 +128,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
   std::memcpy(thread_context.xmm_registers, mcontext.fpregs->_xmm,
               sizeof(thread_context.xmm_registers));
 #elif REX_ARCH_ARM64
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   std::memcpy(thread_context.x, mcontext->__ss.__x, sizeof(thread_context.x[0]) * 29);
   thread_context.x[29] = mcontext->__ss.__fp;
   thread_context.x[30] = mcontext->__ss.__lr;
@@ -185,7 +185,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
                                        ? Exception::AccessViolationOperation::kWrite
                                        : Exception::AccessViolationOperation::kRead;
 #elif REX_ARCH_ARM64
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
       bool instruction_is_store;
       if (IsArm64LoadPrefetchStore(*reinterpret_cast<const uint32_t*>(thread_context.pc),
                                    instruction_is_store)) {
@@ -268,7 +268,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       uint32_t modified_x_registers_remaining = ex.modified_x_registers();
       while (rex::bit_scan_forward(modified_x_registers_remaining, &modified_register_index)) {
         modified_x_registers_remaining &= ~(UINT32_C(1) << modified_register_index);
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
         if (modified_register_index < 29) {
           mcontext->__ss.__x[modified_register_index] = thread_context.x[modified_register_index];
         } else if (modified_register_index == 29) {
@@ -280,7 +280,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
         mcontext.regs[modified_register_index] = thread_context.x[modified_register_index];
 #endif
       }
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
       mcontext->__ss.__sp = thread_context.sp;
       mcontext->__ss.__pc = thread_context.pc;
       mcontext->__ss.__cpsr = uint32_t(thread_context.pstate);
@@ -298,7 +298,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       uint32_t modified_v_registers_remaining = ex.modified_v_registers();
       while (rex::bit_scan_forward(modified_v_registers_remaining, &modified_register_index)) {
         modified_v_registers_remaining &= ~(UINT32_C(1) << modified_register_index);
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
         std::memcpy(&mcontext->__ns.__v[modified_register_index],
                     &thread_context.v[modified_register_index], sizeof(vec128_t));
 #else

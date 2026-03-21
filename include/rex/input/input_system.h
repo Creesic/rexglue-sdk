@@ -44,6 +44,7 @@ class InputSystem : public system::IInputSystem {
 
  private:
   rex::ui::Window* window_ = nullptr;
+  std::function<bool()> is_active_callback_ = nullptr;
 
   std::vector<std::unique_ptr<InputDriver>> drivers_;
 };

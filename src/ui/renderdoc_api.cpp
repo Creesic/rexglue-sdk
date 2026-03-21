@@ -15,7 +15,7 @@
 namespace rex {
 namespace ui {
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
 std::unique_ptr<RenderDocAPI> RenderDocAPI::CreateIfConnected() {
   return nullptr;
 }

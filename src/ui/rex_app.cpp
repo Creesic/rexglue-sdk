@@ -226,7 +226,7 @@ bool ReXApp::OnInitialize() {
 
   // Launch module in background
   app_context().CallInUIThreadDeferred([this]() {
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
     if (auto* input_system =
             dynamic_cast<rex::input::InputSystem*>(runtime_ ? runtime_->input_system() : nullptr)) {
       (void)rex::input::AttachDefaultInputDrivers(*input_system, window_.get(), false);
@@ -239,13 +239,12 @@ bool ReXApp::OnInitialize() {
       app_context().QuitFromUIThread();
       return;
     }
+    main_guest_thread_ = main_thread;
 
     module_thread_ = std::thread([this, main_thread = std::move(main_thread)]() mutable {
       main_thread->Wait(0, 0, 0, nullptr);
       REXLOG_INFO("Execution complete");
-      if (!shutting_down_.load(std::memory_order_acquire)) {
-        app_context().CallInUIThread([this]() { app_context().QuitFromUIThread(); });
-      }
+      app_context().CallInUIThread([this]() { app_context().QuitFromUIThread(); });
     });
   });
 
@@ -258,12 +257,20 @@ void ReXApp::OnKeyDown(ui::KeyEvent& e) {
 
 void ReXApp::OnClosing(ui::UIEvent& e) {
   (void)e;
+  if (shutting_down_.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+
   REXLOG_INFO("Window closing, shutting down...");
-  shutting_down_.store(true, std::memory_order_release);
+  if (main_guest_thread_ && main_guest_thread_->is_running()) {
+    main_guest_thread_->Terminate(0);
+  }
   if (runtime_ && runtime_->kernel_state()) {
     runtime_->kernel_state()->TerminateTitle();
   }
-  app_context().QuitFromUIThread();
+  if (!module_thread_.joinable()) {
+    app_context().QuitFromUIThread();
+  }
 }
 
 void ReXApp::OnDestroy() {
@@ -293,6 +300,7 @@ void ReXApp::OnDestroy() {
   if (module_thread_.joinable()) {
     module_thread_.join();
   }
+  main_guest_thread_.reset();
   if (window_) {
     window_->RemoveInputListener(this);
     window_->RemoveListener(this);

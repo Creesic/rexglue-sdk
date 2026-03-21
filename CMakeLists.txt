@@ -51,12 +51,12 @@ endif()
 # Root of the SDK source tree
 set(REXGLUE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# Resolve the effective host architecture. On macOS, CMAKE_SYSTEM_PROCESSOR may
-# reflect the running CMake process rather than CMAKE_OSX_ARCHITECTURES.
+# Resolve the effective target architecture. On macOS, CMAKE_SYSTEM_PROCESSOR
+# may reflect the host CMake process rather than CMAKE_OSX_ARCHITECTURES.
 set(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
-if (APPLE AND CMAKE_OSX_ARCHITECTURES)
-  list(GET CMAKE_OSX_ARCHITECTURES 0 REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR)
-endif ()
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+    list(GET CMAKE_OSX_ARCHITECTURES 0 REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR)
+endif()
 string(TOLOWER "${REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR}" REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER)
 
 # SDK install support
@@ -72,37 +72,46 @@ if(UNIX AND NOT APPLE)
         "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
     )
     set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+elseif(APPLE)
+    list(APPEND CMAKE_INSTALL_RPATH
+        "@loader_path"
+        "@loader_path/../${CMAKE_INSTALL_LIBDIR}"
+    )
 endif()
 
-# Enforce the default Clang toolchain, with AppleClang accepted only for
-# native macOS builds.
-if (APPLE)
-  if (NOT (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
-           CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"))
-    message(FATAL_ERROR
+# Enforce the default Clang toolchain, with AppleClang accepted for native
+# macOS builds.
+if(APPLE)
+    if(NOT (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
+            CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"))
+        message(FATAL_ERROR
             "ReXGlue requires Clang or AppleClang on macOS. Please select a supported compiler.")
-  endif ()
+    endif()
 
-  if (CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
-    if (CMAKE_CXX_COMPILER_VERSION VERSION_LESS "17.0")
-      message(FATAL_ERROR
-              "ReXGlue requires AppleClang 17 or newer (found ${CMAKE_CXX_COMPILER_VERSION})")
-    endif ()
-  elseif (CMAKE_CXX_COMPILER_VERSION VERSION_LESS "18.0")
-    message(FATAL_ERROR "ReXGlue requires Clang 18 or newer (found ${CMAKE_CXX_COMPILER_VERSION})")
-  endif ()
-else ()
-  if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    message(FATAL_ERROR "ReXGlue requires Clang. Please set CMAKE_CXX_COMPILER to clang++")
-  endif ()
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+        if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "17.0")
+            message(FATAL_ERROR
+                "ReXGlue requires AppleClang 17 or newer (found ${CMAKE_CXX_COMPILER_VERSION})")
+        endif()
+    elseif(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "18.0")
+        message(FATAL_ERROR
+            "ReXGlue requires Clang 18 or newer on macOS (found ${CMAKE_CXX_COMPILER_VERSION})")
+    endif()
+else()
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        message(FATAL_ERROR
+            "ReXGlue requires Clang. Please set CMAKE_CXX_COMPILER to clang++")
+    endif()
 
-  if (CMAKE_CXX_COMPILER_VERSION VERSION_LESS "18.0")
-    message(FATAL_ERROR "ReXGlue requires Clang 18 or newer (found ${CMAKE_CXX_COMPILER_VERSION})")
-  endif ()
-endif ()
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "18.0")
+        message(FATAL_ERROR
+            "ReXGlue requires Clang 18 or newer (found ${CMAKE_CXX_COMPILER_VERSION})")
+    endif()
+endif()
 
+# Enforce x64 architecture
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-    message(FATAL_ERROR "ReXGlue only supports 64-bit architectures (x86_64 or ARM64)")
+    message(FATAL_ERROR "ReXGlue only supports 64‑bit architectures (x86_64 or ARM64)")
 endif()
 
 # Set C++23 standard
@@ -112,17 +121,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_DEBUG_POSTFIX d)
 set(CMAKE_RELWITHDEBINFO_POSTFIX rd)
 
-if(NOT WIN32)
-    # Use appropriate code model based on architecture
-    if(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(x86_64|amd64)$")
-        # Large code model on x86_64 for linking with very large recompiled executables (35MB+)
+if(UNIX)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
+if(UNIX AND NOT APPLE)
+    # Use appropriate code model based on architecture on Linux. macOS doesn't
+    # support the same code-model tuning.
+    if(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(amd64|x86_64)$")
         add_compile_options(-mcmodel=large)
     else()
-        # Small code model for other architectures (ARM64, etc.)
         add_compile_options(-mcmodel=small)
     endif()
-    # Position-independent code for all targets
-    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
 
 # Global compile options
@@ -138,28 +148,33 @@ add_compile_options(
 
 # Platform detection (supports AMD64 and ARM64)
 if(WIN32)
-    if(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(x86_64|amd64)$")
+    if(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(amd64|x86_64)$")
         set(REX_PLATFORM "win-amd64")
     elseif(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(aarch64|arm64)$")
         set(REX_PLATFORM "win-arm64")
     else()
-        message(FATAL_ERROR "Unsupported Windows architecture: ${REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR}")
+        message(FATAL_ERROR
+            "Unsupported Windows architecture: ${REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR}")
     endif()
     add_compile_definitions(REX_PLATFORM_WINDOWS=1)
 elseif(APPLE)
-    set(REX_PLATFORM "mac-arm64")
-    set(REX_PLATFORM_MAC TRUE)
-    set(REXGLUE_USE_VULKAN ON CACHE BOOL "" FORCE)
-    set(REXGLUE_USE_D3D12 OFF CACHE BOOL "" FORCE)
-    set(REXGLUE_ENABLE_FIDELITYFX OFF CACHE BOOL "" FORCE)
-    add_compile_definitions(REX_PLATFORM_MAC=1)
-    if(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(arm64|aarch64)$")
-        set(REX_ARCH_ARM64 TRUE)
+    if(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(aarch64|arm64)$")
+        set(REX_PLATFORM "mac-arm64")
         add_compile_definitions(REX_ARCH_ARM64=1)
         add_compile_options(-march=armv8-a)
+    elseif(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(amd64|x86_64)$")
+        set(REX_PLATFORM "mac-amd64")
+    else()
+        message(FATAL_ERROR
+            "Unsupported macOS architecture: ${REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR}")
     endif()
+
+    set(REXGLUE_USE_D3D12 OFF CACHE BOOL "" FORCE)
+    set(REXGLUE_USE_VULKAN ON CACHE BOOL "" FORCE)
+    set(REXGLUE_ENABLE_FIDELITYFX OFF CACHE BOOL "" FORCE)
+    add_compile_definitions(REX_PLATFORM_MAC=1 _DARWIN_C_SOURCE=1)
 elseif(UNIX AND NOT APPLE)
-    if(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(x86_64|amd64)$")
+    if(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(amd64|x86_64)$")
         set(REX_PLATFORM "linux-amd64")
     elseif(REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR_LOWER MATCHES "^(aarch64|arm64)$")
         set(REX_PLATFORM "linux-arm64")
@@ -196,10 +211,6 @@ add_compile_options(
     -Wall
     -Wextra
 )
-if(APPLE)
-    add_compile_definitions(_DARWIN_C_SOURCE=1)
-endif()
-
 include_directories(${REXGLUE_ROOT}/include)
 
 add_subdirectory(src/core)

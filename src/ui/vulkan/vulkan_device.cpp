@@ -29,7 +29,7 @@ REXCVAR_DEFINE_BOOL(vulkan_require_vertex_pipeline_stores_and_atomics, true, "UI
                     "Deprecated and ignored for parity; vertexPipelineStoresAndAtomics is always "
                     "required for Vulkan GPU emulation")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
 constexpr bool kVulkanRequireGeometryShaderDefault = false;
 #else
 constexpr bool kVulkanRequireGeometryShaderDefault = true;

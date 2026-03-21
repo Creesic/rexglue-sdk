@@ -10,6 +10,10 @@
 #   - ReXApp base class source (rex_app.cpp)
 #   - Platform-specific link/compile settings
 #==========================================================
+if(APPLE)
+    include("${CMAKE_CURRENT_LIST_DIR}/rexglue_moltenvk.cmake")
+endif()
+
 function(rexglue_configure_target target_name)
     set(rexglue_effective_system_processor "${REXGLUE_EFFECTIVE_SYSTEM_PROCESSOR}")
     if(NOT rexglue_effective_system_processor)
@@ -94,12 +98,13 @@ function(rexglue_configure_target target_name)
     endif ()
   elseif (APPLE)
     target_link_options(${target_name} PRIVATE -Wl,-rpath,@executable_path)
-    if (TARGET MoltenVK)
+    if (REXGLUE_USE_VULKAN)
+      rexglue_find_moltenvk_library(_rexglue_moltenvk_library REQUIRED)
       add_custom_command(
         TARGET ${target_name}
         POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:MoltenVK>
+                "${_rexglue_moltenvk_library}"
                 $<TARGET_FILE_DIR:${target_name}>
       )
     endif ()

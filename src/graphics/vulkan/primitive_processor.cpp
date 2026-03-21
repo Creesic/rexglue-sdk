@@ -65,7 +65,7 @@ bool VulkanPrimitiveProcessor::Initialize() {
   if (!InitializeCommon(
           device_properties.fullDrawIndexUint32, triangle_fans_supported_without_conversion, false,
           quad_lists_supported_without_conversion, point_sprites_supported_without_vs_expansion,
-          rectangle_lists_supported_without_vs_expansion)) {
+          rectangle_lists_supported_without_vs_expansion, false)) {
     Shutdown();
     return false;
   }
