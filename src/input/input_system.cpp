@@ -41,6 +41,12 @@ void InputSystem::Shutdown() {
 }
 
 void InputSystem::AddDriver(std::unique_ptr<InputDriver> driver) {
+  if (is_active_callback_) {
+    driver->set_is_active_callback(is_active_callback_);
+  }
+  if (window_) {
+    driver->OnWindowAvailable(window_);
+  }
   drivers_.push_back(std::move(driver));
 }
 
@@ -52,6 +58,7 @@ void InputSystem::AttachWindow(rex::ui::Window* window) {
 }
 
 void InputSystem::SetActiveCallback(std::function<bool()> callback) {
+  is_active_callback_ = callback;
   for (auto& driver : drivers_) {
     driver->set_is_active_callback(callback);
   }
@@ -162,6 +169,12 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
 std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
   auto input = std::make_unique<InputSystem>(nullptr);
 
+#if REX_PLATFORM_MAC
+  // On macOS, SDL's GameController startup can block while AppKit/GameController
+  // frameworks are still being brought up. Delay attaching the SDL driver until
+  // the Cocoa window and UI loop are live.
+  (void)tool_mode;
+#else
   if (!tool_mode) {
 #if REX_PLATFORM_WIN32
     if (REXCVAR_GET(input_backend) == "xinput") {
@@ -185,11 +198,33 @@ std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
       input->AddDriver(std::move(mnk_driver));
     }
   }
+#endif
 
   // NOP driver (primary in tool mode, fallback otherwise)
   uint8_t nop_index = tool_mode ? 0 : 1;
   input->AddDriver(std::make_unique<nop::NopInputDriver>(nullptr, nop_index));
   return input;
+}
+
+X_STATUS AttachDefaultInputDrivers(InputSystem& input_system, rex::ui::Window* window,
+                                   bool tool_mode) {
+#if REX_PLATFORM_MAC
+  if (tool_mode) {
+    return X_STATUS_SUCCESS;
+  }
+
+  auto sdl_driver = std::make_unique<sdl::SDLInputDriver>(window, 0);
+  X_STATUS status = sdl_driver->Setup();
+  if (XSUCCEEDED(status)) {
+    input_system.AddDriver(std::move(sdl_driver));
+  }
+  return status;
+#else
+  (void)input_system;
+  (void)window;
+  (void)tool_mode;
+  return X_STATUS_SUCCESS;
+#endif
 }
 
 }  // namespace rex::input

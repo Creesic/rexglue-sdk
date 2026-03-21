@@ -13,9 +13,16 @@ target_include_directories(rexinput PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 if(WIN32)
-    target_sources(rexinput PRIVATE sdl/sdl_input_driver.cpp xinput/xinput_input_driver.cpp)
+    target_sources(rexinput PRIVATE
+        sdl/sdl_bootstrap.cpp
+        sdl/sdl_input_driver.cpp
+        xinput/xinput_input_driver.cpp
+    )
 else()
-    target_sources(rexinput PRIVATE sdl/sdl_input_driver.cpp)
+    target_sources(rexinput PRIVATE
+        sdl/sdl_bootstrap.cpp
+        sdl/sdl_input_driver.cpp
+    )
 endif()
 
 target_link_libraries(rexinput PUBLIC rexcore SDL3::SDL3)

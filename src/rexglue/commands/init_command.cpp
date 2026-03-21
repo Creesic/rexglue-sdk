@@ -30,7 +30,6 @@ using rex::Err;
 using rex::Error;
 using rex::ErrorCategory;
 using rex::Ok;
-
 Result<void> InitProject(const InitOptions& opts, const CliContext& ctx) {
   (void)ctx;  // Currently unused
 

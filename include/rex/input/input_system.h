@@ -44,6 +44,7 @@ class InputSystem : public system::IInputSystem {
 
  private:
   rex::ui::Window* window_ = nullptr;
+  std::function<bool()> is_active_callback_ = nullptr;
 
   std::vector<std::unique_ptr<InputDriver>> drivers_;
 };
@@ -51,5 +52,9 @@ class InputSystem : public system::IInputSystem {
 /// Create a default InputSystem with SDL + NOP drivers.
 /// In tool mode, only the NOP driver is added.
 std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode);
+
+/// Attach platform-specific drivers after a window and UI loop are available.
+X_STATUS AttachDefaultInputDrivers(InputSystem& input_system, rex::ui::Window* window,
+                                   bool tool_mode);
 
 }  // namespace rex::input

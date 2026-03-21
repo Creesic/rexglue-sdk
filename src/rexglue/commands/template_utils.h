@@ -99,5 +99,4 @@ inline bool write_file(const std::filesystem::path& path, const std::string& con
   file << content;
   return true;
 }
-
 }  // namespace rexglue::cli

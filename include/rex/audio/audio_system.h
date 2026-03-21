@@ -98,4 +98,7 @@ class AudioSystem : public system::IAudioSystem {
   std::unique_ptr<rex::thread::Event> resume_event_;
 };
 
+std::unique_ptr<system::IAudioSystem> CreateDefaultAudioSystem(
+    runtime::FunctionDispatcher* function_dispatcher);
+
 }  // namespace rex::audio

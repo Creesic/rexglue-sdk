@@ -25,6 +25,21 @@ REXCVAR_DEFINE_STRING(hid_mappings_file, "gamecontrollerdb.txt", "Input",
 
 namespace rex::input::sdl {
 
+namespace {
+
+void ConfigureSDLControllerHints() {
+#if defined(__APPLE__)
+  // (Graine25) --- On macOS, SDL may surface controllers through GCController
+  // or HIDAPI rather than a host XInput path. These hints keep Xbox pads
+  // visible so the existing guest-facing XInput emulation can consume them. ---
+  SDL_SetHint(SDL_HINT_JOYSTICK_MFI, "1");
+  SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "1");
+  SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_XBOX, "1");
+#endif
+}
+
+}  // namespace
+
 SDLInputDriver::SDLInputDriver(rex::ui::Window* window, size_t window_z_order)
     : InputDriver(window, window_z_order),
       sdl_events_initialized_(false),
@@ -81,6 +96,9 @@ void SDLInputDriver::OnWindowAvailable(rex::ui::Window* window) {
             return false;
           },
           this);
+
+      // SDL snapshots controller hints when the gamepad subsystem initializes.
+      ConfigureSDLControllerHints();
 
       // Initialize game controller subsystem
       if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
