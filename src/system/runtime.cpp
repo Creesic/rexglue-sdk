@@ -26,6 +26,12 @@
 #include <rex/system/xmemory.h>
 #include <rex/system/xthread.h>
 #include <rex/thread.h>
+#include <rex/flags.h>
+
+REXCVAR_DEFINE_BOOL(allow_game_relative_writes, false, "General",
+                    "Not useful to non-developers. Allows code to write to paths "
+                    "relative to game://. Used for "
+                    "generating test data to compare with original hardware. ");
 
 namespace rex {
 
@@ -240,7 +246,8 @@ bool Runtime::SetupVfs() {
 
   // Mount game_data_root as \Device\Harddisk0\Partition1
   auto mount_path = "\\Device\\Harddisk0\\Partition1";
-  auto device = std::make_unique<rex::filesystem::HostPathDevice>(mount_path, abs_game_root, true);
+  auto device = std::make_unique<rex::filesystem::HostPathDevice>(
+      mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
   if (!device->Initialize()) {
     REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize host path device");
     return false;
