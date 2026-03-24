@@ -164,6 +164,16 @@ struct TerminateNotification {
   uint32_t priority;
 };
 
+/// Host-side metadata for a fiber managed by rexcrt hooks.
+struct FiberInfo {
+  rex::thread::Fiber* host_fiber;  ///< Host OS fiber handle
+  uint32_t uid;                    ///< Unique identifier
+  uint32_t guest_context_addr;     ///< Guest fiber context buffer address
+  uint32_t guest_stack_base;       ///< Top of guest kernel stack (0 for thread fibers)
+  uint32_t guest_stack_bottom;     ///< Bottom of guest kernel stack (0 for thread fibers)
+  bool is_thread_fiber;            ///< true = ConvertThreadToFiber (don't free guest stack)
+};
+
 class KernelState {
  public:
   explicit KernelState(Runtime* emulator);
@@ -252,8 +262,8 @@ class KernelState {
   void OnThreadExit(XThread* thread);
   object_ref<XThread> GetThreadByID(uint32_t thread_id);
 
-  rex::thread::Fiber* LookupFiber(uint32_t guest_addr);
-  void RegisterFiber(uint32_t guest_addr, rex::thread::Fiber* fiber);
+  FiberInfo* LookupFiber(uint32_t guest_addr);
+  void RegisterFiber(uint32_t guest_addr, const FiberInfo& info);
   void UnregisterFiber(uint32_t guest_addr);
 
   /// Returns a fiber name for profiling
@@ -320,7 +330,7 @@ class KernelState {
   bool has_notified_startup_ = false;
 
   // Protected by global_critical_region_.
-  std::unordered_map<uint32_t, rex::thread::Fiber*> fiber_map_;
+  std::unordered_map<uint32_t, FiberInfo> fiber_map_;
 
   // Fiber name pool for profiling.
   // Never erased, Tracy references pointers async.

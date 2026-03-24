@@ -167,9 +167,15 @@ KernelState::~KernelState() {
   object_table_.Reset();
 
   // Destroy any host fibers that were not explicitly cleaned up.
-  for (auto& [guest_addr, fiber] : fiber_map_) {
-    if (fiber) {
-      fiber->Destroy();
+  for (auto& [guest_addr, info] : fiber_map_) {
+    if (info.host_fiber) {
+      info.host_fiber->Destroy();
+    }
+    if (!info.is_thread_fiber && info.guest_stack_bottom) {
+      memory_->LookupHeap(0x70000000)->Release(info.guest_stack_bottom);
+    }
+    if (info.guest_context_addr) {
+      memory_->SystemHeapFree(info.guest_context_addr);
     }
   }
   fiber_map_.clear();
@@ -1065,16 +1071,15 @@ bool KernelState::Restore(stream::ByteStream* stream) {
   return true;
 }
 
-rex::thread::Fiber* KernelState::LookupFiber(uint32_t guest_addr) {
+FiberInfo* KernelState::LookupFiber(uint32_t guest_addr) {
   auto lock = global_critical_region_.Acquire();
   auto it = fiber_map_.find(guest_addr);
-  return it != fiber_map_.end() ? it->second : nullptr;
+  return it != fiber_map_.end() ? &it->second : nullptr;
 }
 
-void KernelState::RegisterFiber(uint32_t guest_addr, rex::thread::Fiber* fiber) {
+void KernelState::RegisterFiber(uint32_t guest_addr, const FiberInfo& info) {
   auto lock = global_critical_region_.Acquire();
-  assert_true(fiber_map_.find(guest_addr) == fiber_map_.end());
-  fiber_map_[guest_addr] = fiber;
+  fiber_map_[guest_addr] = info;
 }
 
 void KernelState::UnregisterFiber(uint32_t guest_addr) {
