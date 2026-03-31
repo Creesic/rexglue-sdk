@@ -135,7 +135,7 @@ if(REXGLUE_USE_VULKAN)
         SPIRV-Tools-static
     )
     if(APPLE)
-        target_link_libraries(rexui PRIVATE MoltenVK)
+        target_link_libraries(rexui PRIVATE rexglue_moltenvk)
         target_compile_definitions(rexui PRIVATE VK_USE_PLATFORM_METAL_EXT)
     endif()
 endif()

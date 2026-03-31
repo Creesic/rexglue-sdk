@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <filesystem>
 #include <sstream>
 #include <string>
@@ -40,6 +41,21 @@ bool LoadMacVulkanLoader(platform::DynamicLibrary& loader) {
   }
 
   const auto exe_dir = rex::filesystem::GetExecutableFolder();
+  std::vector<std::filesystem::path> preferred_candidates;
+  if (const char* vulkan_sdk_env = std::getenv("VULKAN_SDK")) {
+    const std::filesystem::path vulkan_sdk(vulkan_sdk_env);
+    preferred_candidates.emplace_back(vulkan_sdk / "lib" / "libMoltenVK.dylib");
+    preferred_candidates.emplace_back(vulkan_sdk / "macOS" / "lib" / "libMoltenVK.dylib");
+  }
+  preferred_candidates.emplace_back("/usr/local/lib/libMoltenVK.dylib");
+  preferred_candidates.emplace_back("/opt/homebrew/lib/libMoltenVK.dylib");
+
+  for (const auto& candidate : preferred_candidates) {
+    if (loader.Load(candidate)) {
+      return true;
+    }
+  }
+
   const std::array<const char*, 4> fallback_names = {
       "libMoltenVKd.dylib",
       "libMoltenVKd.1.dylib",

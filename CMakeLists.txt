@@ -8,6 +8,11 @@ project(ReXGlue
     DESCRIPTION "Xbox 360 Recompilation SDK"
 )
 
+if(APPLE)
+    enable_language(OBJC)
+    enable_language(OBJCXX)
+endif()
+
 #==========================================================
 # Build Options
 #==========================================================
@@ -55,6 +60,15 @@ endif()
 
 # Root of the SDK source tree
 set(REXGLUE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+set(REXGLUE_TARGET_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
+if(APPLE)
+    if(CMAKE_OSX_ARCHITECTURES)
+        list(GET CMAKE_OSX_ARCHITECTURES 0 REXGLUE_TARGET_PROCESSOR)
+    elseif(DEFINED CMAKE_APPLE_SILICON_PROCESSOR AND
+           NOT "${CMAKE_APPLE_SILICON_PROCESSOR}" STREQUAL "")
+        set(REXGLUE_TARGET_PROCESSOR "${CMAKE_APPLE_SILICON_PROCESSOR}")
+    endif()
+endif()
 
 # SDK install support
 include(GNUInstallDirs)
@@ -71,9 +85,9 @@ if(UNIX AND NOT APPLE)
     set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
 endif()
 
-# Enforce Clang18 compiler
-if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    message(FATAL_ERROR "ReXGlue requires Clang compiler. Please set CMAKE_CXX_COMPILER to clang++")
+# Enforce a Clang-family compiler
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$")
+    message(FATAL_ERROR "ReXGlue requires Clang or AppleClang. Please set CMAKE_CXX_COMPILER to clang++")
 endif()
 
 if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "18.0")
@@ -94,7 +108,7 @@ set(CMAKE_RELWITHDEBINFO_POSTFIX rd)
 
 if(NOT WIN32)
     # Use appropriate code model based on architecture
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+    if(REXGLUE_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
         # Large code model on x86_64 for linking with very large recompiled executables (35MB+)
         add_compile_options(-mcmodel=large)
     else()
@@ -118,25 +132,33 @@ add_compile_options(
 
 # Platform detection (supports AMD64 and ARM64)
 if(WIN32)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+    if(REXGLUE_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
         set(REX_PLATFORM "win-amd64")
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+    elseif(REXGLUE_TARGET_PROCESSOR MATCHES "aarch64|ARM64")
         set(REX_PLATFORM "win-arm64")
     else()
-        message(FATAL_ERROR "Unsupported Windows architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+        message(FATAL_ERROR "Unsupported Windows architecture: ${REXGLUE_TARGET_PROCESSOR}")
     endif()
     add_compile_definitions(REX_PLATFORM_WINDOWS=1)
 elseif(UNIX AND NOT APPLE)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+    if(REXGLUE_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
         set(REX_PLATFORM "linux-amd64")
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+    elseif(REXGLUE_TARGET_PROCESSOR MATCHES "aarch64|ARM64")
         set(REX_PLATFORM "linux-arm64")
     else()
-        set(REX_PLATFORM "linux-${CMAKE_SYSTEM_PROCESSOR}")
+        set(REX_PLATFORM "linux-${REXGLUE_TARGET_PROCESSOR}")
     endif()
     add_compile_definitions(REX_PLATFORM_LINUX=1)
+elseif(APPLE)
+    if(REXGLUE_TARGET_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+        set(REX_PLATFORM "mac-arm64")
+    elseif(REXGLUE_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
+        set(REX_PLATFORM "mac-amd64")
+    else()
+        set(REX_PLATFORM "mac-${REXGLUE_TARGET_PROCESSOR}")
+    endif()
 else()
-    message(FATAL_ERROR "Unsupported platform. ReXGlue supports Windows and Linux only.")
+    message(FATAL_ERROR "Unsupported platform. ReXGlue supports Windows, Linux, and macOS only.")
 endif()
 
 # Build config as compile definition (multi-config generators don't know config at configure time)
@@ -170,6 +192,41 @@ endif()
 
 # Third-party dependencies (vendored sources only)
 add_subdirectory(thirdparty)
+
+if(REXGLUE_USE_VULKAN AND APPLE)
+    set(REXGLUE_MOLTENVK_HINTS)
+    if(DEFINED ENV{VULKAN_SDK} AND NOT "$ENV{VULKAN_SDK}" STREQUAL "")
+        list(APPEND REXGLUE_MOLTENVK_HINTS
+            "$ENV{VULKAN_SDK}/lib"
+            "$ENV{VULKAN_SDK}/macOS/lib"
+        )
+    endif()
+    list(APPEND REXGLUE_MOLTENVK_HINTS
+        "/usr/local/lib"
+        "/opt/homebrew/lib"
+    )
+
+    find_file(REXGLUE_MOLTENVK_DYLIB
+        NAMES libMoltenVK.dylib
+        HINTS ${REXGLUE_MOLTENVK_HINTS}
+    )
+
+    if(REXGLUE_MOLTENVK_DYLIB)
+        add_library(rexglue_moltenvk SHARED IMPORTED GLOBAL)
+        set_target_properties(rexglue_moltenvk PROPERTIES
+            IMPORTED_LOCATION "${REXGLUE_MOLTENVK_DYLIB}"
+        )
+        message(STATUS "Using system MoltenVK dylib: ${REXGLUE_MOLTENVK_DYLIB}")
+    elseif(TARGET MoltenVK)
+        add_library(rexglue_moltenvk INTERFACE IMPORTED GLOBAL)
+        target_link_libraries(rexglue_moltenvk INTERFACE MoltenVK)
+        message(STATUS "Using vendored MoltenVK target")
+    else()
+        message(FATAL_ERROR
+            "MoltenVK was not found. Install the Vulkan SDK or provide a MoltenVK target."
+        )
+    endif()
+endif()
 
 # Enable warnings after thirdparty
 add_compile_options(
