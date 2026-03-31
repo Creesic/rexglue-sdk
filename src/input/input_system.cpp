@@ -41,6 +41,9 @@ void InputSystem::Shutdown() {
 }
 
 void InputSystem::AddDriver(std::unique_ptr<InputDriver> driver) {
+  if (window_) {
+    driver->OnWindowAvailable(window_);
+  }
   drivers_.push_back(std::move(driver));
 }
 

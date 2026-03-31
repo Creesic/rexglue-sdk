@@ -15,6 +15,9 @@ function(rexglue_configure_target target_name)
     if(WIN32)
         target_sources(${target_name} PRIVATE
             ${REXGLUE_SHARE_DIR}/windowed_app_main_win.cpp)
+    elseif(APPLE)
+        target_sources(${target_name} PRIVATE
+            ${REXGLUE_SHARE_DIR}/windowed_app_main_macos.cpp)
     else()
         target_sources(${target_name} PRIVATE
             ${REXGLUE_SHARE_DIR}/windowed_app_main_posix.cpp)
@@ -32,6 +35,10 @@ function(rexglue_configure_target target_name)
     if(WIN32)
         target_link_options(${target_name} PRIVATE
             "LINKER:/WHOLEARCHIVE:$<TARGET_FILE:rex::kernel>"
+        )
+    elseif(APPLE)
+        target_link_options(${target_name} PRIVATE
+            "LINKER:-force_load,$<TARGET_FILE:rex::kernel>"
         )
     else()
         target_link_options(${target_name} PRIVATE
