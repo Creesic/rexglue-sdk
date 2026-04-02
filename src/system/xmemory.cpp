@@ -44,7 +44,7 @@ uint32_t get_page_count(uint32_t value, uint32_t page_size, uint32_t page_size_s
 
 constexpr uint64_t kGuestMemoryMappingSize = 0x120000000ull;
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
 uint64_t GetMacGuestMemoryReservationSize(uint32_t system_allocation_granularity) {
   return rex::round_up(kGuestMemoryMappingSize + uint64_t(system_allocation_granularity),
                        uint64_t(system_allocation_granularity));
@@ -137,7 +137,7 @@ Memory::~Memory() {
 
 bool Memory::Initialize() {
   file_name_ = fmt::format("xenia_memory_{}", chrono::Clock::QueryHostTickCount());
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   const uint64_t mapping_size = GetMacGuestMemoryReservationSize(system_allocation_granularity_);
 #else
   const uint64_t mapping_size = kGuestMemoryMappingSize;
@@ -156,7 +156,7 @@ bool Memory::Initialize() {
   // Attempt to create our views. This may fail at the first address
   // we pick, so try a few times.
   mapping_base_ = 0;
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   if (MapViewsMac()) {
     REXSYS_ERROR("Unable to reserve and map a continuous guest range on macOS.");
     assert_always();

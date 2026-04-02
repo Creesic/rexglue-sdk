@@ -23,7 +23,7 @@
 
 namespace rex::filesystem {
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
 extern "C" time_t timegm(struct tm*);
 #endif
 

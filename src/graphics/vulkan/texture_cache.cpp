@@ -2724,7 +2724,7 @@ bool VulkanTextureCache::Initialize() {
     REXGPU_ERROR("VulkanTexture: Failed to create the texture load pipeline layout");
     return false;
   }
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
 #else
   bool load_shaders_needed[kLoadShaderCount] = {};
   auto mark_host_format_pair_load_shaders_needed = [&](const HostFormatPair& host_format_pair) {

@@ -22,7 +22,7 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
 #include <limits>
 #include <memory>
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
 #include <mach/mach.h>
 #include <mach/semaphore.h>
 #endif
@@ -67,7 +67,7 @@ namespace rex::thread {
 
 namespace {
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
 using SuspendSemaphore = semaphore_t;
 
 bool SuspendSemaphoreInitialize(SuspendSemaphore& semaphore) {
@@ -197,7 +197,7 @@ enum class SignalType {
 };
 
 int GetSystemSignal(SignalType num) {
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   static constexpr int kMacSignals[] = {
       SIGUSR1,
       SIGUSR2,
@@ -211,7 +211,7 @@ int GetSystemSignal(SignalType num) {
 }
 
 SignalType GetSystemSignalType(int num) {
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   switch (num) {
     case SIGUSR1:
       return SignalType::kThreadSuspend;
@@ -795,7 +795,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
 #endif
 
   uint32_t system_id() const {
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
     return static_cast<uint32_t>(pthread_mach_thread_np(thread_));
 #else
     return static_cast<uint32_t>(thread_);
@@ -804,7 +804,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
 
   uint64_t affinity_mask() {
     WaitStarted();
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
     REXSYS_WARN("Thread affinity queries are not implemented on macOS");
     return 0;
 #else
@@ -830,7 +830,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
 
   void set_affinity_mask(uint64_t mask) {
     WaitStarted();
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
     static_cast<void>(mask);
     REXSYS_WARN("Thread affinity is not implemented on macOS");
 #else
@@ -907,7 +907,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
     value.sival_ptr = this;
     int result = sigqueue(pthread_gettid_np(thread_),
                           GetSystemSignal(SignalType::kThreadUserCallback), value);
-#elif REX_PLATFORM_MACOS
+#elif REX_PLATFORM_MAC
     int result = pthread_kill(thread_, GetSystemSignal(SignalType::kThreadUserCallback));
 #else
     sigval value{};
@@ -1517,7 +1517,7 @@ void Thread::Exit(int exit_code) {
 
 void set_current_thread_name(const std::string_view name) {
   std::string name_string(name);
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   assert_zero(pthread_setname_np(name_string.c_str()));
 #else
   assert_zero(pthread_setname_np(pthread_self(), name_string.c_str()));

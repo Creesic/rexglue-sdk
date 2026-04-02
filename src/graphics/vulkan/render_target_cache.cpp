@@ -624,7 +624,7 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
   create_direct_resolve_pipeline_layout(descriptor_set_layout_sampled_image_x2_,
                                         &direct_resolve_pipeline_layout_depth_);
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   REXGPU_INFO("VulkanRenderTargetCache::Initialize stage=resolve_copy_pipelines_lazy");
 #else
   REXGPU_INFO("VulkanRenderTargetCache::Initialize stage=resolve_copy_pipelines_eager");
@@ -675,7 +675,7 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
       Shutdown();
       return false;
     }
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
     REXGPU_INFO("VulkanRenderTargetCache::Initialize stage=host_depth_store_pipelines_lazy");
 #else
     REXGPU_INFO("VulkanRenderTargetCache::Initialize stage=host_depth_store_pipelines_eager");
@@ -1152,7 +1152,6 @@ VkPipeline VulkanRenderTargetCache::EnsureHostDepthStorePipeline(xenos::MsaaSamp
 }
 
 void VulkanRenderTargetCache::ClearCache() {
-  direct_swap_source_ = {};
   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
@@ -1172,15 +1171,6 @@ void VulkanRenderTargetCache::ClearCache() {
   render_passes_.clear();
 
   RenderTargetCache::ClearCache();
-}
-
-bool VulkanRenderTargetCache::GetDirectSwapSource(uint32_t frontbuffer_ptr,
-                                                  DirectSwapSource& source_out) const {
-  if (!direct_swap_source_.valid() || direct_swap_source_.base_address != frontbuffer_ptr) {
-    return false;
-  }
-  source_out = direct_swap_source_;
-  return true;
 }
 
 void VulkanRenderTargetCache::CompletedSubmissionUpdated() {
@@ -1400,7 +1390,6 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
                                       uint32_t& written_address_out, uint32_t& written_length_out) {
   written_address_out = 0;
   written_length_out = 0;
-  direct_swap_source_ = {};
 
   bool draw_resolution_scaled = IsDrawResolutionScaled();
 
@@ -1564,36 +1553,6 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
                                             resolve_info.copy_dest_extent_length);
           written_address_out = resolve_info.copy_dest_extent_start;
           written_length_out = resolve_info.copy_dest_extent_length;
-          if (GetPath() == Path::kHostRenderTargets &&
-              resolve_info.rb_copy_control.copy_src_select < xenos::kMaxColorRenderTargets &&
-              resolve_info.copy_dest_coordinate_info.offset_x_div_8 == 0 &&
-              resolve_info.copy_dest_coordinate_info.offset_y_div_8 == 0 &&
-              resolve_info.copy_dest_info.copy_dest_array == 0 &&
-              resolve_info.copy_dest_info.copy_dest_slice == 0) {
-            const RenderTarget* source_render_target =
-                last_update_framebuffer_attachments_[1 + resolve_info.rb_copy_control.copy_src_select];
-            const auto* source_vulkan_rt =
-                source_render_target ? static_cast<const VulkanRenderTarget*>(source_render_target)
-                                     : nullptr;
-            if (source_vulkan_rt != nullptr &&
-                source_vulkan_rt->key().msaa_samples == xenos::MsaaSamples::k1X &&
-                xenos::IsColorResolveFormatBitwiseEquivalent(
-                    source_vulkan_rt->key().GetColorFormat(),
-                    xenos::ColorFormat(resolve_info.copy_dest_info.copy_dest_format))) {
-              direct_swap_source_.image_view = source_vulkan_rt->view_color_transfer();
-              direct_swap_source_.base_address = resolve_info.copy_dest_base;
-              direct_swap_source_.width_unscaled =
-                  resolve_info.coordinate_info.width_div_8 << xenos::kResolveAlignmentPixelsLog2;
-              direct_swap_source_.height_unscaled =
-                  resolve_info.height_div_8 << xenos::kResolveAlignmentPixelsLog2;
-              direct_swap_source_.width_scaled =
-                  direct_swap_source_.width_unscaled * draw_resolution_scale_x();
-              direct_swap_source_.height_scaled =
-                  direct_swap_source_.height_unscaled * draw_resolution_scale_y();
-              direct_swap_source_.format =
-                  xenos::TextureFormat(resolve_info.copy_dest_info.copy_dest_format);
-            }
-          }
           copied = true;
         }
       }

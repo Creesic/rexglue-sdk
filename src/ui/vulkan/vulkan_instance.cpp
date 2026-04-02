@@ -32,7 +32,7 @@ namespace rex {
 namespace ui {
 namespace vulkan {
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
 namespace {
 
 bool LoadMacVulkanLoader(platform::DynamicLibrary& loader) {
@@ -106,7 +106,7 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
 
   bool functions_loaded = true;
   bool loader_loaded = false;
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   loader_loaded = LoadMacVulkanLoader(vulkan_instance->loader_);
 #else
   loader_loaded = vulkan_instance->loader_.Load(platform::lib_names::kVulkanLoader);
@@ -167,7 +167,7 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
   // #129.
   requested_extensions.emplace("VK_EXT_debug_utils",
                                &vulkan_instance->extensions_.ext_EXT_debug_utils);
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   // #395.
   requested_extensions.emplace(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
                                &vulkan_instance->extensions_.ext_KHR_portability_enumeration);
@@ -379,7 +379,7 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
   instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   instance_create_info.pNext = nullptr;
   instance_create_info.flags = 0;
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
   // VK_KHR_get_physical_device_properties2 is needed to get the portability
   // subset features.
   if (vulkan_instance->extensions_.ext_KHR_portability_enumeration &&

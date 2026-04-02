@@ -18,7 +18,7 @@ namespace rex::chrono {
 
 namespace {
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
 constexpr clockid_t kMonotonicClockId = CLOCK_MONOTONIC;
 #else
 constexpr clockid_t kMonotonicClockId = CLOCK_MONOTONIC_RAW;

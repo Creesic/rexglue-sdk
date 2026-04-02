@@ -232,7 +232,7 @@ bool ReXApp::OnInitialize() {
 
   // Launch module in background
   app_context().CallInUIThreadDeferred([this]() {
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
     if (auto* input_system =
             dynamic_cast<rex::input::InputSystem*>(runtime_ ? runtime_->input_system() : nullptr)) {
       (void)rex::input::AttachDefaultInputDrivers(*input_system, window_.get(), false);

@@ -110,19 +110,6 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
                VulkanTextureCache& texture_cache, uint32_t& written_address_out,
                uint32_t& written_length_out);
 
-  struct DirectSwapSource {
-    VkImageView image_view = VK_NULL_HANDLE;
-    uint32_t base_address = 0;
-    uint32_t width_unscaled = 0;
-    uint32_t height_unscaled = 0;
-    uint32_t width_scaled = 0;
-    uint32_t height_scaled = 0;
-    xenos::TextureFormat format = xenos::TextureFormat::k_8_8_8_8;
-
-    bool valid() const { return image_view != VK_NULL_HANDLE && base_address != 0; }
-  };
-  bool GetDirectSwapSource(uint32_t frontbuffer_ptr, DirectSwapSource& source_out) const;
-
   // Returns true if any downloads were submitted to the command processor.
   bool InitializeTraceSubmitDownloads();
   void InitializeTraceCompleteDownloads();
@@ -879,8 +866,6 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   VkPipelineLayout direct_resolve_pipeline_layout_depth_ = VK_NULL_HANDLE;
   std::unordered_map<DirectResolvePipelineKey, VkPipeline, DirectResolvePipelineKey::Hasher>
       direct_resolve_pipelines_;
-  DirectSwapSource direct_swap_source_;
-
   // Temporary storage for Resolve.
   std::vector<Transfer> clear_transfers_[2];
 

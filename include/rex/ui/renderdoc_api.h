@@ -14,7 +14,7 @@
 
 #include <rex/platform/dynlib.h>
 
-#if REX_PLATFORM_MACOS
+#if REX_PLATFORM_MAC
 using RENDERDOC_API_1_0_0 = void;
 #else
 #include <renderdoc_app.h>
@@ -38,7 +38,7 @@ class RenderDocAPI {
  private:
   explicit RenderDocAPI() = default;
 
-#if !REX_PLATFORM_MACOS
+#if !REX_PLATFORM_MAC
   rex::platform::DynamicLibrary library_;
 #endif
 

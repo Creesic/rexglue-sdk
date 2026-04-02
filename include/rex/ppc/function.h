@@ -148,7 +148,7 @@ struct arg_count_t {
 
 namespace detail {
 constexpr uint32_t PhysicalHostOffset([[maybe_unused]] uint32_t guest_addr) noexcept {
-#if REX_PLATFORM_WIN32 || REX_PLATFORM_MACOS
+#if REX_PLATFORM_WIN32 || REX_PLATFORM_MAC
   return (guest_addr >= 0xE0000000u) ? 0x1000u : 0u;
 #else
   return 0u;  // 4 KB granularity keeps the file offset intact.

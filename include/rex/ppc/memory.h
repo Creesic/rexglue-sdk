@@ -43,7 +43,7 @@
 // everywhere and adding it to every single memory access.
 // Maybe a separate base pointer for the 0xE0 heap?
 //=============================================================================
-#if REX_PLATFORM_WIN32 || REX_PLATFORM_MACOS
+#if REX_PLATFORM_WIN32 || REX_PLATFORM_MAC
 #define PPC_PHYS_HOST_OFFSET(addr) (((uint32_t)(addr) >= 0xE0000000u) ? 0x1000u : 0u)
 #else
 #define PPC_PHYS_HOST_OFFSET(addr) 0u  // 4 KB granularity keeps the file offset intact.
@@ -52,7 +52,7 @@
 // Raw address calculation with physical offset (for operations that don't use PPC_LOAD/PPC_STORE)
 #define PPC_RAW_ADDR(x) (base + (uint32_t)(x) + PPC_PHYS_HOST_OFFSET(x))
 
-#if REX_PLATFORM_MACOS && REX_ARCH_ARM64
+#if REX_PLATFORM_MAC && REX_ARCH_ARM64
 #define PPC_SPLIT_U64_ACCESS(addr) (((uint32_t)(addr) & 0x7u) != 0)
 #else
 #define PPC_SPLIT_U64_ACCESS(addr) 0
@@ -144,7 +144,7 @@
 // On macOS ARM64, guest memory writes that build a PM4 packet stream must
 // become globally visible before publishing the MMIO write pointer update that
 // wakes the GPU thread to consume them.
-#if REX_PLATFORM_MACOS && REX_ARCH_ARM64
+#if REX_PLATFORM_MAC && REX_ARCH_ARM64
 #define PPC_MMIO_RELEASE_FENCE() std::atomic_thread_fence(std::memory_order_release)
 #define PPC_MMIO_ACQUIRE_FENCE() std::atomic_thread_fence(std::memory_order_acquire)
 #else
