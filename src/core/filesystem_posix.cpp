@@ -16,6 +16,9 @@
 #include <iostream>
 
 #include <fcntl.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -51,10 +54,23 @@ std::filesystem::path to_path(const std::u16string_view source) {
 namespace filesystem {
 
 std::filesystem::path GetExecutablePath() {
+#if REX_PLATFORM_MAC
+  uint32_t buffer_size = 0;
+  _NSGetExecutablePath(nullptr, &buffer_size);
+  std::string buffer(buffer_size, '\0');
+  if (_NSGetExecutablePath(buffer.data(), &buffer_size) != 0) {
+    return {};
+  }
+  if (!buffer.empty() && buffer.back() == '\0') {
+    buffer.pop_back();
+  }
+  return std::filesystem::weakly_canonical(buffer);
+#else
   char buff[FILENAME_MAX] = "";
   readlink("/proc/self/exe", buff, FILENAME_MAX);
   std::string s(buff);
   return s;
+#endif
 }
 
 std::filesystem::path GetExecutableFolder() {
@@ -89,11 +105,19 @@ FILE* OpenFile(const std::filesystem::path& path, const std::string_view mode) {
 }
 
 bool Seek(FILE* file, int64_t offset, int origin) {
+#if REX_PLATFORM_MAC
+  return fseeko(file, off_t(offset), origin) == 0;
+#else
   return fseeko64(file, off64_t(offset), origin) == 0;
+#endif
 }
 
 int64_t Tell(FILE* file) {
+#if REX_PLATFORM_MAC
+  return int64_t(ftello(file));
+#else
   return int64_t(ftello64(file));
+#endif
 }
 
 bool TruncateStdioFile(FILE* file, uint64_t length) {
@@ -104,7 +128,7 @@ bool TruncateStdioFile(FILE* file, uint64_t length) {
   if (position < 0) {
     return false;
   }
-  if (ftruncate64(fileno(file), off64_t(length))) {
+  if (ftruncate(fileno(file), off_t(length))) {
     return false;
   }
   if (uint64_t(position) > length) {
@@ -241,7 +265,7 @@ std::vector<FileInfo> ListFiles(const std::filesystem::path& path) {
     info.access_timestamp = convertUnixtimeToWinFiletime(st.st_atime);
     info.write_timestamp = convertUnixtimeToWinFiletime(st.st_mtime);
     info.path = path;
-    if (ent->d_type == DT_DIR) {
+    if (S_ISDIR(st.st_mode)) {
       info.type = FileInfo::Type::kDirectory;
       info.total_size = 0;
     } else {

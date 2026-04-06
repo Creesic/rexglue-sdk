@@ -26,6 +26,42 @@ if(REXGLUE_USE_VULKAN)
     find_dependency(VulkanMemoryAllocator CONFIG)
 endif()
 
+if(APPLE AND REXGLUE_USE_VULKAN AND NOT TARGET rexglue_moltenvk)
+    if(TARGET MoltenVK)
+        add_library(rexglue_moltenvk INTERFACE IMPORTED GLOBAL)
+        target_link_libraries(rexglue_moltenvk INTERFACE MoltenVK)
+    else()
+        set(_rexglue_moltenvk_hints "${PACKAGE_PREFIX_DIR}/lib")
+        if(DEFINED ENV{VULKAN_SDK} AND NOT "$ENV{VULKAN_SDK}" STREQUAL "")
+            list(APPEND _rexglue_moltenvk_hints
+                "$ENV{VULKAN_SDK}/lib"
+                "$ENV{VULKAN_SDK}/macOS/lib"
+            )
+        endif()
+        list(APPEND _rexglue_moltenvk_hints
+            "/usr/local/lib"
+            "/opt/homebrew/lib"
+        )
+
+        find_file(REXGLUE_MOLTENVK_DYLIB
+            NAMES libMoltenVK.dylib
+            HINTS ${_rexglue_moltenvk_hints}
+        )
+
+        if(NOT REXGLUE_MOLTENVK_DYLIB)
+            message(FATAL_ERROR
+                "rexglue requires MoltenVK on macOS, but libMoltenVK.dylib was not found. "
+                "Set VULKAN_SDK or install MoltenVK in /usr/local/lib or /opt/homebrew/lib."
+            )
+        endif()
+
+        add_library(rexglue_moltenvk SHARED IMPORTED GLOBAL)
+        set_target_properties(rexglue_moltenvk PROPERTIES
+            IMPORTED_LOCATION "${REXGLUE_MOLTENVK_DYLIB}"
+        )
+    endif()
+endif()
+
 # Include the generated targets
 include("${CMAKE_CURRENT_LIST_DIR}/rexglueTargets.cmake")
 

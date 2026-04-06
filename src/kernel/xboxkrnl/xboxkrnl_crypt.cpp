@@ -22,6 +22,10 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xtypes.h>
 
+#if REX_PLATFORM_MAC
+#include <rex/endian.h>
+#endif
+
 #if REX_PLATFORM_WIN32
 #include <windows.h>
 
@@ -33,7 +37,19 @@
 #include "crypto/des/des.h"
 #include "crypto/des/des3.h"
 #include "crypto/des/descbc.h"
+
+#if REX_PLATFORM_MAC && !defined(_MSC_VER)
+#define REX_RESTORE_MSC_VER_FOR_SHA256 1
+#define _MSC_VER 1
+#endif
+
 #include "crypto/sha256.cpp"
+
+#if defined(REX_RESTORE_MSC_VER_FOR_SHA256)
+#undef _MSC_VER
+#undef REX_RESTORE_MSC_VER_FOR_SHA256
+#endif
+
 #include "crypto/sha256.h"
 
 extern "C" {

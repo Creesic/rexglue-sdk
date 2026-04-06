@@ -318,8 +318,9 @@ void CommandProcessor::WorkerThreadMain() {
     // TODO(benvanik): use reader->Read_update_freq_ and only issue after moving
     //     that many indices.
     if (read_ptr_writeback_ptr_) {
-      memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
-                                       read_ptr_index_);
+      uint8_t* read_ptr_writeback_physical =
+          memory_->TranslatePhysical(read_ptr_writeback_ptr_);
+      memory::store_and_swap<uint32_t>(read_ptr_writeback_physical, read_ptr_index_);
     }
 
     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,

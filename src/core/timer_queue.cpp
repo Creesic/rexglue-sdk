@@ -10,11 +10,12 @@
  */
 
 #include <algorithm>
+#include <cassert>
 #include <forward_list>
 
-#include <disruptorplus/multi_threaded_claim_strategy.hpp>
 #include <disruptorplus/ring_buffer.hpp>
 #include <disruptorplus/sequence_barrier.hpp>
+#include <disruptorplus/sequence_barrier_group.hpp>
 #include <disruptorplus/spin_wait_strategy.hpp>
 
 #include <rex/assert.h>
@@ -22,6 +23,97 @@
 #include <rex/thread/timer_queue.h>
 
 namespace dp = disruptorplus;
+
+namespace {
+
+template <typename WaitStrategy>
+class TimerQueueClaimStrategy {
+ public:
+  TimerQueueClaimStrategy(size_t buffer_size, WaitStrategy& wait_strategy)
+      : index_mask_(static_cast<dp::sequence_t>(buffer_size - 1)),
+        buffer_size_(buffer_size),
+        wait_strategy_(wait_strategy),
+        claim_barrier_(wait_strategy),
+        published_(new std::atomic<dp::sequence_t>[buffer_size]),
+        next_claimable_(0) {
+    assert(buffer_size_ > 0 && (buffer_size_ & (buffer_size_ - 1)) == 0);
+
+    for (dp::sequence_t i = 0; i < static_cast<dp::sequence_t>(buffer_size_); ++i) {
+      published_[static_cast<size_t>(i)].store(
+          static_cast<dp::sequence_t>(i - buffer_size_), std::memory_order_relaxed);
+    }
+  }
+
+  void add_claim_barrier(dp::sequence_barrier<WaitStrategy>& barrier) { claim_barrier_.add(barrier); }
+
+  void add_claim_barrier(dp::sequence_barrier_group<WaitStrategy>& barrier) {
+    claim_barrier_.add(barrier);
+  }
+
+  dp::sequence_t claim_one() {
+    dp::sequence_t sequence = next_claimable_.fetch_add(1, std::memory_order_relaxed);
+    claim_barrier_.wait_until_published(static_cast<dp::sequence_t>(sequence - buffer_size_));
+    return sequence;
+  }
+
+  template <typename Clock, typename Duration>
+  dp::sequence_t wait_until_published(
+      dp::sequence_t sequence, dp::sequence_t last_known_published,
+      const std::chrono::time_point<Clock, Duration>& timeout_time) const {
+    assert(dp::difference(sequence, last_known_published) > 0);
+
+    for (dp::sequence_t seq = last_known_published + 1; dp::difference(seq, sequence) <= 0;
+         ++seq) {
+      if (!is_published(seq)) {
+        const std::atomic<dp::sequence_t>* const sequences[1] = {
+            &published_[static_cast<size_t>(seq & index_mask_)]};
+        dp::sequence_t result =
+            wait_strategy_.wait_until_published(seq, 1, sequences, timeout_time);
+        if (dp::difference(result, seq) < 0) {
+          return seq - 1;
+        }
+      }
+    }
+
+    return last_published_after(sequence);
+  }
+
+  void publish(dp::sequence_t sequence) {
+    set_published(sequence);
+    wait_strategy_.signal_all_when_blocking();
+  }
+
+ private:
+  dp::sequence_t last_published_after(dp::sequence_t last_known_published) const {
+    dp::sequence_t sequence = last_known_published + 1;
+    while (is_published(sequence)) {
+      last_known_published = sequence;
+      ++sequence;
+    }
+    return last_known_published;
+  }
+
+  bool is_published(dp::sequence_t sequence) const {
+    return published_[static_cast<size_t>(sequence & index_mask_)].load(
+               std::memory_order_acquire) == sequence;
+  }
+
+  void set_published(dp::sequence_t sequence) {
+    auto& entry = published_[static_cast<size_t>(sequence & index_mask_)];
+    assert(entry.load(std::memory_order_relaxed) ==
+           static_cast<dp::sequence_t>(sequence - buffer_size_));
+    entry.store(sequence, std::memory_order_release);
+  }
+
+  const dp::sequence_t index_mask_;
+  const size_t buffer_size_;
+  WaitStrategy& wait_strategy_;
+  dp::sequence_barrier_group<WaitStrategy> claim_barrier_;
+  const std::unique_ptr<std::atomic<dp::sequence_t>[]> published_;
+  alignas(64) std::atomic<dp::sequence_t> next_claimable_;
+};
+
+}  // namespace
 
 namespace rex::thread {
 
@@ -143,7 +235,7 @@ class TimerQueue {
   static constexpr size_t kWaitCount = 512;
   dp::ring_buffer<std::shared_ptr<WaitItem>> buffer_;
   dp::spin_wait_strategy wait_strategy_;
-  dp::multi_threaded_claim_strategy<dp::spin_wait_strategy> claim_strategy_;
+  TimerQueueClaimStrategy<dp::spin_wait_strategy> claim_strategy_;
   dp::sequence_barrier<dp::spin_wait_strategy> consumed_;
 
   // This is a _sorted_ (ascending due_) list of active timers managed by a
@@ -187,13 +279,13 @@ void TimerQueueWaitItem::Disarm() {
   }
 }
 
-std::weak_ptr<WaitItem> QueueTimerOnce(std::move_only_function<void(void*)> callback,
+std::weak_ptr<WaitItem> QueueTimerOnce(rex::move_only_function<void(void*)> callback,
                                        void* userdata, WaitItem::clock::time_point due) {
   return timer_queue_.QueueTimer(std::make_shared<WaitItem>(
       std::move(callback), userdata, &timer_queue_, due, WaitItem::clock::duration::zero()));
 }
 
-std::weak_ptr<WaitItem> QueueTimerRecurring(std::move_only_function<void(void*)> callback,
+std::weak_ptr<WaitItem> QueueTimerRecurring(rex::move_only_function<void(void*)> callback,
                                             void* userdata, WaitItem::clock::time_point due,
                                             WaitItem::clock::duration interval) {
   return timer_queue_.QueueTimer(

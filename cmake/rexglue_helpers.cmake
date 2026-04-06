@@ -15,6 +15,9 @@ function(rexglue_configure_target target_name)
     if(WIN32)
         target_sources(${target_name} PRIVATE
             ${REXGLUE_SHARE_DIR}/windowed_app_main_win.cpp)
+    elseif(APPLE)
+        target_sources(${target_name} PRIVATE
+            ${REXGLUE_SHARE_DIR}/windowed_app_main_macos.cpp)
     else()
         target_sources(${target_name} PRIVATE
             ${REXGLUE_SHARE_DIR}/windowed_app_main_posix.cpp)
@@ -33,6 +36,10 @@ function(rexglue_configure_target target_name)
         target_link_options(${target_name} PRIVATE
             "LINKER:/WHOLEARCHIVE:$<TARGET_FILE:rex::kernel>"
         )
+    elseif(APPLE)
+        target_link_options(${target_name} PRIVATE
+            "LINKER:-force_load,$<TARGET_FILE:rex::kernel>"
+        )
     else()
         target_link_options(${target_name} PRIVATE
             -Wl,--whole-archive
@@ -48,16 +55,16 @@ function(rexglue_configure_target target_name)
         target_include_directories(${target_name} PRIVATE ${GTK3_INCLUDE_DIRS})
         target_link_libraries(${target_name} PRIVATE ${GTK3_LIBRARIES})
         # Large executable support
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        if(REXGLUE_TARGET_PROCESSOR MATCHES "x86_64|AMD64")
             target_link_options(${target_name} PRIVATE -Wl,--no-relax)
             target_compile_options(${target_name} PRIVATE -mcmodel=large)
-        elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+        elseif(REXGLUE_TARGET_PROCESSOR MATCHES "aarch64|arm64|ARM64")
             target_compile_options(${target_name} PRIVATE -march=armv8-a)
         endif()
     endif()
 
     if(NOT MSVC)
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        if(REXGLUE_TARGET_PROCESSOR MATCHES "x86_64|AMD64")
             target_compile_options(${target_name} PRIVATE -msse4.1)
         endif()
         # ARM64 NEON is enabled via -march=armv8-a above
