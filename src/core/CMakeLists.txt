@@ -43,6 +43,23 @@ if(WIN32)
         string_win.cpp
         threading_win.cpp
     )
+elseif(APPLE)
+    target_sources(rexcore PRIVATE
+        atomic_posix.cpp
+        clock_posix.cpp
+        dbg_posix.cpp
+        dynlib_posix.cpp
+        exception_handler_posix.cpp
+        filesystem_posix.cpp
+        fiber_posix.cpp
+        mapped_memory_posix.cpp
+        math_gcc.cpp
+        memory_mac.cpp
+        seh_posix.cpp
+        socket_posix.cpp
+        string_posix.cpp
+        threading_posix.cpp
+    )
 elseif(UNIX)
     target_sources(rexcore PRIVATE
         atomic_posix.cpp
@@ -73,7 +90,9 @@ target_include_directories(rexcore PRIVATE
     ${PROJECT_SOURCE_DIR}/thirdparty/cli11/include
 )
 
-if(UNIX)
+if(APPLE)
+    target_link_libraries(rexcore PRIVATE pthread)
+elseif(UNIX)
     target_link_libraries(rexcore PRIVATE pthread rt dl)
 endif()
 
@@ -99,4 +118,3 @@ if(REXGLUE_ENABLE_PERF_COUNTERS)
     target_compile_definitions(rexcore PUBLIC
         $<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
 endif()
-
