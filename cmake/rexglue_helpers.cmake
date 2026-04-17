@@ -33,12 +33,23 @@ function(rexglue_configure_target target_name)
         target_link_options(${target_name} PRIVATE
             "LINKER:/WHOLEARCHIVE:$<TARGET_FILE:rex::kernel>"
         )
+    elseif(APPLE)
+        target_link_options(${target_name} PRIVATE
+            "LINKER:-force_load,$<TARGET_FILE:rex::kernel>"
+        )
     else()
         target_link_options(${target_name} PRIVATE
             -Wl,--whole-archive
             $<TARGET_FILE:rex::kernel>
             -Wl,--no-whole-archive
         )
+    endif()
+
+    # macOS platform settings
+    if(APPLE)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+            target_compile_options(${target_name} PRIVATE -msse4.1)
+        endif()
     endif()
 
     # Linux platform settings
