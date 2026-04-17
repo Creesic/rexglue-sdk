@@ -3,8 +3,8 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ReXGlue
-    VERSION 0.7.0
-    LANGUAGES C CXX
+    VERSION 0.7.6
+    LANGUAGES C CXX OBJC OBJCXX
     DESCRIPTION "Xbox 360 Recompilation SDK"
 )
 # Floor only: bump MAJOR.MINOR for API changes. Patch is derived from git tags
@@ -61,6 +61,14 @@ if(UNIX AND NOT APPLE)
     list(APPEND CMAKE_INSTALL_RPATH
         "$ORIGIN"
         "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
+    )
+    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+elseif(APPLE)
+    # Use loader-relative install names on macOS so installed binaries remain
+    # self-contained within the install prefix.
+    list(APPEND CMAKE_INSTALL_RPATH
+        "@loader_path"
+        "@loader_path/../${CMAKE_INSTALL_LIBDIR}"
     )
     set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
 endif()
@@ -129,8 +137,17 @@ elseif(UNIX AND NOT APPLE)
         set(REX_PLATFORM "linux-${CMAKE_SYSTEM_PROCESSOR}")
     endif()
     add_compile_definitions(REX_PLATFORM_LINUX=1)
+elseif(APPLE)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+        set(REX_PLATFORM "mac-amd64")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+        set(REX_PLATFORM "mac-arm64")
+    else()
+        set(REX_PLATFORM "mac-${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+    add_compile_definitions(REX_PLATFORM_MAC=1)
 else()
-    message(FATAL_ERROR "Unsupported platform. ReXGlue supports Windows and Linux only.")
+    message(FATAL_ERROR "Unsupported platform. ReXGlue supports Windows, Linux, and macOS only.")
 endif()
 
 # Build config as compile definition (multi-config generators don't know config at configure time)
