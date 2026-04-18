@@ -49,16 +49,16 @@ elseif(APPLE)
         clock_posix.cpp
         dbg_posix.cpp
         dynlib_posix.cpp
-        exception_handler_posix.cpp
-        filesystem_posix.cpp
+        exception_handler_mac.cpp
+        filesystem_mac.cpp
         fiber_posix.cpp
-        mapped_memory_posix.cpp
+        mapped_memory_mac.cpp
         math_gcc.cpp
         memory_mac.cpp
         seh_posix.cpp
         socket_posix.cpp
         string_posix.cpp
-        threading_posix.cpp
+        threading_mac.cpp
     )
 elseif(UNIX)
     target_sources(rexcore PRIVATE
