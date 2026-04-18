@@ -96,11 +96,12 @@ set(CMAKE_RELWITHDEBINFO_POSTFIX rd)
 
 if(NOT WIN32)
     # Use appropriate code model based on architecture
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
-        # Large code model on x86_64 for linking with very large recompiled executables (35MB+)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64" AND NOT APPLE)
+        # Large code model on Linux x86_64 for linking with very large recompiled executables (35MB+).
+        # macOS uses small: the ld64 linker on macOS 15+ rejects text relocations produced
+        # by -mcmodel=large, and macOS maps binaries in the low address space so ±2GB is sufficient.
         add_compile_options(-mcmodel=large)
     else()
-        # Small code model for other architectures (ARM64, etc.)
         add_compile_options(-mcmodel=small)
     endif()
     # Position-independent code for all targets
