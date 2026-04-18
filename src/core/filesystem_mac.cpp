@@ -13,9 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <iostream>
-
 #include <fcntl.h>
+#include <mach-o/dyld.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -51,10 +50,24 @@ std::filesystem::path to_path(const std::u16string_view source) {
 namespace filesystem {
 
 std::filesystem::path GetExecutablePath() {
-  char buff[FILENAME_MAX] = "";
-  readlink("/proc/self/exe", buff, FILENAME_MAX);
-  std::string s(buff);
-  return s;
+  uint32_t executable_path_size = 0;
+  _NSGetExecutablePath(nullptr, &executable_path_size);
+  if (!executable_path_size) {
+    return {};
+  }
+
+  std::string executable_path(executable_path_size, '\0');
+  if (_NSGetExecutablePath(executable_path.data(), &executable_path_size) != 0) {
+    return {};
+  }
+
+  if (!executable_path.empty() && executable_path.back() == '\0') {
+    executable_path.pop_back();
+  }
+
+  std::error_code ec;
+  std::filesystem::path canonical_path = std::filesystem::weakly_canonical(executable_path, ec);
+  return ec ? std::filesystem::path(executable_path) : canonical_path;
 }
 
 std::filesystem::path GetExecutableFolder() {
