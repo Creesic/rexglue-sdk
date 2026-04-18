@@ -1332,9 +1332,9 @@ bool build_vpkd3d128(BuilderContext& ctx) {
       uint32_t shift = ctx.insn.operands[4];
 
       // Guard fix: The shift bound was too loose (shift=3 would cause dstIdx to reach 9, an OOB
-      // store). We also explicitly reject shift == 1 since the clear block below only handles 0 and 2.
-      // Furthermore, we explicitly warn on unexpected mask values (e.g., 0, 1) to avoid silent
-      // fallthroughs and silently generating miscompiled code.
+      // store). We also explicitly reject shift == 1 since the clear block below only handles 0
+      // and 2. Furthermore, we explicitly warn on unexpected mask values (e.g., 0, 1) to avoid
+      // silent fallthroughs and silently generating miscompiled code.
       if ((shift != 0 && shift != 2) || (mask != 2 && mask != 3)) {
         REXCODEGEN_WARN("Unexpected float16_4 pack instruction at {:X} (mask={}, shift={})",
                         ctx.base, mask, shift);
@@ -1355,7 +1355,7 @@ bool build_vpkd3d128(BuilderContext& ctx) {
 
       // Invariant: dstIdx must stay under 8 (valid u16 lanes are 0..7).
       // Capping the shift to 0 or 2 in the guard check above ensures this is safe:
-      // it restricts the max dstIdx to (3 - 0) + (2 * 2) = 7. 
+      // it restricts the max dstIdx to (3 - 0) + (2 * 2) = 7.
       // Do not widen the shift bounds without adjusting this logic.
       for (size_t i = 0; i < 4; i++) {
         size_t srcIdx = 3 - i;
