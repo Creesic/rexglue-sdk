@@ -23,7 +23,7 @@
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <mach/vm_region.h>
-#endif // REX_PLATFORM_MAC
+#endif  // REX_PLATFORM_MAC
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -250,16 +250,14 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
       break;
   }
 
-  // On macOS, MAP_FIXED_NOREPLACE is unavailable. kCommit on a pre-reserved
-  // range uses page-aligned mprotect to avoid clobbering the existing reservation.
+    // On macOS, MAP_FIXED_NOREPLACE is unavailable. kCommit on a pre-reserved
+    // range uses page-aligned mprotect to avoid clobbering the existing reservation.
 #if REX_PLATFORM_MAC
   if (base_address != nullptr && allocation_type == AllocationType::kCommit) {
     const size_t host_page = page_size();
-    const uintptr_t aligned_addr =
-        reinterpret_cast<uintptr_t>(base_address) & ~(host_page - 1);
+    const uintptr_t aligned_addr = reinterpret_cast<uintptr_t>(base_address) & ~(host_page - 1);
     const uintptr_t end_addr =
-        (reinterpret_cast<uintptr_t>(base_address) + length + host_page - 1) &
-        ~(host_page - 1);
+        (reinterpret_cast<uintptr_t>(base_address) + length + host_page - 1) & ~(host_page - 1);
     if (mprotect(reinterpret_cast<void*>(aligned_addr), end_addr - aligned_addr,
                  static_cast<int>(prot_requested)) == 0) {
       return base_address;
@@ -385,8 +383,7 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
   } else if ((info.protection & (VM_PROT_READ | VM_PROT_EXECUTE)) ==
              (VM_PROT_READ | VM_PROT_EXECUTE)) {
     access_out = PageAccess::kExecuteReadOnly;
-  } else if ((info.protection & (VM_PROT_READ | VM_PROT_WRITE)) ==
-             (VM_PROT_READ | VM_PROT_WRITE)) {
+  } else if ((info.protection & (VM_PROT_READ | VM_PROT_WRITE)) == (VM_PROT_READ | VM_PROT_WRITE)) {
     access_out = PageAccess::kReadWrite;
   } else if (info.protection & VM_PROT_READ) {
     access_out = PageAccess::kReadOnly;

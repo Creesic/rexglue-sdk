@@ -26,8 +26,8 @@ class TimerQueue;
 struct TimerQueueWaitItem {
   using clock = std::chrono::steady_clock;
 
-  TimerQueueWaitItem(std::function<void(void*)> callback, void* userdata,
-                     TimerQueue* parent_queue, clock::time_point due, clock::duration interval)
+  TimerQueueWaitItem(std::function<void(void*)> callback, void* userdata, TimerQueue* parent_queue,
+                     clock::time_point due, clock::duration interval)
       : callback_(std::move(callback)),
         userdata_(userdata),
         parent_queue_(parent_queue),

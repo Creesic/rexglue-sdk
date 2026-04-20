@@ -710,9 +710,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
   }
 #endif
 
-  uint32_t system_id() const {
-    return static_cast<uint32_t>(pthread_mach_thread_np(thread_));
-  }
+  uint32_t system_id() const { return static_cast<uint32_t>(pthread_mach_thread_np(thread_)); }
 
   uint64_t affinity_mask() {
     WaitStarted();

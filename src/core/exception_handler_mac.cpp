@@ -156,10 +156,9 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       // x86_pf_error_code::X86_PF_WRITE
       constexpr uint64_t kX86PageFaultErrorCodeWrite = UINT64_C(1) << 1;
 #if REX_PLATFORM_MAC
-      access_violation_operation =
-          (uint64_t(mcontext->__es.__err) & kX86PageFaultErrorCodeWrite)
-              ? Exception::AccessViolationOperation::kWrite
-              : Exception::AccessViolationOperation::kRead;
+      access_violation_operation = (uint64_t(mcontext->__es.__err) & kX86PageFaultErrorCodeWrite)
+                                       ? Exception::AccessViolationOperation::kWrite
+                                       : Exception::AccessViolationOperation::kRead;
 #else
       access_violation_operation = (uint64_t(mcontext.gregs[REG_ERR]) & kX86PageFaultErrorCodeWrite)
                                        ? Exception::AccessViolationOperation::kWrite
@@ -220,23 +219,56 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       while (rex::bit_scan_forward(modified_int_registers_remaining, &modified_register_index)) {
         modified_int_registers_remaining &= ~(UINT16_C(1) << modified_register_index);
         switch (modified_register_index) {
-          case 0: mcontext->__ss.__rax = thread_context.int_registers[modified_register_index]; break;
-          case 1: mcontext->__ss.__rcx = thread_context.int_registers[modified_register_index]; break;
-          case 2: mcontext->__ss.__rdx = thread_context.int_registers[modified_register_index]; break;
-          case 3: mcontext->__ss.__rbx = thread_context.int_registers[modified_register_index]; break;
-          case 4: mcontext->__ss.__rsp = thread_context.int_registers[modified_register_index]; break;
-          case 5: mcontext->__ss.__rbp = thread_context.int_registers[modified_register_index]; break;
-          case 6: mcontext->__ss.__rsi = thread_context.int_registers[modified_register_index]; break;
-          case 7: mcontext->__ss.__rdi = thread_context.int_registers[modified_register_index]; break;
-          case 8: mcontext->__ss.__r8 = thread_context.int_registers[modified_register_index]; break;
-          case 9: mcontext->__ss.__r9 = thread_context.int_registers[modified_register_index]; break;
-          case 10: mcontext->__ss.__r10 = thread_context.int_registers[modified_register_index]; break;
-          case 11: mcontext->__ss.__r11 = thread_context.int_registers[modified_register_index]; break;
-          case 12: mcontext->__ss.__r12 = thread_context.int_registers[modified_register_index]; break;
-          case 13: mcontext->__ss.__r13 = thread_context.int_registers[modified_register_index]; break;
-          case 14: mcontext->__ss.__r14 = thread_context.int_registers[modified_register_index]; break;
-          case 15: mcontext->__ss.__r15 = thread_context.int_registers[modified_register_index]; break;
-          default: assert_unhandled_case(modified_register_index);
+          case 0:
+            mcontext->__ss.__rax = thread_context.int_registers[modified_register_index];
+            break;
+          case 1:
+            mcontext->__ss.__rcx = thread_context.int_registers[modified_register_index];
+            break;
+          case 2:
+            mcontext->__ss.__rdx = thread_context.int_registers[modified_register_index];
+            break;
+          case 3:
+            mcontext->__ss.__rbx = thread_context.int_registers[modified_register_index];
+            break;
+          case 4:
+            mcontext->__ss.__rsp = thread_context.int_registers[modified_register_index];
+            break;
+          case 5:
+            mcontext->__ss.__rbp = thread_context.int_registers[modified_register_index];
+            break;
+          case 6:
+            mcontext->__ss.__rsi = thread_context.int_registers[modified_register_index];
+            break;
+          case 7:
+            mcontext->__ss.__rdi = thread_context.int_registers[modified_register_index];
+            break;
+          case 8:
+            mcontext->__ss.__r8 = thread_context.int_registers[modified_register_index];
+            break;
+          case 9:
+            mcontext->__ss.__r9 = thread_context.int_registers[modified_register_index];
+            break;
+          case 10:
+            mcontext->__ss.__r10 = thread_context.int_registers[modified_register_index];
+            break;
+          case 11:
+            mcontext->__ss.__r11 = thread_context.int_registers[modified_register_index];
+            break;
+          case 12:
+            mcontext->__ss.__r12 = thread_context.int_registers[modified_register_index];
+            break;
+          case 13:
+            mcontext->__ss.__r13 = thread_context.int_registers[modified_register_index];
+            break;
+          case 14:
+            mcontext->__ss.__r14 = thread_context.int_registers[modified_register_index];
+            break;
+          case 15:
+            mcontext->__ss.__r15 = thread_context.int_registers[modified_register_index];
+            break;
+          default:
+            assert_unhandled_case(modified_register_index);
         }
       }
       uint16_t modified_xmm_registers_remaining = ex.modified_xmm_registers();
