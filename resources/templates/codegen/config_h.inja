@@ -20,7 +20,7 @@
 
 #define REXCRT_HEAP {% if rexcrt_heap %}1{% else %}0{% endif %}
 
-#include <rex/ppc/image_info.h>
+#include <rex/image_info.h>
 extern const rex::PPCImageInfo PPCImageConfig;
 
 #endif
