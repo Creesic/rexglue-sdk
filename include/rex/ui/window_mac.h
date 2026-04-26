@@ -108,8 +108,8 @@ class MacWindow final : public Window {
   // scroll_x / scroll_y are in MouseEvent::kScrollPerDetent units.
   void HandleMouseScroll(int32_t x, int32_t y, int32_t scroll_x, int32_t scroll_y);
   // key_char is the Unicode code point (0 if not printable); fires OnKeyChar.
-  void HandleKeyDown(VirtualKey vk, uint32_t key_char,
-                     bool shift, bool ctrl, bool alt, bool super_key);
+  void HandleKeyDown(VirtualKey vk, uint32_t key_char, bool shift, bool ctrl, bool alt,
+                     bool super_key);
   void HandleKeyUp(VirtualKey vk, bool shift, bool ctrl, bool alt, bool super_key);
 
  protected:
@@ -126,9 +126,9 @@ class MacWindow final : public Window {
   void RequestPaintImpl() override;
 
  private:
-  NSWindow*         ns_window_  = nullptr;  // the top-level Cocoa window
-  RexMetalView*     metal_view_ = nullptr;  // CAMetalLayer-backed content view
-  RexWindowDelegate* delegate_  = nullptr;  // NSWindowDelegate adapter
+  NSWindow* ns_window_ = nullptr;          // the top-level Cocoa window
+  RexMetalView* metal_view_ = nullptr;     // CAMetalLayer-backed content view
+  RexWindowDelegate* delegate_ = nullptr;  // NSWindowDelegate adapter
 };
 
 // ── MacMenuItem ───────────────────────────────────────────────────────────────

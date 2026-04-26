@@ -895,10 +895,8 @@ void KernelState::CompleteOverlappedDeferred(std::function<X_RESULT()> completio
 }
 
 void KernelState::CompleteOverlappedDeferredEx(
-    std::function<X_RESULT(uint32_t&, uint32_t&)> completion_callback,
-                                               uint32_t overlapped_ptr,
-                                               std::function<void()> pre_callback,
-                                               std::function<void()> post_callback) {
+    std::function<X_RESULT(uint32_t&, uint32_t&)> completion_callback, uint32_t overlapped_ptr,
+    std::function<void()> pre_callback, std::function<void()> post_callback) {
   REXSYS_DEBUG("CompleteOverlappedDeferredEx: queuing for overlapped {:08X}", overlapped_ptr);
   auto ptr = memory()->TranslateVirtual(overlapped_ptr);
   XOverlappedSetResult(ptr, X_ERROR_IO_PENDING);

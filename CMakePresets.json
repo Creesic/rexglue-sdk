@@ -134,6 +134,12 @@
             "inherits": "linux-arm64-base"
         },
         {
+            "name": "mac-amd64",
+            "displayName": "macOS AMD64",
+            "description": "Multi-config build for macOS AMD64 using Homebrew LLVM",
+            "inherits": "mac-base"
+        },
+        {
             "name": "mac-amd64-debug",
             "displayName": "macOS AMD64 Debug",
             "description": "Multi-config Debug build for macOS AMD64 using Homebrew LLVM",

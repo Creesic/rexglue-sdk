@@ -300,9 +300,8 @@ class KernelState {
                                   std::function<void()> pre_callback = nullptr,
                                   std::function<void()> post_callback = nullptr);
   void CompleteOverlappedDeferredEx(
-      std::function<X_RESULT(uint32_t&, uint32_t&)> completion_callback,
-      uint32_t overlapped_ptr, std::function<void()> pre_callback = nullptr,
-      std::function<void()> post_callback = nullptr);
+      std::function<X_RESULT(uint32_t&, uint32_t&)> completion_callback, uint32_t overlapped_ptr,
+      std::function<void()> pre_callback = nullptr, std::function<void()> post_callback = nullptr);
 
   bool Save(stream::ByteStream* stream);
   bool Restore(stream::ByteStream* stream);

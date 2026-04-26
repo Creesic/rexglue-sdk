@@ -28,7 +28,7 @@ XbdmModule::XbdmModule(Runtime* emulator, KernelState* kernel_state)
 
   // Register all exported functions.
   // #define XE_MODULE_EXPORT_GROUP(m, n) \
-//  Register##n##Exports(export_resolver_, kernel_state_);
+  //  Register##n##Exports(export_resolver_, kernel_state_);
   // #include <rex/kernel/xbdm/module_export_groups.inc>
   // #undef XE_MODULE_EXPORT_GROUP
 }

@@ -318,8 +318,7 @@ int Memory::MapViewsMac() {
       static_cast<size_t>(map_info[rex::countof(map_info) - 1].virtual_address_end -
                           map_info[0].virtual_address_start + 1);
 
-  void* reserved_base =
-      mmap(nullptr, total_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  void* reserved_base = mmap(nullptr, total_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (reserved_base == MAP_FAILED) {
     REXSYS_ERROR("MapViewsMac: reserve failed: {}", std::strerror(errno));
     return 1;
@@ -329,17 +328,17 @@ int Memory::MapViewsMac() {
   uint64_t granularity_mask = ~uint64_t(system_allocation_granularity_ - 1);
 
   for (size_t n = 0; n < rex::countof(map_info); n++) {
-    size_t view_size = static_cast<size_t>(
-        map_info[n].virtual_address_end - map_info[n].virtual_address_start + 1);
+    size_t view_size = static_cast<size_t>(map_info[n].virtual_address_end -
+                                           map_info[n].virtual_address_start + 1);
     size_t file_offset = static_cast<size_t>(map_info[n].target_address & granularity_mask);
     void* target_address = mapping_base + map_info[n].virtual_address_start;
-    void* result = mmap(target_address, view_size, PROT_READ | PROT_WRITE,
-                        MAP_SHARED | MAP_FIXED, mapping_, file_offset);
+    void* result = mmap(target_address, view_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+                        mapping_, file_offset);
     if (result == MAP_FAILED || result != target_address) {
       int err = errno;
       REXSYS_ERROR(
-          "MapViewsMac: map failed view {} addr 0x{:016X} size 0x{:X} offset 0x{:X} err {} ({})",
-          n, reinterpret_cast<uintptr_t>(target_address), view_size, file_offset, err,
+          "MapViewsMac: map failed view {} addr 0x{:016X} size 0x{:X} offset 0x{:X} err {} ({})", n,
+          reinterpret_cast<uintptr_t>(target_address), view_size, file_offset, err,
           std::strerror(err));
       munmap(reserved_base, total_size);
       for (auto& view : views_.all_views) {
@@ -914,7 +913,8 @@ void BaseHeap::Dispose() {
     auto& page_entry = page_table_[page_number];
     if (page_entry.state) {
       rex::memory::DeallocFixed(TranslateRelative(page_number << page_size_shift_),
-                                static_cast<size_t>(page_entry.region_page_count) << page_size_shift_,
+                                static_cast<size_t>(page_entry.region_page_count)
+                                    << page_size_shift_,
                                 rex::memory::DeallocationType::kRelease);
       page_number += page_entry.region_page_count;
     }
@@ -1913,9 +1913,8 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
     uint32_t guest_page_number =
         rex::sat_sub(i * system_page_size_, host_address_offset()) >> page_size_shift_;
     if (guest_page_number >= page_table_.size()) {
-      REXSYS_ERROR(
-          "Access callback page OOB: system_page={} guest_page={} offset=0x{:X}",
-          i, guest_page_number, host_address_offset());
+      REXSYS_ERROR("Access callback page OOB: system_page={} guest_page={} offset=0x{:X}", i,
+                   guest_page_number, host_address_offset());
       assert_always();
     }
     rex::memory::PageAccess current_page_access =
