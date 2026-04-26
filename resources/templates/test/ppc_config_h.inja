@@ -54,9 +54,15 @@
 #endif
 
 #ifndef DEFINE_REX_FUNC
+#if REX_PLATFORM_MAC
+#define DEFINE_REX_FUNC(name)                    \
+  REX_WEAK_FUNC(name) { __imp__##name(ctx, base); } \
+  REX_EXTERN(__imp__##name)
+#else
 #define DEFINE_REX_FUNC(name)                                  \
   __attribute__((alias("__imp__" #name))) REX_WEAK_FUNC(name); \
   REX_EXTERN(__imp__##name)
+#endif
 #endif
 
 #if REX_PLATFORM_WIN32

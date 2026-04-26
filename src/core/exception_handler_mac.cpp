@@ -51,7 +51,16 @@ std::pair<ExceptionHandler::Handler, void*> handlers_[kMaxHandlerCount];
 
 static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
                                      void* signal_context) {
-  mcontext_t mcontext = reinterpret_cast<ucontext_t*>(signal_context)->uc_mcontext;
+#if REX_PLATFORM_MAC && REX_ARCH_ARM64
+  // On ARM64, ucontext_t requires 16-byte alignment but the kernel may
+  // provide an unaligned pointer in the signal handler.
+  alignas(16) ucontext_t ucontext_storage;
+  std::memcpy(&ucontext_storage, signal_context, sizeof(ucontext_t));
+  ucontext_t* ucontext = &ucontext_storage;
+#else
+  ucontext_t* ucontext = reinterpret_cast<ucontext_t*>(signal_context);
+#endif
+  mcontext_t mcontext = ucontext->uc_mcontext;
 
   HostThreadContext thread_context;
 
@@ -104,6 +113,24 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
               sizeof(thread_context.xmm_registers));
 #endif
 #elif REX_ARCH_ARM64
+#if REX_PLATFORM_MAC
+  thread_context.pc = mcontext->__ss.__pc;
+  thread_context.sp = mcontext->__ss.__sp;
+  thread_context.pstate = mcontext->__ss.__cpsr;
+  for (int i = 0; i < 29; ++i) {
+    thread_context.x[i] = mcontext->__ss.__x[i];
+  }
+  thread_context.x[29] = mcontext->__ss.__fp;
+  thread_context.x[30] = mcontext->__ss.__lr;
+  for (int i = 0; i < 32; ++i) {
+    thread_context.v[i].low =
+        static_cast<uint64_t>(mcontext->__ns.__v[i] & 0xFFFFFFFFFFFFFFFF);
+    thread_context.v[i].high = static_cast<uint64_t>(
+        (mcontext->__ns.__v[i] >> 64) & 0xFFFFFFFFFFFFFFFF);
+  }
+  thread_context.fpsr = mcontext->__ns.__fpsr;
+  thread_context.fpcr = mcontext->__ns.__fpcr;
+#else
   std::memcpy(thread_context.x, mcontext.regs, sizeof(thread_context.x));
   thread_context.sp = mcontext.sp;
   thread_context.pc = mcontext.pc;
@@ -132,6 +159,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
     thread_context.fpcr = mcontext_fpsimd->fpcr;
     std::memcpy(thread_context.v, mcontext_fpsimd->vregs, sizeof(thread_context.v));
   }
+#endif
 #endif  // REX_ARCH
 
   Exception ex;
@@ -165,6 +193,28 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
                                        : Exception::AccessViolationOperation::kRead;
 #endif
 #elif REX_ARCH_ARM64
+#if REX_PLATFORM_MAC
+      const uint64_t esr = mcontext->__es.__esr;
+      if (((esr >> 26) & 0b111110) == 0b100100) {
+        access_violation_operation = (esr & (UINT64_C(1) << 6))
+                                         ? Exception::AccessViolationOperation::kWrite
+                                         : Exception::AccessViolationOperation::kRead;
+      } else {
+        bool instruction_is_store;
+        if (IsArm64LoadPrefetchStore(
+                *reinterpret_cast<const uint32_t*>(thread_context.pc), instruction_is_store)) {
+          access_violation_operation = instruction_is_store
+                                           ? Exception::AccessViolationOperation::kWrite
+                                           : Exception::AccessViolationOperation::kRead;
+        } else {
+          assert_always(
+              "No ESR in the exception thread context, or it's not a Data "
+              "Abort, and the faulting instruction is not a known load, "
+              "prefetch or store instruction");
+          access_violation_operation = Exception::AccessViolationOperation::kUnknown;
+        }
+      }
+#else
       // For a Data Abort (EC - ESR_EL1 bits 31:26 - 0b100100 from a lower
       // Exception Level, 0b100101 without a change in the Exception Level),
       // bit 6 is 0 for reading from a memory location, 1 for writing to a
@@ -196,6 +246,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
           access_violation_operation = Exception::AccessViolationOperation::kUnknown;
         }
       }
+#endif
 #else
       access_violation_operation = Exception::AccessViolationOperation::kUnknown;
 #endif  // REX_ARCH
@@ -301,6 +352,39 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       }
 #endif
 #elif REX_ARCH_ARM64
+#if REX_PLATFORM_MAC
+      mcontext->__ss.__pc = thread_context.pc;
+      mcontext->__ss.__sp = thread_context.sp;
+      mcontext->__ss.__cpsr = static_cast<__uint32_t>(thread_context.pstate);
+      uint32_t modified_register_index;
+      uint32_t modified_x_registers_remaining = ex.modified_x_registers();
+      while (rex::bit_scan_forward(modified_x_registers_remaining, &modified_register_index)) {
+        modified_x_registers_remaining &= ~(UINT32_C(1) << modified_register_index);
+        if (modified_register_index < 29) {
+          mcontext->__ss.__x[modified_register_index] =
+              thread_context.x[modified_register_index];
+        } else if (modified_register_index == 29) {
+          mcontext->__ss.__fp = thread_context.x[29];
+        } else if (modified_register_index == 30) {
+          mcontext->__ss.__lr = thread_context.x[30];
+        }
+      }
+      if (ex.modified_v_registers()) {
+        uint32_t modified_v_register_index;
+        uint32_t modified_v_registers_remaining = ex.modified_v_registers();
+        while (rex::bit_scan_forward(modified_v_registers_remaining,
+                                     &modified_v_register_index)) {
+          modified_v_registers_remaining &= ~(UINT32_C(1) << modified_v_register_index);
+          mcontext->__ns.__v[modified_v_register_index] =
+              (static_cast<__uint128_t>(thread_context.v[modified_v_register_index].high)
+               << 64) |
+              static_cast<__uint128_t>(thread_context.v[modified_v_register_index].low);
+        }
+        mcontext->__ns.__fpsr = thread_context.fpsr;
+        mcontext->__ns.__fpcr = thread_context.fpcr;
+      }
+      std::memcpy(signal_context, ucontext, sizeof(ucontext_t));
+#else
       uint32_t modified_register_index;
       uint32_t modified_x_registers_remaining = ex.modified_x_registers();
       while (rex::bit_scan_forward(modified_x_registers_remaining, &modified_register_index)) {
@@ -321,6 +405,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
           mcontext.regs[modified_register_index] = thread_context.x[modified_register_index];
         }
       }
+#endif
 #endif  // REX_ARCH
       return;
     }

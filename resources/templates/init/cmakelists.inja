@@ -4,7 +4,7 @@
 # SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
-project({{ names.snake_case }} LANGUAGES CXX)
+project({{ names.snake_case }} LANGUAGES CXX OBJC OBJCXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
