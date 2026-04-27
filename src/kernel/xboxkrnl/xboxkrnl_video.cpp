@@ -324,9 +324,7 @@ u32 VdEnableDisableClockGating_entry(u32 enabled) {
 }
 
 void VdSetGraphicsInterruptCallback_entry(u32 callback, mapped_void user_data) {
-  // callback takes 2 params
-  // r3 = bool 0/1 - 0 is normal interrupt, 1 is some acquire/lock mumble
-  // r4 = user_data (r4 of VdSetGraphicsInterruptCallback)
+  REXLOG_INFO("[video] VdSetGraphicsInterruptCallback: callback=0x{:08X}", callback);
   auto* graphics_system =
       static_cast<graphics::GraphicsSystem*>(REX_KERNEL_STATE()->emulator()->graphics_system());
   if (!graphics_system)
@@ -335,9 +333,7 @@ void VdSetGraphicsInterruptCallback_entry(u32 callback, mapped_void user_data) {
 }
 
 void VdInitializeRingBuffer_entry(mapped_void ptr, i32 size_log2) {
-  // r3 = result of MmGetPhysicalAddress
-  // r4 = log2(size)
-  // Buffer pointers are from MmAllocatePhysicalMemory with WRITE_COMBINE.
+  REXLOG_INFO("[video] VdInitializeRingBuffer: ptr=0x{:08X}, size_log2={}", ptr.guest_address(), size_log2);
   auto* graphics_system =
       static_cast<graphics::GraphicsSystem*>(REX_KERNEL_STATE()->emulator()->graphics_system());
   if (!graphics_system)
@@ -346,7 +342,7 @@ void VdInitializeRingBuffer_entry(mapped_void ptr, i32 size_log2) {
 }
 
 void VdEnableRingBufferRPtrWriteBack_entry(mapped_void ptr, i32 block_size_log2) {
-  // r4 = log2(block size), 6, usually --- <=19
+  REXLOG_INFO("[video] VdEnableRingBufferRPtrWriteBack: ptr=0x{:08X}, block_size_log2={}", ptr.guest_address(), block_size_log2);
   auto* graphics_system =
       static_cast<graphics::GraphicsSystem*>(REX_KERNEL_STATE()->emulator()->graphics_system());
   if (!graphics_system)

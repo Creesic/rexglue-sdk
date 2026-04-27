@@ -116,6 +116,11 @@ bool MMIOHandler::CheckStore(uint32_t virtual_address, uint32_t value) {
       return true;
     }
   }
+  static int unhandled_log_count = 0;
+  if (unhandled_log_count < 20) {
+    unhandled_log_count++;
+    REXLOG_WARN("MMIO CheckStore: unhandled store to 0x{:08X} = 0x{:08X}", virtual_address, value);
+  }
   return false;
 }
 

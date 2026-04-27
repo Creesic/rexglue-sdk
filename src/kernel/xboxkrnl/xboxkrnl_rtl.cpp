@@ -377,6 +377,11 @@ u32 RtlInitializeCriticalSectionAndSpinCount_entry(ppc_ptr_t<X_RTL_CRITICAL_SECT
 }
 
 void RtlEnterCriticalSection_entry(ppc_ptr_t<X_RTL_CRITICAL_SECTION> cs) {
+  if (cs->header.type != 1) {
+    REXKRNL_IMPORT_TRACE("RtlEnterCriticalSection", "auto-init cs={:#x}", cs.guest_address());
+    xeRtlInitializeCriticalSection(cs, cs.guest_address());
+  }
+
   uint32_t cur_thread = XThread::GetCurrentThread()->guest_object();
   uint32_t spin_count = cs->header.absolute * 256;
 

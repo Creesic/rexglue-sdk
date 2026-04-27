@@ -165,7 +165,8 @@ function(rexglue_configure_target target_name)
 
     # macOS platform settings
     if(APPLE)
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64"
+           AND NOT "arm64" IN_LIST CMAKE_OSX_ARCHITECTURES)
             target_compile_options(${target_name} PRIVATE -msse4.1)
         endif()
     endif()
@@ -186,7 +187,8 @@ function(rexglue_configure_target target_name)
     endif()
 
     if(NOT MSVC)
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64"
+           AND NOT "arm64" IN_LIST CMAKE_OSX_ARCHITECTURES)
             target_compile_options(${target_name} PRIVATE -msse4.1)
         endif()
         # ARM64 NEON is enabled via -march=armv8-a above

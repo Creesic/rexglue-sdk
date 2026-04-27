@@ -5,7 +5,10 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 #=============================================================================
 # Architecture detection
 #=============================================================================
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+if(APPLE AND "arm64" IN_LIST CMAKE_OSX_ARCHITECTURES)
+    set(IS_ARM64 TRUE)
+    set(IS_X86_64 FALSE)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
     set(IS_ARM64 FALSE)
     set(IS_X86_64 TRUE)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|ARM64|arm64)$")
@@ -104,6 +107,7 @@ target_compile_definitions(tiny-aes PUBLIC AES128=1 CBC=1)
 # From: https://github.com/openluopworld/aes_128
 add_library(aes128 STATIC
     aes_128/aes.c
+        ../pgr3/out/build/mac-arm64-relwithdebinfo/pgr3
 )
 target_include_directories(aes128 PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -573,7 +577,7 @@ if(WIN32)
     )
 endif()
 
-# Add x86 optimizations 
+# Add x86 optimizations
 if(IS_X86_64)
     target_sources(libavcodec PRIVATE
         ${FFMPEG_DIR}/libavcodec/x86/constants.c

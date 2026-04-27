@@ -365,6 +365,11 @@ class Memory {
     return reinterpret_cast<T>(physical_membase_ + (guest_address & 0x1FFFFFFF));
   }
 
+  // Returns the host page offset (0x1000 on macOS ARM64, 0 otherwise).
+  // Physical addresses computed by the game directly (not from MmGetPhysicalAddress)
+  // need this offset added before being passed to TranslatePhysical.
+  uint32_t host_page_offset() const { return host_page_offset_; }
+
   // Translates a host address to a guest virtual address.
   // Note that the contents at the returned host address are big-endian.
   uint32_t HostToGuestVirtual(const void* host_address) const;
@@ -550,6 +555,7 @@ class Memory {
   uint32_t system_allocation_granularity_ = 0;
   uint8_t* virtual_membase_ = nullptr;
   uint8_t* physical_membase_ = nullptr;
+  uint32_t host_page_offset_ = 0;
 
   // Recompiled code function table configuration
   uint32_t function_table_base_ = 0;  // Guest address of function table (IMAGE_BASE + IMAGE_SIZE)

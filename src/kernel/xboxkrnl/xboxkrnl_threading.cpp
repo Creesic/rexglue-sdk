@@ -838,20 +838,30 @@ uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason, uint32_
 u32 KeWaitForSingleObject_entry(mapped_void object_ptr, u32 wait_reason, u32 processor_mode,
                                 u32 alertable, mapped_u64 timeout_ptr) {
   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
-  // REXKRNL_IMPORT_TRACE("KeWaitForSingleObject", "obj={:#x} reason={} mode={} alertable={}
-  // timeout={}",
-  // object_ptr.guest_address(), (uint32_t)wait_reason,
-  //(uint32_t)processor_mode, (uint32_t)alertable,
-  // timeout_ptr ? (int64_t)timeout : -1);
+  static int wait_log_count = 0;
+  if (wait_log_count < 100) {
+    wait_log_count++;
+    auto thid = rex::system::XThread::GetCurrentThread()->thread_id();
+    REXLOG_INFO("[KeWaitForSingleObject] thid={} obj=0x{:08X} reason={} alertable={} timeout={}",
+                thid, object_ptr.guest_address(), (uint32_t)wait_reason,
+                (uint32_t)alertable, timeout_ptr ? (int64_t)timeout : -1);
+  }
   auto result = xeKeWaitForSingleObject(object_ptr, wait_reason, processor_mode, alertable,
                                         timeout_ptr ? &timeout : nullptr);
-  // REXKRNL_IMPORT_RESULT("KeWaitForSingleObject", "{:#x}", result);
   return result;
 }
 
 u32 NtWaitForSingleObjectEx_entry(u32 object_handle, u32 wait_mode, u32 alertable,
                                   mapped_u64 timeout_ptr) {
   X_STATUS result = X_STATUS_SUCCESS;
+  static int ntwait_log_count = 0;
+  if (ntwait_log_count < 100) {
+    ntwait_log_count++;
+    uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
+    auto thid = rex::system::XThread::GetCurrentThread()->thread_id();
+    REXLOG_INFO("[NtWaitForSingleObjectEx] thid={} handle=0x{:08X} wait_mode={} alertable={} timeout={}",
+                thid, object_handle, wait_mode, alertable, timeout_ptr ? (int64_t)timeout : -1);
+  }
 
   auto object = REX_KERNEL_OBJECTS()->LookupObject<XObject>(object_handle);
   if (object) {

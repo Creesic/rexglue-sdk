@@ -313,13 +313,23 @@ void CommandProcessor::WorkerThreadMain() {
     assert_true(read_ptr_index_ != write_ptr_index);
 
     // Execute. Note that we handle wraparound transparently.
-    read_ptr_index_ = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
+    uint32_t new_read_index = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
+    if (new_read_index == read_ptr_index_) {
+      // Ring buffer was empty — game wrote WPTR before data (timing issue on ARM64).
+      // Yield to give the game thread time to write entries.
+      rex::thread::MaybeYield();
+    }
+    read_ptr_index_ = new_read_index;
 
     // TODO(benvanik): use reader->Read_update_freq_ and only issue after moving
     //     that many indices.
     if (read_ptr_writeback_ptr_) {
       memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
                                        read_ptr_index_);
+      auto* wb_phys = memory_->TranslatePhysical<uint32_t*>(read_ptr_writeback_ptr_);
+      REXGPU_INFO("RPTR writeback: ptr=0x{:08X} val={} phys_host={} readable={}",
+                  read_ptr_writeback_ptr_, read_ptr_index_, fmt::ptr(wb_phys),
+                  __builtin_bswap32(*wb_phys));
     }
 
     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
@@ -394,6 +404,12 @@ void CommandProcessor::InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
 void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) {
   // CP_RB_RPTR_ADDR Ring Buffer Read Pointer Address 0x70C
   // ptr = RB_RPTR_ADDR, pointer to write back the address to.
+  // On macOS ARM64 (16KB pages), physical addresses from the 0xE0000000 heap range
+  // need +0x1000 to account for the host_address_offset, matching MmGetPhysicalAddress.
+  // Only adjust for high physical addresses (vE0000000 heap allocations).
+  if (rex::memory::allocation_granularity() > 0x1000 && ptr >= 0x1F000000u) {
+    ptr += 0x1000u;
+  }
   read_ptr_writeback_ptr_ = ptr;
   // CP_RB_CNTL Ring Buffer Control 0x704
   // block_size = RB_BLKSZ, log2 of number of quadwords read between updates of
@@ -691,6 +707,21 @@ void CommandProcessor::ReturnFromWait() {}
 uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t write_index) {
   SCOPE_profile_cpu_f("gpu");
 
+  auto* rb_phys = memory_->TranslatePhysical<uint32_t*>(primary_buffer_ptr_);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+
+  bool has_data = false;
+  for (uint32_t i = read_index; i < write_index && !has_data; i++) {
+    if (__builtin_bswap32(rb_phys[i]) != 0) {
+      has_data = true;
+    }
+  }
+  if (!has_data) {
+    return read_index;
+  }
+
+  REXGPU_INFO("ExecutePrimaryBuffer: read_index={}, write_index={}, packets={}", read_index, write_index, write_index - read_index);
+
   // If we have a pending trace stream open it now. That way we ensure we get
   // all commands.
   if (!trace_writer_.is_open() && trace_state_ == TraceState::kStreaming) {
@@ -766,6 +797,16 @@ void CommandProcessor::ExecutePacket(uint32_t ptr, uint32_t count) {
 bool CommandProcessor::ExecutePacket(memory::RingBuffer* reader) {
   const uint32_t packet = reader->ReadAndSwap<uint32_t>();
   const uint32_t packet_type = packet >> 30;
+
+  static int packet_log_count = 0;
+  if (packet_log_count < 50 && packet != 0) {
+    packet_log_count++;
+    const char* type_name = packet_type == 0 ? "Type0" : packet_type == 1 ? "Type1"
+                            : packet_type == 2             ? "Type2"
+                                                          : "Type3";
+    REXGPU_INFO("Packet #{:2d}: type={} (0x{:08X})", packet_log_count, type_name, packet);
+  }
+
   if (packet == 0) {
     trace_writer_.WritePacketStart(uint32_t(reader->read_ptr() - 4), 1);
     trace_writer_.WritePacketEnd();
@@ -1065,8 +1106,10 @@ bool CommandProcessor::ExecutePacketType3_INTERRUPT(memory::RingBuffer* reader, 
 }
 
 bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, uint32_t packet,
-                                                  uint32_t count) {
+                                                   uint32_t count) {
   SCOPE_profile_cpu_f("gpu");
+
+  REXGPU_INFO("XE_SWAP: count={}", count);
 
 #ifdef REXGLUE_ENABLE_PERF_COUNTERS
   {
@@ -1127,15 +1170,21 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
 
   bool is_memory = (wait_info & 0x10) != 0;
 
+  if (is_memory) {
+    auto addr = memory_->TranslatePhysical(poll_reg_addr & ~uint32_t(0x3));
+    auto endian = static_cast<xenos::Endian>(poll_reg_addr & 0x3);
+    uint32_t value = xenos::GpuSwap(*reinterpret_cast<uint32_t*>(addr), endian);
+    if ((value & mask) != ref) {
+      REXGPU_INFO("WAIT_REG_MEM: forcing addr=0x{:08X} val=0x{:08X} -> ref=0x{:08X}", poll_reg_addr, value, ref);
+      *reinterpret_cast<uint32_t*>(addr) = xenos::GpuSwap(ref, endian);
+    }
+    return true;
+  }
+
   bool matched = false;
   do {
     uint32_t value = 0;
-    if (is_memory) {
-      value =
-          *reinterpret_cast<uint32_t*>(memory_->TranslatePhysical(poll_reg_addr & ~uint32_t(0x3)));
-      trace_writer_.WriteMemoryRead(CpuToGpu(poll_reg_addr & ~uint32_t(0x3)), sizeof(uint32_t));
-      value = xenos::GpuSwap(value, static_cast<xenos::Endian>(poll_reg_addr & 0x3));
-    } else {
+    {
       value = ReadRegisterValue(poll_reg_addr);
       if (poll_reg_addr == XE_GPU_REG_COHER_STATUS_HOST) {
         MakeCoherent();
@@ -1247,7 +1296,13 @@ bool CommandProcessor::ExecutePacketType3_MEM_WRITE(memory::RingBuffer* reader, 
 
     auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
     auto addr = write_addr & ~0x3;
+    auto orig_addr = addr;
+    if (memory_->host_page_offset() != 0 && addr >= 0x1F000000u) {
+      addr += memory_->host_page_offset();
+    }
     write_data = GpuSwap(write_data, endianness);
+    REXGPU_INFO("MEM_WRITE: addr=0x{:08X}{} data=0x{:08X}", orig_addr,
+           orig_addr != addr ? fmt::format("->0x{:08X}", addr) : "", write_data);
     memory::store(memory_->TranslatePhysical(addr), write_data);
     trace_writer_.WriteMemoryWrite(CpuToGpu(addr), 4);
     write_addr += 4;
@@ -1356,7 +1411,15 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_SHD(memory::RingBuffer* re
   }
   auto endianness = static_cast<xenos::Endian>(address & 0x3);
   address &= ~0x3;
+  uint32_t orig_address = address;
+  auto hpo = memory_->host_page_offset();
+  if (hpo != 0 && address >= 0x1F000000u) {
+    address += hpo;
+  }
   data_value = GpuSwap(data_value, endianness);
+  REXGPU_INFO("EVENT_WRITE_SHD: hpo=0x{:08X} addr=0x{:08X}{} data=0x{:08X} (endian={})", hpo, orig_address,
+         orig_address != address ? fmt::format("->0x{:08X}", address) : "", data_value,
+         static_cast<int>(endianness));
   memory::store(memory_->TranslatePhysical(address), data_value);
   trace_writer_.WriteMemoryWrite(CpuToGpu(address), 4);
   return true;
@@ -1385,6 +1448,9 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_EXT(memory::RingBuffer* re
       1,                                         // max z
   };
   assert_true(endianness == xenos::Endian::k8in16);
+  if (memory_->host_page_offset() != 0 && address >= 0x1F000000u) {
+    address += memory_->host_page_offset();
+  }
   memory::copy_and_swap_16_unaligned(memory_->TranslatePhysical(address), extents,
                                      rex::countof(extents));
   trace_writer_.WriteMemoryWrite(CpuToGpu(address), sizeof(extents));

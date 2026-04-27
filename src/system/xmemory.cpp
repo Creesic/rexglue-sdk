@@ -175,6 +175,7 @@ bool Memory::Initialize() {
 #endif
   virtual_membase_ = mapping_base_;
   physical_membase_ = mapping_base_ + 0x100000000ull;
+  host_page_offset_ = (rex::memory::allocation_granularity() > 0x1000) ? 0x1000 : 0;
 
   // Prepare virtual heaps.
   heaps_.v00000000.Initialize(this, virtual_membase_, memory::HeapType::kGuestVirtual, 0x00000000,

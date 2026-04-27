@@ -149,14 +149,17 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
                                  this,        // context (GraphicsSystem*)
                                  reinterpret_cast<runtime::MMIOReadCallback>(ReadRegisterThunk),
                                  reinterpret_cast<runtime::MMIOWriteCallback>(WriteRegisterThunk));
+  REXGPU_INFO("GPU MMIO registered at 0x7FC80000, host=0x{:016X}", (uintptr_t)memory_->TranslateVirtual(0x7FC80000));
 
   // Guest vblank timer based on the configured guest video mode.
   vsync_worker_running_ = true;
   vsync_worker_thread_ = system::object_ref<system::XHostThread>(
       new system::XHostThread(kernel_state_, 128 * 1024, 0, [this]() {
+        REXGPU_INFO("VSync worker thread started");
         system::X_VIDEO_MODE video_mode;
         kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
         double refresh_rate_hz = std::max(1.0, double(float(video_mode.refresh_rate)));
+        REXGPU_INFO("VSync: refresh_rate={:.1f} Hz", refresh_rate_hz);
         uint64_t guest_tick_frequency = chrono::Clock::guest_tick_frequency();
         uint64_t vsync_interval_ticks =
             std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
@@ -177,7 +180,9 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
   // TODO: set_can_debugger_suspend not yet ported
   // vsync_worker_thread_->set_can_debugger_suspend(true);
   vsync_worker_thread_->set_name("GPU VSync");
+  REXGPU_INFO("Creating VSync worker thread...");
   vsync_worker_thread_->Create();
+  REXGPU_INFO("VSync worker thread created");
 
   if (REXCVAR_GET(trace_gpu_stream)) {
     BeginTracing();
@@ -273,9 +278,11 @@ uint32_t GraphicsSystem::ReadRegister(uint32_t addr) {
 
 void GraphicsSystem::WriteRegister(uint32_t addr, uint32_t value) {
   uint32_t r = (addr & 0xFFFF) / 4;
+  REXGPU_DEBUG("WriteRegister: addr=0x{:08X}, r=0x{:04X}, value=0x{:08X}", addr, r, value);
 
   switch (r) {
     case 0x01C5:  // CP_RB_WPTR
+      REXGPU_INFO("CP_RB_WPTR write: 0x{:08X}", value);
       command_processor_->UpdateWritePointer(value);
       break;
     case 0x1844:  // AVIVO_D1GRPH_PRIMARY_SURFACE_ADDRESS
@@ -290,6 +297,7 @@ void GraphicsSystem::WriteRegister(uint32_t addr, uint32_t value) {
 }
 
 void GraphicsSystem::InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
+  REXGPU_INFO("InitializeRingBuffer: ptr=0x{:08X}, size_log2={}", ptr, size_log2);
   command_processor_->InitializeRingBuffer(ptr, size_log2);
 }
 
@@ -311,33 +319,96 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
   auto thread = system::XThread::GetCurrentThread();
   assert_not_null(thread);
 
-  // Pick a CPU, if needed. We're going to guess 2. Because.
   if (cpu == 0xFFFFFFFF) {
     cpu = 2;
   }
   thread->SetActiveCpu(cpu);
 
-  // REXGPU_INFO("Dispatching GPU interrupt at {:08X} w/ mode {} on cpu {}",
-  //          interrupt_callback_, source, cpu);
+  static int dispatch_log_count = 0;
+  if (dispatch_log_count < 20) {
+    dispatch_log_count++;
+    REXGPU_INFO("Dispatching GPU interrupt at {:08X} w/ source {} on cpu {} (dispatch #{})", 
+                interrupt_callback_, source, cpu, dispatch_log_count);
+  }
 
   uint64_t args[] = {source, interrupt_callback_data_};
+
+  // On real Xbox 360, the GPU writes the RPTR to a hardware writeback address,
+  // and the D3D runtime reads it directly. In our emulator, the CP writes to the
+  // physical writeback address, but the D3D tracking structure (shadow) at
+  // [context + 0x28B0] needs updating. Two fields: [base+0] (counter) and
+  // [base+60] (read position). Without this, the game thread thinks the ring
+  // buffer is full and spins forever.
+  if (command_processor_) {
+    uint32_t user_data = static_cast<uint32_t>(interrupt_callback_data_);
+    uint32_t rb_ctrl_addr = user_data + 10384;  // 0x28B0
+    auto rb_ctrl_host = memory_->TranslateVirtual(rb_ctrl_addr);
+    uint32_t rb_ctrl = memory::load_and_swap<uint32_t>(rb_ctrl_host);
+    if (rb_ctrl != 0) {
+      uint32_t current_rptr = command_processor_->read_index();
+      auto rptr_host = memory_->TranslateVirtual(rb_ctrl);
+      uint32_t old_shadow = memory::load_and_swap<uint32_t>(rptr_host);
+      if (old_shadow != current_rptr) {
+        memory::store_and_swap<uint32_t>(rptr_host, current_rptr);
+      }
+      auto rpos_host = memory_->TranslateVirtual(rb_ctrl + 60);
+      uint32_t old_rpos = memory::load_and_swap<uint32_t>(rpos_host);
+      if (old_rpos != current_rptr) {
+        memory::store_and_swap<uint32_t>(rpos_host, current_rptr);
+      }
+      // The D3D spin-loop at sub_82377DF8 compares [context+0x28CC] (submission
+      // counter) against the RPTR shadow using unsigned subtraction.  If the
+      // shadow exceeds the counter the subtraction wraps and the loop spins
+      // forever.  Keep the counter >= shadow so the arithmetic works.
+      auto sub_ctr_host = memory_->TranslateVirtual(user_data + 10396); // 0x28CC
+      uint32_t sub_ctr = memory::load_and_swap<uint32_t>(sub_ctr_host);
+      if (sub_ctr < current_rptr) {
+        memory::store_and_swap<uint32_t>(sub_ctr_host, current_rptr);
+        static int ctr_fix_count = 0;
+        if (ctr_fix_count < 10) {
+          ctr_fix_count++;
+          REXGPU_INFO("  Submit ctr fixed: [0x{:08X}] {} -> {} (rptr_shadow={})",
+                      user_data + 10396, sub_ctr, current_rptr, current_rptr);
+        }
+      }
+      // On real hardware, the D3D completion mechanism clears the command
+      // buffer marker at [cmd_buffer+16] before the VBlank callback fires.
+      // The game sets marker=0x0BADF00D before submitting; if the callback
+      // sees it, it prints "Unanticipated CPU_INTERRUPT" and traps.
+      // Clear it here to emulate the completion path.
+      auto cmd_buf_host = memory_->TranslateVirtual(user_data + 10388); // 0x28C4
+      uint32_t cmd_buf = memory::load_and_swap<uint32_t>(cmd_buf_host);
+      if (cmd_buf != 0) {
+        auto marker_host = memory_->TranslateVirtual(cmd_buf + 16);
+        uint32_t marker = memory::load_and_swap<uint32_t>(marker_host);
+        if (marker == 0x0BADF00D) {
+          memory::store_and_swap<uint32_t>(marker_host, 0);
+          static int marker_fix_count = 0;
+          if (marker_fix_count < 10) {
+            marker_fix_count++;
+            REXGPU_INFO("  Cleared 0x0BADF00D marker at [0x{:08X}+16]", cmd_buf);
+          }
+        }
+      }
+    }
+  }
+
   function_dispatcher_->ExecuteInterrupt(thread->thread_state(), interrupt_callback_, args,
                                          rex::countof(args));
 }
 
 void GraphicsSystem::MarkVblank() {
-  // TODO: Enable profiling once ported
-  // SCOPE_profile_cpu_f("gpu");
-
-  // Increment vblank counter (so the game sees us making progress).
   if (command_processor_) {
     command_processor_->increment_counter();
   }
 
-  // TODO(benvanik): we shouldn't need to do the dispatch here, but there's
-  //     something wrong and the CP will block waiting for code that
-  //     needs to be run in the interrupt.
-  DispatchInterruptCallback(0, 2);
+  static int vblank_log_count = 0;
+  if (vblank_log_count < 50) {
+    vblank_log_count++;
+    REXGPU_INFO("MarkVblank #{}: interrupt_callback_=0x{:08X}", vblank_log_count, interrupt_callback_);
+  }
+
+  DispatchInterruptCallback(1, 2);
 }
 
 void GraphicsSystem::ClearCaches() {

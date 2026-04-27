@@ -96,6 +96,8 @@ class CommandProcessor {
 
   void CallInThread(std::function<void()> fn);
 
+  uint32_t read_index() const { return read_ptr_index_; }
+
   virtual void ClearCaches();
   virtual void InvalidateGpuMemory();
 
