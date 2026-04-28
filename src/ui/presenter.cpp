@@ -312,6 +312,8 @@ Presenter::~Presenter() {
 }
 
 void Presenter::SetWindowSurfaceFromUIThread(Window* new_window, Surface* new_surface) {
+  fprintf(stderr, "[presenter] SetWindowSurfaceFromUIThread: window=%p surface=%p\n",
+          new_window, new_surface); fflush(stderr);
   // No intrusive lifetime management must be performed from UI drawers - defer
   // it if needed.
   assert_false(is_executing_ui_drawers_);

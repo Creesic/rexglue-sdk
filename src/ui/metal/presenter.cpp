@@ -1,5 +1,6 @@
 #include <rex/ui/metal/presenter.h>
 #include <rex/ui/metal/provider.h>
+#include <rex/ui/surface_mac.h>
 #include <rex/logging/macros.h>
 
 #include <Metal/Metal.hpp>
@@ -73,6 +74,14 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
   }
 
   MTL::Texture* src = provider_->GetFrontbufferTexture();
+  static std::atomic<int> present_count{0};
+  int pc = present_count.fetch_add(1);
+  if (pc < 10) {
+    fprintf(stderr, "[metal] PaintAndPresent: src=%p drawable=%p (%ux%u)\n",
+            src, drawable ? drawable->texture() : nullptr,
+            drawable ? (unsigned)drawable->texture()->width() : 0,
+            drawable ? (unsigned)drawable->texture()->height() : 0); fflush(stderr);
+  }
   if (src) {
     MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
     if (blit) {
@@ -96,7 +105,32 @@ MetalPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
     Surface& new_surface, uint32_t new_surface_width,
     uint32_t new_surface_height, bool was_paintable,
     bool& is_vsync_implicit_out) {
+  fprintf(stderr, "[metal] ConnectOrReconnect: type=%d %ux%u was_paintable=%d\n",
+          (int)new_surface.GetType(), new_surface_width, new_surface_height, was_paintable);
+  fflush(stderr);
   is_vsync_implicit_out = true;
+
+  Surface::TypeIndex surface_type = new_surface.GetType();
+  if (surface_type != Surface::kTypeIndex_CAMetalLayer) {
+    REXLOG_ERROR("MetalPresenter: Unsupported surface type {}", (int)surface_type);
+    return SurfacePaintConnectResult::kFailureSurfaceUnusable;
+  }
+
+  auto& metal_surface = static_cast<const CAMetalLayerSurface&>(new_surface);
+  CAMetalLayer* raw_layer = metal_surface.layer();
+  if (!raw_layer) {
+    REXLOG_ERROR("MetalPresenter: Null CAMetalLayer");
+    return SurfacePaintConnectResult::kFailureSurfaceUnusable;
+  }
+
+  CA::MetalLayer* layer = reinterpret_cast<CA::MetalLayer*>(raw_layer);
+  layer->setDevice(reinterpret_cast<MTL::Device*>(device_));
+  layer->setPixelFormat(MTL::PixelFormat::PixelFormatBGRA8Unorm);
+  layer->setDrawableSize(CGSize{(double)new_surface_width, (double)new_surface_height});
+
+  metal_layer_ = raw_layer;
+
+  REXLOG_INFO("MetalPresenter: Connected to CAMetalLayer {}x{}", new_surface_width, new_surface_height);
   return SurfacePaintConnectResult::kSuccess;
 }
 
@@ -109,7 +143,12 @@ bool MetalPresenter::RefreshGuestOutputImpl(
     uint32_t frontbuffer_height,
     std::function<bool(GuestOutputRefreshContext& context)> refresher,
     bool& is_8bpc_out_ref) {
-  return false;
+  fprintf(stderr, "[metal] RefreshGuestOutputImpl: mailbox=%u %ux%u\n",
+          mailbox_index, frontbuffer_width, frontbuffer_height); fflush(stderr);
+  MetalGuestOutputRefreshContext context(is_8bpc_out_ref);
+  bool ok = refresher(context);
+  fprintf(stderr, "[metal] RefreshGuestOutputImpl: refresher returned %d\n", ok); fflush(stderr);
+  return ok;
 }
 
 }  // namespace metal

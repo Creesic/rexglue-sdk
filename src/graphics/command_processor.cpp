@@ -947,7 +947,7 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
   bool result = false;
   static std::atomic<int> pkt_count{0};
   int pc = pkt_count.fetch_add(1);
-  if (pc < 30) {
+  if (pc < 200) {
     fprintf(stderr, "[metal] PM4 type3 opcode=0x%02X count=%d\n", opcode, count); fflush(stderr);
   }
   switch (opcode) {
@@ -1145,6 +1145,7 @@ bool CommandProcessor::ExecutePacketType3_INTERRUPT(memory::RingBuffer* reader, 
 
 bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, uint32_t packet,
                                                    uint32_t count) {
+  fprintf(stderr, "[gpu] XE_SWAP EXECUTED: count=%u\n", count); fflush(stderr);
   SCOPE_profile_cpu_f("gpu");
 
   REXGPU_INFO("XE_SWAP: count={}", count);

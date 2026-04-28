@@ -7,6 +7,8 @@
 #include <rex/graphics/metal/primitive_processor.h>
 #include <rex/graphics/util/draw.h>
 #include <rex/ui/metal/provider.h>
+#include <rex/ui/presenter.h>
+#include <rex/kernel/xboxkrnl/video.h>
 #include <rex/system/kernel_state.h>
 #include <rex/logging/macros.h>
 #include <rex/assert.h>
@@ -198,6 +200,7 @@ void MetalCommandProcessor::BeginCommandBuffer() {
 void MetalCommandProcessor::EndCommandBuffer() {
   if (!current_command_buffer_) return;
   EndRenderEncoder();
+  fprintf(stderr, "[metal] EndCommandBuffer: encoding signal\n"); fflush(stderr);
 
   uint64_t signal_value = ++submission_current_;
   current_command_buffer_->encodeSignalEvent(wait_shared_event_, signal_value);
@@ -207,15 +210,17 @@ void MetalCommandProcessor::EndCommandBuffer() {
         completed_command_buffers_.store(signal_value);
       });
 
+  fprintf(stderr, "[metal] EndCommandBuffer: committing\n"); fflush(stderr);
   current_command_buffer_->commit();
+  fprintf(stderr, "[metal] EndCommandBuffer: committed, clearing refs\n"); fflush(stderr);
   current_command_buffer_ = nullptr;
   uniforms_ring_offset_ = 0;
   draw_ring_offset_ = 0;
 
   if (command_buffer_autorelease_pool_) {
-    command_buffer_autorelease_pool_->drain();
     command_buffer_autorelease_pool_ = nullptr;
   }
+  fprintf(stderr, "[metal] EndCommandBuffer: done\n"); fflush(stderr);
 }
 
 void MetalCommandProcessor::EndRenderEncoder() {
@@ -532,12 +537,14 @@ bool MetalCommandProcessor::IssueCopy() {
 void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                       uint32_t frontbuffer_width,
                                       uint32_t frontbuffer_height) {
+  fprintf(stderr, "[metal] IssueSwap: ptr=0x%08X w=%u h=%u\n", frontbuffer_ptr, frontbuffer_width, frontbuffer_height); fflush(stderr);
   last_swap_ptr_ = frontbuffer_ptr;
   last_swap_width_ = frontbuffer_width;
   last_swap_height_ = frontbuffer_height;
   saw_swap_ = true;
   copy_resolve_writes_pending_ = false;
 
+  fprintf(stderr, "[metal] IssueSwap: getting color0\n"); fflush(stderr);
   if (render_target_cache_) {
     MTL::Texture* color0 = render_target_cache_->GetColorTarget(0);
     if (color0) {
@@ -546,7 +553,36 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
     }
   }
 
+  fprintf(stderr, "[metal] IssueSwap: EndCommandBuffer\n"); fflush(stderr);
   EndCommandBuffer();
+  fprintf(stderr, "[metal] IssueSwap: EndCommandBuffer done\n"); fflush(stderr);
+
+  if (!graphics_system_) {
+    fprintf(stderr, "[metal] IssueSwap: no graphics_system_\n"); fflush(stderr);
+    return;
+  }
+  ui::Presenter* presenter = graphics_system_->presenter();
+  if (!presenter) {
+    fprintf(stderr, "[metal] IssueSwap: no presenter\n"); fflush(stderr);
+    return;
+  }
+
+  uint32_t guest_width = frontbuffer_width ? frontbuffer_width : 1280;
+  uint32_t guest_height = frontbuffer_height ? frontbuffer_height : 720;
+
+  system::X_VIDEO_MODE video_mode;
+  kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+  uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
+  uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
+  fprintf(stderr, "[metal] IssueSwap: RefreshGuestOutput %ux%u display=%ux%u\n",
+          guest_width, guest_height, display_width, display_height); fflush(stderr);
+
+  bool ok = presenter->RefreshGuestOutput(
+      guest_width, guest_height, display_width, display_height,
+      [this](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
+        return true;
+      });
+  fprintf(stderr, "[metal] IssueSwap: RefreshGuestOutput returned %d\n", ok); fflush(stderr);
 }
 
 void MetalCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {

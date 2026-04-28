@@ -341,6 +341,7 @@ class Window {
       presenter_->RequestUIPaintFromUIThread();
     }
   }
+  void PaintForDisplayUpdate() { OnPaint(false); }
 
  protected:
   // The receiver, which must never be instantiated in the Window object itself

@@ -446,6 +446,8 @@ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
                   mapped_u32 frontbuffer_ptr,  // ptr to frontbuffer address
                   mapped_u32 texture_format_ptr, mapped_u32 color_space_ptr, mapped_u32 width,
                   mapped_u32 height) {
+  fprintf(stderr, "[kernel] VdSwap called: fb_ptr=0x%08X w=%u h=%u\n",
+          frontbuffer_ptr.value(), width.value(), height.value()); fflush(stderr);
   // All of these parameters are REQUIRED.
   assert(buffer_ptr);
   assert(fetch_ptr);

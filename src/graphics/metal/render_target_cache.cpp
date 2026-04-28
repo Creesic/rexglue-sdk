@@ -106,14 +106,15 @@ MTL::Texture* MetalRenderTargetCache::CreateRenderTargetTexture(
   MTL::TextureDescriptor* desc = MTL::TextureDescriptor::texture2DDescriptor(
       format, width, height,
       MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
+  desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
   if (sample_count > 1) {
     desc->setTextureType(MTL::TextureType2DMultisample);
     desc->setSampleCount(sample_count);
   }
   desc->setStorageMode(MTL::StorageModePrivate);
 
-  fprintf(stderr, "[metal] CreateRenderTargetTexture: %ux%u fmt=%d device=%p desc=%p\n",
-          width, height, (int)format, device_, desc); fflush(stderr);
+  fprintf(stderr, "[metal] CreateRenderTargetTexture: %ux%u fmt=%d usage=0x%x\n",
+          width, height, (int)format, (unsigned)desc->usage()); fflush(stderr);
   MTL::Texture* tex = device_->newTexture(desc);
   fprintf(stderr, "[metal] CreateRenderTargetTexture: tex=%p\n", tex); fflush(stderr);
   desc->release();

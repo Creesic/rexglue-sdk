@@ -262,6 +262,12 @@ VirtualKey TranslateKeyCode(unsigned short key_code) {
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)isOpaque { return YES; }
 
+- (void)updateLayer {
+  if (cpp_window_) {
+    cpp_window_->PaintForDisplayUpdate();
+  }
+}
+
 // ── Mouse helpers ─────────────────────────────────────────────────────────────
 
 - (void)handleMouseEvent:(NSEvent*)event
@@ -614,7 +620,10 @@ std::unique_ptr<Surface> MacWindow::CreateSurfaceImpl(Surface::TypeFlags allowed
 }
 
 void MacWindow::RequestPaintImpl() {
-  if (metal_view_) [metal_view_ setNeedsDisplay:YES];
+  MacWindow* win = this;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    win->PaintForDisplayUpdate();
+  });
 }
 
 uint32_t MacWindow::GetLatestDpiImpl() const {

@@ -38,7 +38,7 @@
 #ifdef __OBJC__
 @class CAMetalLayer;
 #else
-typedef void CAMetalLayer;
+typedef struct objc_object CAMetalLayer;
 #endif
 
 namespace rex {
