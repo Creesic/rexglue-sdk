@@ -312,11 +312,9 @@ void CommandProcessor::WorkerThreadMain() {
     }
     assert_true(read_ptr_index_ != write_ptr_index);
 
-    // Execute. Note that we handle wraparound transparently.
+    gpu_busy_ = true;
     uint32_t new_read_index = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
     if (new_read_index == read_ptr_index_) {
-      // Ring buffer was empty — game wrote WPTR before data (timing issue on ARM64).
-      // Yield to give the game thread time to write entries.
       rex::thread::MaybeYield();
     }
     read_ptr_index_ = new_read_index & ((primary_buffer_size_ / sizeof(uint32_t)) - 1);
@@ -325,6 +323,7 @@ void CommandProcessor::WorkerThreadMain() {
       memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
                                        read_ptr_index_);
     }
+    gpu_busy_ = false;
 
     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
     // but no games seem to actually use it.

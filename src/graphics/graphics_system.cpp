@@ -443,8 +443,12 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
       uint32_t marker = memory::load_and_swap<uint32_t>(marker_host);
       if (marker == 0x0BADF00D) {
         memory::store_and_swap<uint32_t>(marker_host, 0);
-        REXGPU_INFO("  Post-callback: cleared 0x0BADF00D marker at [0x{:08X}+16]", cmd_buf);
       }
+    }
+    auto flags_host = memory_->TranslateVirtual(user_data + 10433);
+    uint8_t flags = memory::load_and_swap<uint8_t>(flags_host);
+    if (flags & 0x2) {
+      memory::store_and_swap<uint8_t>(flags_host, flags & ~uint8_t(0x2));
     }
   }
 }
@@ -461,7 +465,9 @@ void GraphicsSystem::MarkVblank() {
   }
 
   DispatchInterruptCallback(0, 2);
-  DispatchInterruptCallback(1, 2);
+  if (command_processor_ && !command_processor_->gpu_busy()) {
+    DispatchInterruptCallback(1, 2);
+  }
 }
 
 void GraphicsSystem::SynchronizeRingBuffer() {

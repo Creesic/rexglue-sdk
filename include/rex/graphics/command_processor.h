@@ -97,6 +97,7 @@ class CommandProcessor {
   void CallInThread(std::function<void()> fn);
 
   uint32_t read_index() const { return read_ptr_index_; }
+  bool gpu_busy() const { return gpu_busy_.load(); }
 
   virtual void ClearCaches();
   virtual void InvalidateGpuMemory();
@@ -264,6 +265,7 @@ class CommandProcessor {
   std::filesystem::path trace_frame_path_;
 
   std::atomic<bool> worker_running_;
+  std::atomic<bool> gpu_busy_{false};
   system::object_ref<system::XHostThread> worker_thread_;
 
   std::queue<std::function<void()>> pending_fns_;
