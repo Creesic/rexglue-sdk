@@ -20,9 +20,14 @@ uint64_t Clock::host_tick_frequency_platform() {
   timespec res;
   int error = clock_getres(CLOCK_MONOTONIC_RAW, &res);
   assert_zero(error);
-  assert_zero(res.tv_sec);  // Sub second resolution is required.
+  assert_zero(res.tv_sec);
 
-  // Convert nano seconds to hertz. Resolution is 1ns on most systems.
+  // On macOS ARM, CLOCK_MONOTONIC_RAW may report coarse resolution (e.g. 42ns)
+  // but clock_gettime actually returns nanosecond-precision timestamps.
+  // Using the resolution-derived frequency would make guest time run too fast.
+  if (res.tv_nsec > 1) {
+    return 1000000000ull;
+  }
   return 1000000000ull / res.tv_nsec;
 }
 
