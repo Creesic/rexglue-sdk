@@ -456,6 +456,7 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
 void GraphicsSystem::MarkVblank() {
   if (command_processor_) {
     command_processor_->increment_counter();
+    command_processor_->RequestDeferredInterrupt();
   }
 
   static int vblank_log_count = 0;
@@ -465,9 +466,6 @@ void GraphicsSystem::MarkVblank() {
   }
 
   DispatchInterruptCallback(0, 2);
-  if (command_processor_ && !command_processor_->gpu_busy()) {
-    DispatchInterruptCallback(1, 2);
-  }
 }
 
 void GraphicsSystem::SynchronizeRingBuffer() {

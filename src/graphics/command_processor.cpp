@@ -323,6 +323,11 @@ void CommandProcessor::WorkerThreadMain() {
       memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
                                        read_ptr_index_);
     }
+
+    if (graphics_system_ && interrupt_sources_pending_.exchange(false)) {
+      graphics_system_->DispatchInterruptCallback(1, 2);
+    }
+
     gpu_busy_ = false;
 
     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,

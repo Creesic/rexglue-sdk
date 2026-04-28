@@ -98,6 +98,7 @@ class CommandProcessor {
 
   uint32_t read_index() const { return read_ptr_index_; }
   bool gpu_busy() const { return gpu_busy_.load(); }
+  void RequestDeferredInterrupt() { interrupt_sources_pending_ = true; }
 
   virtual void ClearCaches();
   virtual void InvalidateGpuMemory();
@@ -266,6 +267,7 @@ class CommandProcessor {
 
   std::atomic<bool> worker_running_;
   std::atomic<bool> gpu_busy_{false};
+  std::atomic<bool> interrupt_sources_pending_{false};
   system::object_ref<system::XHostThread> worker_thread_;
 
   std::queue<std::function<void()>> pending_fns_;
