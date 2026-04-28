@@ -319,17 +319,21 @@ void CommandProcessor::WorkerThreadMain() {
       // Yield to give the game thread time to write entries.
       rex::thread::MaybeYield();
     }
-    read_ptr_index_ = new_read_index;
+    read_ptr_index_ = new_read_index & ((primary_buffer_size_ / sizeof(uint32_t)) - 1);
 
     // TODO(benvanik): use reader->Read_update_freq_ and only issue after moving
     //     that many indices.
+    // Note: RPTR writeback is now handled in UpdateWritePointer to avoid
+    // the game's RPTR spin loop timing out before the GPU thread processes.
     if (read_ptr_writeback_ptr_) {
-      memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
-                                       read_ptr_index_);
       auto* wb_phys = memory_->TranslatePhysical<uint32_t*>(read_ptr_writeback_ptr_);
-      REXGPU_INFO("RPTR writeback: ptr=0x{:08X} val={} phys_host={} readable={}",
-                  read_ptr_writeback_ptr_, read_ptr_index_, fmt::ptr(wb_phys),
-                  __builtin_bswap32(*wb_phys));
+      static int wb_log_count = 0;
+      if (wb_log_count < 30) {
+        wb_log_count++;
+        REXGPU_INFO("RPTR writeback (GPU thread): ptr=0x{:08X} val={} readable={}",
+                    read_ptr_writeback_ptr_, read_ptr_index_,
+                    __builtin_bswap32(*wb_phys));
+      }
     }
 
     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
@@ -402,25 +406,19 @@ void CommandProcessor::InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
 }
 
 void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) {
-  // CP_RB_RPTR_ADDR Ring Buffer Read Pointer Address 0x70C
-  // ptr = RB_RPTR_ADDR, pointer to write back the address to.
-  // On macOS ARM64 (16KB pages), physical addresses from the 0xE0000000 heap range
-  // need +0x1000 to account for the host_address_offset, matching MmGetPhysicalAddress.
-  // Only adjust for high physical addresses (vE0000000 heap allocations).
-  if (rex::memory::allocation_granularity() > 0x1000 && ptr >= 0x1F000000u) {
-    ptr += 0x1000u;
-  }
-  read_ptr_writeback_ptr_ = ptr;
-  // CP_RB_CNTL Ring Buffer Control 0x704
-  // block_size = RB_BLKSZ, log2 of number of quadwords read between updates of
-  //              the read pointer.
-  read_ptr_update_freq_ = uint32_t(1) << block_size_log2 >> 2;
-}
+   read_ptr_writeback_ptr_ = ptr;
+   read_ptr_update_freq_ = uint32_t(1) << block_size_log2 >> 2;
+ }
 
 void CommandProcessor::UpdateWritePointer(uint32_t value) {
-  write_ptr_index_ = value;
+  uint32_t mask = (primary_buffer_size_ / sizeof(uint32_t)) - 1;
+  write_ptr_index_ = value & mask;
+  if (read_ptr_writeback_ptr_) {
+    memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
+                                     write_ptr_index_);
+  }
   write_ptr_index_event_->Set();
-}
+ }
 
 uint32_t CommandProcessor::ReadRegisterValue(uint32_t index) const {
   if (index < RegisterFile::kRegisterCount) {
@@ -710,10 +708,30 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
   auto* rb_phys = memory_->TranslatePhysical<uint32_t*>(primary_buffer_ptr_);
   std::atomic_thread_fence(std::memory_order_seq_cst);
 
+  if (read_index == write_index) {
+    return read_index;
+  }
+
+  uint32_t rb_dwords = primary_buffer_size_ / sizeof(uint32_t);
   bool has_data = false;
-  for (uint32_t i = read_index; i < write_index && !has_data; i++) {
-    if (__builtin_bswap32(rb_phys[i]) != 0) {
-      has_data = true;
+  if (write_index > read_index) {
+    for (uint32_t i = read_index; i < write_index && !has_data; i++) {
+      if (__builtin_bswap32(rb_phys[i]) != 0) {
+        has_data = true;
+      }
+    }
+  } else {
+    for (uint32_t i = read_index; i < rb_dwords && !has_data; i++) {
+      if (__builtin_bswap32(rb_phys[i]) != 0) {
+        has_data = true;
+      }
+    }
+    if (!has_data) {
+      for (uint32_t i = 0; i < write_index && !has_data; i++) {
+        if (__builtin_bswap32(rb_phys[i]) != 0) {
+          has_data = true;
+        }
+      }
     }
   }
   if (!has_data) {
@@ -1296,13 +1314,8 @@ bool CommandProcessor::ExecutePacketType3_MEM_WRITE(memory::RingBuffer* reader, 
 
     auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
     auto addr = write_addr & ~0x3;
-    auto orig_addr = addr;
-    if (memory_->host_page_offset() != 0 && addr >= 0x1F000000u) {
-      addr += memory_->host_page_offset();
-    }
     write_data = GpuSwap(write_data, endianness);
-    REXGPU_INFO("MEM_WRITE: addr=0x{:08X}{} data=0x{:08X}", orig_addr,
-           orig_addr != addr ? fmt::format("->0x{:08X}", addr) : "", write_data);
+    REXGPU_INFO("MEM_WRITE: addr=0x{:08X} data=0x{:08X}", addr, write_data);
     memory::store(memory_->TranslatePhysical(addr), write_data);
     trace_writer_.WriteMemoryWrite(CpuToGpu(addr), 4);
     write_addr += 4;
@@ -1409,20 +1422,14 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_SHD(memory::RingBuffer* re
     // Write value.
     data_value = value;
   }
-  auto endianness = static_cast<xenos::Endian>(address & 0x3);
-  address &= ~0x3;
-  uint32_t orig_address = address;
-  auto hpo = memory_->host_page_offset();
-  if (hpo != 0 && address >= 0x1F000000u) {
-    address += hpo;
-  }
-  data_value = GpuSwap(data_value, endianness);
-  REXGPU_INFO("EVENT_WRITE_SHD: hpo=0x{:08X} addr=0x{:08X}{} data=0x{:08X} (endian={})", hpo, orig_address,
-         orig_address != address ? fmt::format("->0x{:08X}", address) : "", data_value,
-         static_cast<int>(endianness));
-  memory::store(memory_->TranslatePhysical(address), data_value);
-  trace_writer_.WriteMemoryWrite(CpuToGpu(address), 4);
-  return true;
+   auto endianness = static_cast<xenos::Endian>(address & 0x3);
+   address &= ~0x3;
+   data_value = GpuSwap(data_value, endianness);
+   REXGPU_INFO("EVENT_WRITE_SHD: addr=0x{:08X} data=0x{:08X} (endian={})",
+          address, data_value, static_cast<int>(endianness));
+   memory::store(memory_->TranslatePhysical(address), data_value);
+   trace_writer_.WriteMemoryWrite(CpuToGpu(address), 4);
+   return true;
 }
 
 bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_EXT(memory::RingBuffer* reader,
@@ -1448,9 +1455,6 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_EXT(memory::RingBuffer* re
       1,                                         // max z
   };
   assert_true(endianness == xenos::Endian::k8in16);
-  if (memory_->host_page_offset() != 0 && address >= 0x1F000000u) {
-    address += memory_->host_page_offset();
-  }
   memory::copy_and_swap_16_unaligned(memory_->TranslatePhysical(address), extents,
                                      rex::countof(extents));
   trace_writer_.WriteMemoryWrite(CpuToGpu(address), sizeof(extents));

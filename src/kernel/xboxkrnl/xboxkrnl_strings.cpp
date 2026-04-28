@@ -48,6 +48,10 @@ REX_HOOK_RAW(__imp__DbgPrint) {
       str.pop_back();
     }
     REXKRNL_INFO("DbgPrint: {}", str);
+    if (str.find("CPU_INTERRUPT") != std::string::npos) {
+      REXKRNL_INFO("  CPU_INTERRUPT caller=0x{:08X} fmt=0x{:08X} r4=0x{:08X} r5=0x{:08X}",
+                   ctx.lr, format_ptr, ctx.r4.u32, ctx.r5.u32);
+    }
   }
 
   ctx.r3.u64 = 0;  // NTSTATUS success

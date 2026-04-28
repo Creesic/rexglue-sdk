@@ -87,6 +87,8 @@ class GraphicsSystem : public system::IGraphicsSystem {
   void BeginTracing();
   void EndTracing();
 
+  void SynchronizeRingBuffer();
+
   bool is_paused() const { return paused_; }
   void Pause();
   void Resume();

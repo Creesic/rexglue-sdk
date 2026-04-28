@@ -333,61 +333,98 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
 
   uint64_t args[] = {source, interrupt_callback_data_};
 
-  // On real Xbox 360, the GPU writes the RPTR to a hardware writeback address,
-  // and the D3D runtime reads it directly. In our emulator, the CP writes to the
-  // physical writeback address, but the D3D tracking structure (shadow) at
-  // [context + 0x28B0] needs updating. Two fields: [base+0] (counter) and
-  // [base+60] (read position). Without this, the game thread thinks the ring
-  // buffer is full and spins forever.
-  if (command_processor_) {
+  if (source == 0) {
     uint32_t user_data = static_cast<uint32_t>(interrupt_callback_data_);
-    uint32_t rb_ctrl_addr = user_data + 10384;  // 0x28B0
+    auto ud_host = memory_->TranslateVirtual(user_data);
+    uint32_t vblank_ctr = memory::load_and_swap<uint32_t>(ud_host + 15592);
+    uint32_t frame_ctr = memory::load_and_swap<uint32_t>(ud_host + 15584);
+    uint32_t notify_fn = memory::load_and_swap<uint32_t>(ud_host + 15580);
+    static int src0_log_count = 0;
+    if (src0_log_count < 20) {
+      src0_log_count++;
+      REXGPU_INFO("source=0: vblank_ctr={} frame_ctr={} notify_fn=0x{:08X}",
+                   vblank_ctr, frame_ctr, notify_fn);
+    }
+  }
+
+  // Ring buffer control structure at [context+10384] has 3 key fields:
+  //   [ctrl+0]  = submit counter shadow (game writes via sub_82377BD8)
+  //   [ctrl+4]  = WPTR shadow = (counter & 3) | write_position
+  //   [ctrl+60] = hardware RPTR writeback (GPU writes here)
+  // On real Xbox 360, the GPU writes RPTR to [ctrl+60] via writeback, and the
+  // game updates [ctrl+0] and [ctrl+4] during submit (sub_82377BD8).  The submit
+  // function only writes these when bit 2 of [context+10433] is set; otherwise
+  // the game relies on the wait-timeout handler (sub_82386130) to set that bit.
+  // Since we process GPU commands synchronously, we emulate all three updates
+  // here to keep the D3D tracking consistent.
+   static int cp_check_count = 0;
+   if (cp_check_count < 3) {
+     cp_check_count++;
+     REXGPU_INFO("  CP check: command_processor_={} data=0x{:08X}",
+                 (void*)command_processor_.get(), interrupt_callback_data_);
+   }
+   if (command_processor_) {
+     uint32_t user_data = static_cast<uint32_t>(interrupt_callback_data_);
+     uint32_t rb_ctrl_addr = user_data + 10384;
     auto rb_ctrl_host = memory_->TranslateVirtual(rb_ctrl_addr);
     uint32_t rb_ctrl = memory::load_and_swap<uint32_t>(rb_ctrl_host);
+    static int rb_diag_count = 0;
+    if (rb_diag_count < 5) {
+      rb_diag_count++;
+      REXGPU_INFO("  rb_ctrl check: user_data=0x{:08X} rb_ctrl=0x{:08X} rptr={}",
+                  user_data, rb_ctrl, command_processor_->read_index());
+    }
     if (rb_ctrl != 0) {
-      uint32_t current_rptr = command_processor_->read_index();
-      auto rptr_host = memory_->TranslateVirtual(rb_ctrl);
-      uint32_t old_shadow = memory::load_and_swap<uint32_t>(rptr_host);
-      if (old_shadow != current_rptr) {
-        memory::store_and_swap<uint32_t>(rptr_host, current_rptr);
-      }
-      auto rpos_host = memory_->TranslateVirtual(rb_ctrl + 60);
-      uint32_t old_rpos = memory::load_and_swap<uint32_t>(rpos_host);
-      if (old_rpos != current_rptr) {
-        memory::store_and_swap<uint32_t>(rpos_host, current_rptr);
-      }
-      // The D3D spin-loop at sub_82377DF8 compares [context+0x28CC] (submission
-      // counter) against the RPTR shadow using unsigned subtraction.  If the
-      // shadow exceeds the counter the subtraction wraps and the loop spins
-      // forever.  Keep the counter >= shadow so the arithmetic works.
-      auto sub_ctr_host = memory_->TranslateVirtual(user_data + 10396); // 0x28CC
+      auto sub_ctr_host = memory_->TranslateVirtual(user_data + 10396);
       uint32_t sub_ctr = memory::load_and_swap<uint32_t>(sub_ctr_host);
-      if (sub_ctr < current_rptr) {
-        memory::store_and_swap<uint32_t>(sub_ctr_host, current_rptr);
-        static int ctr_fix_count = 0;
-        if (ctr_fix_count < 10) {
-          ctr_fix_count++;
-          REXGPU_INFO("  Submit ctr fixed: [0x{:08X}] {} -> {} (rptr_shadow={})",
-                      user_data + 10396, sub_ctr, current_rptr, current_rptr);
+      auto shadow0_host = memory_->TranslateVirtual(rb_ctrl);
+      uint32_t shadow0 = sub_ctr >= 2 ? sub_ctr - 2 : 0;
+      memory::store_and_swap<uint32_t>(shadow0_host, shadow0);
+      auto counter_host = memory_->TranslateVirtual(user_data + 13988);
+      uint32_t counter = memory::load_and_swap<uint32_t>(counter_host);
+      auto wptr_host = memory_->TranslateVirtual(user_data);
+      uint32_t wptr = memory::load_and_swap<uint32_t>(wptr_host);
+      uint32_t wptr_shadow = (counter & 0x3) | wptr;
+      auto shadow4_host = memory_->TranslateVirtual(rb_ctrl + 4);
+      memory::store_and_swap<uint32_t>(shadow4_host, wptr_shadow);
+
+      // Clear CPU_INTERRUPT flag (bit 1) set by RPTR wait timeout.
+      // On real Xbox 360, the GPU hardware processes fast enough. In our
+      // emulator, the software GPU thread may be too slow, causing the
+      // timeout handler to set this flag. Clear it to prevent the error.
+      auto flags_host = memory_->TranslateVirtual(user_data + 10433);
+      uint8_t flags = memory::load_and_swap<uint8_t>(flags_host);
+      if (flags & 0x2) {
+        memory::store_and_swap<uint8_t>(flags_host, flags & ~0x2);
+        static int flag_clear_count = 0;
+        if (flag_clear_count < 20) {
+          flag_clear_count++;
+          REXGPU_INFO("  Cleared CPU_INTERRUPT flag (was 0x{:02X})", flags);
         }
       }
-      // On real hardware, the D3D completion mechanism clears the command
-      // buffer marker at [cmd_buffer+16] before the VBlank callback fires.
-      // The game sets marker=0x0BADF00D before submitting; if the callback
-      // sees it, it prints "Unanticipated CPU_INTERRUPT" and traps.
-      // Clear it here to emulate the completion path.
-      auto cmd_buf_host = memory_->TranslateVirtual(user_data + 10388); // 0x28C4
+
+      static int rb_log_count = 0;
+      if (rb_log_count < 20) {
+        rb_log_count++;
+        uint32_t current_rptr = command_processor_->read_index();
+        REXGPU_INFO("  RB update: ctrl+0={}(sc={}) ctrl+4=0x{:08X}(ctr={} wp=0x{:08X}) "
+                    "ctrl+60={} rptr={}",
+                    shadow0, sub_ctr, wptr_shadow, counter, wptr,
+                    current_rptr, current_rptr);
+      }
+      auto cmd_buf_host = memory_->TranslateVirtual(user_data + 10388);
       uint32_t cmd_buf = memory::load_and_swap<uint32_t>(cmd_buf_host);
       if (cmd_buf != 0) {
         auto marker_host = memory_->TranslateVirtual(cmd_buf + 16);
         uint32_t marker = memory::load_and_swap<uint32_t>(marker_host);
+        static int marker_check_count = 0;
+        if (marker_check_count < 200) {
+          marker_check_count++;
+          REXGPU_INFO("  Marker check [0x{:08X}+16] = 0x{:08X}{}", cmd_buf, marker,
+                      marker == 0x0BADF00D ? " (CLEARING)" : "");
+        }
         if (marker == 0x0BADF00D) {
           memory::store_and_swap<uint32_t>(marker_host, 0);
-          static int marker_fix_count = 0;
-          if (marker_fix_count < 10) {
-            marker_fix_count++;
-            REXGPU_INFO("  Cleared 0x0BADF00D marker at [0x{:08X}+16]", cmd_buf);
-          }
         }
       }
     }
@@ -395,6 +432,21 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
 
   function_dispatcher_->ExecuteInterrupt(thread->thread_state(), interrupt_callback_, args,
                                          rex::countof(args));
+
+  if (source == 1 && command_processor_) {
+    uint32_t user_data = static_cast<uint32_t>(interrupt_callback_data_);
+    auto ud_host = memory_->TranslateVirtual(user_data);
+    auto cmd_buf_host = memory_->TranslateVirtual(user_data + 10388);
+    uint32_t cmd_buf = memory::load_and_swap<uint32_t>(cmd_buf_host);
+    if (cmd_buf != 0) {
+      auto marker_host = memory_->TranslateVirtual(cmd_buf + 16);
+      uint32_t marker = memory::load_and_swap<uint32_t>(marker_host);
+      if (marker == 0x0BADF00D) {
+        memory::store_and_swap<uint32_t>(marker_host, 0);
+        REXGPU_INFO("  Post-callback: cleared 0x0BADF00D marker at [0x{:08X}+16]", cmd_buf);
+      }
+    }
+  }
 }
 
 void GraphicsSystem::MarkVblank() {
@@ -408,7 +460,40 @@ void GraphicsSystem::MarkVblank() {
     REXGPU_INFO("MarkVblank #{}: interrupt_callback_=0x{:08X}", vblank_log_count, interrupt_callback_);
   }
 
+  DispatchInterruptCallback(0, 2);
   DispatchInterruptCallback(1, 2);
+}
+
+void GraphicsSystem::SynchronizeRingBuffer() {
+  if (!interrupt_callback_data_ || !command_processor_) return;
+  uint32_t user_data = interrupt_callback_data_;
+  auto rb_ctrl_host = memory_->TranslateVirtual(user_data + 10384);
+  uint32_t rb_ctrl = memory::load_and_swap<uint32_t>(rb_ctrl_host);
+  if (rb_ctrl == 0) return;
+  auto sub_ctr_host = memory_->TranslateVirtual(user_data + 10396);
+  uint32_t sub_ctr = memory::load_and_swap<uint32_t>(sub_ctr_host);
+  auto shadow0_host = memory_->TranslateVirtual(rb_ctrl);
+  uint32_t old_shadow0 = memory::load_and_swap<uint32_t>(shadow0_host);
+  uint32_t shadow0 = sub_ctr >= 2 ? sub_ctr - 2 : 0;
+  memory::store_and_swap<uint32_t>(shadow0_host, shadow0);
+  auto counter_host = memory_->TranslateVirtual(user_data + 13988);
+  uint32_t counter = memory::load_and_swap<uint32_t>(counter_host);
+  auto wptr_host = memory_->TranslateVirtual(user_data);
+  uint32_t wptr = memory::load_and_swap<uint32_t>(wptr_host);
+  uint32_t wptr_shadow = (counter & 0x3) | wptr;
+  auto shadow4_host = memory_->TranslateVirtual(rb_ctrl + 4);
+  memory::store_and_swap<uint32_t>(shadow4_host, wptr_shadow);
+  auto flags_host = memory_->TranslateVirtual(user_data + 10433);
+  uint8_t flags = memory::load_and_swap<uint8_t>(flags_host);
+  if (flags & 0x2) {
+    memory::store_and_swap<uint8_t>(flags_host, flags & ~0x2);
+  }
+  static int sync_log_count = 0;
+  if (sync_log_count < 50) {
+    sync_log_count++;
+    REXGPU_INFO("SyncRB: ctrl+0 {}->{} sc={} wp=0x{:08X} flags=0x{:02X}",
+                old_shadow0, shadow0, sub_ctr, wptr, flags);
+  }
 }
 
 void GraphicsSystem::ClearCaches() {
