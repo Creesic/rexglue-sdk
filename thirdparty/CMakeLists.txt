@@ -107,7 +107,6 @@ target_compile_definitions(tiny-aes PUBLIC AES128=1 CBC=1)
 # From: https://github.com/openluopworld/aes_128
 add_library(aes128 STATIC
     aes_128/aes.c
-        ../pgr3/out/build/mac-arm64-relwithdebinfo/pgr3
 )
 target_include_directories(aes128 PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -277,7 +276,7 @@ if(REXGLUE_USE_D3D12)
 endif()
 
 #=============================================================================
-# SPIR-V toolchain (only when Vulkan backend is enabled)
+# SPIR-V toolchain (when Vulkan or Metal backend is enabled)
 #=============================================================================
 if(REXGLUE_USE_VULKAN)
     # SPIRV-Headers
@@ -300,16 +299,38 @@ if(REXGLUE_USE_VULKAN)
     set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
     set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
     set(SKIP_GLSLANG_INSTALL ON CACHE BOOL "" FORCE)
-    # Enable RTTI for spv::Builder inheritance in SpirvBuilder
     set(ENABLE_RTTI ON CACHE BOOL "" FORCE)
-
-    # Set policy minimum for older glslang versions with outdated cmake_minimum_required
     set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
     add_subdirectory(glslang)
-    # Create alias for older glslang versions that don't provide it
     if(NOT TARGET glslang::SPIRV)
         add_library(glslang::SPIRV ALIAS SPIRV)
     endif()
+endif()
+
+#=============================================================================
+# Metal Shader Converter + DXBC to DXIL (Metal backend only)
+#=============================================================================
+if(REXGLUE_USE_METAL)
+    # metal-shader-converter (libmetalirconverter) - DXIL to MetalLib
+    add_library(metalirconverter SHARED IMPORTED)
+    set_target_properties(metalirconverter PROPERTIES
+        IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/metal-shader-converter/lib/libmetalirconverter.dylib"
+    )
+    add_library(metalirconverter-headers INTERFACE)
+    target_include_directories(metalirconverter-headers INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/metal-shader-converter/include
+    )
+
+    # dxilconv (libdxilconv) - DXBC to DXIL
+    add_library(dxilconv SHARED IMPORTED)
+    set_target_properties(dxilconv PROPERTIES
+        IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/dxilconv/lib/libdxilconv.dylib"
+    )
+    add_library(dxilconv-headers INTERFACE)
+    target_include_directories(dxilconv-headers INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/dxilconv/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/DirectX-Headers/include
+    )
 endif()
 
 #=============================================================================

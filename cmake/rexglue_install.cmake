@@ -33,6 +33,10 @@ if(REXGLUE_USE_VULKAN)
     )
 endif()
 
+if(REXGLUE_USE_METAL)
+    # Metal uses MSC (dxilconv + metalirconverter) instead of SPIRV-Cross
+endif()
+
 if(REXGLUE_USE_D3D12)
     list(APPEND REXGLUE_INSTALL_TARGETS dxc-headers)
 endif()
@@ -112,11 +116,34 @@ install(FILES
 )
 
 # Install SPIRV-Tools headers (only the public API, not opt/linker)
-if(REXGLUE_USE_VULKAN)
+if(REXGLUE_USE_VULKAN OR REXGLUE_USE_METAL)
     install(FILES
         thirdparty/spirv-tools/include/spirv-tools/libspirv.h
         thirdparty/spirv-tools/include/spirv-tools/libspirv.hpp
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/spirv-tools
+    )
+endif()
+
+if(REXGLUE_USE_METAL)
+    install(DIRECTORY thirdparty/metal-cpp/Foundation
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.hpp"
+    )
+    install(DIRECTORY thirdparty/metal-cpp/QuartzCore
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.hpp"
+    )
+    install(DIRECTORY thirdparty/metal-cpp/Metal
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.hpp"
+    )
+    install(DIRECTORY thirdparty/metal-shader-converter/include/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.h"
+    )
+    install(DIRECTORY thirdparty/dxilconv/include/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
     )
 endif()
 
@@ -128,6 +155,12 @@ install(FILES
     src/ui/rex_app.cpp
     DESTINATION ${CMAKE_INSTALL_DATADIR}/rexglue
 )
+if(REXGLUE_USE_METAL)
+    install(FILES
+        src/graphics/metal/metal_cpp_impl.cpp
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/rexglue
+    )
+endif()
 
 # Install DXC API headers (vendored, for D3D12 backend)
 if(REXGLUE_USE_D3D12)

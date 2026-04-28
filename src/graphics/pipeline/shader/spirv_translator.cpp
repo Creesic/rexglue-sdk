@@ -44,6 +44,7 @@ SpirvShaderTranslator::Features::Features(bool all)
       demote_to_helper_invocation(all),
       sample_rate_shading(all) {}
 
+#if REX_HAS_VULKAN
 SpirvShaderTranslator::Features::Features(const ui::vulkan::VulkanDevice* const vulkan_device)
     : max_storage_buffer_range(vulkan_device->properties().maxStorageBufferRange),
       full_draw_index_uint32(vulkan_device->properties().fullDrawIndexUint32),
@@ -71,6 +72,7 @@ SpirvShaderTranslator::Features::Features(const ui::vulkan::VulkanDevice* const 
     spirv_version = spv::Spv_1_0;
   }
 }
+#endif
 
 uint64_t SpirvShaderTranslator::GetDefaultVertexShaderModification(
     uint32_t dynamic_addressable_register_count,

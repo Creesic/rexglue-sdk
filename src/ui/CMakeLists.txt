@@ -55,6 +55,14 @@ if(REXGLUE_USE_D3D12)
     )
 endif()
 
+# Metal UI backend
+if(REXGLUE_USE_METAL)
+    set(REXUI_METAL_SOURCES
+        metal/provider.cpp
+        metal/presenter.cpp
+    )
+endif()
+
 # Platform-specific sources
 if(WIN32)
     set(REXUI_PLATFORM_SOURCES
@@ -89,6 +97,10 @@ endif()
 
 if(REXGLUE_USE_D3D12)
     list(APPEND REXUI_SOURCES ${REXUI_D3D12_SOURCES})
+endif()
+
+if(REXGLUE_USE_METAL)
+    list(APPEND REXUI_SOURCES ${REXUI_METAL_SOURCES})
 endif()
 
 add_library(rexui STATIC ${REXUI_SOURCES})
@@ -137,6 +149,12 @@ if(REXGLUE_USE_VULKAN)
     )
 endif()
 
+if(REXGLUE_USE_METAL)
+    target_include_directories(rexui PUBLIC
+        $<BUILD_INTERFACE:${REXGLUE_ROOT}/thirdparty/metal-cpp>
+    )
+endif()
+
 # Platform-specific dependencies
 if(WIN32)
     target_link_libraries(rexui PUBLIC
@@ -147,7 +165,9 @@ elseif(APPLE)
     target_link_libraries(rexui PUBLIC
         "-framework Cocoa"
         "-framework Metal"
+        "-framework MetalKit"
         "-framework QuartzCore"
+        "-framework Foundation"
     )
 else()
     find_package(PkgConfig REQUIRED)

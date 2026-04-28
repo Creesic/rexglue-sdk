@@ -981,6 +981,11 @@ bool VulkanCommandProcessor::SetupContext() {
     return false;
   }
 
+  REXGPU_INFO("Vulkan render target path: {}",
+              render_target_cache_->GetPath() == RenderTargetCache::Path::kPixelShaderInterlock
+                  ? "PixelShaderInterlock"
+                  : "HostRenderTargets");
+
   // Shared memory and EDRAM descriptor set layout.
   bool edram_fragment_shader_interlock =
       render_target_cache_->GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;
@@ -2329,8 +2334,23 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
       frontbuffer_width_scaled, frontbuffer_height_scaled, frontbuffer_format,
       &frontbuffer_width_unscaled, &frontbuffer_height_unscaled, &swap_source_needs_rb_swap);
   if (swap_texture_view == VK_NULL_HANDLE) {
-    REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
+    static int null_view_count = 0;
+    if (++null_view_count <= 5) {
+      REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL (count={})", null_view_count);
+    }
     return;
+  }
+  {
+    static bool diag_logged = false;
+    if (!diag_logged) {
+      diag_logged = true;
+      REXGPU_INFO("XELOG_GPU PRESENT DIAG: packet_size={}x{} src_size={}x{} "
+                  "src_unscaled={}x{} format={} fb_ptr=0x{:08X}",
+                  frontbuffer_width, frontbuffer_height,
+                  frontbuffer_width_scaled, frontbuffer_height_scaled, frontbuffer_width_unscaled,
+                  frontbuffer_height_unscaled,
+                  static_cast<uint32_t>(frontbuffer_format), frontbuffer_ptr);
+    }
   }
   // The swap gamma / FXAA pass samples source texels by pixel index, but swap
   // textures may be allocation-padded. Prefer the active frontbuffer region
@@ -2408,13 +2428,6 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
           frontbuffer_width_scaled, frontbuffer_height_scaled);
     }
   }
-  REXGPU_DEBUG(
-      "XELOG_GPU PRESENT: swap_texture_view={:p} packet_size={}x{} src_size={}x{} "
-      "src_unscaled={}x{} guest_output_size={}x{} format={}",
-      static_cast<void*>(swap_texture_view), frontbuffer_width, frontbuffer_height,
-      frontbuffer_width_scaled, frontbuffer_height_scaled, frontbuffer_width_unscaled,
-      frontbuffer_height_unscaled, guest_output_width, guest_output_height,
-      static_cast<uint32_t>(frontbuffer_format));
 
   system::X_VIDEO_MODE video_mode;
   kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
@@ -2525,6 +2538,17 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
           }
         }
         bool use_compute_gamma = swap_apply_gamma_compute_pipeline != VK_NULL_HANDLE;
+        {
+          static bool gamma_diag_logged = false;
+          if (!gamma_diag_logged) {
+            gamma_diag_logged = true;
+            REXGPU_INFO("XELOG_GPU GAMMA DIAG: use_compute_gamma={} use_pwl={} "
+                        "rb_swap={} fxaa={} compute_pipeline={:p}",
+                        use_compute_gamma, use_pwl_gamma_ramp,
+                        swap_source_requires_compute_rb_swap, use_fxaa,
+                        static_cast<void*>(swap_apply_gamma_compute_pipeline));
+          }
+        }
 
         // TODO(Triang3l): FXAA can result in more than 8 bits of precision.
         context.SetIs8bpc(!use_pwl_gamma_ramp && !use_fxaa);

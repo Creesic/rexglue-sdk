@@ -58,6 +58,24 @@ set(REXGRAPHICS_VULKAN_SOURCES
     vulkan/texture_cache.cpp
 )
 
+# Metal backend
+set(REXGRAPHICS_METAL_SOURCES
+    metal/graphics_system.cpp
+    metal/metal_cpp_impl.cpp
+    metal/command_processor.cpp
+    metal/primitive_processor.cpp
+    metal/render_target_cache.cpp
+    metal/shared_memory.cpp
+    metal/texture_cache.cpp
+    metal/pipeline_cache.cpp
+    metal/shader.cpp
+    metal/shader_converter.cpp
+    metal/dxbc_to_dxil_converter.cpp
+    metal/shader_cache.cpp
+    metal/geometry_shader.cpp
+    metal/heap_pool.cpp
+)
+
 # D3D12 backend
 if(REXGLUE_USE_D3D12)
     # DXBC third-party dependency
@@ -99,6 +117,26 @@ if(REXGLUE_USE_VULKAN)
     list(APPEND REXGRAPHICS_SOURCES ${REXGRAPHICS_SPIRV_SOURCES} ${REXGRAPHICS_VULKAN_SOURCES})
 endif()
 
+if(REXGLUE_USE_METAL)
+    list(APPEND REXGRAPHICS_SOURCES ${REXGRAPHICS_METAL_SOURCES})
+    # Metal needs DXBC shader translation (DXBC -> DXIL -> MetalLib via MSC)
+    set(REXGRAPHICS_DXBC_THIRDPARTY_SOURCES
+        ${REXGLUE_ROOT}/thirdparty/dxbc/DXBCChecksum.cpp
+    )
+    set(REXGRAPHICS_DXBC_SOURCES
+        pipeline/shader/dxbc.cpp
+        pipeline/shader/dxbc_translator.cpp
+        pipeline/shader/dxbc_translator_alu.cpp
+        pipeline/shader/dxbc_translator_fetch.cpp
+        pipeline/shader/dxbc_translator_memexport.cpp
+        pipeline/shader/dxbc_translator_om.cpp
+    )
+    list(APPEND REXGRAPHICS_SOURCES
+        ${REXGRAPHICS_DXBC_THIRDPARTY_SOURCES}
+        ${REXGRAPHICS_DXBC_SOURCES}
+    )
+endif()
+
 if(REXGLUE_USE_D3D12)
     list(APPEND REXGRAPHICS_SOURCES ${REXGRAPHICS_DXBC_THIRDPARTY_SOURCES} ${REXGRAPHICS_DXBC_SOURCES} ${REXGRAPHICS_D3D12_SOURCES})
 endif()
@@ -137,6 +175,31 @@ if(REXGLUE_USE_VULKAN)
         OGLCompiler
     )
     target_compile_definitions(rexgraphics PUBLIC REX_HAS_VULKAN=1)
+endif()
+
+if(REXGLUE_USE_METAL)
+    target_include_directories(rexgraphics PUBLIC
+        $<BUILD_INTERFACE:${REXGLUE_ROOT}/thirdparty/metal-cpp>
+    )
+    target_include_directories(rexgraphics PRIVATE
+        ${REXGLUE_ROOT}/thirdparty/metal-shader-converter/include
+        ${REXGLUE_ROOT}/thirdparty/dxilconv/include
+        ${REXGLUE_ROOT}/thirdparty/DirectX-Headers/include
+        ${REXGLUE_ROOT}/thirdparty/dxc/include
+    )
+    target_link_libraries(rexgraphics PUBLIC
+        metalirconverter
+        dxilconv
+        "-L${REXGLUE_ROOT}/thirdparty/metal-shader-converter/lib"
+        "-L${REXGLUE_ROOT}/thirdparty/dxilconv/lib"
+    )
+    target_link_libraries(rexgraphics PUBLIC
+        "-framework Metal"
+        "-framework QuartzCore"
+        "-framework MetalKit"
+        "-framework Foundation"
+    )
+    target_compile_definitions(rexgraphics PUBLIC REX_HAS_METAL=1)
 endif()
 
 if(REXGLUE_USE_D3D12)

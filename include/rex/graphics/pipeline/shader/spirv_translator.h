@@ -20,7 +20,9 @@
 #include <rex/graphics/pipeline/shader/spirv_builder.h>
 #include <rex/graphics/pipeline/shader/translator.h>
 #include <rex/graphics/xenos.h>
+#if REX_HAS_VULKAN
 #include <rex/ui/vulkan/device.h>
+#endif
 
 namespace rex::graphics {
 
@@ -374,7 +376,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
   static constexpr uint32_t kSpirvMagicToolId = 26;
 
   struct Features {
+#if REX_HAS_VULKAN
     explicit Features(const ui::vulkan::VulkanDevice* vulkan_device);
+#endif
     explicit Features(bool all = false);
 
     unsigned int spirv_version;

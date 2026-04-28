@@ -27,6 +27,9 @@
 #if REX_HAS_D3D12
 #include <rex/graphics/d3d12/graphics_system.h>
 #endif
+#if REX_HAS_METAL
+#include <rex/graphics/metal/graphics_system.h>
+#endif
 #include <rex/audio/audio_system.h>
 #include <rex/audio/sdl/sdl_audio_system.h>
 #include <rex/input/input_system.h>
@@ -150,6 +153,8 @@ bool ReXApp::OnInitialize() {
   rex::RuntimeConfig config;
 #if REX_HAS_D3D12
   config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::d3d12::D3D12GraphicsSystem);
+#elif REX_HAS_METAL
+  config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::metal::MetalGraphicsSystem);
 #elif REX_HAS_VULKAN
   config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
 #endif
