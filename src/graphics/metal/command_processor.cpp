@@ -38,23 +38,32 @@ uint64_t MetalCommandProcessor::GetCompletedSubmission() const {
 }
 
 bool MetalCommandProcessor::SetupContext() {
+  fprintf(stderr, "[metal] SetupContext: starting\n"); fflush(stderr);
+
+  if (!graphics_system_ || !graphics_system_->provider()) {
+    fprintf(stderr, "[metal] SetupContext: no graphics system or provider\n"); fflush(stderr);
+    return false;
+  }
+
   auto& provider = *static_cast<rex::ui::metal::MetalProvider*>(graphics_system_->provider());
   device_ = provider.GetDevice();
   command_queue_ = provider.GetCommandQueue();
   if (!device_ || !command_queue_) {
-    REXLOG_ERROR("MetalCommandProcessor: No Metal device/command queue");
+    fprintf(stderr, "[metal] SetupContext: No Metal device=%p or command_queue=%p\n", device_, command_queue_); fflush(stderr);
     return false;
   }
 
-  REXLOG_INFO("MetalCommandProcessor: Using device {}", device_->name()->utf8String());
+  fprintf(stderr, "[metal] SetupContext: device=%s\n", device_->name()->utf8String()); fflush(stderr);
 
   mesh_shader_supported_ = device_->supportsFamily(MTL::GPUFamilyApple6);
 
   wait_shared_event_ = device_->newSharedEvent();
   if (!wait_shared_event_) {
-    REXLOG_ERROR("MetalCommandProcessor: Failed to create shared event");
+    fprintf(stderr, "[metal] SetupContext: failed to create shared event\n"); fflush(stderr);
     return false;
   }
+
+  fprintf(stderr, "[metal] SetupContext: creating buffers\n"); fflush(stderr);
 
   null_buffer_ = device_->newBuffer(kNullBufferSize, MTL::ResourceStorageModeShared);
   {
@@ -82,18 +91,22 @@ bool MetalCommandProcessor::SetupContext() {
   shared_memory_ = std::make_unique<MetalSharedMemory>(*this,
       *graphics_system_->kernel_state()->memory());
   if (!shared_memory_->Initialize()) {
-    REXLOG_ERROR("MetalCommandProcessor: Failed to initialize shared memory");
+    fprintf(stderr, "[metal] SetupContext: shared_memory init failed\n"); fflush(stderr);
     return false;
   }
+
+  fprintf(stderr, "[metal] SetupContext: shared_memory OK, creating primitive_processor\n"); fflush(stderr);
 
   primitive_processor_ = std::make_unique<MetalPrimitiveProcessor>(
       *this, *register_file_,
       *graphics_system_->kernel_state()->memory(),
       trace_writer_, *shared_memory_);
   if (!primitive_processor_->Initialize()) {
-    REXLOG_ERROR("MetalCommandProcessor: Failed to initialize primitive processor");
+    fprintf(stderr, "[metal] SetupContext: primitive_processor init failed\n"); fflush(stderr);
     return false;
   }
+
+  fprintf(stderr, "[metal] SetupContext: primitive_processor OK, creating caches\n"); fflush(stderr);
 
   texture_cache_ = std::make_unique<MetalTextureCache>(
       *register_file_, *shared_memory_, 1, 1, *this);
@@ -104,11 +117,11 @@ bool MetalCommandProcessor::SetupContext() {
       trace_writer_, 1, 1, *this);
 
   if (!InitializeShaderTranslation()) {
-    REXLOG_ERROR("MetalCommandProcessor: Failed to initialize shader translation");
+    fprintf(stderr, "[metal] SetupContext: shader translation init failed\n"); fflush(stderr);
     return false;
   }
 
-  REXLOG_INFO("MetalCommandProcessor: Setup complete (mesh_shaders={})", mesh_shader_supported_);
+  fprintf(stderr, "[metal] SetupContext: complete (mesh_shaders=%d)\n", mesh_shader_supported_); fflush(stderr);
   return true;
 }
 
@@ -138,20 +151,24 @@ void MetalCommandProcessor::ShutdownContext() {
 }
 
 bool MetalCommandProcessor::InitializeShaderTranslation() {
+  fprintf(stderr, "[metal] InitializeShaderTranslation: creating DXBC converter\n"); fflush(stderr);
   dxbc_to_dxil_converter_ = std::make_unique<DxbcToDxilConverter>();
   if (!dxbc_to_dxil_converter_->Initialize()) {
-    REXLOG_ERROR("MetalCommandProcessor: Failed to initialize DXBC to DXIL converter");
+    fprintf(stderr, "[metal] InitializeShaderTranslation: DXBC converter init failed\n"); fflush(stderr);
     return false;
   }
 
+  fprintf(stderr, "[metal] InitializeShaderTranslation: creating Metal shader converter\n"); fflush(stderr);
   metal_shader_converter_ = std::make_unique<MetalShaderConverter>();
   if (!metal_shader_converter_->Initialize()) {
-    REXLOG_ERROR("MetalCommandProcessor: Failed to initialize Metal shader converter");
+    fprintf(stderr, "[metal] InitializeShaderTranslation: Metal converter init failed\n"); fflush(stderr);
     return false;
   }
 
+  fprintf(stderr, "[metal] InitializeShaderTranslation: creating DXBC translator\n"); fflush(stderr);
   shader_translator_ = std::make_unique<DxbcShaderTranslator>(
       ui::GraphicsProvider::GpuVendorID::kApple, true, false);
+  fprintf(stderr, "[metal] InitializeShaderTranslation: complete\n"); fflush(stderr);
   return true;
 }
 

@@ -30,6 +30,10 @@ const CLSID kClsidDxbcConverter = {
     0x4900391e, 0xb752, 0x4edd,
     {0xa8, 0x85, 0x6f, 0xb7, 0x6e, 0x25, 0xad, 0xdb}};
 
+size_t DxbcConverterIID() {
+  return UuidStrHash("IDxbcConverter");
+}
+
 std::string HResultHex(HRESULT hr) {
   char buffer[11];
   std::snprintf(buffer, sizeof(buffer), "%08X", static_cast<unsigned>(hr));
@@ -56,18 +60,18 @@ bool DxbcToDxilConverter::Initialize() {
   }
 
   IDxbcConverter* test_converter = nullptr;
-  HRESULT hr = DxcCreateInstance(kClsidDxbcConverter, __uuidof(IDxbcConverter),
+  REFIID iid = reinterpret_cast<REFIID>(DxbcConverterIID());
+  HRESULT hr = DxcCreateInstance(kClsidDxbcConverter, iid,
                                  reinterpret_cast<void**>(&test_converter));
   if (hr != S_OK || !test_converter) {
-    REXLOG_ERROR("DxbcToDxilConverter: Failed to create IDxbcConverter (hr=0x{:08X})",
-                 static_cast<unsigned>(hr));
+    fprintf(stderr, "[metal] DxbcToDxilConverter: DxcCreateInstance failed hr=0x%08X\n", static_cast<unsigned>(hr)); fflush(stderr);
     is_available_ = false;
     return false;
   }
   test_converter->Release();
 
   is_available_ = true;
-  REXLOG_INFO("DxbcToDxilConverter: Initialized successfully");
+  fprintf(stderr, "[metal] DxbcToDxilConverter: initialized OK\n"); fflush(stderr);
   return true;
 }
 
@@ -132,7 +136,8 @@ IDxbcConverter* DxbcToDxilConverter::GetThreadConverter(
   if (thread_state.converter) return thread_state.converter;
 
   HRESULT hr =
-      DxcCreateInstance(kClsidDxbcConverter, __uuidof(IDxbcConverter),
+      DxcCreateInstance(kClsidDxbcConverter,
+                        reinterpret_cast<REFIID>(DxbcConverterIID()),
                         reinterpret_cast<void**>(&thread_state.converter));
   if (hr != S_OK || !thread_state.converter) {
     if (error_message) {

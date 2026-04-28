@@ -22,14 +22,15 @@ void MetalShaderConverter::SetMinimumTarget(uint32_t gpu_family, uint32_t os,
 }
 
 bool MetalShaderConverter::Initialize() {
+  fprintf(stderr, "[metal] MetalShaderConverter: calling IRCompilerCreate\n"); fflush(stderr);
   IRCompiler* test_compiler = IRCompilerCreate();
   if (!test_compiler) {
-    REXLOG_ERROR("MetalShaderConverter: Failed to create IR compiler - MSC not available");
+    fprintf(stderr, "[metal] MetalShaderConverter: IRCompilerCreate returned null - MSC not available\n"); fflush(stderr);
     is_available_ = false;
     return false;
   }
   IRCompilerDestroy(test_compiler);
-  REXLOG_INFO("MetalShaderConverter: Initialized successfully");
+  fprintf(stderr, "[metal] MetalShaderConverter: initialized OK\n"); fflush(stderr);
   is_available_ = true;
   return true;
 }

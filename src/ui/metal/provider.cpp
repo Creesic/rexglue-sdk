@@ -28,17 +28,19 @@ MetalProvider::~MetalProvider() {
 }
 
 bool MetalProvider::Initialize() {
+  fprintf(stderr, "[metal] Provider::Initialize: creating device\n"); fflush(stderr);
   device_ = MTL::CreateSystemDefaultDevice();
   if (!device_) {
-    REXLOG_ERROR("Failed to create Metal device");
+    fprintf(stderr, "[metal] Provider::Initialize: failed to create Metal device\n"); fflush(stderr);
     return false;
   }
-  REXLOG_INFO("Metal device: {}", device_->name()->utf8String());
+  fprintf(stderr, "[metal] Provider::Initialize: device=%s\n", device_->name()->utf8String()); fflush(stderr);
   command_queue_ = device_->newCommandQueue();
   if (!command_queue_) {
-    REXLOG_ERROR("Failed to create Metal Command Queue");
+    fprintf(stderr, "[metal] Provider::Initialize: failed to create command queue\n"); fflush(stderr);
     return false;
   }
+  fprintf(stderr, "[metal] Provider::Initialize: complete\n"); fflush(stderr);
   return true;
 }
 
