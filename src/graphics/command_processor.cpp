@@ -121,7 +121,9 @@ bool CommandProcessor::Initialize() {
   // what games set when starting with the sRGB (return value 1)
   // VdGetCurrentDisplayGamma.
   for (uint32_t i = 0; i < 256; ++i) {
-    uint32_t value = i * 0x3FF / 0xFF;
+    double linear = double(i) / 255.0;
+    double srgb = std::pow(linear, 1.0 / 2.2);
+    uint32_t value = uint32_t(srgb * 1023 + 0.5);
     reg::DC_LUT_30_COLOR& gamma_ramp_entry = gamma_ramp_256_entry_table_[i];
     gamma_ramp_entry.color_10_blue = value;
     gamma_ramp_entry.color_10_green = value;

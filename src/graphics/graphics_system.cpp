@@ -433,16 +433,18 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
   function_dispatcher_->ExecuteInterrupt(thread->thread_state(), interrupt_callback_, args,
                                          rex::countof(args));
 
-  if (source == 1 && command_processor_) {
+  if (command_processor_) {
     uint32_t user_data = static_cast<uint32_t>(interrupt_callback_data_);
     auto ud_host = memory_->TranslateVirtual(user_data);
-    auto cmd_buf_host = memory_->TranslateVirtual(user_data + 10388);
-    uint32_t cmd_buf = memory::load_and_swap<uint32_t>(cmd_buf_host);
-    if (cmd_buf != 0) {
-      auto marker_host = memory_->TranslateVirtual(cmd_buf + 16);
-      uint32_t marker = memory::load_and_swap<uint32_t>(marker_host);
-      if (marker == 0x0BADF00D) {
-        memory::store_and_swap<uint32_t>(marker_host, 0);
+    if (source == 1) {
+      auto cmd_buf_host = memory_->TranslateVirtual(user_data + 10388);
+      uint32_t cmd_buf = memory::load_and_swap<uint32_t>(cmd_buf_host);
+      if (cmd_buf != 0) {
+        auto marker_host = memory_->TranslateVirtual(cmd_buf + 16);
+        uint32_t marker = memory::load_and_swap<uint32_t>(marker_host);
+        if (marker == 0x0BADF00D) {
+          memory::store_and_swap<uint32_t>(marker_host, 0);
+        }
       }
     }
     auto flags_host = memory_->TranslateVirtual(user_data + 10433);
