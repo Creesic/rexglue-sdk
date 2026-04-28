@@ -82,7 +82,11 @@ RenderTargetCache::RenderTarget* MetalRenderTargetCache::CreateRenderTarget(
   uint32_t scaled_w = w * scale_x;
   uint32_t scaled_h = h * scale_y;
 
+  fprintf(stderr, "[metal] CreateRenderTarget: depth=%d fmt=%d %ux%u -> %ux%u\n",
+          key.is_depth, (int)format, w, h, scaled_w, scaled_h); fflush(stderr);
+
   MTL::Texture* tex = CreateRenderTargetTexture(scaled_w, scaled_h, format);
+  fprintf(stderr, "[metal] CreateRenderTarget: tex=%p\n", tex); fflush(stderr);
   rt->SetTexture(tex);
   if (tex) tex->release();
 
@@ -94,6 +98,10 @@ MTL::Texture* MetalRenderTargetCache::CreateRenderTargetTexture(
     uint32_t width, uint32_t height, MTL::PixelFormat format,
     uint32_t sample_count) {
   if (format == MTL::PixelFormatInvalid) return nullptr;
+  if (!device_) {
+    fprintf(stderr, "[metal] CreateRenderTargetTexture: no device!\n"); fflush(stderr);
+    return nullptr;
+  }
 
   MTL::TextureDescriptor* desc = MTL::TextureDescriptor::texture2DDescriptor(
       format, width, height,
@@ -104,7 +112,10 @@ MTL::Texture* MetalRenderTargetCache::CreateRenderTargetTexture(
   }
   desc->setStorageMode(MTL::StorageModePrivate);
 
+  fprintf(stderr, "[metal] CreateRenderTargetTexture: %ux%u fmt=%d device=%p desc=%p\n",
+          width, height, (int)format, device_, desc); fflush(stderr);
   MTL::Texture* tex = device_->newTexture(desc);
+  fprintf(stderr, "[metal] CreateRenderTargetTexture: tex=%p\n", tex); fflush(stderr);
   desc->release();
   return tex;
 }
@@ -165,17 +176,153 @@ MetalRenderTargetCache::GetOrCreateRenderTarget(const RegisterFile& regs) {
   return nullptr;
 }
 
-MTL::RenderPassDescriptor*
-MetalRenderTargetCache::GetRenderPassDescriptor(uint32_t sample_count) {
-  return nullptr;
-}
-
 MTL::Texture* MetalRenderTargetCache::GetColorTarget(uint32_t index) const {
+  if (index < 4 && current_color_rt_[index]) {
+    return current_color_rt_[index]->texture();
+  }
   return nullptr;
 }
 
 MTL::Texture* MetalRenderTargetCache::GetDepthTarget() const {
+  if (current_depth_rt_) {
+    return current_depth_rt_->texture();
+  }
   return nullptr;
+}
+
+bool MetalRenderTargetCache::Update(
+    bool is_rasterization_done,
+    reg::RB_DEPTHCONTROL normalized_depth_control,
+    uint32_t normalized_color_mask,
+    const Shader& vertex_shader) {
+  fprintf(stderr, "[metal] RT::Update: calling base Update\n"); fflush(stderr);
+  if (!RenderTargetCache::Update(is_rasterization_done,
+                                  normalized_depth_control,
+                                  normalized_color_mask,
+                                  vertex_shader)) {
+    fprintf(stderr, "[metal] RT::Update: base Update FAILED\n"); fflush(stderr);
+    return false;
+  }
+  fprintf(stderr, "[metal] RT::Update: base Update OK\n"); fflush(stderr);
+
+  const RenderTarget* const* accumulated =
+      last_update_accumulated_render_targets();
+
+  fprintf(stderr, "[metal] RT::Update: depth=%p c0=%p c1=%p c2=%p c3=%p\n",
+          accumulated[0], accumulated[1], accumulated[2], accumulated[3], accumulated[4]); fflush(stderr);
+
+  std::memset(current_color_rt_, 0, sizeof(current_color_rt_));
+  current_depth_rt_ = nullptr;
+  std::memset(current_color_formats_, 0, sizeof(current_color_formats_));
+  current_depth_format_ = MTL::PixelFormatInvalid;
+  current_stencil_format_ = MTL::PixelFormatInvalid;
+
+  if (accumulated[0]) {
+    auto* depth_rt = static_cast<MetalRenderTarget*>(
+        const_cast<RenderTarget*>(accumulated[0]));
+    current_depth_rt_ = depth_rt;
+    current_depth_format_ = GetMetalDepthFormat(depth_rt->key().GetDepthFormat());
+    current_stencil_format_ = current_depth_format_;
+  }
+
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; i++) {
+    if (accumulated[1 + i]) {
+      auto* color_rt = static_cast<MetalRenderTarget*>(
+          const_cast<RenderTarget*>(accumulated[1 + i]));
+      current_color_rt_[i] = color_rt;
+      current_color_formats_[i] = GetMetalColorFormat(color_rt->key().GetColorFormat());
+    }
+  }
+
+  auto rb_surface_info = register_file().Get<reg::RB_SURFACE_INFO>();
+  current_sample_count_ = 1u << uint32_t(rb_surface_info.msaa_samples);
+
+  return UpdateRenderPass();
+}
+
+bool MetalRenderTargetCache::UpdateRenderPass() {
+  fprintf(stderr, "[metal] UpdateRenderPass: enter\n"); fflush(stderr);
+  command_processor_.EndRenderEncoder();
+
+  fprintf(stderr, "[metal] UpdateRenderPass: EndRenderEncoder done\n"); fflush(stderr);
+  MTL::CommandBuffer* cmd = command_processor_.EnsureCommandBuffer();
+  fprintf(stderr, "[metal] UpdateRenderPass: cmd=%p\n", cmd); fflush(stderr);
+  if (!cmd) {
+    REXLOG_ERROR("MetalRenderTargetCache: No command buffer for render pass");
+    return false;
+  }
+
+  MTL::RenderPassDescriptor* desc = MTL::RenderPassDescriptor::alloc()->init();
+  fprintf(stderr, "[metal] UpdateRenderPass: desc=%p\n", desc); fflush(stderr);
+
+  if (current_depth_rt_) {
+    MTL::RenderPassDepthAttachmentDescriptor* depth = desc->depthAttachment();
+    depth->setTexture(current_depth_rt_->texture());
+    depth->setLoadAction(MTL::LoadActionLoad);
+    depth->setStoreAction(MTL::StoreActionStore);
+
+    if (current_stencil_format_ == MTL::PixelFormatDepth32Float_Stencil8) {
+      MTL::RenderPassStencilAttachmentDescriptor* stencil = desc->stencilAttachment();
+      stencil->setTexture(current_depth_rt_->texture());
+      stencil->setLoadAction(MTL::LoadActionLoad);
+      stencil->setStoreAction(MTL::StoreActionStore);
+    }
+
+    if (current_depth_rt_->needs_initial_clear()) {
+      depth->setLoadAction(MTL::LoadActionClear);
+      depth->setClearDepth(1.0);
+      if (current_stencil_format_ == MTL::PixelFormatDepth32Float_Stencil8) {
+        desc->stencilAttachment()->setLoadAction(MTL::LoadActionClear);
+        desc->stencilAttachment()->setClearStencil(0);
+      }
+      current_depth_rt_->SetNeedsInitialClear(false);
+    }
+  }
+
+  bool has_any_attachment = current_depth_rt_ != nullptr;
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; i++) {
+    if (current_color_rt_[i]) {
+      has_any_attachment = true;
+      MTL::RenderPassColorAttachmentDescriptor* color =
+          desc->colorAttachments()->object(i);
+      color->setTexture(current_color_rt_[i]->texture());
+      color->setLoadAction(MTL::LoadActionLoad);
+      color->setStoreAction(MTL::StoreActionStore);
+
+      if (current_color_rt_[i]->needs_initial_clear()) {
+        color->setLoadAction(MTL::LoadActionClear);
+        color->setClearColor(MTL::ClearColor(0, 0, 0, 0));
+        current_color_rt_[i]->SetNeedsInitialClear(false);
+      }
+    }
+  }
+
+  fprintf(stderr, "[metal] UpdateRenderPass: has_any=%d depth_tex=%p c0_tex=%p\n",
+          has_any_attachment, 
+          current_depth_rt_ ? current_depth_rt_->texture() : nullptr,
+          current_color_rt_[0] ? current_color_rt_[0]->texture() : nullptr); fflush(stderr);
+
+  if (!has_any_attachment) {
+    desc->release();
+    fprintf(stderr, "[metal] UpdateRenderPass: no attachments\n"); fflush(stderr);
+    return true;
+  }
+
+  MTL::RenderCommandEncoder* encoder = cmd->renderCommandEncoder(desc);
+  if (!encoder) {
+    REXLOG_ERROR("MetalRenderTargetCache: Failed to create render command encoder");
+    desc->release();
+    return false;
+  }
+
+  fprintf(stderr, "[metal] UpdateRenderPass: created encoder=%p depth=%p color0=%p\n",
+          encoder, current_depth_rt_ ? current_depth_rt_->texture() : nullptr,
+          current_color_rt_[0] ? current_color_rt_[0]->texture() : nullptr); fflush(stderr);
+
+  command_processor_.SetRenderEncoder(encoder, desc);
+  encoder->release();
+
+  return true;
 }
 
 MetalRenderTargetCache::MetalRenderTarget::~MetalRenderTarget() {

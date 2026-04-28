@@ -743,6 +743,11 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
   }
 
   REXGPU_INFO("ExecutePrimaryBuffer: read_index={}, write_index={}, packets={}", read_index, write_index, write_index - read_index);
+  static std::atomic<int> epb_count{0};
+  int c = epb_count.fetch_add(1);
+  if (c < 20) {
+    fprintf(stderr, "[metal] ExecutePrimaryBuffer: packets=%d total=%d\n", write_index - read_index, c+1); fflush(stderr);
+  }
 
   // If we have a pending trace stream open it now. That way we ensure we get
   // all commands.
@@ -785,6 +790,12 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
 
 void CommandProcessor::ExecuteIndirectBuffer(uint32_t ptr, uint32_t count) {
   SCOPE_profile_cpu_f("gpu");
+
+  static std::atomic<int> ib_count{0};
+  int c = ib_count.fetch_add(1);
+  if (c < 10) {
+    fprintf(stderr, "[metal] ExecuteIndirectBuffer: ptr=0x%08X count=%d\n", ptr, count); fflush(stderr);
+  }
 
   trace_writer_.WriteIndirectBufferStart(ptr, count * sizeof(uint32_t));
 
@@ -934,6 +945,11 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
   }
 
   bool result = false;
+  static std::atomic<int> pkt_count{0};
+  int pc = pkt_count.fetch_add(1);
+  if (pc < 30) {
+    fprintf(stderr, "[metal] PM4 type3 opcode=0x%02X count=%d\n", opcode, count); fflush(stderr);
+  }
   switch (opcode) {
     case PM4_ME_INIT:
       result = ExecutePacketType3_ME_INIT(reader, packet, count);

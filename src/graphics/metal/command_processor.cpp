@@ -115,6 +115,10 @@ bool MetalCommandProcessor::SetupContext() {
       *register_file_,
       *graphics_system_->kernel_state()->memory(),
       trace_writer_, 1, 1, *this);
+  if (!render_target_cache_->Initialize()) {
+    fprintf(stderr, "[metal] SetupContext: render target cache init failed\n"); fflush(stderr);
+    return false;
+  }
 
   if (!InitializeShaderTranslation()) {
     fprintf(stderr, "[metal] SetupContext: shader translation init failed\n"); fflush(stderr);
@@ -285,6 +289,9 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   const RegisterFile& regs = *register_file_;
   uint32_t normalized_color_mask = 0;
 
+  static std::atomic<int> entry_count{0};
+  int ec = entry_count.fetch_add(1);
+
   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
   if (edram_mode != xenos::EdramMode::kCopy && copy_resolve_writes_pending_) {
     EndCommandBuffer();
@@ -306,6 +313,14 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   bool primitive_polygonal = draw_util::IsPrimitivePolygonal(regs);
   bool is_rasterization_done =
       draw_util::IsRasterizationPotentiallyDone(regs, primitive_polygonal);
+  static std::atomic<int> raster_count{0};
+  if (is_rasterization_done) {
+    int rc = raster_count.fetch_add(1);
+    if (rc < 5) {
+      fprintf(stderr, "[metal] IssueDraw RASTER #%d: prim=%d count=%d edram=%d\n",
+              rc, (int)primitive_type, index_count, (int)edram_mode); fflush(stderr);
+    }
+  }
   Shader* pixel_shader = nullptr;
   if (is_rasterization_done) {
     if (edram_mode == xenos::EdramMode::kColorDepth) {
@@ -365,8 +380,16 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   }
 
   BeginCommandBuffer();
+
+  static std::atomic<int> id_count{0};
+  int dc = id_count.fetch_add(1);
+  if (dc < 5) {
+    fprintf(stderr, "[metal] IssueDraw #%d: prim=%d index=%d cmd=%p enc=%p\n",
+            dc, (int)primitive_type, index_count, current_command_buffer_, current_render_encoder_); fflush(stderr);
+  }
+
   if (!current_command_buffer_ || !current_render_encoder_) {
-    REXLOG_ERROR("IssueDraw: failed to begin Metal command buffer/render encoder");
+    REXLOG_ERROR("IssueDraw: no command buffer or render encoder");
     return false;
   }
 
@@ -514,6 +537,15 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   last_swap_height_ = frontbuffer_height;
   saw_swap_ = true;
   copy_resolve_writes_pending_ = false;
+
+  if (render_target_cache_) {
+    MTL::Texture* color0 = render_target_cache_->GetColorTarget(0);
+    if (color0) {
+      auto& provider = GetMetalProvider();
+      provider.SetFrontbufferTexture(color0);
+    }
+  }
+
   EndCommandBuffer();
 }
 

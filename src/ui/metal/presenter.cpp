@@ -60,16 +60,28 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
 
   CA::MetalLayer* layer = reinterpret_cast<CA::MetalLayer*>(metal_layer_);
 
+  CA::MetalDrawable* drawable = layer->nextDrawable();
+  if (!drawable) {
+    pool->drain();
+    return PaintResult::kNotPresented;
+  }
+
   MTL::CommandBuffer* cmd = queue->commandBuffer();
   if (!cmd) {
     pool->drain();
     return PaintResult::kNotPresented;
   }
 
-  CA::MetalDrawable* drawable = layer->nextDrawable();
-  if (!drawable) {
-    pool->drain();
-    return PaintResult::kNotPresented;
+  MTL::Texture* src = provider_->GetFrontbufferTexture();
+  if (src) {
+    MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
+    if (blit) {
+      blit->copyFromTexture(src, 0, 0, MTL::Origin(0, 0, 0),
+                            MTL::Size(src->width(), src->height(), 1),
+                            drawable->texture(), 0, 0,
+                            MTL::Origin(0, 0, 0));
+      blit->endEncoding();
+    }
   }
 
   cmd->presentDrawable(drawable);
