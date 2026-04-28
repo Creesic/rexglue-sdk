@@ -11,14 +11,6 @@
 
 #include <rex/logging/macros.h>
 
-size_t UuidStrHash(const char* k) {
-  size_t hash = 0;
-  while (*k) hash = hash * 131 + static_cast<size_t>(*k++);
-  return hash;
-}
-
-DEFINE_CROSS_PLATFORM_UUIDOF(IUnknown)
-
 namespace rex {
 namespace graphics {
 namespace metal {
@@ -30,8 +22,15 @@ const CLSID kClsidDxbcConverter = {
     0x4900391e, 0xb752, 0x4edd,
     {0xa8, 0x85, 0x6f, 0xb7, 0x6e, 0x25, 0xad, 0xdb}};
 
-size_t DxbcConverterIID() {
-  return UuidStrHash("IDxbcConverter");
+size_t ElfHash(const char* k) {
+  unsigned long h = 0;
+  while (*k) {
+    h = (h << 4) + static_cast<unsigned char>(*k++);
+    unsigned long g = h & 0xF0000000UL;
+    if (g) h ^= g >> 24;
+    h &= ~g;
+  }
+  return static_cast<size_t>(h);
 }
 
 std::string HResultHex(HRESULT hr) {
@@ -60,9 +59,12 @@ bool DxbcToDxilConverter::Initialize() {
   }
 
   IDxbcConverter* test_converter = nullptr;
-  REFIID iid = reinterpret_cast<REFIID>(DxbcConverterIID());
+  size_t iid_val = ElfHash("IUnknown");
+  REFIID iid = reinterpret_cast<REFIID>(iid_val);
+  fprintf(stderr, "[metal] DxbcToDxilConverter: calling DxcCreateInstance iid=0x%016zx\n", iid_val); fflush(stderr);
   HRESULT hr = DxcCreateInstance(kClsidDxbcConverter, iid,
                                  reinterpret_cast<void**>(&test_converter));
+  fprintf(stderr, "[metal] DxbcToDxilConverter: DxcCreateInstance returned hr=0x%08X conv=%p\n", static_cast<unsigned>(hr), test_converter); fflush(stderr);
   if (hr != S_OK || !test_converter) {
     fprintf(stderr, "[metal] DxbcToDxilConverter: DxcCreateInstance failed hr=0x%08X\n", static_cast<unsigned>(hr)); fflush(stderr);
     is_available_ = false;
@@ -137,7 +139,7 @@ IDxbcConverter* DxbcToDxilConverter::GetThreadConverter(
 
   HRESULT hr =
       DxcCreateInstance(kClsidDxbcConverter,
-                        reinterpret_cast<REFIID>(DxbcConverterIID()),
+                        reinterpret_cast<REFIID>(ElfHash("IUnknown")),
                         reinterpret_cast<void**>(&thread_state.converter));
   if (hr != S_OK || !thread_state.converter) {
     if (error_message) {
