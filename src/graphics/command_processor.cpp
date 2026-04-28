@@ -321,19 +321,9 @@ void CommandProcessor::WorkerThreadMain() {
     }
     read_ptr_index_ = new_read_index & ((primary_buffer_size_ / sizeof(uint32_t)) - 1);
 
-    // TODO(benvanik): use reader->Read_update_freq_ and only issue after moving
-    //     that many indices.
-    // Note: RPTR writeback is now handled in UpdateWritePointer to avoid
-    // the game's RPTR spin loop timing out before the GPU thread processes.
     if (read_ptr_writeback_ptr_) {
-      auto* wb_phys = memory_->TranslatePhysical<uint32_t*>(read_ptr_writeback_ptr_);
-      static int wb_log_count = 0;
-      if (wb_log_count < 30) {
-        wb_log_count++;
-        REXGPU_INFO("RPTR writeback (GPU thread): ptr=0x{:08X} val={} readable={}",
-                    read_ptr_writeback_ptr_, read_ptr_index_,
-                    __builtin_bswap32(*wb_phys));
-      }
+      memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
+                                       read_ptr_index_);
     }
 
     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
@@ -410,15 +400,24 @@ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_s
    read_ptr_update_freq_ = uint32_t(1) << block_size_log2 >> 2;
  }
 
-void CommandProcessor::UpdateWritePointer(uint32_t value) {
+ void CommandProcessor::UpdateWritePointer(uint32_t value) {
   uint32_t mask = (primary_buffer_size_ / sizeof(uint32_t)) - 1;
-  write_ptr_index_ = value & mask;
-  if (read_ptr_writeback_ptr_) {
-    memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
-                                     write_ptr_index_);
-  }
+  uint32_t new_wptr = value & mask;
+  write_ptr_index_ = new_wptr;
   write_ptr_index_event_->Set();
- }
+
+  if (primary_buffer_size_ > 0 && new_wptr != read_ptr_index_ && worker_running_) {
+    uint32_t spin = 0;
+    while (read_ptr_index_ != new_wptr && worker_running_) {
+      rex::thread::MaybeYield();
+      if (++spin > 10'000'000) {
+        REXGPU_WARN("UpdateWritePointer: GPU worker stall (rptr={} wptr={}), breaking",
+                     read_ptr_index_.load(), new_wptr);
+        break;
+      }
+    }
+  }
+  }
 
 uint32_t CommandProcessor::ReadRegisterValue(uint32_t index) const {
   if (index < RegisterFile::kRegisterCount) {
