@@ -25,7 +25,7 @@
 
 namespace {
 
-constexpr bool kMetalVerboseDiagnostics = false;
+constexpr bool kMetalVerboseDiagnostics = true;
 
 void SetDescriptorBuffer(::IRDescriptorTableEntry* entry, uint64_t gpu_va, uint64_t size) {
   entry->gpuVA = gpu_va;
@@ -645,8 +645,26 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         uint32_t phys_val = buffer_length >= 4 ? *(uint32_t*)(phys_ptr) : 0;
         uint32_t shmem_val = (shmem_ptr && buffer_offset + 4 <= 0x20000000)
                                  ? *(uint32_t*)(shmem_ptr + buffer_offset) : 0xBADBAD;
-        fprintf(stderr, "[metal] VFETCH[%d] fc=%d addr=0x%08X len=%u phys[0]=%08X shmem[0]=%08X\n",
-                vdiag, binding.fetch_constant, buffer_offset, buffer_length, phys_val, shmem_val);
+        fprintf(stderr, "[metal] VFETCH[%d] fc=%d type=%d addr=0x%08X len=%u dwords=[%08X,%08X]\n",
+                vdiag, binding.fetch_constant, (int)vfetch.type,
+                buffer_offset, buffer_length, vfetch.dword_0, vfetch.dword_1);
+        fprintf(stderr, "[metal]   phys[0]=%08X shmem[0]=%08X\n", phys_val, shmem_val);
+        {
+          const uint32_t* uptr = reinterpret_cast<const uint32_t*>(phys_ptr);
+          fprintf(stderr, "[metal]   vdata_hex (all %u bytes):\n", buffer_length);
+          for (uint32_t j = 0; j < buffer_length / 4 && j < 40; j += 8) {
+            fprintf(stderr, "[metal]   ");
+            for (uint32_t k = 0; k < 8 && (j+k) < buffer_length/4; k++) {
+              fprintf(stderr, "%08X ", uptr[j+k]);
+            }
+            fprintf(stderr, "\n");
+          }
+          const float* fptr = reinterpret_cast<const float*>(uptr);
+          fprintf(stderr, "[metal]   vdata_float (all %u floats):\n", buffer_length/4);
+          for (uint32_t j = 0; j < buffer_length/4 && j < 40; j++) {
+            fprintf(stderr, "[metal]     [%u] = %f (0x%08X)\n", j, fptr[j], uptr[j]);
+          }
+        }
         fflush(stderr);
         vdiag++;
       }
@@ -680,6 +698,32 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
 
   bool shared_memory_is_uav = memexport_used;
   BindResources(regs, shared_memory_is_uav);
+
+  {
+    static std::atomic<int> desc_diag{0};
+    int dd = desc_diag.fetch_add(1);
+    if (dd < 3) {
+      auto* top_ptrs = reinterpret_cast<const uint64_t*>(top_level_ab_->contents());
+      fprintf(stderr, "[metal] DESC DIAG #%d: AB[0]=%p AB[5]=%p AB[9]=%p AB[10]=%p\n",
+              dd, (void*)top_ptrs[0], (void*)top_ptrs[5], (void*)top_ptrs[9], (void*)top_ptrs[10]);
+      auto* srv_entries = reinterpret_cast<const IRDescriptorTableEntry*>(res_heap_ab_->contents());
+      fprintf(stderr, "[metal] DESC DIAG: SRV[0] gpuVA=%p size=%llu\n",
+              (void*)srv_entries[0].gpuVA, (unsigned long long)srv_entries[0].metadata);
+      auto* cbv_entries = reinterpret_cast<const IRDescriptorTableEntry*>(cbv_heap_ab_->contents());
+      for (int i = 0; i < 5; i++) {
+        fprintf(stderr, "[metal] DESC DIAG: CBV[%d] gpuVA=%p size=%llu\n",
+                i, (void*)cbv_entries[i].gpuVA, (unsigned long long)cbv_entries[i].metadata);
+      }
+      if (shared_memory_ && shared_memory_->GetBuffer()) {
+        fprintf(stderr, "[metal] DESC DIAG: shmem gpuVA=%p actual=%p\n",
+                (void*)shared_memory_->GetBuffer()->gpuAddress(),
+                (void*)srv_entries[0].gpuVA);
+      }
+      fprintf(stderr, "[metal] DESC DIAG: uniforms gpuVA=%p\n",
+              (void*)uniforms_ring_buffer_->gpuAddress());
+      fflush(stderr);
+    }
+  }
 
   uint32_t draw_vertex_count = primitive_processing_result.host_draw_vertex_count;
   MTL::PrimitiveType metal_primitive_type;
@@ -811,15 +855,12 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   uint32_t swap_width_unscaled = 0;
   uint32_t swap_height_unscaled = 0;
   xenos::TextureFormat swap_format = xenos::TextureFormat::k_8_8_8_8;
-  if (texture_cache_) {
-    swap_texture = texture_cache_->RequestSwapTexture(
-        swap_width_scaled, swap_height_scaled, swap_format,
-        &swap_width_unscaled, &swap_height_unscaled);
-  }
-  if (!swap_texture && render_target_cache_) {
+  if (render_target_cache_) {
     swap_texture = render_target_cache_->GetColorTarget(0);
     swap_width_scaled = swap_texture ? swap_texture->width() : 0;
     swap_height_scaled = swap_texture ? swap_texture->height() : 0;
+    swap_width_unscaled = frontbuffer_width;
+    swap_height_unscaled = frontbuffer_height;
   }
   if (swap_texture) {
     auto& provider = GetMetalProvider();
@@ -835,6 +876,46 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
               frontbuffer_height, swap_texture);
       fflush(stderr);
     }
+    }
+  }
+
+  {
+    static std::atomic<int> rb_count{0};
+    int rb = rb_count.fetch_add(1);
+    if (rb < 20 && rb % 5 == 0 && swap_texture && current_command_buffer_) {
+      if (current_render_encoder_) {
+        current_render_encoder_->endEncoding();
+        current_render_encoder_ = nullptr;
+      }
+      MTL::Buffer* readback_buf = device_->newBuffer(4096, MTL::ResourceStorageModeShared);
+      if (readback_buf) {
+        auto do_read = [&](uint32_t rx, uint32_t ry, const char* label) {
+          MTL::BlitCommandEncoder* blit = current_command_buffer_->blitCommandEncoder();
+          if (blit) {
+            blit->copyFromTexture(swap_texture, 0, 0,
+                                  MTL::Origin(rx, ry, 0),
+                                  MTL::Size(16, 1, 1),
+                                  readback_buf, 0, 16 * 4, 16 * 4);
+            blit->endEncoding();
+          }
+          current_command_buffer_->commit();
+          current_command_buffer_->waitUntilCompleted();
+          auto* px = reinterpret_cast<const uint8_t*>(readback_buf->contents());
+          fprintf(stderr, "[metal] RB %s(%u,%u):", label, rx, ry);
+          for (int i = 0; i < 16; i++) {
+            fprintf(stderr, " [%02X%02X%02X%02X]", px[i*4], px[i*4+1], px[i*4+2], px[i*4+3]);
+          }
+          fprintf(stderr, "\n");
+          fflush(stderr);
+          current_command_buffer_ = command_queue_->commandBuffer();
+        };
+        do_read(10, 10, "TL");
+        do_read(640, 360, "CTR");
+        do_read(1270, 710, "BR");
+        readback_buf->release();
+        current_command_buffer_ = nullptr;
+        return;
+      }
     }
   }
 
@@ -1145,11 +1226,45 @@ void MetalCommandProcessor::BindResources(
 
   if (texture_cache_) {
     uint32_t texture_count = texture_cache_->GetBoundTextureCount();
+    {
+      static std::atomic<int> tex_diag{0};
+      int td = tex_diag.fetch_add(1);
+      if (td < 3) {
+        fprintf(stderr, "[metal] TEX DIAG #%d: bound_texture_count=%u\n", td, texture_count);
+        for (uint32_t i = 0; i < texture_count && i < 4; ++i) {
+          MTL::Texture* t = texture_cache_->GetBoundTexture(i);
+          fprintf(stderr, "[metal] TEX DIAG: tex[%u]=%p %ux%u fmt=%d\n",
+                  i, t, t ? (unsigned)t->width() : 0, t ? (unsigned)t->height() : 0,
+                  t ? (int)t->pixelFormat() : -1);
+          if (t && td == 0) {
+            MTL::Buffer* trb = device_->newBuffer(16, MTL::ResourceStorageModeShared);
+            if (trb && current_command_buffer_) {
+              if (current_render_encoder_) { current_render_encoder_->endEncoding(); current_render_encoder_ = nullptr; }
+              MTL::BlitCommandEncoder* be = current_command_buffer_->blitCommandEncoder();
+              if (be) {
+                be->copyFromTexture(t, 0, 0, MTL::Origin(0,0,0), MTL::Size(4,1,1), trb, 0, 4, 4);
+                be->endEncoding();
+              }
+              current_command_buffer_->commit();
+              current_command_buffer_->waitUntilCompleted();
+              auto* tp = reinterpret_cast<const uint8_t*>(trb->contents());
+              fprintf(stderr, "[metal] TEX DIAG: tex[%u] first 16 bytes:", i);
+              for (int b = 0; b < 16; b++) fprintf(stderr, " %02X", tp[b]);
+              fprintf(stderr, "\n");
+              fflush(stderr);
+              trb->release();
+              current_command_buffer_ = command_queue_->commandBuffer();
+            }
+          }
+        }
+        fflush(stderr);
+      }
+    }
     for (uint32_t i = 0; i < texture_count && i < kResourceHeapSlotsPerTable - 1; ++i) {
       MTL::Texture* tex = texture_cache_->GetBoundTexture(i);
       if (tex) {
         SetDescriptorTexture(&res_entries[1 + i], tex);
-        UseRenderEncoderResource(tex, MTL::ResourceUsageRead);
+        UseRenderEncoderResource(tex, MTL::ResourceUsageSample);
       }
     }
 
@@ -1308,6 +1423,15 @@ void MetalCommandProcessor::WriteSystemConstants(
     auto* fc = reinterpret_cast<float*>(float_ptr);
     fprintf(stderr, "[metal] DIAG float_consts[0-3]=(%.3f,%.3f,%.3f,%.3f) [4-7]=(%.3f,%.3f,%.3f,%.3f)\n",
             fc[0], fc[1], fc[2], fc[3], fc[4], fc[5], fc[6], fc[7]);
+    fprintf(stderr, "[metal] DIAG float_consts[8-11]=(%.3f,%.3f,%.3f,%.3f) [12-15]=(%.3f,%.3f,%.3f,%.3f)\n",
+            fc[32], fc[33], fc[34], fc[35], fc[36], fc[37], fc[38], fc[39]);
+    fprintf(stderr, "[metal] DIAG float_consts[16-19]=(%.3f,%.3f,%.3f,%.3f) [20-23]=(%.3f,%.3f,%.3f,%.3f)\n",
+            fc[64], fc[65], fc[66], fc[67], fc[68], fc[69], fc[70], fc[71]);
+    auto* sc = reinterpret_cast<const uint32_t*>(base_ptr);
+    fprintf(stderr, "[metal] DIAG sys_consts raw: [0-3]=%08X %08X %08X %08X\n",
+            sc[0], sc[1], sc[2], sc[3]);
+    fprintf(stderr, "[metal] DIAG sys_consts raw: [4-7]=%08X %08X %08X %08X\n",
+            sc[4], sc[5], sc[6], sc[7]);
     auto* fetch0 = reinterpret_cast<uint32_t*>(fetch_ptr);
     fprintf(stderr, "[metal] DIAG fetch_const[0]: raw0=0x%08X raw1=0x%08X\n",
             fetch0[0], fetch0[1]);

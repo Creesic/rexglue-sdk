@@ -120,10 +120,24 @@ bool MetalShader::MetalTranslation::TranslateToMetal(
     if (f) {
       fwrite(metallib_data_.data(), 1, metallib_data_.size(), f);
       fclose(f);
-      fprintf(stderr, "[metal] Dumped shader #%d to %s (%zu bytes, fn=%s)\n",
-              dc, dump_path, metallib_data_.size(), function_name_.c_str());
-      fflush(stderr);
     }
+    snprintf(dump_path, sizeof(dump_path), "/tmp/pgr3_shader_%d.dxil", dc);
+    f = fopen(dump_path, "wb");
+    if (f) {
+      fwrite(dxil_data_.data(), 1, dxil_data_.size(), f);
+      fclose(f);
+    }
+    auto& dxbc_bin = translated_binary();
+    snprintf(dump_path, sizeof(dump_path), "/tmp/pgr3_shader_%d.dxbc", dc);
+    f = fopen(dump_path, "wb");
+    if (f) {
+      fwrite(dxbc_bin.data(), 1, dxbc_bin.size(), f);
+      fclose(f);
+    }
+    fprintf(stderr, "[metal] Dumped shader #%d: dxbc=%zu dxil=%zu metallib=%zu fn=%s\n",
+            dc, dxbc_bin.size(), dxil_data_.size(), metallib_data_.size(),
+            function_name_.c_str());
+    fflush(stderr);
   }
 
   NS::Error* error = nullptr;
