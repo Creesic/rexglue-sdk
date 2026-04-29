@@ -778,7 +778,15 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   uint32_t swap_width_unscaled = 0;
   uint32_t swap_height_unscaled = 0;
   xenos::TextureFormat swap_format = xenos::TextureFormat::k_8_8_8_8;
-  if (texture_cache_) {
+  MTL::Texture* color_target_texture =
+      render_target_cache_ ? render_target_cache_->GetColorTarget(0) : nullptr;
+  if (color_target_texture) {
+    swap_texture = color_target_texture;
+    swap_width_scaled = swap_texture->width();
+    swap_height_scaled = swap_texture->height();
+    swap_width_unscaled = swap_width_scaled;
+    swap_height_unscaled = swap_height_scaled;
+  } else if (texture_cache_) {
     swap_texture = texture_cache_->RequestSwapTexture(
         swap_width_scaled, swap_height_scaled, swap_format,
         &swap_width_unscaled, &swap_height_unscaled);
