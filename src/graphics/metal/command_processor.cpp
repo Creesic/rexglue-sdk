@@ -45,6 +45,30 @@ void SetDescriptorSampler(::IRDescriptorTableEntry* entry, MTL::SamplerState* sa
   entry->metadata = 0;
 }
 
+bool GetMetalPrimitiveType(rex::graphics::xenos::PrimitiveType primitive_type,
+                           MTL::PrimitiveType& metal_primitive_type_out) {
+  switch (primitive_type) {
+    case rex::graphics::xenos::PrimitiveType::kPointList:
+      metal_primitive_type_out = MTL::PrimitiveTypePoint;
+      return true;
+    case rex::graphics::xenos::PrimitiveType::kLineList:
+      metal_primitive_type_out = MTL::PrimitiveTypeLine;
+      return true;
+    case rex::graphics::xenos::PrimitiveType::kLineStrip:
+      metal_primitive_type_out = MTL::PrimitiveTypeLineStrip;
+      return true;
+    case rex::graphics::xenos::PrimitiveType::kTriangleList:
+    case rex::graphics::xenos::PrimitiveType::kRectangleList:
+      metal_primitive_type_out = MTL::PrimitiveTypeTriangle;
+      return true;
+    case rex::graphics::xenos::PrimitiveType::kTriangleStrip:
+      metal_primitive_type_out = MTL::PrimitiveTypeTriangleStrip;
+      return true;
+    default:
+      return false;
+  }
+}
+
 }
 
 namespace rex {
@@ -658,6 +682,13 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   BindResources(regs, shared_memory_is_uav);
 
   uint32_t draw_vertex_count = primitive_processing_result.host_draw_vertex_count;
+  MTL::PrimitiveType metal_primitive_type;
+  if (!GetMetalPrimitiveType(primitive_processing_result.host_primitive_type,
+                             metal_primitive_type)) {
+    REXLOG_ERROR("IssueDraw: unsupported Metal host primitive type {}",
+                 uint32_t(primitive_processing_result.host_primitive_type));
+    return false;
+  }
 
   using PIBT = PrimitiveProcessor::ProcessedIndexBufferType;
   auto do_draw_indexed = [&](MTL::IndexType index_type, MTL::Buffer* index_buffer,
@@ -683,7 +714,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     current_render_encoder_->setVertexBytes(&ir_index_type, sizeof(ir_index_type), MscBufferIndex::kUniforms);
     current_render_encoder_->setFragmentBytes(&frag_uniforms, sizeof(frag_uniforms), MscBufferIndex::kUniforms);
     current_render_encoder_->drawIndexedPrimitives(
-        MTL::PrimitiveTypeTriangle, NS::UInteger(draw_vertex_count),
+        metal_primitive_type, NS::UInteger(draw_vertex_count),
         index_type, index_buffer, index_offset, NS::UInteger(1), 0, 0);
   };
 
@@ -693,7 +724,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       MTL::IndexType index_type =
           primitive_processing_result.host_index_format == xenos::IndexFormat::kInt16
               ? MTL::IndexTypeUInt16 : MTL::IndexTypeUInt32;
-      uint64_t index_offset = primitive_processing_result.guest_index_base * sizeof(uint32_t);
+      uint64_t index_offset = primitive_processing_result.guest_index_base;
       do_draw_indexed(index_type, index_buffer, index_offset);
     }
   } else if (primitive_processing_result.index_buffer_type == PIBT::kHostConverted) {
@@ -704,6 +735,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       MTL::IndexType index_type =
           primitive_processing_result.host_index_format == xenos::IndexFormat::kInt16
               ? MTL::IndexTypeUInt16 : MTL::IndexTypeUInt32;
+      UseRenderEncoderResource(converted_buffer, MTL::ResourceUsageRead);
       do_draw_indexed(index_type, converted_buffer, converted_offset);
     }
   } else if (primitive_processing_result.index_buffer_type == PIBT::kHostBuiltinForAuto ||
@@ -713,6 +745,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       MTL::IndexType index_type =
           primitive_processing_result.host_index_format == xenos::IndexFormat::kInt16
               ? MTL::IndexTypeUInt16 : MTL::IndexTypeUInt32;
+      UseRenderEncoderResource(builtin_buffer, MTL::ResourceUsageRead);
       do_draw_indexed(index_type, builtin_buffer, 0);
     }
   } else {
@@ -733,7 +766,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     current_render_encoder_->setVertexBytes(&ir_index_type, sizeof(ir_index_type), MscBufferIndex::kUniforms);
     current_render_encoder_->setFragmentBytes(&frag_uniforms, sizeof(frag_uniforms), MscBufferIndex::kUniforms);
     current_render_encoder_->drawPrimitives(
-        MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(draw_vertex_count));
+        metal_primitive_type, NS::UInteger(0), NS::UInteger(draw_vertex_count));
   }
 
   ++current_draw_index_;
@@ -778,15 +811,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   uint32_t swap_width_unscaled = 0;
   uint32_t swap_height_unscaled = 0;
   xenos::TextureFormat swap_format = xenos::TextureFormat::k_8_8_8_8;
-  MTL::Texture* color_target_texture =
-      render_target_cache_ ? render_target_cache_->GetColorTarget(0) : nullptr;
-  if (color_target_texture) {
-    swap_texture = color_target_texture;
-    swap_width_scaled = swap_texture->width();
-    swap_height_scaled = swap_texture->height();
-    swap_width_unscaled = swap_width_scaled;
-    swap_height_unscaled = swap_height_scaled;
-  } else if (texture_cache_) {
+  if (texture_cache_) {
     swap_texture = texture_cache_->RequestSwapTexture(
         swap_width_scaled, swap_height_scaled, swap_format,
         &swap_width_unscaled, &swap_height_unscaled);
@@ -1344,6 +1369,7 @@ void MetalCommandProcessor::WriteSystemConstants(
       current_render_encoder_->setScissorRect(scissor);
     }
   }
+
 }
 
 }  // namespace metal
