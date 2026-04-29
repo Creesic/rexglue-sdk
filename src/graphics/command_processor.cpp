@@ -35,6 +35,10 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/user_module.h>
 
+namespace {
+constexpr bool kGpuVerboseDiagnostics = false;
+}
+
 REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
 
 REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
@@ -743,10 +747,12 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
   }
 
   REXGPU_INFO("ExecutePrimaryBuffer: read_index={}, write_index={}, packets={}", read_index, write_index, write_index - read_index);
+  if constexpr (kGpuVerboseDiagnostics) {
   static std::atomic<int> epb_count{0};
   int c = epb_count.fetch_add(1);
   if (c < 20) {
     fprintf(stderr, "[metal] ExecutePrimaryBuffer: packets=%d total=%d\n", write_index - read_index, c+1); fflush(stderr);
+  }
   }
 
   // If we have a pending trace stream open it now. That way we ensure we get
@@ -791,10 +797,12 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
 void CommandProcessor::ExecuteIndirectBuffer(uint32_t ptr, uint32_t count) {
   SCOPE_profile_cpu_f("gpu");
 
+  if constexpr (kGpuVerboseDiagnostics) {
   static std::atomic<int> ib_count{0};
   int c = ib_count.fetch_add(1);
   if (c < 10) {
     fprintf(stderr, "[metal] ExecuteIndirectBuffer: ptr=0x%08X count=%d\n", ptr, count); fflush(stderr);
+  }
   }
 
   trace_writer_.WriteIndirectBufferStart(ptr, count * sizeof(uint32_t));
@@ -945,10 +953,12 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
   }
 
   bool result = false;
+  if constexpr (kGpuVerboseDiagnostics) {
   static std::atomic<int> pkt_count{0};
   int pc = pkt_count.fetch_add(1);
   if (pc < 200) {
     fprintf(stderr, "[metal] PM4 type3 opcode=0x%02X count=%d\n", opcode, count); fflush(stderr);
+  }
   }
   switch (opcode) {
     case PM4_ME_INIT:
@@ -1145,10 +1155,12 @@ bool CommandProcessor::ExecutePacketType3_INTERRUPT(memory::RingBuffer* reader, 
 
 bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, uint32_t packet,
                                                    uint32_t count) {
+  if constexpr (kGpuVerboseDiagnostics) {
   static int xe_swap_log = 0;
   if (xe_swap_log < 5) {
     fprintf(stderr, "[gpu] XE_SWAP EXECUTED: count=%u\n", count); fflush(stderr);
     xe_swap_log++;
+  }
   }
   SCOPE_profile_cpu_f("gpu");
 

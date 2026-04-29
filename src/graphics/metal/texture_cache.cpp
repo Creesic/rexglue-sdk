@@ -10,6 +10,10 @@
 #include <algorithm>
 #include <cstring>
 
+namespace {
+constexpr bool kMetalVerboseDiagnostics = false;
+}
+
 namespace rex {
 namespace graphics {
 namespace metal {
@@ -108,11 +112,13 @@ std::unique_ptr<TextureCache::Texture> MetalTextureCache::CreateTexture(
     REXLOG_ERROR("MetalTextureCache: Failed to create texture {}x{} fmt={}",
                  width, height, uint32_t(key.format));
   } else {
+    if constexpr (kMetalVerboseDiagnostics) {
     static int create_count = 0;
     if (create_count++ < 10) {
       fprintf(stderr, "[metal] CreateTexture: %ux%u fmt=%d tiled=%d mips=%u mtltex=%p\n",
               width, height, (int)key.format, (int)key.tiled, mip_levels, metal_texture);
       fflush(stderr);
+    }
     }
   }
 
@@ -171,12 +177,14 @@ bool MetalTextureCache::LoadTextureDataFromResidentMemoryImpl(
   bool is_3d = key.dimension == xenos::DataDimension::k3D;
   bool is_tiled = key.tiled;
 
+  if constexpr (kMetalVerboseDiagnostics) {
   static int load_count = 0;
   if (load_count++ < 10) {
     fprintf(stderr, "[metal] LoadTexture: %ux%u fmt=%d tiled=%d base=%d mips=%d base_addr=0x%X\n",
             width, height, (int)key.format, (int)is_tiled, (int)load_base, (int)load_mips,
             key.base_page << 12);
     fflush(stderr);
+  }
   }
 
   uint32_t base_address = key.base_page << 12;
@@ -296,15 +304,18 @@ bool MetalTextureCache::LoadTextureDataFromResidentMemoryImpl(
 }
 
 void MetalTextureCache::RequestTextures(uint32_t used_texture_mask) {
+  if constexpr (kMetalVerboseDiagnostics) {
   static int req_count = 0;
   if (req_count < 5) {
     fprintf(stderr, "[metal] RequestTextures: mask=0x%08X\n", used_texture_mask);
     fflush(stderr);
     req_count++;
   }
+  }
 
   TextureCache::RequestTextures(used_texture_mask);
 
+  if constexpr (kMetalVerboseDiagnostics) {
   static int post_count = 0;
   if (post_count < 5) {
     for (uint32_t i = 0; i < 32; ++i) {
@@ -316,6 +327,7 @@ void MetalTextureCache::RequestTextures(uint32_t used_texture_mask) {
       }
     }
     post_count++;
+  }
   }
 
   const auto& regs = register_file();
@@ -351,6 +363,39 @@ MTL::Texture* MetalTextureCache::GetBoundTexture(uint32_t index) const {
 MTL::SamplerState* MetalTextureCache::GetBoundSampler(uint32_t index) const {
   if (index < kMaxBoundTextures) return bound_samplers_[index];
   return nullptr;
+}
+
+MTL::Texture* MetalTextureCache::RequestSwapTexture(
+    uint32_t& width_scaled_out, uint32_t& height_scaled_out,
+    xenos::TextureFormat& format_out, uint32_t* width_unscaled_out,
+    uint32_t* height_unscaled_out) {
+  const auto& regs = register_file();
+  xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(0);
+
+  TextureKey key;
+  BindingInfoFromFetchConstant(fetch, key, nullptr);
+  if (!key.is_valid || key.base_page == 0 ||
+      key.dimension != xenos::DataDimension::k2DOrStacked) {
+    return nullptr;
+  }
+
+  MetalTexture* texture = static_cast<MetalTexture*>(FindOrCreateTexture(key));
+  if (!texture || !LoadTextureData(*texture)) {
+    return nullptr;
+  }
+
+  texture->MarkAsUsed();
+  key = texture->key();
+  if (width_unscaled_out) {
+    *width_unscaled_out = key.GetWidth();
+  }
+  if (height_unscaled_out) {
+    *height_unscaled_out = key.GetHeight();
+  }
+  width_scaled_out = key.GetWidth() * (key.scaled_resolve ? draw_resolution_scale_x() : 1);
+  height_scaled_out = key.GetHeight() * (key.scaled_resolve ? draw_resolution_scale_y() : 1);
+  format_out = key.format;
+  return texture->metal_texture();
 }
 
 MTL::PixelFormat MetalTextureCache::GetMetalPixelFormat(

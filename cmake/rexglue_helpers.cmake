@@ -82,6 +82,25 @@ function(_rexglue_warn_missing_macos_vulkan_runtime)
     endif()
 endfunction()
 
+function(_rexglue_copy_macos_metal_runtime target_name runtime_root)
+    if("${runtime_root}" STREQUAL "")
+        return()
+    endif()
+
+    foreach(_rexglue_runtime_file
+            libmetalirconverter.dylib
+            libdxilconv.dylib)
+        if(EXISTS "${runtime_root}/${_rexglue_runtime_file}")
+            add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${runtime_root}/${_rexglue_runtime_file}"
+                    "$<TARGET_FILE_DIR:${target_name}>"
+                VERBATIM
+            )
+        endif()
+    endforeach()
+endfunction()
+
 function(_rexglue_copy_macos_vulkan_runtime target_name runtime_root)
     if("${runtime_root}" STREQUAL "")
         _rexglue_warn_missing_macos_vulkan_runtime()
@@ -221,5 +240,28 @@ function(rexglue_configure_target target_name)
     if(APPLE AND REXGLUE_USE_VULKAN)
         rexglue_find_macos_vulkan_runtime(_rexglue_macos_vulkan_runtime_root)
         _rexglue_copy_macos_vulkan_runtime(${target_name} "${_rexglue_macos_vulkan_runtime_root}")
+    endif()
+
+    if(APPLE AND REXGLUE_USE_METAL)
+        set(_rexglue_macos_metal_runtime_root "")
+        if(DEFINED REXGLUE_SHARE_DIR)
+            get_filename_component(_rexglue_package_prefix "${REXGLUE_SHARE_DIR}/../.." ABSOLUTE)
+            if(EXISTS "${_rexglue_package_prefix}/lib/libmetalirconverter.dylib")
+                set(_rexglue_macos_metal_runtime_root "${_rexglue_package_prefix}/lib")
+            endif()
+        endif()
+        if("${_rexglue_macos_metal_runtime_root}" STREQUAL "" AND DEFINED REXGLUE_ROOT)
+            if(EXISTS "${REXGLUE_ROOT}/thirdparty/metal-shader-converter/lib/libmetalirconverter.dylib")
+                set(_rexglue_macos_metal_runtime_root
+                    "${REXGLUE_ROOT}/thirdparty/metal-shader-converter/lib")
+            endif()
+        endif()
+        if(NOT "${_rexglue_macos_metal_runtime_root}" STREQUAL "")
+            target_link_options(${target_name} PRIVATE
+                "LINKER:-rpath,${_rexglue_macos_metal_runtime_root}"
+            )
+            _rexglue_copy_macos_metal_runtime(${target_name}
+                "${_rexglue_macos_metal_runtime_root}")
+        endif()
     endif()
 endfunction()
