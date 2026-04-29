@@ -85,11 +85,26 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
   if (src) {
     MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
     if (blit) {
+      uint32_t copy_w = std::min(src->width(), drawable->texture()->width());
+      uint32_t copy_h = std::min(src->height(), drawable->texture()->height());
       blit->copyFromTexture(src, 0, 0, MTL::Origin(0, 0, 0),
-                            MTL::Size(src->width(), src->height(), 1),
-                            drawable->texture(), 0, 0,
-                            MTL::Origin(0, 0, 0));
+                             MTL::Size(copy_w, copy_h, 1),
+                             drawable->texture(), 0, 0,
+                             MTL::Origin(0, 0, 0));
+      if (copy_w < (uint32_t)drawable->texture()->width()) {
+        blit->copyFromTexture(src, 0, 0, MTL::Origin(0, 0, 0),
+                               MTL::Size(copy_w, copy_h, 1),
+                               drawable->texture(), 0, 0,
+                               MTL::Origin(copy_w, 0, 0));
+      }
       blit->endEncoding();
+      if (pc < 3) {
+        fprintf(stderr, "[metal] PaintAndPresent: blitted %ux%u from %p to drawable (%ux%u)\n",
+                copy_w, copy_h, src,
+                (unsigned)drawable->texture()->width(),
+                (unsigned)drawable->texture()->height());
+        fflush(stderr);
+      }
     }
   }
 
@@ -143,11 +158,17 @@ bool MetalPresenter::RefreshGuestOutputImpl(
     uint32_t frontbuffer_height,
     std::function<bool(GuestOutputRefreshContext& context)> refresher,
     bool& is_8bpc_out_ref) {
-  fprintf(stderr, "[metal] RefreshGuestOutputImpl: mailbox=%u %ux%u\n",
-          mailbox_index, frontbuffer_width, frontbuffer_height); fflush(stderr);
+  static std::atomic<int> refresh_count{0};
+  int rc = refresh_count.fetch_add(1);
+  if (rc < 5) {
+    fprintf(stderr, "[metal] RefreshGuestOutputImpl: mailbox=%u %ux%u\n",
+            mailbox_index, frontbuffer_width, frontbuffer_height); fflush(stderr);
+  }
   MetalGuestOutputRefreshContext context(is_8bpc_out_ref);
   bool ok = refresher(context);
-  fprintf(stderr, "[metal] RefreshGuestOutputImpl: refresher returned %d\n", ok); fflush(stderr);
+  if (rc < 5) {
+    fprintf(stderr, "[metal] RefreshGuestOutputImpl: refresher returned %d\n", ok); fflush(stderr);
+  }
   return ok;
 }
 

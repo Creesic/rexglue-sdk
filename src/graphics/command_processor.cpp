@@ -1145,7 +1145,11 @@ bool CommandProcessor::ExecutePacketType3_INTERRUPT(memory::RingBuffer* reader, 
 
 bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, uint32_t packet,
                                                    uint32_t count) {
-  fprintf(stderr, "[gpu] XE_SWAP EXECUTED: count=%u\n", count); fflush(stderr);
+  static int xe_swap_log = 0;
+  if (xe_swap_log < 5) {
+    fprintf(stderr, "[gpu] XE_SWAP EXECUTED: count=%u\n", count); fflush(stderr);
+    xe_swap_log++;
+  }
   SCOPE_profile_cpu_f("gpu");
 
   REXGPU_INFO("XE_SWAP: count={}", count);

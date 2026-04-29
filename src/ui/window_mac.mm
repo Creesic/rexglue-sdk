@@ -254,7 +254,7 @@ VirtualKey TranslateKeyCode(unsigned short key_code) {
   layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
   // framebufferOnly=YES tells Metal the layer is used exclusively as a render
   // target, enabling GPU driver optimisations (e.g. lossless compression).
-  layer.framebufferOnly = YES;
+  layer.framebufferOnly = NO;
   return layer;
 }
 

@@ -69,7 +69,20 @@ bool MetalShader::MetalTranslation::TranslateToMetal(
         metallib_data_ = std::move(cached.metallib_data);
         NS::String* fn =
             NS::String::string(function_name_.c_str(), NS::UTF8StringEncoding);
-        metal_function_ = metal_library_->newFunction(fn);
+  metal_function_ = metal_library_->newFunction(fn);
+  if (metal_function_) {
+    static int func_count = 0;
+    if (func_count++ < 3) {
+      fprintf(stderr, "[metal] newFunction '%s' OK, argCount=%u\n",
+              function_name_.c_str(),
+              (unsigned)metal_function_->vertexAttributes()->count());
+      auto* args = metal_function_->functionConstantsDictionary();
+      if (args) {
+        fprintf(stderr, "[metal]   functionConstants keys=%u\n",
+                (unsigned)args->count());
+      }
+    }
+  }
         if (metal_function_) {
           return true;
         }
@@ -97,6 +110,21 @@ bool MetalShader::MetalTranslation::TranslateToMetal(
   metallib_data_ = std::move(msc_result.metallib_data);
   REXLOG_DEBUG("MetalShader: Converted {} bytes DXIL to {} bytes MetalLib",
                dxil_data_.size(), metallib_data_.size());
+
+  static std::atomic<int> dump_count{0};
+  int dc = dump_count.fetch_add(1);
+  if (dc < 4) {
+    char dump_path[256];
+    snprintf(dump_path, sizeof(dump_path), "/tmp/pgr3_shader_%d.metallib", dc);
+    FILE* f = fopen(dump_path, "wb");
+    if (f) {
+      fwrite(metallib_data_.data(), 1, metallib_data_.size(), f);
+      fclose(f);
+      fprintf(stderr, "[metal] Dumped shader #%d to %s (%zu bytes, fn=%s)\n",
+              dc, dump_path, metallib_data_.size(), function_name_.c_str());
+      fflush(stderr);
+    }
+  }
 
   NS::Error* error = nullptr;
   dispatch_data_t data =

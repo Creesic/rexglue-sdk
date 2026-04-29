@@ -282,7 +282,6 @@ void GraphicsSystem::WriteRegister(uint32_t addr, uint32_t value) {
 
   switch (r) {
     case 0x01C5:  // CP_RB_WPTR
-      fprintf(stderr, "[gpu] CP_RB_WPTR write: 0x%08X\n", value); fflush(stderr);
       command_processor_->UpdateWritePointer(value);
       break;
     case 0x1844:  // AVIVO_D1GRPH_PRIMARY_SURFACE_ADDRESS
