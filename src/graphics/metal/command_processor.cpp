@@ -1145,6 +1145,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   }
 
   current_render_encoder_->setRenderPipelineState(pipeline);
+  ApplyRasterizerState(primitive_polygonal);
   ApplyDepthStencilState(primitive_polygonal, normalized_depth_control);
 
   int md = metal_draw_count.fetch_add(1);
@@ -1836,6 +1837,62 @@ MetalCommandProcessor::GetOrCreatePipelineState(
   return pipeline;
 }
 
+void MetalCommandProcessor::ApplyRasterizerState(bool primitive_polygonal) {
+  if (!current_render_encoder_) return;
+
+  const RegisterFile& regs = *register_file_;
+  auto pa_su_sc_mode_cntl = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
+  auto pa_cl_clip_cntl = regs.Get<reg::PA_CL_CLIP_CNTL>();
+
+  MTL::CullMode cull_mode = MTL::CullModeNone;
+  if (primitive_polygonal) {
+    bool cull_front = pa_su_sc_mode_cntl.cull_front;
+    bool cull_back = pa_su_sc_mode_cntl.cull_back;
+    if (cull_front && !cull_back) {
+      cull_mode = MTL::CullModeFront;
+    } else if (cull_back && !cull_front) {
+      cull_mode = MTL::CullModeBack;
+    }
+  }
+  current_render_encoder_->setCullMode(cull_mode);
+
+  current_render_encoder_->setFrontFacingWinding(
+      pa_su_sc_mode_cntl.face ? MTL::WindingClockwise
+                              : MTL::WindingCounterClockwise);
+
+  MTL::TriangleFillMode fill_mode = MTL::TriangleFillModeFill;
+  if (primitive_polygonal &&
+      pa_su_sc_mode_cntl.poly_mode == xenos::PolygonModeEnable::kDualMode) {
+    xenos::PolygonType polygon_type = xenos::PolygonType::kTriangles;
+    if (!pa_su_sc_mode_cntl.cull_front) {
+      polygon_type = std::min(polygon_type, pa_su_sc_mode_cntl.polymode_front_ptype);
+    }
+    if (!pa_su_sc_mode_cntl.cull_back) {
+      polygon_type = std::min(polygon_type, pa_su_sc_mode_cntl.polymode_back_ptype);
+    }
+    if (polygon_type != xenos::PolygonType::kTriangles) {
+      fill_mode = MTL::TriangleFillModeLines;
+    }
+  }
+  current_render_encoder_->setTriangleFillMode(fill_mode);
+
+  float polygon_offset_scale = 0.0f;
+  float polygon_offset = 0.0f;
+  draw_util::GetPreferredFacePolygonOffset(
+      regs, primitive_polygonal, polygon_offset_scale, polygon_offset);
+  float depth_bias_factor = regs.Get<reg::RB_DEPTH_INFO>().depth_format ==
+                                    xenos::DepthRenderTargetFormat::kD24S8
+                                ? draw_util::kD3D10PolygonOffsetFactorUnorm24
+                                : draw_util::kD3D10PolygonOffsetFactorFloat24;
+  float depth_bias_constant = polygon_offset * depth_bias_factor;
+  float depth_bias_slope = polygon_offset_scale * xenos::kPolygonOffsetScaleSubpixelUnit;
+  current_render_encoder_->setDepthBias(depth_bias_constant, depth_bias_slope, 0.0f);
+
+  current_render_encoder_->setDepthClipMode(pa_cl_clip_cntl.clip_disable
+                                                 ? MTL::DepthClipModeClamp
+                                                 : MTL::DepthClipModeClip);
+}
+
 void MetalCommandProcessor::ApplyDepthStencilState(
     bool primitive_polygonal,
     reg::RB_DEPTHCONTROL normalized_depth_control) {
@@ -1952,12 +2009,12 @@ void MetalCommandProcessor::BindResources(
     auto bind_shader_samplers = [&](MetalShader* shader) {
       if (!shader) return;
       const auto& sampler_bindings = shader->GetSamplerBindingsAfterTranslation();
-      for (const auto& binding : sampler_bindings) {
-        uint32_t slot = binding.fetch_constant;
-        if (slot >= kSamplerHeapSlotsPerTable) continue;
-        MTL::SamplerState* sampler = texture_cache_->GetBoundSamplerState(slot);
+      for (size_t sampler_index = 0; sampler_index < sampler_bindings.size(); ++sampler_index) {
+        if (sampler_index >= kSamplerHeapSlotsPerTable) break;
+        const auto& binding = sampler_bindings[sampler_index];
+        MTL::SamplerState* sampler = texture_cache_->GetBoundSamplerState(binding.fetch_constant);
         if (sampler) {
-          SetDescriptorSampler(&smp_entries[slot], sampler);
+          SetDescriptorSampler(&smp_entries[sampler_index], sampler);
         }
       }
     };
