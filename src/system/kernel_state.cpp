@@ -645,10 +645,24 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
   module->Dump();
 
   if (module->is_dll_module() && module->entry_point() && call_entry) {
-    // TODO(tomc): add support for this. sort of coupled with the rest of the guest module loading.
-    //              impl of GetProcAddressByOrdinal is critical to the impl of the dll loading.
+    auto* runtime = Runtime::instance();
+    auto* dispatcher = runtime->function_dispatcher();
+    auto* thread_state = runtime::ThreadState::Get();
 
-    REXSYS_WARN("LoadUserModule: DllMain(DLL_PROCESS_ATTACH) not implemented");
+    if (dispatcher && thread_state && dispatcher->GetFunction(module->entry_point())) {
+      REXSYS_INFO("LoadUserModule: calling DllMain(DLL_PROCESS_ATTACH) for {} at {:08X}",
+                  module->name(), module->entry_point());
+
+      uint32_t hinst = module->guest_xex_header() ? module->guest_xex_header()
+                                                   : module->hmodule_ptr();
+      uint64_t args[] = {hinst, 1, 0};
+      dispatcher->Execute(thread_state, module->entry_point(), args, 3);
+
+      REXSYS_INFO("LoadUserModule: DllMain returned {}", thread_state->context()->r3.u32);
+    } else {
+      REXSYS_WARN("LoadUserModule: DllMain at {:08X} not found in function table",
+                  module->entry_point());
+    }
   }
 
   return module;
