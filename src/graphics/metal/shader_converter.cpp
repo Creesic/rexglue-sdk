@@ -148,6 +148,24 @@ void* MetalShaderConverter::CreateXbox360RootSignature(
     return nullptr;
   }
 
+  static bool dumped_root_locations = false;
+  if (!dumped_root_locations) {
+    dumped_root_locations = true;
+    size_t resource_count = IRRootSignatureGetResourceCount(rootSig);
+    std::vector<IRResourceLocation> locations(resource_count);
+    IRRootSignatureGetResourceLocations(rootSig, locations.data());
+    fprintf(stderr, "[metal] root signature locations (%zu):\n", resource_count);
+    for (const IRResourceLocation& location : locations) {
+      fprintf(stderr,
+              "[metal]   type=%u space=%u slot=%u top_offset=%u size=%llu name=%s\n",
+              uint32_t(location.resourceType), location.space, location.slot,
+              location.topLevelOffset,
+              static_cast<unsigned long long>(location.sizeBytes),
+              location.resourceName ? location.resourceName : "<null>");
+    }
+    fflush(stderr);
+  }
+
   return rootSig;
 }
 

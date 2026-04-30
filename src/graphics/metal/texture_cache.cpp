@@ -357,6 +357,17 @@ MTL::Texture* MetalTextureCache::GetBoundTexture(uint32_t index) const {
   return nullptr;
 }
 
+MTL::Texture* MetalTextureCache::GetBoundTexture(
+    uint32_t fetch_constant, bool signed_version) const {
+  const TextureBinding* binding = GetValidTextureBinding(fetch_constant);
+  if (!binding) return nullptr;
+  Texture* texture = signed_version && binding->texture_signed
+                         ? binding->texture_signed
+                         : binding->texture;
+  if (!texture) return nullptr;
+  return static_cast<const MetalTexture*>(texture)->metal_texture();
+}
+
 MTL::SamplerState* MetalTextureCache::GetBoundSampler(uint32_t index) const {
   if (index < kMaxBoundTextures) return bound_samplers_[index];
   return nullptr;

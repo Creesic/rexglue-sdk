@@ -7,6 +7,10 @@ namespace rex {
 namespace graphics {
 namespace metal {
 
+namespace {
+constexpr bool kMetalVerboseDiagnostics = false;
+}
+
 MetalRenderTargetCache::MetalRenderTargetCache(
     const RegisterFile& register_file, const memory::Memory& memory,
     TraceWriter& trace_writer, uint32_t draw_resolution_scale_x,
@@ -111,12 +115,14 @@ MTL::Texture* MetalRenderTargetCache::CreateRenderTargetTexture(
 
 MTL::PixelFormat MetalRenderTargetCache::GetMetalColorFormat(
     xenos::ColorRenderTargetFormat format) const {
+  if constexpr (kMetalVerboseDiagnostics) {
   static std::atomic<int> fmt_diag{0};
   int fd = fmt_diag.fetch_add(1);
   if (fd < 3) {
     fprintf(stderr, "[metal] RT FORMAT: xenos=%d (%s)\n", (int)format,
             xenos::GetColorRenderTargetFormatName(format));
     fflush(stderr);
+  }
   }
   switch (format) {
     case xenos::ColorRenderTargetFormat::k_8_8_8_8:
@@ -257,7 +263,7 @@ bool MetalRenderTargetCache::Update(
     return true;
   }
 
-  {
+  if constexpr (kMetalVerboseDiagnostics) {
     static std::atomic<int> rt_diag{0};
     int rd = rt_diag.fetch_add(1);
     if (rd < 5) {
@@ -275,10 +281,11 @@ bool MetalRenderTargetCache::Update(
     prev_color_tex_[i] = new_color[i] ? new_color[i]->texture() : nullptr;
   }
 
-  return UpdateRenderPass();
+  return UpdateRenderPass(normalized_depth_control);
 }
 
-bool MetalRenderTargetCache::UpdateRenderPass() {
+bool MetalRenderTargetCache::UpdateRenderPass(
+    reg::RB_DEPTHCONTROL normalized_depth_control) {
   command_processor_.EndRenderEncoder();
 
   MTL::CommandBuffer* cmd = command_processor_.EnsureCommandBuffer();
@@ -304,7 +311,27 @@ bool MetalRenderTargetCache::UpdateRenderPass() {
 
     if (current_depth_rt_->needs_initial_clear()) {
       depth->setLoadAction(MTL::LoadActionClear);
-      depth->setClearDepth(1.0);
+      bool clear_for_greater =
+          normalized_depth_control.z_enable &&
+          (normalized_depth_control.zfunc == xenos::CompareFunction::kGreater ||
+           normalized_depth_control.zfunc == xenos::CompareFunction::kGreaterEqual);
+      depth->setClearDepth(clear_for_greater ? 0.0 : 1.0);
+      static std::atomic<int> depth_clear_diag{0};
+      int dcd = depth_clear_diag.fetch_add(1);
+      if (dcd < 16) {
+        fprintf(stderr,
+                "[metal] INITIAL DEPTH CLEAR #%d: fmt=%u z_enable=%u z_write=%u "
+                "zfunc=%u clear=%f tex=%p %lux%lu\n",
+                dcd, current_depth_rt_->key().resource_format,
+                uint32_t(normalized_depth_control.z_enable),
+                uint32_t(normalized_depth_control.z_write_enable),
+                uint32_t(normalized_depth_control.zfunc),
+                clear_for_greater ? 0.0 : 1.0,
+                current_depth_rt_->texture(),
+                current_depth_rt_->texture() ? current_depth_rt_->texture()->width() : 0,
+                current_depth_rt_->texture() ? current_depth_rt_->texture()->height() : 0);
+        fflush(stderr);
+      }
       if (current_stencil_format_ == MTL::PixelFormatDepth32Float_Stencil8) {
         desc->stencilAttachment()->setLoadAction(MTL::LoadActionClear);
         desc->stencilAttachment()->setClearStencil(0);
@@ -323,7 +350,7 @@ bool MetalRenderTargetCache::UpdateRenderPass() {
       color->setTexture(ctex);
       color->setLoadAction(MTL::LoadActionLoad);
       color->setStoreAction(MTL::StoreActionStore);
-      {
+      if constexpr (kMetalVerboseDiagnostics) {
         static std::atomic<int> attach_diag{0};
         int ad = attach_diag.fetch_add(1);
         if (ad < 10) {
@@ -340,13 +367,17 @@ bool MetalRenderTargetCache::UpdateRenderPass() {
         color->setLoadAction(MTL::LoadActionClear);
         color->setClearColor(MTL::ClearColor(0, 1, 0, 1));
         current_color_rt_[i]->SetNeedsInitialClear(false);
+        if constexpr (kMetalVerboseDiagnostics) {
         fprintf(stderr, "[metal] RT CLEAR: attachment=%d load=Clear GREEN fmt=%d\n",
                 i, (int)current_color_formats_[i]);
         fflush(stderr);
+        }
       } else {
+        if constexpr (kMetalVerboseDiagnostics) {
         fprintf(stderr, "[metal] RT LOAD: attachment=%d load=Load fmt=%d\n",
                 i, (int)current_color_formats_[i]);
         fflush(stderr);
+        }
       }
     }
   }
@@ -366,6 +397,147 @@ bool MetalRenderTargetCache::UpdateRenderPass() {
   command_processor_.SetRenderEncoder(encoder, desc);
   encoder->release();
 
+  return true;
+}
+
+bool MetalRenderTargetCache::ResolveClear(
+    const draw_util::ResolveInfo& resolve_info) {
+  if (!resolve_info.IsClearingDepth() && !resolve_info.IsClearingColor()) {
+    return true;
+  }
+
+  Transfer::Rectangle clear_rectangle;
+  RenderTarget* clear_render_targets[2] = {};
+  std::vector<Transfer> clear_transfers[2];
+  if (!PrepareHostRenderTargetsResolveClear(resolve_info, clear_rectangle,
+                                            clear_render_targets[0],
+                                            clear_transfers[0],
+                                            clear_render_targets[1],
+                                            clear_transfers[1])) {
+    return true;
+  }
+
+  command_processor_.EndRenderEncoder();
+  MTL::CommandBuffer* cmd = command_processor_.EnsureCommandBuffer();
+  if (!cmd) {
+    return false;
+  }
+
+  MTL::RenderPassDescriptor* desc = MTL::RenderPassDescriptor::alloc()->init();
+  bool has_attachment = false;
+
+  if (clear_render_targets[0]) {
+    auto* depth_rt = static_cast<MetalRenderTarget*>(clear_render_targets[0]);
+    uint64_t clear_value = resolve_info.rb_depth_clear;
+    uint32_t depth_guest_clear_value = (uint32_t(clear_value) >> 8) & 0xFFFFFF;
+    double depth_host_clear_value = 0.0;
+    switch (depth_rt->key().GetDepthFormat()) {
+      case xenos::DepthRenderTargetFormat::kD24S8:
+        depth_host_clear_value = xenos::UNorm24To32(depth_guest_clear_value);
+        break;
+      case xenos::DepthRenderTargetFormat::kD24FS8:
+        depth_host_clear_value =
+            xenos::Float20e4To32(depth_guest_clear_value) * 0.5f;
+        break;
+    }
+
+    MTL::RenderPassDepthAttachmentDescriptor* depth = desc->depthAttachment();
+    depth->setTexture(depth_rt->texture());
+    depth->setLoadAction(MTL::LoadActionClear);
+    depth->setStoreAction(MTL::StoreActionStore);
+    depth->setClearDepth(depth_host_clear_value);
+
+    if (GetMetalDepthFormat(depth_rt->key().GetDepthFormat()) ==
+        MTL::PixelFormatDepth32Float_Stencil8) {
+      MTL::RenderPassStencilAttachmentDescriptor* stencil =
+          desc->stencilAttachment();
+      stencil->setTexture(depth_rt->texture());
+      stencil->setLoadAction(MTL::LoadActionClear);
+      stencil->setStoreAction(MTL::StoreActionStore);
+      stencil->setClearStencil(uint32_t(clear_value) & 0xFF);
+    }
+    depth_rt->SetNeedsInitialClear(false);
+    has_attachment = true;
+  }
+
+  if (clear_render_targets[1]) {
+    auto* color_rt = static_cast<MetalRenderTarget*>(clear_render_targets[1]);
+    uint64_t clear_value =
+        resolve_info.rb_color_clear |
+        (uint64_t(resolve_info.rb_color_clear_lo) << 32);
+    double color_clear_value[4] = {};
+    switch (color_rt->key().GetColorFormat()) {
+      case xenos::ColorRenderTargetFormat::k_8_8_8_8:
+      case xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA:
+        for (uint32_t i = 0; i < 4; ++i) {
+          color_clear_value[i] =
+              ((clear_value >> (i * 8)) & 0xFF) * (1.0 / 255.0);
+        }
+        break;
+      case xenos::ColorRenderTargetFormat::k_2_10_10_10:
+      case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10:
+        for (uint32_t i = 0; i < 3; ++i) {
+          color_clear_value[i] =
+              ((clear_value >> (i * 10)) & 0x3FF) * (1.0 / 1023.0);
+        }
+        color_clear_value[3] = ((clear_value >> 30) & 0x3) * (1.0 / 3.0);
+        break;
+      case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
+      case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT_AS_16_16_16_16:
+        for (uint32_t i = 0; i < 3; ++i) {
+          color_clear_value[i] =
+              xenos::Float7e3To32((clear_value >> (i * 10)) & 0x3FF);
+        }
+        color_clear_value[3] = ((clear_value >> 30) & 0x3) * (1.0 / 3.0);
+        break;
+      case xenos::ColorRenderTargetFormat::k_16_16:
+      case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:
+        for (uint32_t i = 0; i < 2; ++i) {
+          color_clear_value[i] = double((clear_value >> (i * 16)) & 0xFFFF);
+        }
+        break;
+      case xenos::ColorRenderTargetFormat::k_16_16_16_16:
+      case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
+        for (uint32_t i = 0; i < 4; ++i) {
+          color_clear_value[i] = double((clear_value >> (i * 16)) & 0xFFFF);
+        }
+        break;
+      case xenos::ColorRenderTargetFormat::k_32_FLOAT:
+        color_clear_value[0] = double(uint32_t(clear_value));
+        break;
+      case xenos::ColorRenderTargetFormat::k_32_32_FLOAT:
+        color_clear_value[0] = double(uint32_t(clear_value));
+        color_clear_value[1] = double(uint32_t(clear_value >> 32));
+        break;
+      default:
+        break;
+    }
+
+    MTL::RenderPassColorAttachmentDescriptor* color =
+        desc->colorAttachments()->object(0);
+    color->setTexture(color_rt->texture());
+    color->setLoadAction(MTL::LoadActionClear);
+    color->setStoreAction(MTL::StoreActionStore);
+    color->setClearColor(MTL::ClearColor(
+        color_clear_value[0], color_clear_value[1],
+        color_clear_value[2], color_clear_value[3]));
+    color_rt->SetNeedsInitialClear(false);
+    has_attachment = true;
+  }
+
+  if (!has_attachment) {
+    desc->release();
+    return true;
+  }
+
+  MTL::RenderCommandEncoder* encoder = cmd->renderCommandEncoder(desc);
+  if (!encoder) {
+    desc->release();
+    return false;
+  }
+  encoder->endEncoding();
+  encoder->release();
+  desc->release();
   return true;
 }
 

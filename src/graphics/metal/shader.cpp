@@ -18,6 +18,10 @@ namespace rex {
 namespace graphics {
 namespace metal {
 
+namespace {
+constexpr bool kMetalVerboseDiagnostics = false;
+}
+
 MetalShader::MetalShader(xenos::ShaderType shader_type,
                          uint64_t ucode_data_hash,
                          const uint32_t* ucode_dwords,
@@ -111,12 +115,13 @@ bool MetalShader::MetalTranslation::TranslateToMetal(
   REXLOG_DEBUG("MetalShader: Converted {} bytes DXIL to {} bytes MetalLib",
                dxil_data_.size(), metallib_data_.size());
 
-  static std::atomic<int> dump_count{0};
-  int dc = dump_count.fetch_add(1);
-  fprintf(stderr, "[metal] SHADER DUMP #%d: metallib=%zu bytes fn=%s\n",
-          dc, metallib_data_.size(), function_name_.c_str());
-  fflush(stderr);
-  if (dc < 10) {
+  if constexpr (kMetalVerboseDiagnostics) {
+    static std::atomic<int> dump_count{0};
+    int dc = dump_count.fetch_add(1);
+    fprintf(stderr, "[metal] SHADER DUMP #%d: metallib=%zu bytes fn=%s\n",
+            dc, metallib_data_.size(), function_name_.c_str());
+    fflush(stderr);
+    if (dc < 10) {
     char dump_path[256];
     snprintf(dump_path, sizeof(dump_path), "/tmp/pgr3_shader_%d.metallib", dc);
     FILE* f = fopen(dump_path, "wb");
@@ -141,6 +146,7 @@ bool MetalShader::MetalTranslation::TranslateToMetal(
             dc, dxbc_bin.size(), dxil_data_.size(), metallib_data_.size(),
             function_name_.c_str());
     fflush(stderr);
+    }
   }
 
   NS::Error* error = nullptr;
