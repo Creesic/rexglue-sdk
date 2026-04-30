@@ -38,7 +38,7 @@ nlohmann::json buildTemplateData(const rex::codegen::CodegenContext& ctx,
                                  const std::unordered_map<uint32_t, std::string>& rexcrtByAddr) {
   const auto& cfg = ctx.Config();
 
-  // Compute code_base and code_size from binary sections
+  // Compute code_base and code_size from binary sections (main + modules)
   size_t codeMin = ~size_t(0);
   size_t codeMax = 0;
   for (const auto& section : ctx.binary().sections()) {
@@ -47,6 +47,17 @@ nlohmann::json buildTemplateData(const rex::codegen::CodegenContext& ctx,
         codeMin = section.baseAddress;
       if ((section.baseAddress + section.size) > codeMax)
         codeMax = section.baseAddress + section.size;
+    }
+  }
+  // Extend code range to include all modules
+  for (const auto& mod : ctx.modules()) {
+    for (const auto& section : mod.binary.sections()) {
+      if (section.executable) {
+        if (section.baseAddress < codeMin)
+          codeMin = section.baseAddress;
+        if ((section.baseAddress + section.size) > codeMax)
+          codeMax = section.baseAddress + section.size;
+      }
     }
   }
 
@@ -100,10 +111,18 @@ nlohmann::json buildTemplateData(const rex::codegen::CodegenContext& ctx,
       {"non_volatile_as_local", cfg.nonVolatileRegistersAsLocalVariables},
   };
 
+  // Compute overall image range (main + all modules)
+  size_t imgBaseMin = ctx.binary().baseAddress();
+  size_t imgSizeTotal = ctx.binary().imageSize();
+  for (const auto& mod : ctx.modules()) {
+    imgSizeTotal = std::max(imgSizeTotal,
+                            (mod.binary.baseAddress() - imgBaseMin) + mod.binary.imageSize());
+  }
+
   return {
       {"project", cfg.projectName},
       {"image_base", fmt::format("0x{:X}", ctx.binary().baseAddress())},
-      {"image_size", fmt::format("0x{:X}", ctx.binary().imageSize())},
+      {"image_size", fmt::format("0x{:X}", imgSizeTotal)},
       {"code_base", fmt::format("0x{:X}", codeMin)},
       {"code_size", fmt::format("0x{:X}", codeMax - codeMin)},
       {"rexcrt_heap", cfg.rexcrtFunctions.contains("RtlAllocateHeap") ? 1 : 0},
@@ -159,7 +178,7 @@ bool CodegenWriter::write(bool force) {
   REXCODEGEN_INFO("Output path: {}", outputPath.string());
   std::filesystem::create_directories(outputPath);
 
-  // --- Clean old generated files (from recompile.cpp) ---
+  // --- Clean old generated files ---
   std::string prefix = config().projectName + "_";
   for (const auto& entry : std::filesystem::directory_iterator(outputPath)) {
     auto ext = entry.path().extension();
@@ -204,6 +223,27 @@ bool CodegenWriter::write(bool force) {
 
   auto tmplData = buildTemplateData(ctx_, functions, rexcrtByAddr);
 
+  // Add per-module image info for additional modules
+  nlohmann::json modulesJson = nlohmann::json::array();
+  for (const auto& mod : ctx_.modules()) {
+    size_t modCodeMin = ~size_t(0);
+    size_t modCodeMax = 0;
+    for (const auto& section : mod.binary.sections()) {
+      if (section.executable) {
+        if (section.baseAddress < modCodeMin) modCodeMin = section.baseAddress;
+        if ((section.baseAddress + section.size) > modCodeMax) modCodeMax = section.baseAddress + section.size;
+      }
+    }
+    modulesJson.push_back({
+        {"name", mod.name},
+        {"image_base", fmt::format("0x{:X}", mod.binary.baseAddress())},
+        {"image_size", fmt::format("0x{:X}", mod.binary.imageSize())},
+        {"code_base", fmt::format("0x{:X}", modCodeMin)},
+        {"code_size", fmt::format("0x{:X}", modCodeMax - modCodeMin)},
+    });
+  }
+  tmplData["modules"] = modulesJson;
+
   // Generate {project}_init.h (self-contained: config + declarations + macros)
   REXCODEGEN_TRACE("Recompile: generating {}_init.h", projectName);
   out = renderWithJson(registry, "codegen/init_h", tmplData);
@@ -227,6 +267,18 @@ bool CodegenWriter::write(bool force) {
                       static_cast<uint32_t>(analysisState().entryPoint), nullptr};
   if (runtime_)
     emitCtx.resolver = runtime_->export_resolver();
+
+  // Set up module binaries for address translation during emission
+  std::vector<BinaryView> moduleBinaryStorage;
+  for (auto& mod : ctx_.modules()) {
+    if (mod.binary.baseAddress() != 0) {
+      moduleBinaryStorage.push_back(std::move(mod.binary));
+    }
+  }
+  if (!moduleBinaryStorage.empty()) {
+    emitCtx.moduleBinaries = moduleBinaryStorage.data();
+    emitCtx.moduleBinaryCount = moduleBinaryStorage.size();
+  }
 
   // Generate recomp files with size-based splitting
   REXCODEGEN_INFO("Recompiling {} functions...", functions.size());

@@ -96,6 +96,58 @@ Result<CodegenContext> CodegenContext::Create(const std::filesystem::path& confi
   ctx.analysisState_.entryPoint = ctx.binary_.entryPoint();
   ctx.analysisState_.imageSize = ctx.binary_.imageSize();
 
+  // --- Load additional modules (DLL XEX files) ---
+  for (const auto& modCfg : ctx.config_.modules) {
+    auto modPath = ctx.configDir_ / modCfg.filePath;
+    if (!std::filesystem::exists(modPath)) {
+      REXCODEGEN_ERROR("Module XEX not found: {}", modPath.string());
+      return Err<CodegenContext>(ErrorCategory::NotFound,
+                                fmt::format("Module XEX not found: {}", modPath.string()));
+    }
+    modPath = std::filesystem::canonical(modPath);
+
+    // Copy the module XEX to the same directory as the main XEX so the VFS can find it.
+    // LoadUserModule resolves relative to the executable module's path.
+    auto mainXexDir = xexPath.parent_path();
+    auto modFilename = modPath.filename();
+    auto vfsModPath = "game:\\" + modFilename.string();
+    auto destPath = mainXexDir / modFilename;
+    if (destPath != modPath) {
+      std::filesystem::copy_file(modPath, destPath,
+                                 std::filesystem::copy_options::overwrite_existing);
+    }
+
+    // Load the module via LoadUserModule (does NOT replace the executable module)
+    auto* kernel = runtime.kernel_state();
+    auto userMod = kernel->LoadUserModule(vfsModPath, false);
+    if (!userMod) {
+      REXCODEGEN_ERROR("Failed to load module: {}", modCfg.name);
+      return Err<CodegenContext>(ErrorCategory::Format,
+                                fmt::format("Failed to load module: {}", modCfg.name));
+    }
+
+    auto* xexMod = userMod->xex_module();
+    if (!xexMod) {
+      REXCODEGEN_ERROR("Module has no XexModule: {}", modCfg.name);
+      return Err<CodegenContext>(ErrorCategory::Format,
+                                fmt::format("Module has no XexModule: {}", modCfg.name));
+    }
+
+    ModuleBinary modBin;
+    modBin.name = modCfg.name;
+    modBin.binary = BinaryView::fromModule(*xexMod);
+    modBin.analysis.format = "xex";
+    modBin.analysis.loadAddress = modBin.binary.baseAddress();
+    modBin.analysis.entryPoint = modBin.binary.entryPoint();
+    modBin.analysis.imageSize = modBin.binary.imageSize();
+
+    REXCODEGEN_INFO("Loaded module '{}': base=0x{:08X}, size=0x{:X}, entry=0x{:08X}",
+                    modCfg.name, modBin.binary.baseAddress(), modBin.binary.imageSize(),
+                    modBin.binary.entryPoint());
+
+    ctx.modules_.push_back(std::move(modBin));
+  }
+
   return ctx;
 }
 
@@ -123,6 +175,11 @@ const DecodedBinary& CodegenContext::decoded() const {
 void CodegenContext::initDecoded() {
   decoded_ = std::make_unique<DecodedBinary>(binary_);
   decoded_->decode();
+}
+
+void CodegenContext::initModuleDecoded(ModuleBinary& mod) {
+  mod.decoded = std::make_unique<DecodedBinary>(mod.binary);
+  mod.decoded->decode();
 }
 
 }  // namespace rex::codegen

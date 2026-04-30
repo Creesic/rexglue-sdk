@@ -12,6 +12,17 @@ const rex::PPCImageInfo PPCImageConfig = {
     REXCRT_HEAP,        // rexcrt_heap
 };
 
+{% for mod in modules %}
+const rex::PPCImageInfo PPCImageConfig_{{ mod.name }} = {
+    REX_MODULE_{{ mod.name | upper }}_CODE_BASE,
+    REX_MODULE_{{ mod.name | upper }}_CODE_SIZE,
+    REX_MODULE_{{ mod.name | upper }}_BASE,
+    REX_MODULE_{{ mod.name | upper }}_SIZE,
+    nullptr,            // func_mappings (shared via main PPCFuncMappings)
+    false,              // rexcrt_heap
+};
+
+{% endfor %}
 PPCFuncMapping PPCFuncMappings[] = {
 {% for fn in functions %}{% if not fn.below_code_base %}	{ {{ fn.address }}, {{ fn.name }} },
 {% endif %}{% endfor %}{% for imp in imports %}	{ {{ imp.address }}, {{ imp.name }} },

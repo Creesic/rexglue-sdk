@@ -176,6 +176,23 @@ set(SNAPPY_INSTALL ON CACHE BOOL "" FORCE)
 add_subdirectory(snappy)
 target_compile_options(snappy PRIVATE -w)
 
+# Snappy's vendored CMake mutates global CMAKE_CXX_FLAGS and (with MSVC) defines
+# _HAS_EXCEPTIONS=0. ReXGlue, spdlog, and UTF-8 helpers need standard C++ exceptions
+# for the rest of the tree; restore that after snappy is configured.
+if(MSVC)
+    string(REPLACE "/EHs-c-" "/EHsc" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    if(NOT CMAKE_CXX_FLAGS MATCHES "/EHsc|/EHa|/EHs")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
+    endif()
+    remove_definitions(_HAS_EXCEPTIONS=0)
+else()
+    string(REGEX REPLACE " -fno-exceptions" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    string(REPLACE "-fno-exceptions" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    if(NOT CMAKE_CXX_FLAGS MATCHES "-fexceptions")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
+    endif()
+endif()
+
 #=============================================================================
 # utfcpp - UTF-8 string library (header-only)
 #=============================================================================

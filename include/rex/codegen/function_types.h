@@ -26,6 +26,7 @@
 #include <vector>
 
 #include <rex/types.h>
+#include <rex/codegen/binary_view.h>
 
 namespace rex::codegen::ppc {
 struct Instruction;
@@ -40,7 +41,6 @@ namespace rex::codegen {
 // Forward declarations
 class FunctionGraph;
 class FunctionNode;
-class BinaryView;
 struct RecompilerConfig;
 
 /// Lightweight context passed to FunctionNode::emitCpp() and BuilderContext.
@@ -51,6 +51,30 @@ struct EmitContext {
   const FunctionGraph& graph;
   uint32_t entryPoint = 0;                      ///< For "xstart" naming
   runtime::ExportResolver* resolver = nullptr;  ///< For import ordinal resolution (nullable)
+  const BinaryView* moduleBinaries = nullptr;   ///< Additional module binaries (array)
+  size_t moduleBinaryCount = 0;                 ///< Number of additional module binaries
+
+  /// Translate address through main binary, falling back to module binaries
+  const uint8_t* translateAddress(uint32_t addr) const {
+    if (auto* p = binary.translate(addr))
+      return p;
+    for (size_t i = 0; i < moduleBinaryCount; ++i) {
+      if (auto* p = moduleBinaries[i].translate(addr))
+        return p;
+    }
+    return nullptr;
+  }
+
+  /// Resolve the BinaryView that contains the given address
+  const BinaryView* resolveBinary(uint32_t addr) const {
+    if (binary.findSection(addr))
+      return &binary;
+    for (size_t i = 0; i < moduleBinaryCount; ++i) {
+      if (moduleBinaries[i].findSection(addr))
+        return &moduleBinaries[i];
+    }
+    return &binary;
+  }
 };
 
 //=============================================================================

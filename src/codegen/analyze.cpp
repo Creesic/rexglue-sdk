@@ -70,7 +70,57 @@ Result<void> Analyze(CodegenContext& ctx) {
     return validateResult;
   }
 
-  REXCODEGEN_INFO("Analyze: complete - {} functions ready for code generation",
+  REXCODEGEN_INFO("Analyze: main binary complete - {} functions", ctx.graph.functionCount());
+
+  // --- Analyze additional modules (DLLs) ---
+  // Each module is analyzed in a temporary context, then functions are merged
+  // into the main graph. This avoids swapping BinaryView/DecodedBinary.
+  for (auto& mod : ctx.modules()) {
+    REXCODEGEN_INFO("Analyze: analyzing module '{}' (base=0x{:08X})", mod.name,
+                    mod.binary.baseAddress());
+
+    RecompilerConfig modConfig = ctx.Config();
+    modConfig.functions.clear();
+    auto modBase = mod.binary.baseAddress();
+    auto modEnd = modBase + mod.binary.imageSize();
+    for (const auto& [addr, fcfg] : ctx.Config().functions) {
+      if (addr >= modBase && addr < modEnd) {
+        modConfig.functions[addr] = fcfg;
+      }
+    }
+
+    // Create a temp context by moving the module binary temporarily
+    auto modCtx = CodegenContext::Create(std::move(mod.binary), std::move(modConfig));
+    modCtx.setResolver(ctx.resolver());
+    modCtx.initDecoded();
+
+    REXCODEGEN_INFO("Analyze: module '{}' decoded {} instructions across {} code regions",
+                    mod.name, modCtx.decoded().instructionCount(), modCtx.decoded().codeRegions().size());
+
+    auto modReg = phases::Register(modCtx);
+    if (!modReg) return modReg;
+    auto modScan = phases::Scan(modCtx);
+    if (!modScan) return modScan;
+    auto modDiscover = phases::Discover(modCtx);
+    if (!modDiscover) return modDiscover;
+    auto modGapFill = phases::GapFill(modCtx);
+    if (!modGapFill) return modGapFill;
+    auto modMerge = phases::Merge(modCtx);
+    if (!modMerge) return modMerge;
+
+    REXCODEGEN_INFO("Analyze: module '{}' discovered {} functions", mod.name,
+                    modCtx.graph.functionCount());
+
+    size_t merged = ctx.graph.mergeGraph(modCtx.graph);
+
+    // Move binary back from temp context so it's available for emission
+    mod.binary = modCtx.extractBinary();
+
+    REXCODEGEN_INFO("Analyze: module '{}' merged {} functions (total: {})", mod.name, merged,
+                    ctx.graph.functionCount());
+  }
+
+  REXCODEGEN_INFO("Analyze: all modules complete - {} total functions ready for code generation",
                   ctx.graph.functionCount());
 
   return Ok();

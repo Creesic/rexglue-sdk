@@ -73,6 +73,14 @@ struct AnalysisState {
   std::vector<uint32_t> ehDiscoveredFuncs;                     ///< EH-discovered function addresses
 };
 
+// Per-module binary descriptor
+struct ModuleBinary {
+  std::string name;        ///< Module name (e.g. "xmedia")
+  BinaryView binary;       ///< Module binary data
+  AnalysisState analysis;  ///< Per-module analysis state
+  std::unique_ptr<DecodedBinary> decoded;
+};
+
 /**
  * Unified context for the entire codegen pipeline.
  *
@@ -135,6 +143,16 @@ class CodegenContext {
   const BinaryView& binary() const { return binary_; }
   BinaryView& binary() { return binary_; }
 
+  /// Access module binaries (main + DLLs)
+  std::vector<ModuleBinary>& modules() { return modules_; }
+  const std::vector<ModuleBinary>& modules() const { return modules_; }
+
+  /// Find module binary by name, or nullptr
+  ModuleBinary* findModule(std::string_view name) {
+    for (auto& m : modules_) if (m.name == name) return &m;
+    return nullptr;
+  }
+
   /// Access the decoded binary (must call initDecoded() first)
   DecodedBinary& decoded();
   const DecodedBinary& decoded() const;
@@ -143,7 +161,13 @@ class CodegenContext {
   /// Call this once after Create() before accessing decoded()
   void initDecoded();
 
+  /// Initialize DecodedBinary for a specific module
+  void initModuleDecoded(ModuleBinary& mod);
+
   bool hasDecoded() const { return decoded_ != nullptr; }
+
+  /// Extract the binary (move semantics) — used to reclaim binary from temp contexts
+  BinaryView extractBinary() { return std::move(binary_); }
 
   RecompilerConfig& Config() { return config_; }
   const RecompilerConfig& Config() const { return config_; }
@@ -152,13 +176,15 @@ class CodegenContext {
   const AnalysisState& analysisState() const { return analysisState_; }
 
   runtime::ExportResolver* resolver() const { return resolver_; }
+  void setResolver(runtime::ExportResolver* r) { resolver_ = r; }
 
   const std::filesystem::path& configDir() const { return configDir_; }
 
  private:
   CodegenContext() = default;
 
-  BinaryView binary_;                       ///< Binary data + sections (owned)
+  BinaryView binary_;                       ///< Main binary data + sections (owned)
+  std::vector<ModuleBinary> modules_;       ///< Additional module binaries (DLLs)
   RecompilerConfig config_;                 ///< User configuration (owned)
   AnalysisState analysisState_;             ///< Analysis state (populated during analysis)
   std::unique_ptr<DecodedBinary> decoded_;  ///< Decoded instructions (created via initDecoded())

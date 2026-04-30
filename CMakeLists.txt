@@ -2,6 +2,19 @@
 # Modern C++23 cross-platform SDK for recompiling Xbox 360 executables
 cmake_minimum_required(VERSION 3.25)
 
+# Must run before project(): Ninja+clang-cl embeds CMAKE_AR in static-library rules at
+# generator setup. The default can be llvm-ar, which does not accept MSVC /out: flags;
+# llvm-lib.exe in the same directory as clang-cl does. Presets set CMAKE_CXX_COMPILER
+# before this file is read.
+if(CMAKE_CXX_COMPILER)
+    get_filename_component(_REXGLUE_CLANG_BIN_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    if(WIN32 AND EXISTS "${_REXGLUE_CLANG_BIN_DIR}/llvm-lib.exe")
+        set(CMAKE_AR "${_REXGLUE_CLANG_BIN_DIR}/llvm-lib.exe" CACHE FILEPATH
+            "Archiver for static libraries" FORCE)
+        set(CMAKE_RANLIB "" CACHE FILEPATH "Unused for COFF static libraries" FORCE)
+    endif()
+endif()
+
 project(ReXGlue
     VERSION 0.7.0
     LANGUAGES C CXX
@@ -109,6 +122,11 @@ add_compile_options(
     $<$<CONFIG:RELEASE>:-DNDEBUG>
     -fno-char8_t
 )
+# clang-cl: without an /EH* flag, C++ exception support can be off; spdlog, utfcpp, and
+# our TOML parsing expect exceptions enabled. MSVC (cl) defaults to /EHsc; be explicit.
+if(MSVC)
+    add_compile_options(/EHsc)
+endif()
 
 # Platform detection (supports AMD64 and ARM64)
 if(WIN32)
@@ -131,6 +149,22 @@ elseif(UNIX AND NOT APPLE)
     add_compile_definitions(REX_PLATFORM_LINUX=1)
 else()
     message(FATAL_ERROR "Unsupported platform. ReXGlue supports Windows and Linux only.")
+endif()
+
+# Windows+Clang: cmake FindThreads false positive creates -lpthreads link flag,
+# and third-party deps may link -lm (POSIX math lib). Create empty stub .lib
+# archives so the linker succeeds without real pthreads/libm.
+if(WIN32)
+    set(_REXGLUE_STUB_DIR "${CMAKE_BINARY_DIR}")
+    set(_REXGLUE_STUB_M    "${_REXGLUE_STUB_DIR}/m.lib")
+    set(_REXGLUE_STUB_PTHR "${_REXGLUE_STUB_DIR}/pthreads.lib")
+    if(NOT EXISTS "${_REXGLUE_STUB_M}" OR NOT EXISTS "${_REXGLUE_STUB_PTHR}")
+        execute_process(
+            COMMAND "${CMAKE_AR}" rcs "${_REXGLUE_STUB_M}"
+            COMMAND "${CMAKE_AR}" rcs "${_REXGLUE_STUB_PTHR}"
+        )
+    endif()
+    link_directories("${_REXGLUE_STUB_DIR}")
 endif()
 
 # Build config as compile definition (multi-config generators don't know config at configure time)

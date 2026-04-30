@@ -528,7 +528,9 @@ class Memory {
   PPCFunc* GetFunction(uint32_t guest_address) const;
 
   // Check if the function table has been initialized.
-  bool HasFunctionTable() const { return function_table_base_ != 0; }
+  bool HasFunctionTable() const { return function_table_host_ != nullptr; }
+
+  uint8_t* function_table_host_base() const { return function_table_host_; }
 
  private:
   int MapViews(uint8_t* mapping_base);
@@ -549,10 +551,11 @@ class Memory {
   uint8_t* physical_membase_ = nullptr;
 
   // Recompiled code function table configuration
-  uint32_t function_table_base_ = 0;  // Guest address of function table (IMAGE_BASE + IMAGE_SIZE)
+  uint32_t function_table_base_ = 0;  // Guest address (for single-binary) or 0 (host-only)
   uint32_t function_code_base_ = 0;   // CODE_BASE for offset calculation
   uint32_t function_code_size_ = 0;   // CODE_SIZE for bounds checking
   uint32_t function_thunk_reserve_ = 0;  // Extra space reserved for runtime thunks
+  uint8_t* function_table_host_ = nullptr;  // Host pointer to function table (always set)
 
   rex::memory::FileMappingHandle mapping_ = rex::memory::kFileMappingHandleInvalid;
   uint8_t* mapping_base_ = nullptr;

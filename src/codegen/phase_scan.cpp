@@ -30,8 +30,8 @@ namespace {
 //=============================================================================
 
 std::vector<CodeRegion> segmentSection(const SectionView& section,
-                                       const std::unordered_set<uint32_t>& exceptionHandlerFuncs,
-                                       uint32_t exportTable) {
+                                        const std::unordered_set<uint32_t>& exceptionHandlerFuncs,
+                                        uint32_t exportTable, uint32_t importThunkStart) {
   std::vector<CodeRegion> regions;
 
   const uint8_t* data = section.data;
@@ -40,6 +40,14 @@ std::vector<CodeRegion> segmentSection(const SectionView& section,
   if (exportTable && exportTable >= section.baseAddress &&
       exportTable < section.baseAddress + section.size) {
     dataEnd = section.data + (exportTable - section.baseAddress);
+  }
+
+  if (importThunkStart && importThunkStart >= section.baseAddress &&
+      importThunkStart < section.baseAddress + section.size) {
+    uint32_t importEnd = static_cast<uint32_t>(importThunkStart - section.baseAddress);
+    if (importEnd < static_cast<uint32_t>(dataEnd - section.data)) {
+      dataEnd = section.data + importEnd;
+    }
   }
 
   uint32_t regionStart = 0;
@@ -112,7 +120,8 @@ void scanBinary(CodegenContext& ctx) {
     if (!section.executable)
       continue;
 
-    auto regions = segmentSection(section, exceptionHandlerFuncs, exportTable);
+    auto regions = segmentSection(section, exceptionHandlerFuncs, exportTable,
+                                    binary.importThunkTableStart());
     scan.codeRegions.insert(scan.codeRegions.end(), regions.begin(), regions.end());
   }
 

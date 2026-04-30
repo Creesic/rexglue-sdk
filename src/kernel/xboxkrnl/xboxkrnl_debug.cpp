@@ -147,8 +147,10 @@ void KeBugCheckEx_entry(u32 code, u32 param1, u32 param2, u32 param3, u32 param4
   REXKRNL_DEBUG("*** STOP: 0x{:08X} (0x{:08X}, 0x{:08X}, 0x{:08X}, 0x{:08X})", code, param1, param2,
                 param3, param4);
   fflush(stdout);
-  rex::debug::Break();
-  assert_always();
+  if (code != 0) {
+    rex::debug::Break();
+    assert_always();
+  }
 }
 
 void KeBugCheck_entry(u32 code) {

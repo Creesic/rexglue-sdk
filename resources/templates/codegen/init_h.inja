@@ -22,6 +22,13 @@
 #define REX_CODE_BASE {{ code_base }}ull
 #define REX_CODE_SIZE {{ code_size }}ull
 
+{% for mod in modules %}
+#define REX_MODULE_{{ mod.name | upper }}_BASE {{ mod.image_base }}ull
+#define REX_MODULE_{{ mod.name | upper }}_SIZE {{ mod.image_size }}ull
+#define REX_MODULE_{{ mod.name | upper }}_CODE_BASE {{ mod.code_base }}ull
+#define REX_MODULE_{{ mod.name | upper }}_CODE_SIZE {{ mod.code_size }}ull
+{% endfor %}
+
 #define REXCRT_HEAP {% if rexcrt_heap %}1{% else %}0{% endif %}
 
 //=============================================================================
@@ -35,6 +42,13 @@
 #include <rex/perf/counter.h>
 #include <rex/thread/mutex.h>
 #include <rex/system/mmio_handler.h>
+#include <rex/system/kernel_state.h>
+
+using rex::u8;
+using rex::u16;
+using rex::u32;
+using rex::i32;
+using rex::u64;
 
 #include <atomic>
 #include <cassert>
@@ -222,7 +236,7 @@ extern PPCFuncMapping PPCFuncMappings[];
 #define REX_CALL_FUNC(x) x(ctx, base)
 
 #define REX_LOOKUP_FUNC(x, y) \
-  (*(PPCFunc**)(x + REX_IMAGE_BASE + REX_IMAGE_SIZE + (u64(u32(y) - REX_CODE_BASE) * 2)))
+  (*(PPCFunc**)(rex::system::kernel_state()->memory()->function_table_host_base() + (u64(u32(y) - REX_CODE_BASE) * 2)))
 
 #ifdef REXGLUE_ENABLE_PROFILING
 #define REX_CALL_INDIRECT_FUNC(x) \

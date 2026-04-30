@@ -6,6 +6,7 @@ add_executable(rexglue
     commands/init_command.cpp
     commands/migrate_command.cpp
     commands/test_recompiler.cpp
+    msvc_stl_shim.cpp
 )
 
 target_include_directories(rexglue
@@ -18,6 +19,10 @@ target_link_libraries(rexglue
     PRIVATE
         rexcodegen
 )
+
+if(WIN32)
+    target_link_libraries(rexglue PRIVATE msvcprt)
+endif()
 
 # Delay-load FidelityFX DLLs so rexglue can run in tool mode without them.
 if(WIN32)

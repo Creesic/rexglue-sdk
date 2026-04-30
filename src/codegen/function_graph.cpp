@@ -387,7 +387,7 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
   labels.reserve(64);
 
   for (const auto& block : blocks()) {
-    auto* blockData = reinterpret_cast<const uint32_t*>(ctx.binary.translate(block.base));
+    auto* blockData = reinterpret_cast<const uint32_t*>(ctx.translateAddress(block.base));
     if (!blockData)
       continue;
 
@@ -500,7 +500,7 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
   for (const auto& block : blocks()) {
     auto blockBase = block.base;
     auto blockEnd = block.end();
-    auto* data = reinterpret_cast<const uint32_t*>(ctx.binary.translate(block.base));
+    auto* data = reinterpret_cast<const uint32_t*>(ctx.translateAddress(block.base));
     if (!data) {
       REXCODEGEN_WARN("Block 0x{:08X} in function 0x{:08X} has no mapped data - skipping",
                       block.base, base());
@@ -556,7 +556,8 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
           }
 
           if (is_switch_pattern) {
-            FunctionScanner scanner(ctx.binary);
+            const BinaryView* resolvedBin = ctx.resolveBinary(blockBase);
+            FunctionScanner scanner(*resolvedBin);
             auto jt_opt = scanner.detect_jump_table(blockBase);
             if (jt_opt.has_value()) {
               lateJumpTables.emplace(blockBase, std::move(*jt_opt));
@@ -802,6 +803,56 @@ bool FunctionGraph::removeFunction(uint32_t entryPoint) {
   functions_.erase(it);
   functionHasXrefs_.erase(entryPoint);  // Clean up xref tracking
   return true;
+}
+
+bool FunctionGraph::mergeFunction(std::unique_ptr<FunctionNode> node) {
+  if (!node) return false;
+  uint32_t base = node->base();
+  auto it = functions_.find(base);
+  if (it != functions_.end()) {
+    FunctionNode* existing = it->second.get();
+    if (existing->authority() > node->authority()) {
+      return false;
+    }
+    if (existing->authority() == node->authority()) {
+      if (!existing->blocks().empty() && node->blocks().empty()) {
+        return false;
+      }
+    }
+    functionsByBase_.erase(base);
+  }
+  functionsByBase_[base] = node.get();
+  functionHasXrefs_[base] = true;
+  functions_[base] = std::move(node);
+  return true;
+}
+
+size_t FunctionGraph::mergeGraph(FunctionGraph& other) {
+  std::unordered_set<std::string> existingNames;
+  existingNames.reserve(functions_.size());
+  for (auto& [addr, fn] : functions_) {
+    if (!fn->name().empty()) {
+      existingNames.insert(fn->name());
+    }
+  }
+
+  size_t merged = 0;
+  for (auto it = other.functions_.begin(); it != other.functions_.end();) {
+    auto& node = it->second;
+    if (node && !node->name().empty() && existingNames.count(node->name())) {
+      // Imports can share names (same external function, different thunk addresses)
+      if (node->authority() != FunctionAuthority::IMPORT) {
+        node->setName(fmt::format("sub_{:08X}", node->base()));
+      }
+    }
+    if (mergeFunction(std::move(node))) {
+      ++merged;
+    }
+    it = other.functions_.erase(it);
+  }
+  other.functionsByBase_.clear();
+  other.functionHasXrefs_.clear();
+  return merged;
 }
 
 FunctionNode* FunctionGraph::getFunctionContaining(uint32_t addr) {

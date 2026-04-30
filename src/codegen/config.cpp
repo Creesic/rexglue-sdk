@@ -374,6 +374,34 @@ void ApplyToml(const toml::table& toml, RecompilerConfig& cfg, const std::string
 
   // --- Sets: additive ---
 
+  // [[modules]] -- additional binaries (DLL XEX files)
+  if (auto modulesArray = toml["modules"].as_array()) {
+    for (auto& entry : *modulesArray) {
+      auto* table = entry.as_table();
+      if (!table) {
+        REXCODEGEN_ERROR("Invalid [[modules]] entry: expected table");
+        continue;
+      }
+
+      auto name_opt = (*table)["name"].value<std::string>();
+      auto path_opt = (*table)["file_path"].value<std::string>();
+
+      if (!name_opt) {
+        REXCODEGEN_ERROR("Missing 'name' in [[modules]] entry");
+        continue;
+      }
+      if (!path_opt) {
+        REXCODEGEN_ERROR("Missing 'file_path' in [[modules]] entry");
+        continue;
+      }
+
+      cfg.modules.push_back(ModuleConfig{std::string(*name_opt), std::string(*path_opt)});
+      REXCODEGEN_DEBUG("[config]   [[modules]] added '{}' -> {}", *name_opt, *path_opt);
+    }
+  }
+
+  // --- Sets: additive (continued) ---
+
   // indirect_calls -> knownIndirectCallHints (set)
   if (auto indirectCallArray = toml["indirect_calls"].as_array()) {
     for (auto& entry : *indirectCallArray) {

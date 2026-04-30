@@ -74,6 +74,14 @@ class FunctionGraph {
   // Remove function from graph (for cleanup of absorbed GAP_FILLs)
   bool removeFunction(uint32_t entryPoint);
 
+  // Merge a pre-built function node from another graph (for multi-module support)
+  // Takes ownership of the node. Returns false if a higher-authority function already exists.
+  bool mergeFunction(std::unique_ptr<FunctionNode> node);
+
+  // Merge all functions from another graph into this one (for multi-module support)
+  // Returns the number of functions merged.
+  size_t mergeGraph(FunctionGraph& other);
+
   // Get function containing address (O(log f) via sorted base index)
   FunctionNode* getFunctionContaining(uint32_t addr);
   const FunctionNode* getFunctionContaining(uint32_t addr) const;

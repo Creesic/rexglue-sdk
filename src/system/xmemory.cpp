@@ -259,7 +259,7 @@ static const struct {
         0x8FFFFFFF,
         0x0000000080000000ull,
     },
-    //  (256mb) - xex 4k pages
+    //  (256mb) - xex 4k pages (mirror of 0x80000000)
     {
         0x90000000,
         0x9FFFFFFF,
@@ -703,54 +703,54 @@ bool Memory::Restore(stream::ByteStream* stream) {
 
 bool Memory::InitializeFunctionTable(uint32_t code_base, uint32_t code_size, uint32_t image_base,
                                      uint32_t image_size) {
-  if (function_table_base_ != 0) {
+  if (function_table_host_ != nullptr) {
     REXSYS_ERROR("Function table already initialized");
     return false;
   }
 
-  // The function table lives at IMAGE_BASE + IMAGE_SIZE in guest address space.
-  // Each 4-byte-aligned guest address gets an 8-byte slot for a host function pointer.
-  // Table size = (code_size + thunk_reserve) * 2 bytes (since offset = (addr - code_base) * 2).
-  // The thunk reserve provides space for runtime-allocated thunks (e.g. XexGetProcedureAddress).
-  constexpr uint32_t kThunkReserveSize = 0x10000;  // 64KB = up to 16K thunks
-  function_table_base_ = image_base + image_size;
+  constexpr uint32_t kThunkReserveSize = 0x10000;
   function_code_base_ = code_base;
   function_code_size_ = code_size;
   function_thunk_reserve_ = kThunkReserveSize;
 
-  uint32_t table_size = (code_size + kThunkReserveSize) * 2;
+  uint64_t table_size = (uint64_t(code_size) + kThunkReserveSize) * 2;
 
   REXSYS_DEBUG(
-      "Initializing function table at {:08X}, size {:08X} for code {:08X}-{:08X} "
+      "Initializing function table, size {:08X} for code {:08X}-{:08X} "
       "(+{:08X} thunk reserve)",
-      function_table_base_, table_size, code_base, code_base + code_size, kThunkReserveSize);
+      table_size, code_base, code_base + code_size, kThunkReserveSize);
 
-  // Allocate the function table region in guest memory.
-  // Use the 64k page heap (v80000000) since that's where XEX code lives.
-  if (!heaps_.v80000000.AllocFixed(
-          function_table_base_, table_size, 0x10000,
+  // Try guest memory allocation first (single-binary, fits in heap).
+  function_table_base_ = image_base + image_size;
+  if (heaps_.v80000000.AllocFixed(
+          function_table_base_, uint32_t(table_size), 0x10000,
           memory::kMemoryAllocationReserve | memory::kMemoryAllocationCommit,
           memory::kMemoryProtectRead | memory::kMemoryProtectWrite)) {
-    REXSYS_ERROR("Failed to allocate function table at {:08X}", function_table_base_);
-    function_table_base_ = 0;
+    Zero(function_table_base_, uint32_t(table_size));
+    function_table_host_ = TranslateVirtual(function_table_base_);
+    REXSYS_DEBUG("Function table in guest memory at {:08X}", function_table_base_);
+    return true;
+  }
+
+  // Fallback: allocate host-only memory (multi-module setups with large code range).
+  function_table_base_ = 0;
+  function_table_host_ = static_cast<uint8_t*>(std::calloc(table_size, 1));
+  if (!function_table_host_) {
+    REXSYS_ERROR("Failed to allocate function table (host alloc) size {:08X}", table_size);
     return false;
   }
 
-  // Zero-initialize the table (nullptr for all entries).
-  Zero(function_table_base_, table_size);
-
+  REXSYS_DEBUG("Function table in host memory at {} (size {:08X})", (void*)function_table_host_,
+               table_size);
   return true;
 }
 
 void Memory::SetFunction(uint32_t guest_address, PPCFunc* host_function) {
-  if (function_table_base_ == 0) {
+  if (function_table_host_ == nullptr) {
     REXSYS_ERROR("SetFunction called before InitializeFunctionTable");
     return;
   }
 
-  // Bounds check - addresses outside code section + thunk reserve are unexpected.
-  // IAT imports are called directly via __imp__ symbols, not through function table.
-  // Thunk reserve extends past code section for runtime-allocated thunks.
   if (guest_address < function_code_base_ ||
       guest_address >= function_code_base_ + function_code_size_ + function_thunk_reserve_) {
     REXSYS_DEBUG("SetFunction: skipping {:08X} (outside code+thunk range [{:08X}, {:08X}))",
@@ -759,34 +759,23 @@ void Memory::SetFunction(uint32_t guest_address, PPCFunc* host_function) {
     return;
   }
 
-  // Calculate table offset: (guest_addr - code_base) * 2
-  // This gives us the byte offset into the table for this 8-byte slot.
   uint64_t offset = (uint64_t(guest_address) - function_code_base_) * 2;
-  uint32_t table_address = function_table_base_ + uint32_t(offset);
-
-  // Write the host function pointer to the table.
-  // The table is in guest memory but stores host pointers.
-  auto* slot = TranslateVirtual<PPCFunc**>(table_address);
+  auto* slot = reinterpret_cast<PPCFunc**>(function_table_host_ + offset);
   *slot = host_function;
 }
 
 PPCFunc* Memory::GetFunction(uint32_t guest_address) const {
-  if (function_table_base_ == 0) {
+  if (function_table_host_ == nullptr) {
     return nullptr;
   }
 
-  // Bounds check (includes thunk reserve for runtime-allocated thunks)
   if (guest_address < function_code_base_ ||
       guest_address >= function_code_base_ + function_code_size_ + function_thunk_reserve_) {
     return nullptr;
   }
 
-  // Calculate table offset
   uint64_t offset = (uint64_t(guest_address) - function_code_base_) * 2;
-  uint32_t table_address = function_table_base_ + uint32_t(offset);
-
-  // Read the host function pointer from the table.
-  auto* slot = const_cast<memory::Memory*>(this)->TranslateVirtual<PPCFunc**>(table_address);
+  auto* slot = reinterpret_cast<PPCFunc* const*>(function_table_host_ + offset);
   return *slot;
 }
 

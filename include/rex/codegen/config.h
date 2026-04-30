@@ -53,6 +53,12 @@ struct FunctionConfig {
   bool isChunk() const { return parent != 0; }
 };
 
+// Additional module (DLL) to recompile alongside the main binary
+struct ModuleConfig {
+  std::string name;      ///< Module identifier (e.g. "xmedia", "speech")
+  std::string filePath;  ///< Path to module XEX relative to config dir
+};
+
 // Section info for analysis output
 struct SectionInfo {
   std::string name;
@@ -106,6 +112,9 @@ struct RecompilerConfig {
   // Maps function name -> guest address (e.g. "CreateFileA" -> 0x8248B780)
   // Parsed from [rexcrt] TOML table. Codegen generates rexcrt_<Name> entries.
   std::unordered_map<std::string, uint32_t> rexcrtFunctions;
+
+  // === Additional modules (DLL XEX files to recompile) ===
+  std::vector<ModuleConfig> modules;  ///< [[modules]] array-of-tables
 
   // === User hints (merged with analysis results in AnalysisState) ===
   std::unordered_map<uint32_t, uint32_t> invalidInstructionHints;  ///< addr -> size
