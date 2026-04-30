@@ -571,7 +571,14 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
   }
 
   shader_translator_ = std::make_unique<DxbcShaderTranslator>(
-      ui::GraphicsProvider::GpuVendorID::kApple, true, false);
+      ui::GraphicsProvider::GpuVendorID::kApple,
+      false,  // bindless_resources_used
+      false,  // edram_rov_used
+      true,   // gamma_render_target_as_unorm8
+      false,  // msaa_2x_supported
+      1,      // draw_resolution_scale_x
+      1,      // draw_resolution_scale_y
+      false); // force_emit_source_map
   return true;
 }
 
@@ -1917,20 +1924,21 @@ void MetalCommandProcessor::BindResources(
     auto bind_shader_textures = [&](MetalShader* shader) {
       if (!shader) return;
       const auto& tex_bindings = shader->GetTextureBindingsAfterTranslation();
-      for (const auto& binding : tex_bindings) {
-        uint32_t slot = binding.bindless_descriptor_index;
-        if (slot >= kResourceHeapSlotsPerTable - 1) continue;
+      for (size_t binding_index = 0; binding_index < tex_bindings.size(); ++binding_index) {
+        uint32_t slot = 1 + static_cast<uint32_t>(binding_index);
+        if (slot >= kResourceHeapSlotsPerTable) break;
+        const auto& binding = tex_bindings[binding_index];
         MTL::Texture* tex = texture_cache_->GetBoundTexture(
             binding.fetch_constant, binding.is_signed);
         if (!tex) continue;
-        SetDescriptorTexture(&res_entries[1 + slot], tex);
+        SetDescriptorTexture(&res_entries[slot], tex);
         UseRenderEncoderResource(tex, MTL::ResourceUsageSample);
         if constexpr (kMetalVerboseDiagnostics) {
           static std::atomic<int> rid_diag{0};
           int rd = rid_diag.fetch_add(1);
-          if (rd < 4) {
-            fprintf(stderr, "[metal] TEX RID: di=%u fc=%u signed=%d gpuRID=%llu ptr=%p\n",
-                    slot, binding.fetch_constant, int(binding.is_signed),
+          if (rd < 8) {
+            fprintf(stderr, "[metal] TEX RID: slot=%u bi=%zu fc=%u signed=%d gpuRID=%llu ptr=%p\n",
+                    slot, binding_index, binding.fetch_constant, int(binding.is_signed),
                     (unsigned long long)tex->gpuResourceID()._impl, tex);
             fflush(stderr);
           }
