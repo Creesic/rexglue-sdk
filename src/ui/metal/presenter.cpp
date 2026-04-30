@@ -6,6 +6,8 @@
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
 
+#include "shaders/blit_metallib.h"
+
 namespace rex {
 namespace ui {
 namespace metal {
@@ -30,6 +32,20 @@ bool MetalPresenter::Initialize() {
       return false;
     }
   }
+
+  dispatch_data_t libData = dispatch_data_create(
+      blit_metallib, blit_metallib_len,
+      dispatch_get_main_queue(), DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  NS::Error* err = nullptr;
+  blit_lib_ = device_->newLibrary(libData, &err);
+  dispatch_release(libData);
+  if (blit_lib_) {
+    REXLOG_INFO("MetalPresenter: Blit shader loaded");
+  } else {
+    REXLOG_ERROR("MetalPresenter: Failed to load blit shader: {}",
+                 err ? err->localizedDescription()->utf8String() : "unknown");
+  }
+
   REXLOG_INFO("MetalPresenter: Initialized on device {}", device_->name()->utf8String());
   return true;
 }
@@ -58,61 +74,101 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
   }
 
   auto* pool = NS::AutoreleasePool::alloc()->init();
-
   CA::MetalLayer* layer = reinterpret_cast<CA::MetalLayer*>(metal_layer_);
-
   CA::MetalDrawable* drawable = layer->nextDrawable();
   if (!drawable) {
     pool->drain();
     return PaintResult::kNotPresented;
   }
 
-  MTL::CommandBuffer* cmd = queue->commandBuffer();
-  if (!cmd) {
-    pool->drain();
-    return PaintResult::kNotPresented;
+  MTL::Texture* dst = drawable->texture();
+  MTL::Texture* src = provider_->GetFrontbufferTexture();
+
+  static std::atomic<int> paint_count{0};
+  int pc = paint_count.fetch_add(1);
+  if (pc < 10 || pc % 500 == 0) {
+    fprintf(stderr, "[metal] PAINT #%d: src=%p dst=%p\n", pc, src, dst);
+    fflush(stderr);
   }
 
-  MTL::Texture* src = provider_->GetFrontbufferTexture();
-  static std::atomic<int> present_count{0};
-  int pc = present_count.fetch_add(1);
-  if (pc < 10) {
-    fprintf(stderr, "[metal] PaintAndPresent: src=%p drawable=%p (%ux%u)\n",
-            src, drawable ? drawable->texture() : nullptr,
-            drawable ? (unsigned)drawable->texture()->width() : 0,
-            drawable ? (unsigned)drawable->texture()->height() : 0); fflush(stderr);
-  }
-  if (src) {
-    MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
-    if (blit) {
-      uint32_t copy_w = std::min(src->width(), drawable->texture()->width());
-      uint32_t copy_h = std::min(src->height(), drawable->texture()->height());
-      blit->copyFromTexture(src, 0, 0, MTL::Origin(0, 0, 0),
-                             MTL::Size(copy_w, copy_h, 1),
-                             drawable->texture(), 0, 0,
-                             MTL::Origin(0, 0, 0));
-      if (copy_w < (uint32_t)drawable->texture()->width()) {
-        blit->copyFromTexture(src, 0, 0, MTL::Origin(0, 0, 0),
-                               MTL::Size(copy_w, copy_h, 1),
-                               drawable->texture(), 0, 0,
-                               MTL::Origin(copy_w, 0, 0));
+  MTL::CommandBuffer* cmd = queue->commandBuffer();
+  if (!cmd) { pool->drain(); return PaintResult::kNotPresented; }
+
+  if (src && blit_lib_) {
+    static std::atomic<int> blit_count{0};
+    int bc = blit_count.fetch_add(1);
+    if (bc < 5) {
+      fprintf(stderr, "[metal] BLIT: src=%p %ux%u fmt=%d dst=%ux%u fmt=%d\n",
+              src, (unsigned)src->width(), (unsigned)src->height(), (int)src->pixelFormat(),
+              (unsigned)dst->width(), (unsigned)dst->height(), (int)dst->pixelFormat());
+      fflush(stderr);
+    }
+    MTL::RenderPipelineState* pipe = GetOrCreateBlitPipeline(dst->pixelFormat());
+    if (pipe) {
+      MTL::RenderPassDescriptor* rpd = MTL::RenderPassDescriptor::alloc()->init();
+      auto* ca = rpd->colorAttachments()->object(0);
+      ca->setTexture(dst);
+      ca->setLoadAction(MTL::LoadActionClear);
+      ca->setClearColor(MTL::ClearColor(0, 0, 0, 1));
+      ca->setStoreAction(MTL::StoreActionStore);
+      MTL::RenderCommandEncoder* enc = cmd->renderCommandEncoder(rpd);
+      if (enc) {
+        enc->setRenderPipelineState(pipe);
+        enc->setFragmentTexture(src, 0);
+        enc->setFragmentSamplerState(GetNearestSampler(), 0);
+        float src_h = src->height() > 720 ? 720.0f : (float)src->height();
+        struct { float w, h, src_w, src_h; } ub = {
+          (float)dst->width(), (float)dst->height(),
+          (float)src->width(), src_h
+        };
+        enc->setVertexBytes(&ub, sizeof(ub), 0);
+        enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+        enc->endEncoding();
       }
-      blit->endEncoding();
-      if (pc < 3) {
-        fprintf(stderr, "[metal] PaintAndPresent: blitted %ux%u from %p to drawable (%ux%u)\n",
-                copy_w, copy_h, src,
-                (unsigned)drawable->texture()->width(),
-                (unsigned)drawable->texture()->height());
-        fflush(stderr);
-      }
+      rpd->release();
     }
   }
 
   cmd->presentDrawable(drawable);
   cmd->commit();
-
   pool->drain();
   return PaintResult::kPresented;
+}
+
+MTL::RenderPipelineState* MetalPresenter::GetOrCreateBlitPipeline(MTL::PixelFormat fmt) {
+  if (blit_pipe_ && blit_pipe_fmt_ == fmt) return blit_pipe_;
+  if (!blit_lib_) return nullptr;
+  auto* vf = blit_lib_->newFunction(NS::String::string("blit_vs", NS::UTF8StringEncoding));
+  auto* ff = blit_lib_->newFunction(NS::String::string("blit_fs", NS::UTF8StringEncoding));
+  auto* desc = MTL::RenderPipelineDescriptor::alloc()->init();
+  desc->setVertexFunction(vf);
+  desc->setFragmentFunction(ff);
+  desc->colorAttachments()->object(0)->setPixelFormat(fmt);
+  NS::Error* err = nullptr;
+  blit_pipe_ = device_->newRenderPipelineState(desc, MTL::PipelineOptionNone, nullptr, &err);
+  if (!blit_pipe_) {
+    fprintf(stderr, "[metal] BLIT PIPE failed: %s\n",
+            err ? err->localizedDescription()->utf8String() : "null"); fflush(stderr);
+  } else {
+    blit_pipe_fmt_ = fmt;
+    fprintf(stderr, "[metal] BLIT PIPE OK fmt=%d\n", (int)fmt); fflush(stderr);
+  }
+  desc->release();
+  if (vf) vf->release();
+  if (ff) ff->release();
+  return blit_pipe_;
+}
+
+MTL::SamplerState* MetalPresenter::GetNearestSampler() {
+  if (nearest_sampler_) return nearest_sampler_;
+  auto* desc = MTL::SamplerDescriptor::alloc()->init();
+  desc->setMinFilter(MTL::SamplerMinMagFilterNearest);
+  desc->setMagFilter(MTL::SamplerMinMagFilterNearest);
+  desc->setSAddressMode(MTL::SamplerAddressModeClampToEdge);
+  desc->setTAddressMode(MTL::SamplerAddressModeClampToEdge);
+  nearest_sampler_ = device_->newSamplerState(desc);
+  desc->release();
+  return nearest_sampler_;
 }
 
 Presenter::SurfacePaintConnectResult
@@ -120,9 +176,6 @@ MetalPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
     Surface& new_surface, uint32_t new_surface_width,
     uint32_t new_surface_height, bool was_paintable,
     bool& is_vsync_implicit_out) {
-  fprintf(stderr, "[metal] ConnectOrReconnect: type=%d %ux%u was_paintable=%d\n",
-          (int)new_surface.GetType(), new_surface_width, new_surface_height, was_paintable);
-  fflush(stderr);
   is_vsync_implicit_out = true;
 
   Surface::TypeIndex surface_type = new_surface.GetType();
@@ -158,18 +211,8 @@ bool MetalPresenter::RefreshGuestOutputImpl(
     uint32_t frontbuffer_height,
     std::function<bool(GuestOutputRefreshContext& context)> refresher,
     bool& is_8bpc_out_ref) {
-  static std::atomic<int> refresh_count{0};
-  int rc = refresh_count.fetch_add(1);
-  if (rc < 5) {
-    fprintf(stderr, "[metal] RefreshGuestOutputImpl: mailbox=%u %ux%u\n",
-            mailbox_index, frontbuffer_width, frontbuffer_height); fflush(stderr);
-  }
   MetalGuestOutputRefreshContext context(is_8bpc_out_ref);
-  bool ok = refresher(context);
-  if (rc < 5) {
-    fprintf(stderr, "[metal] RefreshGuestOutputImpl: refresher returned %d\n", ok); fflush(stderr);
-  }
-  return ok;
+  return refresher(context);
 }
 
 }  // namespace metal

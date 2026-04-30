@@ -111,13 +111,20 @@ MTL::Texture* MetalRenderTargetCache::CreateRenderTargetTexture(
 
 MTL::PixelFormat MetalRenderTargetCache::GetMetalColorFormat(
     xenos::ColorRenderTargetFormat format) const {
+  static std::atomic<int> fmt_diag{0};
+  int fd = fmt_diag.fetch_add(1);
+  if (fd < 3) {
+    fprintf(stderr, "[metal] RT FORMAT: xenos=%d (%s)\n", (int)format,
+            xenos::GetColorRenderTargetFormatName(format));
+    fflush(stderr);
+  }
   switch (format) {
     case xenos::ColorRenderTargetFormat::k_8_8_8_8:
       return MTL::PixelFormatBGRA8Unorm;
     case xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA:
       return MTL::PixelFormatBGRA8Unorm_sRGB;
     case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
-      return MTL::PixelFormatRGB10A2Unorm;
+      return MTL::PixelFormatBGR10A2Unorm;
     case xenos::ColorRenderTargetFormat::k_16_16:
       return MTL::PixelFormatRG16Snorm;
     case xenos::ColorRenderTargetFormat::k_16_16_16_16:
@@ -250,6 +257,19 @@ bool MetalRenderTargetCache::Update(
     return true;
   }
 
+  {
+    static std::atomic<int> rt_diag{0};
+    int rd = rt_diag.fetch_add(1);
+    if (rd < 5) {
+      fprintf(stderr, "[metal] RT CONFIG #%d: config_changed=%d color_fmt=%d depth_fmt=%d color_tex=%p\n",
+              rd, config_changed,
+              current_color_rt_[0] ? (int)current_color_formats_[0] : -1,
+              (int)current_depth_format_,
+              current_color_rt_[0] ? current_color_rt_[0]->texture() : nullptr);
+      fflush(stderr);
+    }
+  }
+
   prev_depth_tex_ = new_depth_tex;
   for (uint32_t i = 0; i < 4; i++) {
     prev_color_tex_[i] = new_color[i] ? new_color[i]->texture() : nullptr;
@@ -299,14 +319,34 @@ bool MetalRenderTargetCache::UpdateRenderPass() {
       has_any_attachment = true;
       MTL::RenderPassColorAttachmentDescriptor* color =
           desc->colorAttachments()->object(i);
-      color->setTexture(current_color_rt_[i]->texture());
+      MTL::Texture* ctex = current_color_rt_[i]->texture();
+      color->setTexture(ctex);
       color->setLoadAction(MTL::LoadActionLoad);
       color->setStoreAction(MTL::StoreActionStore);
+      {
+        static std::atomic<int> attach_diag{0};
+        int ad = attach_diag.fetch_add(1);
+        if (ad < 10) {
+          fprintf(stderr, "[metal] ATTACH DIAG #%d: i=%d tex=%p usage=0x%X fmt=%d %ux%u\n",
+                  ad, i, ctex, (unsigned)(ctex ? ctex->usage() : 0),
+                  ctex ? (int)ctex->pixelFormat() : 0,
+                  ctex ? (unsigned)ctex->width() : 0,
+                  ctex ? (unsigned)ctex->height() : 0);
+          fflush(stderr);
+        }
+      }
 
       if (current_color_rt_[i]->needs_initial_clear()) {
         color->setLoadAction(MTL::LoadActionClear);
         color->setClearColor(MTL::ClearColor(0, 1, 0, 1));
         current_color_rt_[i]->SetNeedsInitialClear(false);
+        fprintf(stderr, "[metal] RT CLEAR: attachment=%d load=Clear GREEN fmt=%d\n",
+                i, (int)current_color_formats_[i]);
+        fflush(stderr);
+      } else {
+        fprintf(stderr, "[metal] RT LOAD: attachment=%d load=Load fmt=%d\n",
+                i, (int)current_color_formats_[i]);
+        fflush(stderr);
       }
     }
   }

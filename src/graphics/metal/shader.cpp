@@ -55,7 +55,7 @@ bool MetalShader::MetalTranslation::TranslateToMetal(
       MetalShaderCache::GetCacheKey(shader().ucode_data_hash(), modification(),
                                     static_cast<uint32_t>(shader().type()));
 
-  if (g_metal_shader_cache && g_metal_shader_cache->IsInitialized()) {
+  if (false && g_metal_shader_cache && g_metal_shader_cache->IsInitialized()) {
     MetalShaderCache::CachedMetallib cached;
     if (g_metal_shader_cache->Load(shader_cache_key, &cached)) {
       NS::Error* error = nullptr;
@@ -113,7 +113,10 @@ bool MetalShader::MetalTranslation::TranslateToMetal(
 
   static std::atomic<int> dump_count{0};
   int dc = dump_count.fetch_add(1);
-  if (dc < 4) {
+  fprintf(stderr, "[metal] SHADER DUMP #%d: metallib=%zu bytes fn=%s\n",
+          dc, metallib_data_.size(), function_name_.c_str());
+  fflush(stderr);
+  if (dc < 10) {
     char dump_path[256];
     snprintf(dump_path, sizeof(dump_path), "/tmp/pgr3_shader_%d.metallib", dc);
     FILE* f = fopen(dump_path, "wb");

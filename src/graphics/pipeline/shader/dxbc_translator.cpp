@@ -339,6 +339,158 @@ void DxbcShaderTranslator::RemapAndConvertVertexIndices(uint32_t dest_temp,
   a_.OpUToF(dest, dest_src);
 }
 
+void DxbcShaderTranslator::StartVertexShader_LoadVertexIndex_ExpandedPoint() {
+  if (register_count() < 1) {
+    return;
+  }
+
+  bool uses_register_dynamic_addressing = current_shader().uses_register_dynamic_addressing();
+
+  uint32_t reg;
+  if (uses_register_dynamic_addressing) {
+    reg = PushSystemTemp();
+  } else {
+    reg = 0;
+  }
+
+  dxbc::Dest index_dest(dxbc::Dest::R(reg, 0b0001));
+  dxbc::Src index_src(dxbc::Src::R(reg, dxbc::Src::kXXXX));
+
+  // Point sprite expansion: 4 host vertices per point (two-triangle strip).
+  // All 4 host vertices map to the same guest vertex: guest_index = SV_VertexID >> 2.
+  a_.OpUShR(index_dest,
+             dxbc::Src::V1D(kInRegisterVSVertexIndex, dxbc::Src::kXXXX),
+             dxbc::Src::LU(2));
+
+  // Line loop closing index check.
+  dxbc::Dest temp_y(dxbc::Dest::R(reg, 0b0010));
+  dxbc::Src temp_y_src(dxbc::Src::R(reg, dxbc::Src::kYYYY));
+  a_.OpINE(temp_y,
+           index_src,
+           LoadSystemConstant(SystemConstants::Index::kLineLoopClosingIndex,
+                              offsetof(SystemConstants, line_loop_closing_index), dxbc::Src::kXXXX));
+  a_.OpAnd(index_dest, index_src, temp_y_src);
+
+  {
+    dxbc::Src endian_src(LoadSystemConstant(SystemConstants::Index::kVertexIndexEndian,
+                                            offsetof(SystemConstants, vertex_index_endian),
+                                            dxbc::Src::kXXXX));
+    dxbc::Dest swap_temp_dest(dxbc::Dest::R(reg, 0b0100));
+    dxbc::Src swap_temp_src(dxbc::Src::R(reg, dxbc::Src::kZZZZ));
+
+    a_.OpSwitch(endian_src);
+    a_.OpCase(dxbc::Src::LU(uint32_t(xenos::Endian::k8in16)));
+    a_.OpCase(dxbc::Src::LU(uint32_t(xenos::Endian::k8in32)));
+    a_.OpAnd(swap_temp_dest, index_src, dxbc::Src::LU(0x00FF00FF));
+    a_.OpUShR(index_dest, index_src, dxbc::Src::LU(8));
+    a_.OpAnd(index_dest, index_src, dxbc::Src::LU(0x00FF00FF));
+    a_.OpUMAd(index_dest, swap_temp_src, dxbc::Src::LU(256), index_src);
+    a_.OpBreak();
+    a_.OpEndSwitch();
+
+    a_.OpSwitch(endian_src);
+    a_.OpCase(dxbc::Src::LU(uint32_t(xenos::Endian::k8in32)));
+    a_.OpCase(dxbc::Src::LU(uint32_t(xenos::Endian::k16in32)));
+    a_.OpUShR(swap_temp_dest, index_src, dxbc::Src::LU(16));
+    a_.OpBFI(index_dest, dxbc::Src::LU(16), dxbc::Src::LU(16), index_src, swap_temp_src);
+    a_.OpBreak();
+    a_.OpEndSwitch();
+
+    if (!uses_register_dynamic_addressing) {
+      a_.OpMov(swap_temp_dest, dxbc::Src::LF(0.0f));
+    }
+  }
+
+  RemapAndConvertVertexIndices(index_dest.index_1d_.index_, index_dest.write_mask_, index_src);
+
+  if (uses_register_dynamic_addressing) {
+    a_.OpMov(dxbc::Dest::X(0, 0, 0b0001), index_src);
+    PopSystemTemp();
+  }
+}
+
+void DxbcShaderTranslator::StartVertexShader_LoadVertexIndex_ExpandedRectangle() {
+  if (register_count() < 1) {
+    return;
+  }
+
+  bool uses_register_dynamic_addressing = current_shader().uses_register_dynamic_addressing();
+
+  uint32_t reg;
+  if (uses_register_dynamic_addressing) {
+    reg = PushSystemTemp();
+  } else {
+    reg = 0;
+  }
+
+  dxbc::Dest index_dest(dxbc::Dest::R(reg, 0b0001));
+  dxbc::Src index_src(dxbc::Src::R(reg, dxbc::Src::kXXXX));
+  dxbc::Dest temp_y(dxbc::Dest::R(reg, 0b0010));
+  dxbc::Src temp_y_src(dxbc::Src::R(reg, dxbc::Src::kYYYY));
+
+  // Rectangle expansion: 4 host vertices per rectangle (two-triangle strip).
+  // 3 guest vertices per rectangle. 4th host vertex clamps to guest vertex 2.
+  // primitive_index = SV_VertexID >> 2
+  a_.OpUShR(index_dest,
+             dxbc::Src::V1D(kInRegisterVSVertexIndex, dxbc::Src::kXXXX),
+             dxbc::Src::LU(2));
+
+  // host_vertex_in_primitive = SV_VertexID & 3
+  a_.OpAnd(temp_y,
+           dxbc::Src::V1D(kInRegisterVSVertexIndex, dxbc::Src::kXXXX),
+           dxbc::Src::LU(3));
+
+  // Clamp to 2: guest_vertex_in_primitive = min(host_vertex, 2)
+  a_.OpUMin(temp_y, temp_y_src, dxbc::Src::LU(2));
+
+  // guest_vertex_index = primitive_index * 3 + guest_vertex_in_primitive
+  a_.OpUMAd(index_dest, index_src, dxbc::Src::LU(3), temp_y_src);
+
+  // Line loop closing index check.
+  a_.OpINE(temp_y,
+           index_src,
+           LoadSystemConstant(SystemConstants::Index::kLineLoopClosingIndex,
+                              offsetof(SystemConstants, line_loop_closing_index), dxbc::Src::kXXXX));
+  a_.OpAnd(index_dest, index_src, temp_y_src);
+
+  {
+    dxbc::Src endian_src(LoadSystemConstant(SystemConstants::Index::kVertexIndexEndian,
+                                            offsetof(SystemConstants, vertex_index_endian),
+                                            dxbc::Src::kXXXX));
+    dxbc::Dest swap_temp_dest(dxbc::Dest::R(reg, 0b0100));
+    dxbc::Src swap_temp_src(dxbc::Src::R(reg, dxbc::Src::kZZZZ));
+
+    a_.OpSwitch(endian_src);
+    a_.OpCase(dxbc::Src::LU(uint32_t(xenos::Endian::k8in16)));
+    a_.OpCase(dxbc::Src::LU(uint32_t(xenos::Endian::k8in32)));
+    a_.OpAnd(swap_temp_dest, index_src, dxbc::Src::LU(0x00FF00FF));
+    a_.OpUShR(index_dest, index_src, dxbc::Src::LU(8));
+    a_.OpAnd(index_dest, index_src, dxbc::Src::LU(0x00FF00FF));
+    a_.OpUMAd(index_dest, swap_temp_src, dxbc::Src::LU(256), index_src);
+    a_.OpBreak();
+    a_.OpEndSwitch();
+
+    a_.OpSwitch(endian_src);
+    a_.OpCase(dxbc::Src::LU(uint32_t(xenos::Endian::k8in32)));
+    a_.OpCase(dxbc::Src::LU(uint32_t(xenos::Endian::k16in32)));
+    a_.OpUShR(swap_temp_dest, index_src, dxbc::Src::LU(16));
+    a_.OpBFI(index_dest, dxbc::Src::LU(16), dxbc::Src::LU(16), index_src, swap_temp_src);
+    a_.OpBreak();
+    a_.OpEndSwitch();
+
+    if (!uses_register_dynamic_addressing) {
+      a_.OpMov(swap_temp_dest, dxbc::Src::LF(0.0f));
+    }
+  }
+
+  RemapAndConvertVertexIndices(index_dest.index_1d_.index_, index_dest.write_mask_, index_src);
+
+  if (uses_register_dynamic_addressing) {
+    a_.OpMov(dxbc::Dest::X(0, 0, 0b0001), index_src);
+    PopSystemTemp();
+  }
+}
+
 void DxbcShaderTranslator::StartVertexShader_LoadVertexIndex() {
   if (register_count() < 1) {
     return;
@@ -440,6 +592,14 @@ void DxbcShaderTranslator::StartVertexOrDomainShader() {
   switch (host_vertex_shader_type) {
     case Shader::HostVertexShaderType::kVertex:
       StartVertexShader_LoadVertexIndex();
+      break;
+
+    case Shader::HostVertexShaderType::kPointListAsTriangleStrip:
+      StartVertexShader_LoadVertexIndex_ExpandedPoint();
+      break;
+
+    case Shader::HostVertexShaderType::kRectangleListAsTriangleStrip:
+      StartVertexShader_LoadVertexIndex_ExpandedRectangle();
       break;
 
     case Shader::HostVertexShaderType::kTriangleDomainCPIndexed:

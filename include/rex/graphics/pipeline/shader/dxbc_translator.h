@@ -756,6 +756,8 @@ class DxbcShaderTranslator : public ShaderTranslator {
   void RemapAndConvertVertexIndices(uint32_t dest_temp, uint32_t dest_temp_components,
                                     const dxbc::Src& src);
   void StartVertexShader_LoadVertexIndex();
+  void StartVertexShader_LoadVertexIndex_ExpandedPoint();
+  void StartVertexShader_LoadVertexIndex_ExpandedRectangle();
   void StartVertexOrDomainShader();
   void StartDomainShader();
   void StartPixelShader_LoadROVParameters();

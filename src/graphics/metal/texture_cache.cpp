@@ -81,11 +81,8 @@ std::unique_ptr<TextureCache::Texture> MetalTextureCache::CreateTexture(
     desc->setTextureType(MTL::TextureTypeCube);
     desc->setArrayLength(depth_or_array / 6);
   } else {
-    desc->setTextureType(MTL::TextureType2D);
-    if (depth_or_array > 1) {
-      desc->setTextureType(MTL::TextureType2DArray);
-      desc->setArrayLength(depth_or_array);
-    }
+    desc->setTextureType(MTL::TextureType2DArray);
+    desc->setArrayLength(std::max(depth_or_array, 1u));
   }
 
   desc->setWidth(width);
