@@ -26,9 +26,9 @@
 namespace {
 
 constexpr bool kMetalVerboseDiagnostics = true;
-constexpr bool kMetalDebugForceSolidFragment = true;
+constexpr bool kMetalDebugForceSolidFragment = false;
 constexpr bool kMetalDebugForceSolidPipeline = false;
-constexpr bool kMetalDebugForceDepthAlways = true;
+constexpr bool kMetalDebugForceDepthAlways = false;
 constexpr bool kMetalDebugFillBeforeCopy = false;
 
 void SetDescriptorBuffer(::IRDescriptorTableEntry* entry, uint64_t gpu_va, uint64_t size) {
@@ -418,18 +418,27 @@ bool MetalCommandProcessor::SetupContext() {
     const size_t kResourceHeapBytes =
         (kResourceHeapSlotsPerTable + kResourceHeapSlotsPerTable) *
         sizeof(IRDescriptorTableEntry);
-    res_heap_ab_ = device_->newBuffer(kResourceHeapBytes, MTL::ResourceStorageModeShared);
-    if (!res_heap_ab_) return false;
+    vs_res_heap_ab_ = device_->newBuffer(kResourceHeapBytes, MTL::ResourceStorageModeShared);
+    if (!vs_res_heap_ab_) return false;
 
-    auto* res_entries = reinterpret_cast<IRDescriptorTableEntry*>(res_heap_ab_->contents());
-    auto* uav_entries = res_entries + kResourceHeapSlotsPerTable;
+    auto* vs_res = reinterpret_cast<IRDescriptorTableEntry*>(vs_res_heap_ab_->contents());
+    auto* uav_entries = vs_res + kResourceHeapSlotsPerTable;
 
-    SetDescriptorBuffer(&res_entries[0], null_buffer_->gpuAddress(), kNullBufferSize);
+    SetDescriptorBuffer(&vs_res[0], null_buffer_->gpuAddress(), kNullBufferSize);
     for (size_t i = 1; i < kResourceHeapSlotsPerTable; ++i) {
-      SetDescriptorTexture(&res_entries[i], null_texture_);
+      SetDescriptorTexture(&vs_res[i], null_texture_);
     }
     for (size_t i = 0; i < kResourceHeapSlotsPerTable; ++i) {
       SetDescriptorBuffer(&uav_entries[i], null_buffer_->gpuAddress(), kNullBufferSize);
+    }
+
+    const size_t kPsResourceHeapBytes = kResourceHeapSlotsPerTable * sizeof(IRDescriptorTableEntry);
+    ps_res_heap_ab_ = device_->newBuffer(kPsResourceHeapBytes, MTL::ResourceStorageModeShared);
+    if (!ps_res_heap_ab_) return false;
+
+    auto* ps_res = reinterpret_cast<IRDescriptorTableEntry*>(ps_res_heap_ab_->contents());
+    for (size_t i = 0; i < kResourceHeapSlotsPerTable; ++i) {
+      SetDescriptorTexture(&ps_res[i], null_texture_);
     }
 
     const size_t kSamplerHeapBytes = kSamplerHeapSlotsPerTable * sizeof(IRDescriptorTableEntry);
@@ -460,23 +469,26 @@ bool MetalCommandProcessor::SetupContext() {
     std::memset(vs_top_ptrs, 0, kTopLevelABBytes);
     std::memset(ps_top_ptrs, 0, kTopLevelABBytes);
 
-    uint64_t srv_base = res_heap_ab_->gpuAddress();
-    uint64_t srv_texture_base =
-        srv_base + sizeof(IRDescriptorTableEntry);
-    uint64_t uav_base = res_heap_ab_->gpuAddress() +
+    uint64_t vs_srv_base = vs_res_heap_ab_->gpuAddress();
+    uint64_t vs_srv_texture_base =
+        vs_srv_base + sizeof(IRDescriptorTableEntry);
+    uint64_t ps_srv_base = ps_res_heap_ab_->gpuAddress();
+    uint64_t ps_srv_texture_base =
+        ps_srv_base + sizeof(IRDescriptorTableEntry);
+    uint64_t uav_base = vs_res_heap_ab_->gpuAddress() +
                         kResourceHeapSlotsPerTable * sizeof(IRDescriptorTableEntry);
     uint64_t smp_base = smp_heap_ab_->gpuAddress();
     uint64_t vs_cbv_base = vs_cbv_heap_ab_->gpuAddress();
     uint64_t ps_cbv_base = ps_cbv_heap_ab_->gpuAddress();
 
-    vs_top_ptrs[0] = srv_base;
-    ps_top_ptrs[0] = srv_base;
+    vs_top_ptrs[0] = vs_srv_base;
+    ps_top_ptrs[0] = ps_srv_base;
     for (int i = 1; i < 4; ++i) {
-      vs_top_ptrs[i] = srv_texture_base;
-      ps_top_ptrs[i] = srv_texture_base;
+      vs_top_ptrs[i] = vs_srv_texture_base;
+      ps_top_ptrs[i] = ps_srv_texture_base;
     }
-    vs_top_ptrs[4] = srv_base;
-    ps_top_ptrs[4] = srv_base;
+    vs_top_ptrs[4] = vs_srv_base;
+    ps_top_ptrs[4] = ps_srv_base;
     for (int i = 5; i < 9; ++i) {
       vs_top_ptrs[i] = uav_base;
       ps_top_ptrs[i] = uav_base;
@@ -543,7 +555,8 @@ void MetalCommandProcessor::ShutdownContext() {
   if (vs_cbv_heap_ab_) { vs_cbv_heap_ab_->release(); vs_cbv_heap_ab_ = nullptr; }
   if (ps_cbv_heap_ab_) { ps_cbv_heap_ab_->release(); ps_cbv_heap_ab_ = nullptr; }
   if (smp_heap_ab_) { smp_heap_ab_->release(); smp_heap_ab_ = nullptr; }
-  if (res_heap_ab_) { res_heap_ab_->release(); res_heap_ab_ = nullptr; }
+  if (ps_res_heap_ab_) { ps_res_heap_ab_->release(); ps_res_heap_ab_ = nullptr; }
+  if (vs_res_heap_ab_) { vs_res_heap_ab_->release(); vs_res_heap_ab_ = nullptr; }
   if (draw_ring_pool_) { draw_ring_pool_->release(); draw_ring_pool_ = nullptr; }
   if (uniforms_ring_buffer_) { uniforms_ring_buffer_->release(); uniforms_ring_buffer_ = nullptr; }
   if (resolved_frontbuffer_texture_) {
@@ -1176,16 +1189,23 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       fprintf(stderr, "[metal] DESC DIAG #%d: VS AB[0]=%p AB[5]=%p AB[9]=%p AB[10]=%p\n",
               dd, (void*)top_ptrs[0], (void*)top_ptrs[5], (void*)top_ptrs[9], (void*)top_ptrs[10]);
       auto* ps_top_ptrs = reinterpret_cast<const uint64_t*>(ps_top_level_ab_->contents());
-      fprintf(stderr, "[metal] DESC DIAG #%d: PS AB[10]=%p\n",
-              dd, (void*)ps_top_ptrs[10]);
-      auto* srv_entries = reinterpret_cast<const IRDescriptorTableEntry*>(res_heap_ab_->contents());
-      fprintf(stderr, "[metal] DESC DIAG: SRV[0] gpuVA=%p size=%llu\n",
-              (void*)srv_entries[0].gpuVA, (unsigned long long)srv_entries[0].metadata);
+      fprintf(stderr, "[metal] DESC DIAG #%d: PS AB[0]=%p AB[10]=%p\n",
+              dd, (void*)ps_top_ptrs[0], (void*)ps_top_ptrs[10]);
+      auto* vs_srv = reinterpret_cast<const IRDescriptorTableEntry*>(vs_res_heap_ab_->contents());
+      fprintf(stderr, "[metal] DESC DIAG: VS SRV[0] gpuVA=%p size=%llu\n",
+              (void*)vs_srv[0].gpuVA, (unsigned long long)vs_srv[0].metadata);
       for (int si = 1; si <= 4; si++) {
-        fprintf(stderr, "[metal] DESC DIAG: SRV[%d] gpuVA=%p texViewID=%llu meta=%llu\n",
-                si, (void*)srv_entries[si].gpuVA,
-                (unsigned long long)srv_entries[si].textureViewID,
-                (unsigned long long)srv_entries[si].metadata);
+        fprintf(stderr, "[metal] DESC DIAG: VS SRV[%d] gpuVA=%p texViewID=%llu meta=%llu\n",
+                si, (void*)vs_srv[si].gpuVA,
+                (unsigned long long)vs_srv[si].textureViewID,
+                (unsigned long long)vs_srv[si].metadata);
+      }
+      auto* ps_srv = reinterpret_cast<const IRDescriptorTableEntry*>(ps_res_heap_ab_->contents());
+      for (int si = 0; si <= 4; si++) {
+        fprintf(stderr, "[metal] DESC DIAG: PS SRV[%d] gpuVA=%p texViewID=%llu meta=%llu\n",
+                si, (void*)ps_srv[si].gpuVA,
+                (unsigned long long)ps_srv[si].textureViewID,
+                (unsigned long long)ps_srv[si].metadata);
       }
       auto* smp_entries = reinterpret_cast<const IRDescriptorTableEntry*>(smp_heap_ab_->contents());
       for (int si = 0; si < 4; si++) {
@@ -1206,7 +1226,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       if (shared_memory_ && shared_memory_->GetBuffer()) {
         fprintf(stderr, "[metal] DESC DIAG: shmem gpuVA=%p actual=%p\n",
                 (void*)shared_memory_->GetBuffer()->gpuAddress(),
-                (void*)srv_entries[0].gpuVA);
+                (void*)vs_srv[0].gpuVA);
       }
       fprintf(stderr, "[metal] DESC DIAG: uniforms gpuVA=%p\n",
               (void*)uniforms_ring_buffer_->gpuAddress());
@@ -1945,12 +1965,13 @@ void MetalCommandProcessor::BindResources(
                        used_texture_mask, normalized_depth_control,
                        normalized_color_mask, vertex_shader, pixel_shader);
 
-  auto* res_entries = reinterpret_cast<IRDescriptorTableEntry*>(res_heap_ab_->contents());
-  auto* uav_entries = res_entries + kResourceHeapSlotsPerTable;
+  auto* vs_res = reinterpret_cast<IRDescriptorTableEntry*>(vs_res_heap_ab_->contents());
+  auto* uav_entries = vs_res + kResourceHeapSlotsPerTable;
+  auto* ps_res = reinterpret_cast<IRDescriptorTableEntry*>(ps_res_heap_ab_->contents());
 
   MTL::Buffer* shared_mem_buffer = shared_memory_ ? shared_memory_->GetBuffer() : nullptr;
   if (shared_mem_buffer) {
-    SetDescriptorBuffer(&res_entries[0],
+    SetDescriptorBuffer(&vs_res[0],
                                shared_mem_buffer->gpuAddress(),
                                shared_mem_buffer->length());
     SetDescriptorBuffer(&uav_entries[0],
@@ -1978,32 +1999,33 @@ void MetalCommandProcessor::BindResources(
         fflush(stderr);
       }
     }
-    auto bind_shader_textures = [&](MetalShader* shader) {
+    auto bind_shader_textures = [&](MetalShader* shader, IRDescriptorTableEntry* entries, uint32_t base_slot) {
       if (!shader) return;
       const auto& tex_bindings = shader->GetTextureBindingsAfterTranslation();
       for (size_t binding_index = 0; binding_index < tex_bindings.size(); ++binding_index) {
-        uint32_t slot = 1 + static_cast<uint32_t>(binding_index);
+        uint32_t slot = base_slot + static_cast<uint32_t>(binding_index);
         if (slot >= kResourceHeapSlotsPerTable) break;
         const auto& binding = tex_bindings[binding_index];
         MTL::Texture* tex = texture_cache_->GetBoundTexture(
             binding.fetch_constant, binding.is_signed);
         if (!tex) continue;
-        SetDescriptorTexture(&res_entries[slot], tex);
+        SetDescriptorTexture(&entries[slot], tex);
         UseRenderEncoderResource(tex, MTL::ResourceUsageSample);
         if constexpr (kMetalVerboseDiagnostics) {
           static std::atomic<int> rid_diag{0};
           int rd = rid_diag.fetch_add(1);
           if (rd < 8) {
-            fprintf(stderr, "[metal] TEX RID: slot=%u bi=%zu fc=%u signed=%d gpuRID=%llu ptr=%p\n",
+            fprintf(stderr, "[metal] TEX RID: slot=%u bi=%zu fc=%u signed=%d gpuRID=%llu stage=%s\n",
                     slot, binding_index, binding.fetch_constant, int(binding.is_signed),
-                    (unsigned long long)tex->gpuResourceID()._impl, tex);
+                    (unsigned long long)tex->gpuResourceID()._impl,
+                    (entries == ps_res) ? "PS" : "VS");
             fflush(stderr);
           }
         }
       }
     };
-    bind_shader_textures(vertex_shader);
-    bind_shader_textures(pixel_shader);
+    bind_shader_textures(vertex_shader, vs_res, 1);
+    bind_shader_textures(pixel_shader, ps_res, 0);
 
     auto* smp_entries = reinterpret_cast<IRDescriptorTableEntry*>(smp_heap_ab_->contents());
     auto bind_shader_samplers = [&](MetalShader* shader) {
@@ -2087,8 +2109,11 @@ void MetalCommandProcessor::BindResources(
   if (ps_cbv_heap_ab_) {
     UseRenderEncoderResource(ps_cbv_heap_ab_, MTL::ResourceUsageRead);
   }
-  if (res_heap_ab_) {
-    UseRenderEncoderResource(res_heap_ab_, MTL::ResourceUsageRead);
+  if (vs_res_heap_ab_) {
+    UseRenderEncoderResource(vs_res_heap_ab_, MTL::ResourceUsageRead);
+  }
+  if (ps_res_heap_ab_) {
+    UseRenderEncoderResource(ps_res_heap_ab_, MTL::ResourceUsageRead);
   }
   if (smp_heap_ab_) {
     UseRenderEncoderResource(smp_heap_ab_, MTL::ResourceUsageRead);
@@ -2100,8 +2125,8 @@ void MetalCommandProcessor::BindResources(
     UseRenderEncoderResource(ps_top_level_ab_, MTL::ResourceUsageRead);
   }
 
-  current_render_encoder_->setVertexBuffer(res_heap_ab_, 0, kDescriptorHeap);
-  current_render_encoder_->setFragmentBuffer(res_heap_ab_, 0, kDescriptorHeap);
+  current_render_encoder_->setVertexBuffer(vs_res_heap_ab_, 0, kDescriptorHeap);
+  current_render_encoder_->setFragmentBuffer(ps_res_heap_ab_, 0, kDescriptorHeap);
 
   current_render_encoder_->setVertexBuffer(smp_heap_ab_, 0, kSamplerHeap);
   current_render_encoder_->setFragmentBuffer(smp_heap_ab_, 0, kSamplerHeap);
