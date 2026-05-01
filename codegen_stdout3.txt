@@ -1,0 +1,116 @@
+[info] [core] [t47360] ReXGlue v0.7.7.13-dev.g18b02f9 - Xbox 360 Recompilation Toolkit
+[info] [core] [t47360] Generating code with config: C:\Users\Tera\rexglue-SDK-77\FH1\fh1_config.toml
+[info] [codegen] [t47360] Loaded 38 function configs (38 standalone, 0 chunks)
+[info] [sys] [t47360] FunctionDispatcher initialized
+[info] [sys] [t47360]   Mounted C:\Users\Tera\rexglue-SDK-77\FH1\assets at \Device\Harddisk0\Partition1
+[info] [sys] [t47360] Runtime initialized in tool mode (no GPU)
+[info] [codegen] [t47360] Loaded 38 function configs (38 standalone, 0 chunks)
+[info] [sys] [t47360] Loading XEX image: game:\default.xex
+[info] [sys] [t15292] XThread::Execute thid 1 (handle=F8000014, 'Kernel Dispatch (F8000014)', native=00003BBC, <host>)
+[info] [codegen] [t47360] Loaded XEX: base=0x82000000, size=0x1620000, entry=0x82A6FBC0
+[info] [codegen] [t47360] Loaded module 'xmedia': base=0x88000000, size=0x2B0000, entry=0x88050800
+[info] [codegen] [t47360] Loaded module 'speech': base=0x89000000, size=0x240000, entry=0x890A0468
+[info] [codegen] [t47360] Analyze: starting analysis...
+[info] [codegen] [t47360] Analyze: decoded 3685591 instructions across 7180 code regions
+[info] [codegen] [t47360] Analyze: registering entry points...
+[info] [codegen] [t47360] Analyze: loaded 383 imports (383 resolved, 0 unresolved, 13 variables skipped)
+[info] [codegen] [t47360] Analyze: PDATA base=0x82366E00, size=457016
+[info] [codegen] [t47360] Analyze: added 57118 functions from PDATA
+[info] [codegen] [t47360] Analyze: queued 1 functions from exception handling
+[info] [codegen] [t47360] Analyze: scanning binary...
+[info] [codegen] [t47360] Analyze: segmented into 37668 code regions
+[info] [codegen] [t47360] Analyze: 37668 code regions, 0 data regions
+[info] [codegen] [t47360] Analyze: starting iterative discovery...
+[warning] [codegen] [t47360] Analyze: function 0x88055B80 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x88050388 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x882435D8 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x88055B80 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x88050388 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x882435D8 not in any code region
+[info] [codegen] [t47360] Analyze: 64457 functions after call graph expansion
+[info] [codegen] [t47360] Analyze: VTable scan found 7636 vtables, 3521 new functions
+[warning] [codegen] [t47360] Analyze: function 0x88055B80 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x88050388 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x882435D8 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x88055B80 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x88050388 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x882435D8 not in any code region
+[info] [codegen] [t47360] Analyze: 67978 total functions after vtable scan
+[info] [codegen] [t47360] Analyze: checking for uncovered code regions...
+[info] [codegen] [t47360] Analyze: registered 9295 gap functions from 37668 regions
+[warning] [codegen] [t47360] Analyze: function 0x88055B80 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x88050388 not in any code region
+[warning] [codegen] [t47360] Analyze: function 0x882435D8 not in any code region
+[info] [codegen] [t47360] Analyze: discovered blocks for 9298 gap-filled functions
+[info] [codegen] [t47360] Analyze: removed 461 absorbed GAP_FILL functions
+[info] [codegen] [t47360] Analyze: resolving jumps and sealing functions...
+[warning] [codegen] [t47360] FunctionGraph::sealAllReady: 0x88055B80 (sub_88055B80) cannot seal (0 unresolved)
+[warning] [codegen] [t47360] FunctionGraph::sealAllReady: 0x88050388 (sub_88050388) cannot seal (0 unresolved)
+[warning] [codegen] [t47360] FunctionGraph::sealAllReady: 0x882435D8 (sub_882435D8) cannot seal (0 unresolved)
+[warning] [codegen] [t47360] FunctionGraph::sealAllReady: 0x82AB4D38 (sub_82AB4D38) cannot seal (1 unresolved)
+[warning] [codegen] [t47360]   0x82AB4DF8 -> 0x82AB4E20
+[warning] [codegen] [t47360] FunctionGraph::sealAllReady: 0x82A97250 (sub_82A97250) cannot seal (1 unresolved)
+[warning] [codegen] [t47360]   0x82A97314 -> 0x82A9733C
+[warning] [codegen] [t47360] FunctionGraph::sealAllReady: 0x82AD80D0 (sub_82AD80D0) cannot seal (4 unresolved)
+[warning] [codegen] [t47360]   0x82AD8138 -> 0x82AD836C
+[warning] [codegen] [t47360]   0x82AD813C -> 0x82AD836C
+[warning] [codegen] [t47360]   0x82AD8138 -> 0x82AD836C
+[warning] [codegen] [t47360]   0x82AD813C -> 0x82AD836C
+[warning] [codegen] [t47360] FunctionGraph::sealAllReady: 0x82A941F8 (sub_82A941F8) cannot seal (1 unresolved)
+[warning] [codegen] [t47360]   0x82A942B8 -> 0x82A942E0
+[warning] [codegen] [t47360] FunctionGraph::sealAllReady: 0x82AB00C0 (sub_82AB00C0) cannot seal (1 unresolved)
+[warning] [codegen] [t47360]   0x82AB0164 -> 0x82AB017C
+[info] [codegen] [t47360] Analyze: 1 iterations, resolved=0, sealed=76421/76812
+[warning] [codegen] [t47360] Analyze: 8 functions still PENDING with unresolved jumps
+[info] [codegen] [t47360] Analyze: validating call graph...
+[info] [codegen] [t47360] Analyze: checked 387538 branches in 76812 functions, verified 327363 edges
+[info] [codegen] [t47360] Analyze: all calls resolve
+[info] [codegen] [t47360] Analyze: main binary complete - 76812 functions
+[info] [codegen] [t47360] Analyze: analyzing module 'xmedia' (base=0x88000000)
+[info] [codegen] [t47360] Analyze: module 'xmedia' decoded 516432 instructions across 3543 code regions
+[info] [codegen] [t47360] Analyze: registering entry points...
+[info] [codegen] [t47360] Analyze: loaded 58 imports (58 resolved, 0 unresolved, 5 variables skipped)
+[info] [codegen] [t47360] Analyze: PDATA base=0x88049C00, size=16832
+[info] [codegen] [t47360] Analyze: added 2098 functions from PDATA
+[info] [codegen] [t47360] Analyze: scanning binary...
+[info] [codegen] [t47360] Analyze: segmented into 1418 code regions
+[info] [codegen] [t47360] Analyze: 1418 code regions, 0 data regions
+[info] [codegen] [t47360] Analyze: starting iterative discovery...
+[info] [codegen] [t47360] Analyze: 2948 functions after call graph expansion
+[info] [codegen] [t47360] Analyze: VTable scan found 0 vtables, 0 new functions
+[info] [codegen] [t47360] Analyze: 2948 total functions after vtable scan
+[info] [codegen] [t47360] Analyze: checking for uncovered code regions...
+[info] [codegen] [t47360] Analyze: registered 297 gap functions from 1418 regions
+[info] [codegen] [t47360] Analyze: discovered blocks for 297 gap-filled functions
+[info] [codegen] [t47360] Analyze: removed 48 absorbed GAP_FILL functions
+[info] [codegen] [t47360] Analyze: resolving jumps and sealing functions...
+[info] [codegen] [t47360] Analyze: 1 iterations, resolved=0, sealed=3139/3197
+[info] [codegen] [t47360] Analyze: module 'xmedia' discovered 3197 functions
+[info] [codegen] [t47360] Analyze: module 'xmedia' merged 3197 functions (total: 80006)
+[info] [codegen] [t47360] Analyze: analyzing module 'speech' (base=0x89000000)
+[info] [codegen] [t47360] Analyze: module 'speech' decoded 367376 instructions across 1445 code regions
+[info] [codegen] [t47360] Analyze: registering entry points...
+[info] [codegen] [t47360] Analyze: loaded 121 imports (121 resolved, 0 unresolved, 6 variables skipped)
+[info] [codegen] [t47360] Analyze: PDATA base=0x8908BE00, size=38200
+[info] [codegen] [t47360] Analyze: added 4769 functions from PDATA
+[info] [codegen] [t47360] Analyze: queued 1 functions from exception handling
+[info] [codegen] [t47360] Analyze: scanning binary...
+[info] [codegen] [t47360] Analyze: segmented into 3072 code regions
+[info] [codegen] [t47360] Analyze: 3072 code regions, 0 data regions
+[info] [codegen] [t47360] Analyze: starting iterative discovery...
+[info] [codegen] [t47360] Analyze: 5962 functions after call graph expansion
+[info] [codegen] [t47360] Analyze: VTable scan found 126 vtables, 177 new functions
+[info] [codegen] [t47360] Analyze: 6139 total functions after vtable scan
+[info] [codegen] [t47360] Analyze: checking for uncovered code regions...
+[info] [codegen] [t47360] Analyze: registered 749 gap functions from 3072 regions
+[info] [codegen] [t47360] Analyze: discovered blocks for 749 gap-filled functions
+[info] [codegen] [t47360] Analyze: removed 175 absorbed GAP_FILL functions
+[info] [codegen] [t47360] Analyze: resolving jumps and sealing functions...
+[warning] [codegen] [t47360] FunctionGraph::sealAllReady: 0x890E2FB8 (sub_890E2FB8) cannot seal (1 unresolved)
+[warning] [codegen] [t47360]   0x890E2FBC -> 0x890E2FA0
+[info] [codegen] [t47360] Analyze: 1 iterations, resolved=0, sealed=6591/6713
+[warning] [codegen] [t47360] Analyze: 1 functions still PENDING with unresolved jumps
+[info] [codegen] [t47360] Analyze: module 'speech' discovered 6713 functions
+[info] [codegen] [t47360] Analyze: module 'speech' merged 6713 functions (total: 86719)
+[info] [codegen] [t47360] Analyze: all modules complete - 86719 total functions ready for code generation
+[info] [codegen] [t47360] Output path: C:\Users\Tera\rexglue-SDK-77\FH1\generated

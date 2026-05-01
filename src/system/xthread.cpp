@@ -564,11 +564,15 @@ void XThread::Execute() {
     args.push_back(creation_params_.start_address);
     args.push_back(creation_params_.start_context);
     want_exit_code = false;
+    REXSYS_INFO("XThread::Execute: xapi trampoline {:08X} -> start_address={:08X}, context={:08X}",
+                address, creation_params_.start_address, creation_params_.start_context);
   } else {
     // Run user code.
     address = creation_params_.start_address;
     args.push_back(creation_params_.start_context);
     want_exit_code = true;
+    REXSYS_INFO("XThread::Execute: direct start_address={:08X}, context={:08X}",
+                address, creation_params_.start_context);
   }
 
   // NOTE(tomc): JIT execution replaced with direct function calls

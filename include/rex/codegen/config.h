@@ -40,10 +40,12 @@ struct MidAsmHook {
 // Unified function/chunk configuration
 // A "chunk" is simply a function entry with a non-zero parent field
 struct FunctionConfig {
-  uint32_t size = 0;    // Explicit size in bytes (mutually exclusive with end)
-  uint32_t end = 0;     // End address, exclusive (mutually exclusive with size)
-  std::string name;     // Custom symbol name (empty = auto-generate sub_XXXXXXXX)
-  uint32_t parent = 0;  // Parent function address (0 = standalone, non-zero = chunk)
+  uint32_t size = 0;          // Explicit size in bytes (mutually exclusive with end)
+  uint32_t end = 0;           // End address, exclusive (mutually exclusive with size)
+  std::string name;           // Custom symbol name (empty = auto-generate sub_XXXXXXXX)
+  uint32_t parent = 0;        // Parent function address (0 = standalone, non-zero = chunk)
+  bool stub = false;          // Emit stub instead of full recompiled body
+  uint32_t stub_return = 0;   // Value to return in r3 when stub=true (default 0)
 
   // Get effective size (prefers size over end)
   uint32_t getSize(uint32_t address) const {

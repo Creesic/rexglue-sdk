@@ -12,8 +12,8 @@
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
-                "CMAKE_C_COMPILER": "clang",
-                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_C_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
+                "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
                 "CMAKE_C_FLAGS": "-march=x86-64-v3",
                 "CMAKE_CXX_FLAGS": "-march=x86-64-v3",
                 "CMAKE_CXX_STANDARD": "23",
@@ -21,7 +21,13 @@
                 "CMAKE_CROSS_CONFIGS": "all",
                 "CMAKE_DEFAULT_BUILD_TYPE": "Debug",
                 "CMAKE_DEFAULT_CONFIGS": "all",
-                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+                "REXGLUE_ENABLE_TRACY": "ON",
+                "REXGLUE_PROFILE_GUEST_FUNCTIONS": "ON"
+            },
+            "environment": {
+                "LIB": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64;C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/um/x64;C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64",
+                "INCLUDE": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/include;C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/ucrt;C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um;C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/shared;C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/winrt"
             },
             "condition": {
                 "type": "equals",

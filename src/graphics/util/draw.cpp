@@ -883,10 +883,11 @@ bool GetResolveInfo(const RegisterFile& regs, const memory::Memory& memory,
     y1 = y0 + int32_t(xenos::kMaxResolveSize);
   }
 
-  assert_true(x0 < x1 && y0 < y1);
   if (x0 >= x1 || y0 >= y1) {
-    REXGPU_ERROR("Resolve region is empty");
-    return false;
+    // Tiled MSAA resolves: the scissor is per-EDRAM-tile, so tiles that don't
+    // overlap the resolve rect produce an empty region. This is normal on real
+    // hardware — the resolve is simply a no-op for those tiles.
+    return true;
   }
 
   info_out.coordinate_info.width_div_8 = uint32_t(x1 - x0) >> xenos::kResolveAlignmentPixelsLog2;

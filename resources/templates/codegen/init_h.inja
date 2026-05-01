@@ -130,10 +130,10 @@ extern PPCFuncMapping PPCFuncMappings[];
 #define REX_LOAD_STRING(x, len) \
   std::string_view(reinterpret_cast<const char*>(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)), (len))
 
-#define REX_STORE_U8(x, y)  (*(volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = (y))
-#define REX_STORE_U16(x, y) (*(volatile u16*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap16(y))
-#define REX_STORE_U32(x, y) (*(volatile u32*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap32(y))
-#define REX_STORE_U64(x, y) (*(volatile u64*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap64(y))
+#define REX_STORE_U8(x, y)  do { *(volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = (y); } while(0)
+#define REX_STORE_U16(x, y) do { *(volatile u16*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap16(y); } while(0)
+#define REX_STORE_U32(x, y) do { *(volatile u32*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap32(y); } while(0)
+#define REX_STORE_U64(x, y) do { *(volatile u64*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap64(y); } while(0)
 
 #define REX_MEMORY_SIZE 0x100000000ull
 
@@ -241,10 +241,22 @@ extern PPCFuncMapping PPCFuncMappings[];
 #ifdef REXGLUE_ENABLE_PROFILING
 #define REX_CALL_INDIRECT_FUNC(x) \
   PROFILE_FUNCTION_DISPATCHED();  \
-  REX_LOOKUP_FUNC(base, x)(ctx, base);
+  do { \
+    auto _rex_fn = REX_LOOKUP_FUNC(base, x); \
+    if (!_rex_fn) { \
+      REX_FATAL("REX_CALL_INDIRECT_FUNC: null function at guest address {:08X} (lr={:08X})", u32(x), u32(ctx.lr)); \
+    } \
+    _rex_fn(ctx, base); \
+  } while(0)
 #else
 #define REX_CALL_INDIRECT_FUNC(x) \
-  REX_LOOKUP_FUNC(base, x)(ctx, base);
+  do { \
+    auto _rex_fn = REX_LOOKUP_FUNC(base, x); \
+    if (!_rex_fn) { \
+      REX_FATAL("REX_CALL_INDIRECT_FUNC: null function at guest address {:08X} (lr={:08X})", u32(x), u32(ctx.lr)); \
+    } \
+    _rex_fn(ctx, base); \
+  } while(0)
 #endif
 
 //=============================================================================

@@ -353,6 +353,27 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
 
   std::string out;
 
+  // --- Config-driven stub ---
+  auto cfgIt = ctx.config.functions.find(base());
+  if (cfgIt != ctx.config.functions.end() && cfgIt->second.stub) {
+    std::string name;
+    if (base() == ctx.entryPoint) {
+      name = "xstart";
+    } else if (!name_.empty()) {
+      name = name_;
+    } else {
+      name = fmt::format("sub_{:08X}", base());
+    }
+
+    emit_println(out, "// STUB: Function at 0x{:08X} marked as stub in config (returns 0x{:08X})", base(), cfgIt->second.stub_return);
+    emit_println(out, "DEFINE_REX_FUNC({}) {{", name);
+    emit_println(out, "\tREX_FUNC_PROLOGUE();");
+    emit_println(out, "\tctx.r3.u64 = 0x{:08X};", cfgIt->second.stub_return);
+    emit_println(out, "\treturn;");
+    emit_println(out, "}}\n");
+    return out;
+  }
+
   // --- Empty stub for functions with no blocks ---
   if (blocks().empty()) {
     REXCODEGEN_WARN("Function 0x{:08X} has no blocks - generating stub", base());
