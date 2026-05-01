@@ -34,9 +34,9 @@ constexpr bool kMetalDebugForceSolidFragment = false;
 constexpr bool kMetalDebugForceSolidPipeline = false;
 constexpr bool kMetalDebugSolidFirstPreCopyDraws = false;
 constexpr bool kMetalDebugForceMagentaTextures = false;
-constexpr bool kMetalDebugDisableBlendAndColorMask = true;
-constexpr bool kMetalDebugForceDepthAlways = true;
-constexpr bool kMetalDebugFillBeforeCopy = true;
+constexpr bool kMetalDebugDisableBlendAndColorMask = false;
+constexpr bool kMetalDebugForceDepthAlways = false;
+constexpr bool kMetalDebugFillBeforeCopy = false;
 constexpr size_t kMetalDrawRingCount = 128;
 
 void SetDescriptorBuffer(::IRDescriptorTableEntry* entry, uint64_t gpu_va, uint64_t size) {
@@ -1071,11 +1071,37 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
 
   uint32_t ps_param_gen_pos = UINT32_MAX;
   uint32_t interpolator_mask = 0;
+  uint32_t pixel_interpolator_input_mask = 0;
   if (pixel_shader) {
-    interpolator_mask = vertex_shader->writes_interpolators() &
+    pixel_interpolator_input_mask =
         pixel_shader->GetInterpolatorInputMask(
             regs.Get<reg::SQ_PROGRAM_CNTL>(),
             regs.Get<reg::SQ_CONTEXT_MISC>(), ps_param_gen_pos);
+    interpolator_mask =
+        vertex_shader->writes_interpolators() & pixel_interpolator_input_mask;
+  }
+  if constexpr (kMetalVerboseDiagnostics) {
+    static std::atomic<int> interp_diag{0};
+    int id = interp_diag.fetch_add(1);
+    if (id < 20) {
+      auto sq_program_cntl = regs.Get<reg::SQ_PROGRAM_CNTL>();
+      auto sq_context_misc = regs.Get<reg::SQ_CONTEXT_MISC>();
+      fprintf(stderr,
+              "[metal] INTERP #%d: vs_hash=%016llX ps_hash=%016llX "
+              "vs_writes=0x%04X ps_inputs=0x%04X linked=0x%04X "
+              "param_gen=%u pos=%u ps_num_reg=%u vs_num_reg=%u\n",
+              id,
+              (unsigned long long)vertex_shader->ucode_data_hash(),
+              pixel_shader ? (unsigned long long)pixel_shader->ucode_data_hash()
+                           : 0ull,
+              vertex_shader->writes_interpolators(),
+              pixel_interpolator_input_mask, interpolator_mask,
+              uint32_t(sq_program_cntl.param_gen),
+              ps_param_gen_pos == UINT32_MAX ? 0xFFFFFFFFu : ps_param_gen_pos,
+              uint32_t(sq_program_cntl.ps_num_reg),
+              uint32_t(sq_program_cntl.vs_num_reg));
+      fflush(stderr);
+    }
   }
 
   auto normalized_depth_control = draw_util::GetNormalizedDepthControl(regs);
@@ -3016,12 +3042,53 @@ void MetalCommandProcessor::BindResources(
         if constexpr (kMetalVerboseDiagnostics) {
           static std::atomic<int> rid_diag{0};
           int rd = rid_diag.fetch_add(1);
-          if (rd < 8) {
+          if (rd < 24) {
             fprintf(stderr, "[metal] TEX RID: slot=%u bi=%zu fc=%u signed=%d gpuRID=%llu stage=%s\n",
                     slot, binding_index, binding.fetch_constant, int(binding.is_signed),
                     (unsigned long long)tex->gpuResourceID()._impl,
                     (entries == ps_res) ? "PS" : "VS");
+            if (entries == ps_res && shared_mem_buffer &&
+                shared_mem_buffer->contents()) {
+              const auto fetch = regs.GetTextureFetch(binding.fetch_constant);
+              uint32_t base_address = fetch.base_address << 12;
+              const uint8_t* shared_bytes =
+                  static_cast<const uint8_t*>(shared_mem_buffer->contents());
+              size_t shared_length = shared_mem_buffer->length();
+              size_t sample_size = 0;
+              uint32_t nonzero_count = 0;
+              uint8_t min_byte = 0xFF;
+              uint8_t max_byte = 0x00;
+              if (base_address < shared_length) {
+                sample_size =
+                    std::min<size_t>(4096, shared_length - base_address);
+                for (size_t i = 0; i < sample_size; ++i) {
+                  uint8_t byte = shared_bytes[base_address + i];
+                  nonzero_count += byte != 0;
+                  min_byte = std::min(min_byte, byte);
+                  max_byte = std::max(max_byte, byte);
+                }
+              }
+              fprintf(stderr,
+                      "[metal] TEX FETCH: fc=%u raw=%08X,%08X,%08X,%08X,%08X,%08X "
+                      "base=0x%08X mip=0x%08X fmt=%u dim=%u %ux%u pitch=%u "
+                      "tiled=%u endian=%u swz=0x%03X signs=%u%u%u%u "
+                      "sample=%zu nz=%u min=%u max=%u first=%02X %02X %02X %02X\n",
+                      binding.fetch_constant, fetch.dword_0, fetch.dword_1,
+                      fetch.dword_2, fetch.dword_3, fetch.dword_4,
+                      fetch.dword_5, base_address, fetch.mip_address << 12,
+                      uint32_t(fetch.format), uint32_t(fetch.dimension),
+                      fetch.size_2d.width + 1, fetch.size_2d.height + 1,
+                      fetch.pitch, fetch.tiled, uint32_t(fetch.endianness),
+                      fetch.swizzle, uint32_t(fetch.sign_x),
+                      uint32_t(fetch.sign_y), uint32_t(fetch.sign_z),
+                      uint32_t(fetch.sign_w), sample_size, nonzero_count,
+                      uint32_t(min_byte), uint32_t(max_byte),
+                      sample_size > 0 ? shared_bytes[base_address + 0] : 0,
+                      sample_size > 1 ? shared_bytes[base_address + 1] : 0,
+                      sample_size > 2 ? shared_bytes[base_address + 2] : 0,
+                      sample_size > 3 ? shared_bytes[base_address + 3] : 0);
             fflush(stderr);
+            }
           }
         }
       }
@@ -3445,12 +3512,10 @@ void MetalCommandProcessor::WriteSystemConstants(
   uint8_t* fetch_ptr = base_ptr + 3 * kCbvSizeBytes;
   std::memset(fetch_ptr, 0, kCbvSizeBytes);
   {
-    auto* fetch_dwords = reinterpret_cast<uint32_t*>(fetch_ptr);
-    for (uint32_t i = 0; i < 96; i++) {
-      auto vf = regs.GetVertexFetch(i);
-      fetch_dwords[i * 2 + 0] = vf.dword_0;
-      fetch_dwords[i * 2 + 1] = vf.dword_1;
-    }
+    constexpr size_t kFetchConstantsSize =
+        xenos::kTextureFetchConstantCount * 6 * sizeof(uint32_t);
+    std::memcpy(fetch_ptr, &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0],
+                kFetchConstantsSize);
   }
 
   uint8_t* vertex_desc_idx_ptr = base_ptr + 4 * kCbvSizeBytes;
