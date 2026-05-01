@@ -62,6 +62,7 @@ set(REXGRAPHICS_VULKAN_SOURCES
 set(REXGRAPHICS_METAL_SOURCES
     metal/graphics_system.cpp
     metal/metal_cpp_impl.cpp
+    metal/ir_runtime_impl.cpp
     metal/command_processor.cpp
     metal/primitive_processor.cpp
     metal/render_target_cache.cpp
@@ -210,4 +211,3 @@ if(REXGLUE_USE_D3D12)
     )
     target_compile_definitions(rexgraphics PUBLIC REX_HAS_D3D12=1)
 endif()
-

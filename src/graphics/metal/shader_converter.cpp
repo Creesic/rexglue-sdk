@@ -363,6 +363,33 @@ bool MetalShaderConverter::ConvertWithStageEx(
     return false;
   }
 
+  if (reflection) {
+    reflection->vertex_inputs.clear();
+    reflection->function_constants.clear();
+    reflection->vertex_output_size_in_bytes = 0;
+    reflection->vertex_input_count = 0;
+    reflection->gs_max_input_primitives_per_mesh_threadgroup = 0;
+    reflection->has_hull_info = false;
+    reflection->hs_max_patches_per_object_threadgroup = 0;
+    reflection->hs_max_object_threads_per_patch = 0;
+    reflection->hs_patch_constants_size = 0;
+    reflection->hs_input_control_point_count = 0;
+    reflection->hs_output_control_point_count = 0;
+    reflection->hs_output_control_point_size = 0;
+    reflection->hs_tessellator_domain = 0;
+    reflection->hs_tessellator_partitioning = 0;
+    reflection->hs_tessellator_output_primitive = 0;
+    reflection->hs_tessellation_type_half = false;
+    reflection->hs_max_tessellation_factor = 0.0f;
+    reflection->has_domain_info = false;
+    reflection->ds_max_input_prims_per_mesh_threadgroup = 0;
+    reflection->ds_input_control_point_count = 0;
+    reflection->ds_input_control_point_size = 0;
+    reflection->ds_patch_constants_size = 0;
+    reflection->ds_tessellator_domain = 0;
+    reflection->ds_tessellation_type_half = false;
+  }
+
   IRShaderReflection* shader_reflection = IRShaderReflectionCreate();
   if (shader_reflection && ir_stage != IRShaderStageInvalid) {
     if (IRObjectGetReflection(metalObject, ir_stage, shader_reflection)) {
@@ -372,23 +399,59 @@ bool MetalShaderConverter::ConvertWithStageEx(
         result.function_name = entry_name;
       }
 
-      if (stage == MetalShaderStage::kVertex && stage_in_metallib &&
-          input_layout && shader_reflection) {
-        IRMetalLibBinary* stage_in_lib = IRMetalLibBinaryCreate();
-        if (stage_in_lib) {
-          if (IRMetalLibSynthesizeStageInFunction(compiler, shader_reflection,
-                                                  input_layout, stage_in_lib)) {
-            size_t stage_in_size = IRMetalLibGetBytecodeSize(stage_in_lib);
-            if (stage_in_size) {
-              stage_in_metallib->resize(stage_in_size);
-              IRMetalLibGetBytecode(stage_in_lib, stage_in_metallib->data());
+      if (reflection) {
+        if (ir_stage == IRShaderStageVertex) {
+          IRVersionedVSInfo vs_info = {};
+          vs_info.version = IRReflectionVersion_1_0;
+          if (IRShaderReflectionCopyVertexInfo(
+                  shader_reflection, IRReflectionVersion_1_0, &vs_info)) {
+            reflection->vertex_output_size_in_bytes =
+                vs_info.info_1_0.vertex_output_size_in_bytes;
+            reflection->vertex_input_count =
+                static_cast<uint32_t>(vs_info.info_1_0.num_vertex_inputs);
+            reflection->vertex_inputs.reserve(
+                vs_info.info_1_0.num_vertex_inputs);
+            for (size_t i = 0; i < vs_info.info_1_0.num_vertex_inputs; ++i) {
+              const auto& input = vs_info.info_1_0.vertex_inputs[i];
+              MetalShaderReflectionInput out;
+              out.name = input.name ? input.name : "";
+              out.attribute_index = input.attributeIndex;
+              reflection->vertex_inputs.push_back(std::move(out));
             }
+            IRShaderReflectionReleaseVertexInfo(&vs_info);
           }
-          IRMetalLibBinaryDestroy(stage_in_lib);
+        } else if (ir_stage == IRShaderStageGeometry ||
+                   ir_stage == IRShaderStageMesh) {
+          IRVersionedGSInfo gs_info = {};
+          gs_info.version = IRReflectionVersion_1_0;
+          if (IRShaderReflectionCopyGeometryInfo(
+                  shader_reflection, IRReflectionVersion_1_0, &gs_info)) {
+            reflection->gs_max_input_primitives_per_mesh_threadgroup =
+                gs_info.info_1_0.max_input_primitives_per_mesh_threadgroup;
+            IRShaderReflectionReleaseGeometryInfo(&gs_info);
+          }
+        }
+
+        if (IRShaderReflectionNeedsFunctionConstants(shader_reflection)) {
+          size_t constant_count =
+              IRShaderReflectionGetFunctionConstantCount(shader_reflection);
+          if (constant_count) {
+            std::vector<IRFunctionConstant> constants(constant_count);
+            IRShaderReflectionCopyFunctionConstants(shader_reflection,
+                                                    constants.data());
+            reflection->function_constants.reserve(constant_count);
+            for (const auto& constant : constants) {
+              MetalShaderFunctionConstant out;
+              out.name = constant.name ? constant.name : "";
+              out.type = static_cast<uint32_t>(constant.type);
+              reflection->function_constants.push_back(std::move(out));
+            }
+            IRShaderReflectionReleaseFunctionConstants(constants.data(),
+                                                       constant_count);
+          }
         }
       }
     }
-    IRShaderReflectionDestroy(shader_reflection);
   }
 
   if (result.function_name.empty()) {
@@ -406,6 +469,26 @@ bool MetalShaderConverter::ConvertWithStageEx(
         result.function_name = "main";
         break;
     }
+  }
+
+  if (stage == MetalShaderStage::kVertex && stage_in_metallib &&
+      input_layout && shader_reflection) {
+    IRMetalLibBinary* stage_in_lib = IRMetalLibBinaryCreate();
+    if (stage_in_lib) {
+      if (IRMetalLibSynthesizeStageInFunction(compiler, shader_reflection,
+                                              input_layout, stage_in_lib)) {
+        size_t stage_in_size = IRMetalLibGetBytecodeSize(stage_in_lib);
+        if (stage_in_size) {
+          stage_in_metallib->resize(stage_in_size);
+          IRMetalLibGetBytecode(stage_in_lib, stage_in_metallib->data());
+        }
+      }
+      IRMetalLibBinaryDestroy(stage_in_lib);
+    }
+  }
+
+  if (shader_reflection) {
+    IRShaderReflectionDestroy(shader_reflection);
   }
 
   REXLOG_DEBUG(

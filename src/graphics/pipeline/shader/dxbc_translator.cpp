@@ -108,6 +108,10 @@ uint64_t DxbcShaderTranslator::GetDefaultPixelShaderModification(
   shader_modification.pixel.dynamic_addressable_register_count = dynamic_addressable_register_count;
   shader_modification.pixel.interpolator_mask = (UINT32_C(1) << xenos::kMaxInterpolators) - 1;
   shader_modification.pixel.depth_stencil_mode = Modification::DepthStencilMode::kNoModifiers;
+  shader_modification.pixel.rt0_blend_rgb_factor_for_premult =
+      xenos::BlendFactor::kOne;
+  shader_modification.pixel.rt0_blend_a_factor_for_premult =
+      xenos::BlendFactor::kOne;
   return shader_modification.value;
 }
 
@@ -339,6 +343,82 @@ void DxbcShaderTranslator::RemapAndConvertVertexIndices(uint32_t dest_temp,
   a_.OpUToF(dest, dest_src);
 }
 
+void DxbcShaderTranslator::LoadDMAIndexForExpandedPrimitive(uint32_t index_temp) {
+  dxbc::Dest index_dest(dxbc::Dest::R(index_temp, 0b0001));
+  dxbc::Src index_src(dxbc::Src::R(index_temp, dxbc::Src::kXXXX));
+
+  dxbc::Src load_address_constant(LoadSystemConstant(
+      SystemConstants::Index::kVertexIndexLoadAddress,
+      offsetof(SystemConstants, vertex_index_load_address), dxbc::Src::kXXXX));
+  uint32_t address_temp = PushSystemTemp();
+  dxbc::Dest address_dest(dxbc::Dest::R(address_temp, 0b0001));
+  dxbc::Src address_src(dxbc::Src::R(address_temp, dxbc::Src::kXXXX));
+
+  a_.OpINE(address_dest, load_address_constant, dxbc::Src::LU(UINT32_MAX));
+  a_.OpIf(true, address_src);
+
+  dxbc::Src is_32bit_src(LoadSystemConstant(
+      SystemConstants::Index::kVertexIndexLoadIs32Bit,
+      offsetof(SystemConstants, vertex_index_load_is_32bit), dxbc::Src::kXXXX));
+  a_.OpIf(true, is_32bit_src);
+
+  if (srv_index_shared_memory_ == kBindingIndexUnallocated) {
+    srv_index_shared_memory_ = srv_count_++;
+  }
+  if (uav_index_shared_memory_ == kBindingIndexUnallocated) {
+    uav_index_shared_memory_ = uav_count_++;
+  }
+
+  auto load_from_shared_memory = [&](const dxbc::Src& shared_memory_src,
+                                     bool index_32bit) {
+    if (index_32bit) {
+      a_.OpUMAd(address_dest, index_src, dxbc::Src::LU(sizeof(uint32_t)),
+                load_address_constant);
+      a_.OpLdRaw(index_dest, address_src, shared_memory_src);
+    } else {
+      uint32_t word_temp = PushSystemTemp();
+      dxbc::Dest word_dest(dxbc::Dest::R(word_temp, 0b0001));
+      dxbc::Src word_src(dxbc::Src::R(word_temp, dxbc::Src::kXXXX));
+      dxbc::Dest shift_dest(dxbc::Dest::R(word_temp, 0b0010));
+      dxbc::Src shift_src(dxbc::Src::R(word_temp, dxbc::Src::kYYYY));
+
+      a_.OpUMAd(address_dest, index_src, dxbc::Src::LU(sizeof(uint16_t)),
+                load_address_constant);
+      a_.OpAnd(shift_dest, address_src, dxbc::Src::LU(2));
+      a_.OpIShL(shift_dest, shift_src, dxbc::Src::LU(3));
+      a_.OpAnd(address_dest, address_src, dxbc::Src::LU(~uint32_t(3)));
+      a_.OpLdRaw(word_dest, address_src, shared_memory_src);
+      a_.OpUShR(index_dest, word_src, shift_src);
+      a_.OpAnd(index_dest, index_src, dxbc::Src::LU(UINT16_MAX));
+      PopSystemTemp();
+    }
+  };
+
+  auto load_from_bound_shared_memory = [&](bool index_32bit) {
+    a_.OpAnd(address_dest, LoadFlagsSystemConstant(),
+             dxbc::Src::LU(kSysFlag_SharedMemoryIsUAV));
+    a_.OpIf(false, address_src);
+    load_from_shared_memory(
+        dxbc::Src::T(srv_index_shared_memory_, uint32_t(SRVMainRegister::kSharedMemory)),
+        index_32bit);
+    a_.OpElse();
+    load_from_shared_memory(
+        dxbc::Src::U(uav_index_shared_memory_, uint32_t(UAVRegister::kSharedMemory)),
+        index_32bit);
+    a_.OpEndIf();
+  };
+
+  load_from_bound_shared_memory(true);
+
+  a_.OpElse();
+
+  load_from_bound_shared_memory(false);
+
+  a_.OpEndIf();
+  a_.OpEndIf();
+  PopSystemTemp();
+}
+
 void DxbcShaderTranslator::StartVertexShader_LoadVertexIndex_ExpandedPoint() {
   if (register_count() < 1) {
     return;
@@ -370,6 +450,8 @@ void DxbcShaderTranslator::StartVertexShader_LoadVertexIndex_ExpandedPoint() {
            LoadSystemConstant(SystemConstants::Index::kLineLoopClosingIndex,
                               offsetof(SystemConstants, line_loop_closing_index), dxbc::Src::kXXXX));
   a_.OpAnd(index_dest, index_src, temp_y_src);
+
+  LoadDMAIndexForExpandedPrimitive(reg);
 
   {
     dxbc::Src endian_src(LoadSystemConstant(SystemConstants::Index::kVertexIndexEndian,
@@ -452,6 +534,8 @@ void DxbcShaderTranslator::StartVertexShader_LoadVertexIndex_ExpandedRectangle()
            LoadSystemConstant(SystemConstants::Index::kLineLoopClosingIndex,
                               offsetof(SystemConstants, line_loop_closing_index), dxbc::Src::kXXXX));
   a_.OpAnd(index_dest, index_src, temp_y_src);
+
+  LoadDMAIndexForExpandedPrimitive(reg);
 
   {
     dxbc::Src endian_src(LoadSystemConstant(SystemConstants::Index::kVertexIndexEndian,
@@ -2142,6 +2226,9 @@ const DxbcShaderTranslator::SystemConstantRdef DxbcShaderTranslator::system_cons
     {"xe_edram_rt_blend_factors_ops", ShaderRdefTypeIndex::kUint4, sizeof(uint32_t) * 4},
 
     {"xe_edram_blend_constant", ShaderRdefTypeIndex::kFloat4, sizeof(float) * 4},
+
+    {"xe_vertex_index_load_address", ShaderRdefTypeIndex::kUint, sizeof(uint32_t)},
+    {"xe_vertex_index_load_is_32bit", ShaderRdefTypeIndex::kUint, sizeof(uint32_t)},
 };
 
 void DxbcShaderTranslator::WriteResourceDefinition() {

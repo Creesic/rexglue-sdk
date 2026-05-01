@@ -18,7 +18,7 @@ MetalPrimitiveProcessor::MetalPrimitiveProcessor(
 MetalPrimitiveProcessor::~MetalPrimitiveProcessor() { Shutdown(true); }
 
 bool MetalPrimitiveProcessor::Initialize() {
-  if (!InitializeCommon(true, false, false, false, false, false)) {
+  if (!InitializeCommon(true, false, false, false, false, true)) {
     Shutdown();
     return false;
   }

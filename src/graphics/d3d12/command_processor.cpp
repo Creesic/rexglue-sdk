@@ -3814,6 +3814,10 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
   dirty |= system_constants_.vertex_index_max != vgt_max_vtx_indx;
   system_constants_.vertex_index_min = vgt_min_vtx_indx;
   system_constants_.vertex_index_max = vgt_max_vtx_indx;
+  dirty |= system_constants_.vertex_index_load_address != UINT32_MAX;
+  dirty |= system_constants_.vertex_index_load_is_32bit != 0;
+  system_constants_.vertex_index_load_address = UINT32_MAX;
+  system_constants_.vertex_index_load_is_32bit = 0;
 
   // User clip planes (UCP_ENA_#), when not CLIP_DISABLE.
   // The shader knows only the total count - tightly packing the user clip

@@ -111,7 +111,7 @@ class DxbcShaderTranslator : public ShaderTranslator {
     // If anything in this is structure is changed in a way not compatible with
     // the previous layout, invalidate the pipeline storages by increasing this
     // version number (0xYYYYMMDD)!
-    static constexpr uint32_t kVersion = 0x20260226;
+    static constexpr uint32_t kVersion = 0x20260430;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -176,6 +176,10 @@ class DxbcShaderTranslator : public ShaderTranslator {
       uint32_t dynamic_addressable_register_count : 8;
       // Non-ROV - depth / stencil output mode.
       DepthStencilMode depth_stencil_mode : 2;
+      // For host render targets with MIN/MAX blend ops: the source blend factor
+      // to pre-multiply RT0 shader output by. kOne means no pre-multiply.
+      xenos::BlendFactor rt0_blend_rgb_factor_for_premult : 5;
+      xenos::BlendFactor rt0_blend_a_factor_for_premult : 5;
     } pixel;
 
     explicit Modification(uint64_t modification_value = 0) : value(modification_value) {
@@ -388,6 +392,12 @@ class DxbcShaderTranslator : public ShaderTranslator {
     // The constant blend factor for the respective modes.
     float edram_blend_constant[4];
 
+    // For VS-expanded point and rectangle DMA draws, the shader computes a
+    // guest index ordinal first, then loads the real guest index from memory.
+    uint32_t vertex_index_load_address;
+    uint32_t vertex_index_load_is_32bit;
+    uint32_t padding_vertex_index_load[2];
+
    private:
     friend class DxbcShaderTranslator;
 
@@ -439,6 +449,9 @@ class DxbcShaderTranslator : public ShaderTranslator {
       kEdramRTBlendFactorsOps,
 
       kEdramBlendConstant,
+
+      kVertexIndexLoadAddress,
+      kVertexIndexLoadIs32Bit,
 
       kCount,
     };
@@ -646,6 +659,8 @@ class DxbcShaderTranslator : public ShaderTranslator {
     return is_vertex_shader() && Shader::IsHostVertexShaderTypeDomain(
                                      GetDxbcShaderModification().vertex.host_vertex_shader_type);
   }
+
+  void LoadDMAIndexForExpandedPrimitive(uint32_t index_temp);
 
   bool IsForceEarlyDepthStencilGlobalFlagEnabled() const {
     return is_pixel_shader() &&
