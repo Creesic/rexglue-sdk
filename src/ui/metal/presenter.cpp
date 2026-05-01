@@ -90,29 +90,25 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
 
   static std::atomic<int> paint_count{0};
   int pc = paint_count.fetch_add(1);
-  if constexpr (kMetalVerboseDiagnostics) {
-  if (pc < 10 || pc % 500 == 0) {
-    fprintf(stderr, "[metal] PAINT #%d: src=%p dst=%p\n", pc, src, dst);
+  if (pc < 10) {
+    fprintf(stderr, "[metal] PAINT #%d: src=%p dst=%p blit_lib=%p\n", pc, src, dst, blit_lib_);
     fflush(stderr);
-  }
   }
 
   MTL::CommandBuffer* cmd = queue->commandBuffer();
   if (!cmd) { pool->drain(); return PaintResult::kNotPresented; }
 
   if (src && blit_lib_) {
-    static std::atomic<int> blit_count{0};
-    int bc = blit_count.fetch_add(1);
-    if constexpr (kMetalVerboseDiagnostics) {
-    if (bc < 5) {
-      fprintf(stderr, "[metal] BLIT: src=%p %ux%u fmt=%d dst=%ux%u fmt=%d\n",
-              src, (unsigned)src->width(), (unsigned)src->height(), (int)src->pixelFormat(),
-              (unsigned)dst->width(), (unsigned)dst->height(), (int)dst->pixelFormat());
-      fflush(stderr);
-    }
-    }
     MTL::RenderPipelineState* pipe = GetOrCreateBlitPipeline(dst->pixelFormat());
     if (pipe) {
+      static std::atomic<int> actual_blit_count{0};
+      int abc = actual_blit_count.fetch_add(1);
+      if (abc < 5) {
+        fprintf(stderr, "[metal] ACTUAL BLIT #%d: src=%p %ux%u fmt=%d -> dst=%p %ux%u fmt=%d\n",
+                abc, src, (unsigned)src->width(), (unsigned)src->height(), (int)src->pixelFormat(),
+                dst, (unsigned)dst->width(), (unsigned)dst->height(), (int)dst->pixelFormat());
+        fflush(stderr);
+      }
       MTL::RenderPassDescriptor* rpd = MTL::RenderPassDescriptor::alloc()->init();
       auto* ca = rpd->colorAttachments()->object(0);
       ca->setTexture(dst);
@@ -155,15 +151,11 @@ MTL::RenderPipelineState* MetalPresenter::GetOrCreateBlitPipeline(MTL::PixelForm
   NS::Error* err = nullptr;
   blit_pipe_ = device_->newRenderPipelineState(desc, MTL::PipelineOptionNone, nullptr, &err);
   if (!blit_pipe_) {
-    if constexpr (kMetalVerboseDiagnostics) {
-    fprintf(stderr, "[metal] BLIT PIPE failed: %s\n",
+    fprintf(stderr, "[metal] BLIT PIPE FAILED: %s\n",
             err ? err->localizedDescription()->utf8String() : "null"); fflush(stderr);
-    }
   } else {
     blit_pipe_fmt_ = fmt;
-    if constexpr (kMetalVerboseDiagnostics) {
     fprintf(stderr, "[metal] BLIT PIPE OK fmt=%d\n", (int)fmt); fflush(stderr);
-    }
   }
   desc->release();
   if (vf) vf->release();

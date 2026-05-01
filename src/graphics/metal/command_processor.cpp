@@ -36,7 +36,7 @@ constexpr bool kMetalDebugSolidFirstPreCopyDraws = false;
 constexpr bool kMetalDebugForceMagentaTextures = false;
 constexpr bool kMetalDebugDisableBlendAndColorMask = true;
 constexpr bool kMetalDebugForceDepthAlways = true;
-constexpr bool kMetalDebugFillBeforeCopy = false;
+constexpr bool kMetalDebugFillBeforeCopy = true;
 constexpr size_t kMetalDrawRingCount = 128;
 
 void SetDescriptorBuffer(::IRDescriptorTableEntry* entry, uint64_t gpu_va, uint64_t size) {
@@ -1224,6 +1224,14 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (metal_pixel_shader) {
     used_texture_mask |= metal_pixel_shader->GetUsedTextureMaskAfterTranslation();
   }
+  if (metal_pixel_shader) {
+    uint32_t ps_wct = metal_pixel_shader->writes_color_targets();
+    uint32_t rb_color_mask = regs[XE_GPU_REG_RB_COLOR_MASK];
+    uint32_t edram_mode = (uint32_t)regs.Get<reg::RB_MODECONTROL>().edram_mode;
+    fprintf(stderr, "[metal] COLOR MASK DIAG: ps_wct=0x%X ncm=0x%X rb_color_mask=0x%08X edram_mode=%u\n",
+            ps_wct, normalized_color_mask, rb_color_mask, edram_mode);
+    fflush(stderr);
+  }
   if (texture_cache_ && used_texture_mask) {
     if (texture_cache_->AnyUsedTextureRequestWorkPending(used_texture_mask)) {
     }
@@ -1377,6 +1385,12 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       if (debug_pipeline) {
         pipeline = debug_pipeline;
         debug_solid_fragment = true;
+      } else {
+        static bool diag_printed = false;
+        if (!diag_printed) {
+          diag_printed = true;
+          fprintf(stderr, "[metal] DIAG: debug solid fragment pipeline FAILED to create\n"); fflush(stderr);
+        }
       }
     }
   }
@@ -1925,19 +1939,98 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
 
   EndCommandBuffer();
 
+  if (sc < 5 && swap_texture) {
+      uint32_t bpp = 8;
+      struct Pos { int x, y; const char* name; };
+      Pos positions[] = {{0,0,"TL"}, {639,0,"TR"}, {0,359,"BL"},
+                          {639,359,"BR"}, {320,180,"C1"}, {640,360,"C2"}};
+      int npos = sizeof(positions)/sizeof(positions[0]);
+      MTL::Buffer* staging = device_->newBuffer(npos * bpp, MTL::ResourceStorageModeShared);
+      if (staging) {
+        MTL::CommandBuffer* cb = command_queue_->commandBuffer();
+        if (cb) {
+          MTL::BlitCommandEncoder* blit = cb->blitCommandEncoder();
+          if (blit) {
+            for (int i = 0; i < npos; i++) {
+              blit->copyFromTexture(swap_texture, 0, 0,
+                                    MTL::Origin(positions[i].x, positions[i].y, 0),
+                                    MTL::Size(1, 1, 1), staging, i * bpp, bpp, bpp);
+            }
+            blit->endEncoding();
+            blit->release();
+          }
+          cb->commit();
+          cb->waitUntilCompleted();
+          auto* pixels = reinterpret_cast<const uint16_t*>(staging->contents());
+          auto f16_to_float = [](uint16_t h) -> float {
+            uint32_t sign = (h >> 15) & 1;
+            uint32_t exp = (h >> 10) & 0x1F;
+            uint32_t mant = h & 0x3FF;
+            if (exp == 0) return 0.0f;
+            if (exp == 31) return mant ? NAN : (sign ? -INFINITY : INFINITY);
+            uint32_t f = (sign << 31) | ((exp + 112) << 23) | (mant << 13);
+            float result;
+            std::memcpy(&result, &f, 4);
+            return result;
+          };
+          for (int i = 0; i < npos; i++) {
+            int off = i * 4;
+            fprintf(stderr, "[metal] PIXEL #%d %s: %.2f,%.2f,%.2f,%.2f\n",
+                    sc, positions[i].name,
+                    f16_to_float(pixels[off]), f16_to_float(pixels[off+1]),
+                    f16_to_float(pixels[off+2]), f16_to_float(pixels[off+3]));
+          }
+          fflush(stderr);
+          cb->release();
+        }
+        staging->release();
+      }
+    }
+
   {
-    if (swap_texture) {
+    if (swap_texture && present_texture_) {
+      MTL::CommandBuffer* cb = command_queue_->commandBuffer();
+      if (cb) {
+        MTL::BlitCommandEncoder* blit = cb->blitCommandEncoder();
+        if (blit) {
+          blit->copyFromTexture(swap_texture, 0, 0,
+                                MTL::Origin(0, 0, 0),
+                                MTL::Size(swap_texture->width(), 720, 1),
+                                present_texture_, 0, 0,
+                                MTL::Origin(0, 0, 0));
+          blit->endEncoding();
+          blit->release();
+        }
+        cb->commit();
+        cb->waitUntilCompleted();
+      }
       auto& provider = GetMetalProvider();
-      provider.SetFrontbufferTexture(swap_texture);
+      provider.SetFrontbufferTexture(present_texture_);
       static std::atomic<int> fb_set_count{0};
       int fbs = fb_set_count.fetch_add(1);
-      if constexpr (kMetalVerboseDiagnostics) {
       if (fbs < 5) {
-        fprintf(stderr, "[metal] SET FRONTBUFFER DIRECT #%d: tex=%p fmt=%d %ux%u\n",
-                fbs, swap_texture, (int)swap_texture->pixelFormat(),
-                (unsigned)swap_texture->width(), (unsigned)swap_texture->height());
-        fflush(stderr);
-      }
+        MTL::Buffer* staging = device_->newBuffer(32, MTL::ResourceStorageModeShared);
+        if (staging) {
+          MTL::CommandBuffer* cb2 = command_queue_->commandBuffer();
+          if (cb2) {
+            MTL::BlitCommandEncoder* blit2 = cb2->blitCommandEncoder();
+            if (blit2) {
+              blit2->copyFromTexture(present_texture_, 0, 0,
+                                     MTL::Origin(640, 360, 0),
+                                     MTL::Size(1, 1, 1), staging, 0, 8, 8);
+              blit2->endEncoding();
+              blit2->release();
+            }
+            cb2->commit();
+            cb2->waitUntilCompleted();
+            auto* px = reinterpret_cast<const uint16_t*>(staging->contents());
+            fprintf(stderr, "[metal] PRESENT VERIFY #%d: px=[%04X,%04X,%04X,%04X]\n",
+                    fbs, px[0], px[1], px[2], px[3]);
+            fflush(stderr);
+            cb2->release();
+          }
+          staging->release();
+        }
       }
     }
   }
