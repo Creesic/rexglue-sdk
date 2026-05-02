@@ -113,7 +113,7 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
       auto* ca = rpd->colorAttachments()->object(0);
       ca->setTexture(dst);
       ca->setLoadAction(MTL::LoadActionClear);
-      ca->setClearColor(MTL::ClearColor(0, 0, 0, 1));
+      ca->setClearColor(MTL::ClearColor(0, 1, 1, 1));
       ca->setStoreAction(MTL::StoreActionStore);
       MTL::RenderCommandEncoder* enc = cmd->renderCommandEncoder(rpd);
       if (enc) {
@@ -133,6 +133,16 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
     }
   }
 
+  static std::atomic<int> present_count{0};
+  int prc = present_count.fetch_add(1);
+  cmd->addCompletedHandler([prc](MTL::CommandBuffer* cb) {
+    if (prc < 10) {
+      fprintf(stderr, "[metal] PRESENT COMPLETE #%d: status=%d err=%s\n",
+              prc, (int)cb->status(),
+              cb->error() ? cb->error()->localizedDescription()->utf8String() : "none");
+      fflush(stderr);
+    }
+  });
   cmd->presentDrawable(drawable);
   cmd->commit();
   pool->drain();

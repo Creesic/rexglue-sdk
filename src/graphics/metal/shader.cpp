@@ -1,30 +1,41 @@
+/**
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2026 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ */
+
 #include <rex/graphics/metal/shader.h>
 
 #include <dispatch/dispatch.h>
 #include <inttypes.h>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 
 #ifndef DISPATCH_DATA_DESTRUCTOR_NONE
 #define DISPATCH_DATA_DESTRUCTOR_NONE DISPATCH_DATA_DESTRUCTOR_DEFAULT
 #endif
 
+#include <rex/assert.h>
+#include <rex/filesystem.h>
+#include <rex/logging.h>
+#include <rex/string.h>
+#include <rex/graphics/pipeline/shader/dxbc.h>
+#include <rex/graphics/flags.h>
 #include <rex/graphics/metal/dxbc_to_dxil_converter.h>
 #include <rex/graphics/metal/shader_cache.h>
 #include <rex/graphics/metal/shader_converter.h>
-#include <rex/logging/macros.h>
+#include <rex/ui/metal/presenter.h>
 
 namespace rex {
 namespace graphics {
 namespace metal {
 
-namespace {
-constexpr bool kMetalVerboseDiagnostics = false;
-}
-
 MetalShader::MetalShader(xenos::ShaderType shader_type,
-                         uint64_t ucode_data_hash,
-                         const uint32_t* ucode_dwords,
+                         uint64_t ucode_data_hash, const uint32_t* ucode_dwords,
                          size_t ucode_dword_count,
                          std::endian ucode_source_endian)
     : DxbcShader(shader_type, ucode_data_hash, ucode_dwords, ucode_dword_count,
@@ -49,6 +60,7 @@ bool MetalShader::MetalTranslation::TranslateToMetal(
     return false;
   }
 
+  // Get the translated DXBC bytecode from the base class
   const std::vector<uint8_t>& dxbc_data = translated_binary();
   if (dxbc_data.empty()) {
     REXLOG_ERROR("MetalShader: No translated DXBC data available");
@@ -59,7 +71,8 @@ bool MetalShader::MetalTranslation::TranslateToMetal(
       MetalShaderCache::GetCacheKey(shader().ucode_data_hash(), modification(),
                                     static_cast<uint32_t>(shader().type()));
 
-  if (false && g_metal_shader_cache && g_metal_shader_cache->IsInitialized()) {
+  if (REXCVAR_GET(metal_shader_disk_cache) && g_metal_shader_cache &&
+      g_metal_shader_cache->IsInitialized()) {
     MetalShaderCache::CachedMetallib cached;
     if (g_metal_shader_cache->Load(shader_cache_key, &cached)) {
       NS::Error* error = nullptr;
@@ -71,22 +84,9 @@ bool MetalShader::MetalTranslation::TranslateToMetal(
       if (metal_library_) {
         function_name_ = cached.function_name;
         metallib_data_ = std::move(cached.metallib_data);
-        NS::String* fn =
+        NS::String* function_name_ns =
             NS::String::string(function_name_.c_str(), NS::UTF8StringEncoding);
-  metal_function_ = metal_library_->newFunction(fn);
-  if (metal_function_) {
-    static int func_count = 0;
-    if (func_count++ < 3) {
-      fprintf(stderr, "[metal] newFunction '%s' OK, argCount=%u\n",
-              function_name_.c_str(),
-              (unsigned)metal_function_->vertexAttributes()->count());
-      auto* args = metal_function_->functionConstantsDictionary();
-      if (args) {
-        fprintf(stderr, "[metal]   functionConstants keys=%u\n",
-                (unsigned)args->count());
-      }
-    }
-  }
+        metal_function_ = metal_library_->newFunction(function_name_ns);
         if (metal_function_) {
           return true;
         }
@@ -95,107 +95,165 @@ bool MetalShader::MetalTranslation::TranslateToMetal(
       }
     }
   }
+  auto dump_msc_failure = [&](const char* reason) {
+    if (REXCVAR_GET(dump_shaders).empty()) {
+      return;
+    }
+    static std::atomic<uint32_t> dump_counter{0};
+    uint32_t dump_id = dump_counter.fetch_add(1);
+    const char* type_str =
+        (shader().type() == xenos::ShaderType::kVertex) ? "vs" : "ps";
+    char base_name[128];
+    snprintf(base_name, sizeof(base_name), "shader_%016" PRIx64 "_%s_%u",
+             shader().ucode_data_hash(), type_str, dump_id);
 
+    std::filesystem::path base_dir =
+        std::filesystem::path(REXCVAR_GET(dump_shaders)) / "metal_shaders" / "failures";
+    std::filesystem::path dxbc_path =
+        base_dir / (std::string(base_name) + ".dxbc");
+    std::filesystem::path dxil_path =
+        base_dir / (std::string(base_name) + ".dxil");
+    std::filesystem::path info_path =
+        base_dir / (std::string(base_name) + ".txt");
+
+    rex::filesystem::CreateParentFolder(dxbc_path);
+
+    FILE* info_file = rex::filesystem::OpenFile(info_path, "wb");
+    if (info_file) {
+      std::string info =
+          fmt::format("reason={}\nshader_type={}\nucode_hash=0x{:016X}\n",
+                      reason, type_str, shader().ucode_data_hash());
+      fwrite(info.data(), 1, info.size(), info_file);
+      fclose(info_file);
+    }
+
+    if (!dxbc_data.empty()) {
+      FILE* f = rex::filesystem::OpenFile(dxbc_path, "wb");
+      if (f) {
+        fwrite(dxbc_data.data(), 1, dxbc_data.size(), f);
+        fclose(f);
+      }
+    }
+
+    if (!dxil_data_.empty()) {
+      FILE* f = rex::filesystem::OpenFile(dxil_path, "wb");
+      if (f) {
+        fwrite(dxil_data_.data(), 1, dxil_data_.size(), f);
+        fclose(f);
+      }
+    }
+
+    REXLOG_ERROR("MetalShader: dumped MSC failure artifacts to {} (reason={})",
+           rex::path_to_utf8(info_path.parent_path()), reason);
+  };
+
+  // Step 1: Convert DXBC to DXIL in-process (dxilconv)
   std::string dxbc_error;
   if (!dxbc_converter.Convert(dxbc_data, dxil_data_, &dxbc_error)) {
     REXLOG_ERROR("MetalShader: DXBC to DXIL conversion failed: {}", dxbc_error);
+    dump_msc_failure("dxbc2dxil_failed");
     return false;
   }
   REXLOG_DEBUG("MetalShader: Converted {} bytes DXBC to {} bytes DXIL",
-               dxbc_data.size(), dxil_data_.size());
+         dxbc_data.size(), dxil_data_.size());
 
+  // Step 2: Convert DXIL to MetalLib using Metal Shader Converter
   MetalShaderConversionResult msc_result;
   if (!metal_converter.Convert(shader().type(), dxil_data_, msc_result)) {
     REXLOG_ERROR("MetalShader: DXIL to Metal conversion failed: {}",
-                 msc_result.error_message);
+           msc_result.error_message);
+    dump_msc_failure("msc_convert_failed");
     return false;
   }
   function_name_ = msc_result.function_name;
   metallib_data_ = std::move(msc_result.metallib_data);
   REXLOG_DEBUG("MetalShader: Converted {} bytes DXIL to {} bytes MetalLib",
-               dxil_data_.size(), metallib_data_.size());
+         dxil_data_.size(), metallib_data_.size());
 
-  if constexpr (kMetalVerboseDiagnostics) {
-    static std::atomic<int> dump_count{0};
-    int dc = dump_count.fetch_add(1);
-    fprintf(stderr, "[metal] SHADER DUMP #%d: metallib=%zu bytes fn=%s\n",
-            dc, metallib_data_.size(), function_name_.c_str());
-    fflush(stderr);
-    if (dc < 10) {
-    char dump_path[256];
-    snprintf(dump_path, sizeof(dump_path), "/tmp/pgr3_shader_%d.metallib", dc);
-    FILE* f = fopen(dump_path, "wb");
-    if (f) {
-      fwrite(metallib_data_.data(), 1, metallib_data_.size(), f);
-      fclose(f);
+  // Debug: Dump shader artifacts (DXBC, DXIL, MetalLib) to files when enabled.
+  static std::atomic<int> shader_dump_counter{0};
+  if (!REXCVAR_GET(dump_shaders).empty()) {
+    std::filesystem::path base_dir = std::filesystem::path(REXCVAR_GET(dump_shaders)) / "metal_shaders";
+
+    char filename[128];
+    const char* type_str =
+        (shader().type() == xenos::ShaderType::kVertex) ? "vs" : "ps";
+    int counter = shader_dump_counter++;
+
+    // Dump DXBC (translated binary from DXBC translator)
+    const auto& dxbc_data = translated_binary();
+    if (!dxbc_data.empty()) {
+      snprintf(filename, sizeof(filename), "shader_%d_%s.dxbc", counter,
+               type_str);
+      std::filesystem::path dxbc_path = base_dir / filename;
+      rex::filesystem::CreateParentFolder(dxbc_path);
+      FILE* f = rex::filesystem::OpenFile(dxbc_path, "wb");
+      if (f) {
+        fwrite(dxbc_data.data(), 1, dxbc_data.size(), f);
+        fclose(f);
+      }
     }
-    snprintf(dump_path, sizeof(dump_path), "/tmp/pgr3_shader_%d.dxil", dc);
-    f = fopen(dump_path, "wb");
-    if (f) {
-      fwrite(dxil_data_.data(), 1, dxil_data_.size(), f);
-      fclose(f);
+
+    // Dump DXIL
+    if (!dxil_data_.empty()) {
+      snprintf(filename, sizeof(filename), "shader_%d_%s.dxil", counter,
+               type_str);
+      std::filesystem::path dxil_path = base_dir / filename;
+      rex::filesystem::CreateParentFolder(dxil_path);
+      FILE* f = rex::filesystem::OpenFile(dxil_path, "wb");
+      if (f) {
+        fwrite(dxil_data_.data(), 1, dxil_data_.size(), f);
+        fclose(f);
+      }
     }
-    auto& dxbc_bin = translated_binary();
-    snprintf(dump_path, sizeof(dump_path), "/tmp/pgr3_shader_%d.dxbc", dc);
-    f = fopen(dump_path, "wb");
-    if (f) {
-      fwrite(dxbc_bin.data(), 1, dxbc_bin.size(), f);
-      fclose(f);
-    }
-    fprintf(stderr, "[metal] Dumped shader #%d: dxbc=%zu dxil=%zu metallib=%zu fn=%s\n",
-            dc, dxbc_bin.size(), dxil_data_.size(), metallib_data_.size(),
-            function_name_.c_str());
-    fflush(stderr);
+
+    // Dump MetalLib
+    if (!metallib_data_.empty()) {
+      snprintf(filename, sizeof(filename), "shader_%d_%s.metallib", counter,
+               type_str);
+      std::filesystem::path metallib_path = base_dir / filename;
+      rex::filesystem::CreateParentFolder(metallib_path);
+      FILE* f = rex::filesystem::OpenFile(metallib_path, "wb");
+      if (f) {
+        fwrite(metallib_data_.data(), 1, metallib_data_.size(), f);
+        fclose(f);
+      }
     }
   }
 
+  // Step 3: Create Metal library from the metallib data
   NS::Error* error = nullptr;
   dispatch_data_t data =
       dispatch_data_create(metallib_data_.data(), metallib_data_.size(),
                            nullptr, DISPATCH_DATA_DESTRUCTOR_NONE);
+
   metal_library_ = device->newLibrary(data, &error);
   dispatch_release(data);
 
   if (!metal_library_) {
     if (error) {
       REXLOG_ERROR("MetalShader: Failed to create Metal library: {}",
-                   error->localizedDescription()->utf8String());
-      error->release();
+             error->localizedDescription()->utf8String());
     } else {
       REXLOG_ERROR("MetalShader: Failed to create Metal library (unknown error)");
     }
     return false;
   }
 
-  NS::String* fn = NS::String::string(function_name_.c_str(),
-                                       NS::UTF8StringEncoding);
-  metal_function_ = metal_library_->newFunction(fn);
+  // Step 4: Get the main function from the library
+  // MSC generates functions with specific names based on shader type
+  NS::String* function_name = NS::String::string(
+      msc_result.function_name.c_str(), NS::UTF8StringEncoding);
+
+  metal_function_ = metal_library_->newFunction(function_name);
 
   if (!metal_function_) {
-    const char* alt_names[] = {"main0", "main", "vertexMain", "fragmentMain"};
-    for (const char* alt_name : alt_names) {
-      NS::String* alt_fn =
-          NS::String::string(alt_name, NS::UTF8StringEncoding);
-      metal_function_ = metal_library_->newFunction(alt_fn);
-      if (metal_function_) {
-        REXLOG_DEBUG("MetalShader: Found function with alternative name: {}",
-                     alt_name);
-        break;
-      }
-    }
-  }
-
-  if (!metal_function_) {
-    NS::Array* function_names = metal_library_->functionNames();
-    REXLOG_ERROR("MetalShader: Could not find shader function. Available:");
-    for (NS::UInteger i = 0; i < function_names->count(); i++) {
-      NS::String* name = static_cast<NS::String*>(function_names->object(i));
-      REXLOG_ERROR("  - {}", name->utf8String());
-    }
+    REXLOG_ERROR("MetalShader: Function '{}' not found in metallib", function_name_);
     return false;
   }
 
-  if (g_metal_shader_cache && g_metal_shader_cache->IsInitialized()) {
+  if (REXCVAR_GET(metal_shader_disk_cache) && g_metal_shader_cache &&
+      g_metal_shader_cache->IsInitialized()) {
     g_metal_shader_cache->Store(shader_cache_key, function_name_,
                                 metallib_data_.data(), metallib_data_.size());
   }
@@ -209,5 +267,5 @@ Shader::Translation* MetalShader::CreateTranslationInstance(
 }
 
 }  // namespace metal
-}  // namespace graphics
+}  // namespace gpu
 }  // namespace rex

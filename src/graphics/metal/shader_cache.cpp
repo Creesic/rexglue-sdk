@@ -1,3 +1,12 @@
+/**
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2026 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ */
+
 #include <rex/graphics/metal/shader_cache.h>
 
 #include <algorithm>
@@ -6,9 +15,9 @@
 #include <fstream>
 #include <limits>
 
-#include <rex/logging/macros.h>
-
 #include <xxhash.h>
+#include <rex/logging.h>
+#include <rex/graphics/flags.h>
 
 namespace rex {
 namespace graphics {
@@ -18,9 +27,8 @@ std::unique_ptr<MetalShaderCache> g_metal_shader_cache =
     std::make_unique<MetalShaderCache>();
 
 namespace {
-constexpr uint32_t kCacheFileMagic = 0x4D4C4358;
-constexpr uint32_t kCacheFileVersion = 1;
 
+constexpr uint32_t kCacheFileMagic = 0x4D4C4358;  // 'XCLM'
 struct CacheFileHeader {
   uint32_t magic;
   uint32_t version;
@@ -28,6 +36,9 @@ struct CacheFileHeader {
   uint32_t function_name_length;
   uint32_t metallib_size;
 };
+
+static_assert(sizeof(CacheFileHeader) == 24, "Unexpected header packing.");
+
 }  // namespace
 
 void MetalShaderCache::Initialize(const std::filesystem::path& cache_dir) {
@@ -38,7 +49,7 @@ void MetalShaderCache::Initialize(const std::filesystem::path& cache_dir) {
   std::filesystem::create_directories(cache_dir_, ec);
   if (ec) {
     REXLOG_WARN("MetalShaderCache: Failed to create cache directory {}: {}",
-                cache_dir_.string(), ec.message());
+           cache_dir_.string(), ec.message());
     initialized_ = false;
     return;
   }
@@ -53,13 +64,11 @@ void MetalShaderCache::Shutdown() {
 
 uint64_t MetalShaderCache::GetCacheKey(uint64_t ucode_hash,
                                        uint64_t modification, uint32_t stage) {
-  struct KeyData {
-    uint64_t ucode_hash;
-    uint64_t modification;
-    uint32_t stage;
-    uint32_t reserved;
-  } key_data = {ucode_hash, modification, stage, 0};
-  return XXH3_64bits(&key_data, sizeof(key_data));
+  const uint64_t header =
+      (uint64_t(MetalShaderCache::kStorageVersion) << 32) | 1ull;
+  const uint64_t key_words[] = {header, ucode_hash, modification,
+                                uint64_t(stage)};
+  return XXH3_64bits(key_words, sizeof(key_words));
 }
 
 MetalShaderCache::CacheStats MetalShaderCache::GetStats() const {
@@ -75,10 +84,14 @@ MetalShaderCache::CacheStats MetalShaderCache::GetStats() const {
 }
 
 bool MetalShaderCache::Load(uint64_t cache_key, CachedMetallib* out) {
-  if (!out) return false;
+  if (!out) {
+    return false;
+  }
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!initialized_) return false;
+    if (!initialized_) {
+      return false;
+    }
     auto it = cache_.find(cache_key);
     if (it != cache_.end()) {
       out->function_name = it->second.function_name;
@@ -88,11 +101,15 @@ bool MetalShaderCache::Load(uint64_t cache_key, CachedMetallib* out) {
   }
 
   CachedMetallib disk_entry;
-  if (!LoadFromDisk(cache_key, &disk_entry)) return false;
+  if (!LoadFromDisk(cache_key, &disk_entry)) {
+    return false;
+  }
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!initialized_) return false;
+    if (!initialized_) {
+      return false;
+    }
     MemoryEntry mem;
     mem.function_name = disk_entry.function_name;
     mem.metallib_data = disk_entry.metallib_data;
@@ -106,7 +123,9 @@ bool MetalShaderCache::Load(uint64_t cache_key, CachedMetallib* out) {
 void MetalShaderCache::Store(uint64_t cache_key, std::string_view function_name,
                              const uint8_t* metallib_data,
                              size_t metallib_size) {
-  if (!metallib_data || metallib_size == 0) return;
+  if (!metallib_data || metallib_size == 0) {
+    return;
+  }
 
   CachedMetallib entry;
   entry.function_name.assign(function_name.data(), function_name.size());
@@ -115,7 +134,9 @@ void MetalShaderCache::Store(uint64_t cache_key, std::string_view function_name,
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!initialized_) return;
+    if (!initialized_) {
+      return;
+    }
     MemoryEntry mem;
     mem.function_name = entry.function_name;
     mem.metallib_data = entry.metallib_data;
@@ -136,17 +157,22 @@ bool MetalShaderCache::LoadFromDisk(uint64_t cache_key, CachedMetallib* out) {
   std::filesystem::path path;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!initialized_) return false;
+    if (!initialized_) {
+      return false;
+    }
     path = GetDiskPath(cache_key);
   }
 
   std::ifstream file(path, std::ios::binary);
-  if (!file.is_open()) return false;
+  if (!file.is_open()) {
+    return false;
+  }
 
   CacheFileHeader hdr = {};
   file.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
   if (!file || hdr.magic != kCacheFileMagic ||
-      hdr.version != kCacheFileVersion || hdr.cache_key != cache_key) {
+      hdr.version != MetalShaderCache::kStorageVersion ||
+      hdr.cache_key != cache_key) {
     return false;
   }
 
@@ -158,12 +184,16 @@ bool MetalShaderCache::LoadFromDisk(uint64_t cache_key, CachedMetallib* out) {
   std::string fn;
   fn.resize(hdr.function_name_length);
   file.read(fn.data(), hdr.function_name_length);
-  if (!file) return false;
+  if (!file) {
+    return false;
+  }
 
   std::vector<uint8_t> data;
   data.resize(hdr.metallib_size);
   file.read(reinterpret_cast<char*>(data.data()), hdr.metallib_size);
-  if (!file) return false;
+  if (!file) {
+    return false;
+  }
 
   out->function_name = std::move(fn);
   out->metallib_data = std::move(data);
@@ -175,7 +205,9 @@ bool MetalShaderCache::StoreToDisk(uint64_t cache_key,
   std::filesystem::path path;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!initialized_) return false;
+    if (!initialized_) {
+      return false;
+    }
     path = GetDiskPath(cache_key);
   }
 
@@ -183,11 +215,13 @@ bool MetalShaderCache::StoreToDisk(uint64_t cache_key,
   tmp_path += ".tmp";
 
   std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
-  if (!file.is_open()) return false;
+  if (!file.is_open()) {
+    return false;
+  }
 
   CacheFileHeader hdr = {};
   hdr.magic = kCacheFileMagic;
-  hdr.version = kCacheFileVersion;
+  hdr.version = MetalShaderCache::kStorageVersion;
   hdr.cache_key = cache_key;
   hdr.function_name_length = static_cast<uint32_t>(in.function_name.size());
   hdr.metallib_size = static_cast<uint32_t>(in.metallib_data.size());
@@ -207,5 +241,5 @@ bool MetalShaderCache::StoreToDisk(uint64_t cache_key,
 }
 
 }  // namespace metal
-}  // namespace graphics
+}  // namespace gpu
 }  // namespace rex

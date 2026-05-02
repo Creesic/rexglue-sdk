@@ -325,6 +325,7 @@ void CommandProcessor::WorkerThreadMain() {
     read_ptr_index_ = new_read_index & ((primary_buffer_size_ / sizeof(uint32_t)) - 1);
 
     if (read_ptr_writeback_ptr_) {
+      std::atomic_thread_fence(std::memory_order_release);
       memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
                                        read_ptr_index_);
     }
@@ -1229,11 +1230,27 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
     auto addr = memory_->TranslatePhysical(poll_reg_addr & ~uint32_t(0x3));
     auto endian = static_cast<xenos::Endian>(poll_reg_addr & 0x3);
     uint32_t value = xenos::GpuSwap(*reinterpret_cast<uint32_t*>(addr), endian);
+    static std::atomic<int> wrm_count{0};
+    int wc = wrm_count.fetch_add(1);
+    if (wc < 20) {
+      fprintf(stderr, "[cp] WAIT_REG_MEM mem: addr=0x%08X val=0x%08X ref=0x%08X mask=0x%08X -> %s\n",
+              poll_reg_addr, value, ref, mask,
+              (value & mask) != ref ? "FORCED" : "ok");
+      fflush(stderr);
+    }
     if ((value & mask) != ref) {
       REXGPU_INFO("WAIT_REG_MEM: forcing addr=0x{:08X} val=0x{:08X} -> ref=0x{:08X}", poll_reg_addr, value, ref);
       *reinterpret_cast<uint32_t*>(addr) = xenos::GpuSwap(ref, endian);
     }
     return true;
+  }
+
+  static std::atomic<int> wrm_reg_count{0};
+  int wrc = wrm_reg_count.fetch_add(1);
+  if (wrc < 20) {
+    fprintf(stderr, "[cp] WAIT_REG_MEM reg: addr=0x%08X ref=0x%08X mask=0x%08X func=%d\n",
+            poll_reg_addr, ref, mask, wait_info & 0x7);
+    fflush(stderr);
   }
 
   bool matched = false;
@@ -1537,11 +1554,11 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* re
 bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32_t packet,
                                               const char* opcode_name, uint32_t viz_query_condition,
                                               uint32_t count_remaining) {
-  // if viz_query_condition != 0, this is a conditional draw based on viz query.
-  // This ID matches the one issued in PM4_VIZ_QUERY
-  // uint32_t viz_id = viz_query_condition & 0x3F;
-  // when true, render conditionally based on query result
-  // uint32_t viz_use = viz_query_condition & 0x100;
+  static std::atomic<int> total_draw_pm4{0};
+  static std::atomic<int> draw_succeeded_count{0};
+  static std::atomic<int> draw_issued_count{0};
+  static std::atomic<int> draw_viz_skip_count{0};
+  int tdp = total_draw_pm4.fetch_add(1);
 
   assert_not_zero(count_remaining);
   if (!count_remaining) {
@@ -1621,8 +1638,13 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
   reader->AdvanceRead(count_remaining * sizeof(uint32_t));
 
   if (draw_succeeded) {
+    draw_succeeded_count.fetch_add(1);
     auto viz_query = register_file_->Get<reg::PA_SC_VIZ_QUERY>();
+    if (viz_query.viz_query_ena && viz_query.kill_pix_post_hi_z) {
+      draw_viz_skip_count.fetch_add(1);
+    }
     if (!(viz_query.viz_query_ena && viz_query.kill_pix_post_hi_z)) {
+      draw_issued_count.fetch_add(1);
       // TODO(Triang3l): Don't drop the draw call completely if the vertex
       // shader has memexport.
       // TODO(Triang3l || JoelLinn): Handle this properly in the render
@@ -1648,10 +1670,21 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
     }
   }
 
-  // If read the packed correctly, but merely couldn't execute it (because of,
-  // for instance, features not supported by the host), don't terminate command
-  // buffer processing as that would leave rendering in a way more inconsistent
-  // state than just a single dropped draw command.
+  if (tdp < 5) {
+    fprintf(stderr, "[cp] DRAW #%d: succeeded=%d issued=%d source=%u prim=%u major=%u\n",
+            tdp, int(draw_succeeded), draw_issued_count.load(),
+            uint32_t(vgt_draw_initiator.source_select),
+            uint32_t(vgt_draw_initiator.prim_type),
+            uint32_t(vgt_draw_initiator.major_mode));
+    fflush(stderr);
+  }
+  if (tdp + 1 == 60) {
+    fprintf(stderr, "[cp] DRAW SUMMARY at #%d: total=%d succeeded=%d issued=%d viz_skip=%d\n",
+            tdp + 1, total_draw_pm4.load(), draw_succeeded_count.load(),
+            draw_issued_count.load(), draw_viz_skip_count.load());
+    fflush(stderr);
+  }
+
   return true;
 }
 

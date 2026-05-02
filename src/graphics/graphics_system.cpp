@@ -378,13 +378,15 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
       uint32_t sub_ctr = memory::load_and_swap<uint32_t>(sub_ctr_host);
       auto shadow0_host = memory_->TranslateVirtual(rb_ctrl);
       uint32_t shadow0 = sub_ctr >= 2 ? sub_ctr - 2 : 0;
-      memory::store_and_swap<uint32_t>(shadow0_host, shadow0);
       auto counter_host = memory_->TranslateVirtual(user_data + 13988);
       uint32_t counter = memory::load_and_swap<uint32_t>(counter_host);
       auto wptr_host = memory_->TranslateVirtual(user_data);
       uint32_t wptr = memory::load_and_swap<uint32_t>(wptr_host);
       uint32_t wptr_shadow = (counter & 0x3) | wptr;
       auto shadow4_host = memory_->TranslateVirtual(rb_ctrl + 4);
+
+      std::atomic_thread_fence(std::memory_order_release);
+      memory::store_and_swap<uint32_t>(shadow0_host, shadow0);
       memory::store_and_swap<uint32_t>(shadow4_host, wptr_shadow);
 
       // Clear CPU_INTERRUPT flag (bit 1) set by RPTR wait timeout.
@@ -423,11 +425,15 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
                       marker == 0x0BADF00D ? " (CLEARING)" : "");
         }
         if (marker == 0x0BADF00D) {
+          std::atomic_thread_fence(std::memory_order_release);
           memory::store_and_swap<uint32_t>(marker_host, 0);
+          std::atomic_thread_fence(std::memory_order_release);
         }
       }
     }
   }
+
+  __sync_synchronize();
 
   function_dispatcher_->ExecuteInterrupt(thread->thread_state(), interrupt_callback_, args,
                                          rex::countof(args));
@@ -442,13 +448,16 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
         auto marker_host = memory_->TranslateVirtual(cmd_buf + 16);
         uint32_t marker = memory::load_and_swap<uint32_t>(marker_host);
         if (marker == 0x0BADF00D) {
+          std::atomic_thread_fence(std::memory_order_release);
           memory::store_and_swap<uint32_t>(marker_host, 0);
+          std::atomic_thread_fence(std::memory_order_release);
         }
       }
     }
     auto flags_host = memory_->TranslateVirtual(user_data + 10433);
     uint8_t flags = memory::load_and_swap<uint8_t>(flags_host);
     if (flags & 0x2) {
+      std::atomic_thread_fence(std::memory_order_release);
       memory::store_and_swap<uint8_t>(flags_host, flags & ~uint8_t(0x2));
     }
   }

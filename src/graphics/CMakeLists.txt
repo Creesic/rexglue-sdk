@@ -75,6 +75,7 @@ set(REXGRAPHICS_METAL_SOURCES
     metal/shader_cache.cpp
     metal/geometry_shader.cpp
     metal/heap_pool.cpp
+    metal/upload_buffer_pool.cpp
 )
 
 # D3D12 backend

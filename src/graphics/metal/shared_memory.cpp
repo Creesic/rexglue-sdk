@@ -1,83 +1,171 @@
-#include <rex/graphics/metal/shared_memory.h>
-#include <rex/graphics/metal/command_processor.h>
-#include <rex/ui/metal/provider.h>
-#include <rex/logging/macros.h>
-#include <rex/system/xmemory.h>
-#include <rex/memory.h>
+/**
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2026 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ */
 
-#include <Metal/Metal.hpp>
+#include <rex/graphics/metal/shared_memory.h>
+
+#include <rex/logging.h>
+#include <rex/memory.h>
+#include <rex/graphics/flags.h>
+#include <rex/graphics/metal/command_processor.h>
+#include <rex/ui/metal/util.h>
 
 namespace rex {
 namespace graphics {
 namespace metal {
+using memory::Memory;
 
 MetalSharedMemory::MetalSharedMemory(MetalCommandProcessor& command_processor,
-                                     memory::Memory& memory)
+                                     Memory& memory)
     : SharedMemory(memory), command_processor_(command_processor) {}
 
 MetalSharedMemory::~MetalSharedMemory() { Shutdown(); }
 
 bool MetalSharedMemory::Initialize() {
+  // Try to alias guest memory on unified-memory devices and fall back to a
+  // dedicated shared buffer when not supported.
+  // Initialize base class
   InitializeCommon();
 
-  MTL::Device* device = command_processor_.GetMetalDevice();
+  const ui::metal::MetalProvider& provider =
+      command_processor_.GetMetalProvider();
+  MTL::Device* device = provider.GetDevice();
+
   if (!device) {
-    REXLOG_ERROR("MetalSharedMemory: No Metal device");
+    REXLOG_ERROR("Metal device is null in MetalSharedMemory::Initialize");
     return false;
   }
 
+  // Create Metal buffer - similar to D3D12's approach
+  // On Apple Silicon, ResourceStorageModeShared gives CPU/GPU access
   void* xbox_ram = memory().TranslatePhysical(0);
-  void* virtual_ram = memory().TranslateVirtual(0xA0000000);
-
-  fprintf(stderr, "[metal] DIAG phys_base=%p virt_A_base=%p\n",
-          xbox_ram, virtual_ram);
-  if (xbox_ram && virtual_ram) {
-    fprintf(stderr, "[metal] DIAG phys[0x11D00000]=%08X virt_A[0x11D00000]=%08X\n",
-            *(const uint32_t*)((const char*)xbox_ram + 0x11D00000),
-            *(const uint32_t*)((const char*)virtual_ram + 0x11D00000));
+  if (!xbox_ram) {
+    REXLOG_ERROR("Metal shared memory: Xbox RAM is null");
+    return false;
   }
 
-  buffer_ = device->newBuffer(kBufferSize, MTL::ResourceStorageModeShared);
-  if (buffer_ && xbox_ram) {
-    memcpy(buffer_->contents(), xbox_ram, kBufferSize);
+  if (REXCVAR_GET(metal_shared_memory_zero_copy) && device->hasUnifiedMemory()) {
+    size_t system_page_size = rex::memory::page_size();
+    if (reinterpret_cast<uintptr_t>(xbox_ram) % system_page_size == 0) {
+      buffer_ = device->newBuffer(xbox_ram, kBufferSize,
+                                  MTL::ResourceStorageModeShared, nullptr);
+      if (buffer_) {
+        use_zero_copy_ = true;
+        REXLOG_DEBUG("Metal shared memory: using bytes-no-copy buffer");
+      } else {
+        REXLOG_WARN("Metal shared memory: bytes-no-copy buffer creation failed");
+      }
+    } else {
+      REXLOG_WARN(
+          "Metal shared memory: Xbox RAM not page-aligned for bytes-no-copy");
+    }
   }
 
   if (!buffer_) {
-    REXLOG_ERROR("MetalSharedMemory: Failed to create buffer");
+    // WriteCombined is safe here: the CPU only writes to this buffer (memcpy in
+    // UploadRanges) and never reads back.  This yields 2-4x faster sequential
+    // write throughput on Apple Silicon.  The zero-copy path above aliases
+    // guest memory which IS read by the CPU, so WriteCombined must NOT be used
+    // there.
+    buffer_ = device->newBuffer(kBufferSize,
+                                MTL::ResourceStorageModeShared |
+                                    MTL::ResourceCPUCacheModeWriteCombined);
+  }
+  if (!buffer_) {
+    REXLOG_ERROR("Failed to create Metal shared memory buffer");
     return false;
   }
 
-  REXLOG_INFO("MetalSharedMemory: Initialized ({} bytes, zero_copy={})",
-              kBufferSize, use_zero_copy_);
+  // For trace dump, do initial full copy; UploadRanges handles incremental
+  // updates for normal runs.
+  if (!use_zero_copy_) {
+    if (xbox_ram) {
+      memcpy(buffer_->contents(), xbox_ram, kBufferSize);
+    }
+  } else {
+    REXLOG_DEBUG("Metal shared memory: skipping initial copy (zero-copy)");
+  }
+
   return true;
-}
-
-void MetalSharedMemory::ClearCache() { SharedMemory::ClearCache(); }
-
-const void* MetalSharedMemory::GetGuestRamPtr(uint32_t offset) const {
-  auto* base = static_cast<const uint8_t*>(memory().TranslatePhysical(0));
-  if (!base || offset >= kBufferSize) return nullptr;
-  return base + offset;
 }
 
 bool MetalSharedMemory::UploadRanges(
     const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) {
-  if (!buffer_ || upload_page_ranges.empty()) return true;
+  if (!buffer_ || upload_page_ranges.empty()) {
+    return true;
+  }
 
-  uint8_t* buffer_data = static_cast<uint8_t*>(buffer_->contents());
-  uint8_t* xbox_data =
-      static_cast<uint8_t*>(memory().TranslatePhysical(0));
-  if (!xbox_data) return false;
+  uint8_t* buffer_data = nullptr;
+  uint8_t* xbox_data = nullptr;
+  if (!use_zero_copy_) {
+    void* xbox_ram = memory().TranslatePhysical(0);
+    if (!xbox_ram) {
+      REXLOG_ERROR("MetalSharedMemory::UploadRanges: Xbox RAM is null");
+      return false;
+    }
+    buffer_data = static_cast<uint8_t*>(buffer_->contents());
+    xbox_data = static_cast<uint8_t*>(xbox_ram);
+  }
 
   const uint32_t page_size = 1u << page_size_log2();
-  for (const auto& range : upload_page_ranges) {
-    uint32_t start = range.first * page_size;
-    uint32_t length = range.second * page_size;
-    if (start >= kBufferSize) continue;
-    if (start + length > kBufferSize) length = kBufferSize - start;
+
+  uint32_t merged_start = 0;
+  uint32_t merged_end = 0;
+  bool have_merged = false;
+
+  auto flush_merged_range = [&](uint32_t start, uint32_t end) {
+    if (end <= start) {
+      return;
+    }
+    uint32_t length = end - start;
     MakeRangeValid(start, length, false);
-    memcpy(buffer_data + start, xbox_data + start, length);
+    if (!use_zero_copy_) {
+      memcpy(buffer_data + start, xbox_data + start, length);
+    }
+  };
+
+  for (uint32_t i = 0; i < upload_page_ranges.size(); ++i) {
+    const auto& range = upload_page_ranges[i];
+    uint32_t start = range.first * page_size;
+    uint32_t end = start + range.second * page_size;
+    if (start >= kBufferSize) {
+      continue;
+    }
+    if (end > kBufferSize) {
+      end = kBufferSize;
+    }
+
+    if (!have_merged) {
+      merged_start = start;
+      merged_end = end;
+      have_merged = true;
+      continue;
+    }
+
+    // Merge overlapping/adjacent ranges.
+    if (start <= merged_end) {
+      if (end > merged_end) {
+        merged_end = end;
+      }
+    } else {
+      flush_merged_range(merged_start, merged_end);
+      merged_start = start;
+      merged_end = end;
+    }
   }
+
+  if (have_merged) {
+    flush_merged_range(merged_start, merged_end);
+  }
+
+  REXLOG_DEBUG("MetalSharedMemory::UploadRanges: Copied {} ranges to Metal buffer",
+         upload_page_ranges.size());
+
   return true;
 }
 
@@ -87,8 +175,10 @@ void MetalSharedMemory::Shutdown() {
     buffer_ = nullptr;
   }
   use_zero_copy_ = false;
+
+  ShutdownCommon();  // Base class cleanup
 }
 
 }  // namespace metal
-}  // namespace graphics
+}  // namespace gpu
 }  // namespace rex

@@ -111,3 +111,22 @@ REXCVAR_DECLARE(bool, d3d12_readback_memexport);
 REXCVAR_DECLARE(bool, d3d12_readback_resolve);
 
 #define XE_GPU_FINE_GRAINED_DRAW_SCOPES 1
+
+// Metal
+REXCVAR_DECLARE(bool, metal_shader_disk_cache);
+REXCVAR_DECLARE(bool, metal_pipeline_binary_archive);
+REXCVAR_DECLARE(bool, metal_pipeline_disk_cache);
+REXCVAR_DECLARE(bool, metal_use_heaps);
+REXCVAR_DECLARE(bool, metal_shared_memory_zero_copy);
+REXCVAR_DECLARE(int32_t, metal_heap_min_bytes);
+REXCVAR_DECLARE(bool, metal_texture_cache_use_private);
+REXCVAR_DECLARE(bool, metal_texture_upload_via_blit);
+REXCVAR_DECLARE(int32_t, metal_pipeline_creation_threads);
+REXCVAR_DECLARE(bool, metal_force_bc_decompress);
+REXCVAR_DECLARE(bool, metal_transfer_fast_divmod);
+REXCVAR_DECLARE(bool, metal_transfer_msaa_sample_id);
+REXCVAR_DECLARE(bool, metal_transfer_tile_instancing);
+REXCVAR_DECLARE(bool, metal_memory_log_rate);
+REXCVAR_DECLARE(bool, submit_on_primary_buffer_end);
+REXCVAR_DECLARE(bool, metal_allow_gamma_unorm16);
+REXCVAR_DECLARE(std::string, render_target_path_metal);
