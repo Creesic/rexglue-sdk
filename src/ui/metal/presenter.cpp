@@ -35,10 +35,15 @@ bool MetalPresenter::Initialize() {
     }
   }
 
-  command_queue_ = device_->newCommandQueue();
+  command_queue_ = provider_->GetCommandQueue();
   if (!command_queue_) {
-    REXLOG_ERROR("MetalPresenter: Failed to create command queue");
+    REXLOG_ERROR("MetalPresenter: No command queue from provider");
     return false;
+  }
+
+  guest_output_shared_event_ = device_->newSharedEvent();
+  if (!guest_output_shared_event_) {
+    REXLOG_WARN("MetalPresenter: SharedEvent unavailable; no submission tracking");
   }
 
   dispatch_data_t libData = dispatch_data_create(
@@ -59,11 +64,15 @@ bool MetalPresenter::Initialize() {
 }
 
 void MetalPresenter::Shutdown() {
+  if (gamma_ramp_pwl_texture_) { gamma_ramp_pwl_texture_->release(); gamma_ramp_pwl_texture_ = nullptr; }
+  if (gamma_ramp_table_texture_) { gamma_ramp_table_texture_->release(); gamma_ramp_table_texture_ = nullptr; }
+  if (gamma_ramp_buffer_) { gamma_ramp_buffer_->release(); gamma_ramp_buffer_ = nullptr; }
+  if (guest_output_shared_event_) { guest_output_shared_event_->release(); guest_output_shared_event_ = nullptr; }
   for (auto& tex : guest_output_textures_) {
     if (tex) tex->release();
     tex = nullptr;
   }
-  if (command_queue_) { command_queue_->release(); command_queue_ = nullptr; }
+  if (command_queue_) { command_queue_ = nullptr; }
   metal_layer_ = nullptr;
 }
 
@@ -91,15 +100,23 @@ bool MetalPresenter::CopyTextureToGuestOutput(
   if (!blit) return false;
 
   blit->copyFromTexture(source_texture, 0, 0,
-                        MTL::Origin(0, 0, 0),
-                        MTL::Size(source_width, source_height, 1),
-                        dest_texture, 0, 0,
-                        MTL::Origin(0, 0, 0));
+                         MTL::Origin(0, 0, 0),
+                         MTL::Size(source_width, source_height, 1),
+                         dest_texture, 0, 0,
+                         MTL::Origin(0, 0, 0));
   blit->endEncoding();
+
+  uint64_t submission_id = 0;
+  if (guest_output_shared_event_) {
+    submission_id = guest_output_submission_counter_.fetch_add(1,
+                    std::memory_order_relaxed) + 1;
+    cmd->encodeSignalEvent(guest_output_shared_event_, submission_id);
+  }
+
   cmd->commit();
 
   if (submission_out) {
-    *submission_out = 0;
+    *submission_out = submission_id;
   }
   return true;
 }
@@ -136,6 +153,16 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
   if (!cmd) { pool->drain(); return PaintResult::kNotPresented; }
 
   if (guest_output_texture && blit_lib_) {
+    uint64_t await_submission = guest_output_submissions_[mailbox_index];
+    if (await_submission > guest_output_waited_submission_ &&
+        guest_output_shared_event_) {
+      uint64_t completed = guest_output_shared_event_->signaledValue();
+      if (await_submission > completed) {
+        cmd->encodeWait(guest_output_shared_event_, await_submission);
+      }
+      guest_output_waited_submission_ = await_submission;
+    }
+
     MTL::RenderPipelineState* pipe = GetOrCreateBlitPipeline(dst->pixelFormat());
     if (pipe) {
       MTL::RenderPassDescriptor* rpd = MTL::RenderPassDescriptor::alloc()->init();
