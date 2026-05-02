@@ -1274,8 +1274,18 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           [source_texture, metal_presenter, source_width, source_height,
            force_swap_rb_copy, use_pwl_gamma_ramp_copy](
               ui::Presenter::GuestOutputRefreshContext& context) -> bool {
-            // TODO: MetalGuestOutputRefreshContext API not yet ported
-            return false;
+            auto& metal_context =
+                static_cast<ui::metal::MetalGuestOutputRefreshContext&>(context);
+            context.SetIs8bpc(!use_pwl_gamma_ramp_copy);
+            uint64_t submission_id = 0;
+            bool copy_success = metal_presenter->CopyTextureToGuestOutput(
+                source_texture, metal_context.resource_uav_capable(),
+                source_width, source_height, force_swap_rb_copy,
+                use_pwl_gamma_ramp_copy, &submission_id);
+            if (copy_success && submission_id) {
+              metal_context.SetSubmissionId(submission_id);
+            }
+            return copy_success;
           });
     }
   }
@@ -1688,7 +1698,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         metal_pixel_shader->GetUsedTextureMaskAfterTranslation();
   }
   if (texture_cache_ && used_texture_mask &&
-      false /* TODO: AnyUsedTextureRequestWorkPending */) {
+      true) {
     texture_cache_->RequestTextures(used_texture_mask);
   }
 
