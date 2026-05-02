@@ -2,11 +2,18 @@
 #include <rex/ui/metal/provider.h>
 #include <rex/ui/surface_mac.h>
 #include <rex/logging/macros.h>
+#include <rex/cvar.h>
+#include <rex/graphics/metal/metal4_context.h>
 
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
 
+#include <chrono>
+
 #include "shaders/blit_metallib.h"
+
+REXCVAR_DEFINE_BOOL(metal_hud, true, "GPU", "Enable Metal performance HUD overlay");
+REXCVAR_DEFINE_BOOL(metal_frame_timing, true, "GPU", "Log GPU frame timing info");
 
 namespace rex {
 namespace ui {
@@ -19,6 +26,7 @@ MetalPresenter::MetalPresenter(MetalProvider* provider,
   guest_output_submissions_.fill(0);
   if (provider_) {
     device_ = provider_->GetDevice();
+    mtl4_ = provider_->GetMetal4Context();
   }
 }
 
@@ -28,16 +36,15 @@ bool MetalPresenter::Initialize() {
   if (!device_) {
     if (provider_) {
       device_ = provider_->GetDevice();
+      mtl4_ = provider_->GetMetal4Context();
     }
     if (!device_) {
       REXLOG_ERROR("MetalPresenter: No Metal device");
       return false;
     }
   }
-
-  command_queue_ = provider_->GetCommandQueue();
-  if (!command_queue_) {
-    REXLOG_ERROR("MetalPresenter: No command queue from provider");
+  if (!mtl4_) {
+    REXLOG_ERROR("MetalPresenter: No Metal4Context");
     return false;
   }
 
@@ -59,7 +66,7 @@ bool MetalPresenter::Initialize() {
                  err ? err->localizedDescription()->utf8String() : "unknown");
   }
 
-  REXLOG_INFO("MetalPresenter: Initialized on device {}", device_->name()->utf8String());
+  REXLOG_INFO("MetalPresenter: Initialized (MTL4) on device {}", device_->name()->utf8String());
   return true;
 }
 
@@ -72,8 +79,8 @@ void MetalPresenter::Shutdown() {
     if (tex) tex->release();
     tex = nullptr;
   }
-  if (command_queue_) { command_queue_ = nullptr; }
   metal_layer_ = nullptr;
+  mtl4_ = nullptr;
 }
 
 Surface::TypeFlags MetalPresenter::GetSupportedSurfaceTypes() const {
@@ -89,31 +96,37 @@ bool MetalPresenter::CopyTextureToGuestOutput(
     uint32_t source_width, uint32_t source_height,
     bool force_swap_rb, bool use_pwl_gamma_ramp,
     uint64_t* submission_out) {
-  if (!source_texture || !dest_texture || !command_queue_) {
+  if (!source_texture || !dest_texture || !mtl4_) {
     return false;
   }
 
-  MTL::CommandBuffer* cmd = command_queue_->commandBuffer();
+  MTL4::CommandBuffer* cmd = mtl4_->BeginCommandBuffer();
   if (!cmd) return false;
 
-  MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
-  if (!blit) return false;
+  MTL4::ComputeCommandEncoder* compute = cmd->computeCommandEncoder();
+  if (!compute) {
+    mtl4_->Commit(cmd);
+    return false;
+  }
 
-  blit->copyFromTexture(source_texture, 0, 0,
-                         MTL::Origin(0, 0, 0),
-                         MTL::Size(source_width, source_height, 1),
-                         dest_texture, 0, 0,
-                         MTL::Origin(0, 0, 0));
-  blit->endEncoding();
+  compute->copyFromTexture(source_texture, 0, 0,
+                            MTL::Origin(0, 0, 0),
+                            MTL::Size(source_width, source_height, 1),
+                            dest_texture, 0, 0,
+                            MTL::Origin(0, 0, 0));
+  compute->endEncoding();
 
   uint64_t submission_id = 0;
   if (guest_output_shared_event_) {
     submission_id = guest_output_submission_counter_.fetch_add(1,
                     std::memory_order_relaxed) + 1;
-    cmd->encodeSignalEvent(guest_output_shared_event_, submission_id);
   }
 
-  cmd->commit();
+  mtl4_->Commit(cmd);
+
+  if (submission_id && guest_output_shared_event_) {
+    mtl4_->SignalEvent(guest_output_shared_event_, submission_id);
+  }
 
   if (submission_out) {
     *submission_out = submission_id;
@@ -123,12 +136,7 @@ bool MetalPresenter::CopyTextureToGuestOutput(
 
 Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
     bool execute_ui_drawers) {
-  if (!metal_layer_ || !device_) {
-    return PaintResult::kNotPresented;
-  }
-
-  MTL::CommandQueue* queue = command_queue_;
-  if (!queue) {
+  if (!metal_layer_ || !device_ || !mtl4_) {
     return PaintResult::kNotPresented;
   }
 
@@ -149,40 +157,34 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
     guest_output_texture = guest_output_textures_[mailbox_index];
   }
 
-  MTL::CommandBuffer* cmd = queue->commandBuffer();
+  MTL4::CommandBuffer* cmd = mtl4_->BeginCommandBuffer();
   if (!cmd) { pool->drain(); return PaintResult::kNotPresented; }
 
   if (guest_output_texture && blit_lib_) {
-    uint64_t await_submission = guest_output_submissions_[mailbox_index];
-    if (await_submission > guest_output_waited_submission_ &&
-        guest_output_shared_event_) {
-      uint64_t completed = guest_output_shared_event_->signaledValue();
-      if (await_submission > completed) {
-        cmd->encodeWait(guest_output_shared_event_, await_submission);
-      }
-      guest_output_waited_submission_ = await_submission;
-    }
-
     MTL::RenderPipelineState* pipe = GetOrCreateBlitPipeline(dst->pixelFormat());
     if (pipe) {
-      MTL::RenderPassDescriptor* rpd = MTL::RenderPassDescriptor::alloc()->init();
+      MTL4::RenderPassDescriptor* rpd = MTL4::RenderPassDescriptor::alloc()->init();
       auto* ca = rpd->colorAttachments()->object(0);
       ca->setTexture(dst);
       ca->setLoadAction(MTL::LoadActionClear);
       ca->setClearColor(MTL::ClearColor(0, 0, 0, 1));
       ca->setStoreAction(MTL::StoreActionStore);
-      MTL::RenderCommandEncoder* enc = cmd->renderCommandEncoder(rpd);
+      MTL4::RenderCommandEncoder* enc = cmd->renderCommandEncoder(rpd);
       if (enc) {
         enc->setRenderPipelineState(pipe);
-        enc->setFragmentTexture(guest_output_texture, 0);
-        enc->setFragmentSamplerState(GetNearestSampler(), 0);
+
         float src_h = guest_output_texture->height() > 720 ? 720.0f
                           : (float)guest_output_texture->height();
         struct {
           float w, h, src_w, src_h;
         } ub = {(float)dst->width(), (float)dst->height(),
                 (float)guest_output_texture->width(), src_h};
-        enc->setVertexBytes(&ub, sizeof(ub), 0);
+
+        mtl4_->SetVertexAddress(mtl4_->AllocInlineConstant(&ub, sizeof(ub)), 0);
+        mtl4_->SetFragmentTexture(guest_output_texture->gpuResourceID(), 0);
+        mtl4_->SetFragmentSampler(GetNearestSampler()->gpuResourceID(), 0);
+        mtl4_->FlushRenderBindings(enc);
+
         enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0),
                             NS::UInteger(3));
         enc->endEncoding();
@@ -198,8 +200,9 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
     }
   }
 
-  cmd->presentDrawable(drawable);
-  cmd->commit();
+  mtl4_->Commit(cmd);
+  mtl4_->SignalDrawable(drawable);
+
   pool->drain();
   return PaintResult::kPresented;
 }

@@ -53,6 +53,7 @@
 #define IR_RUNTIME_METALCPP
 #include <metal_irconverter_runtime.h>
 #include <rex/graphics/metal/command_processor.h>
+#include <rex/graphics/metal/metal4_context.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/xenos.h>
@@ -716,11 +717,11 @@ bool MetalRenderTargetCache::Initialize() {
     }
   } else {
     ScopedAutoreleasePool autorelease_pool;
-    MTL::CommandBuffer* cmd =
+    MTL4::CommandBuffer* cmd =
         command_processor_.CreateStandaloneTransferCommandBuffer(
             "XeniaCB reason=edram-init");
     if (cmd) {
-      MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
+      MTL4::ComputeCommandEncoder* blit = cmd->computeCommandEncoder();
       if (blit) {
         blit->fillBuffer(
             edram_buffer_,
@@ -1958,7 +1959,7 @@ void MetalRenderTargetCache::RestoreEdramSnapshot(const void* snapshot) {
   }
 
   ScopedAutoreleasePool autorelease_pool;
-  MTL::CommandBuffer* cmd =
+  MTL4::CommandBuffer* cmd =
       command_processor_.CreateStandaloneTransferCommandBuffer(
           "XeniaCB reason=rt-texture-upload");
   if (!cmd) {
@@ -1966,7 +1967,7 @@ void MetalRenderTargetCache::RestoreEdramSnapshot(const void* snapshot) {
     return;
   }
 
-  MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
+  MTL4::ComputeCommandEncoder* blit = cmd->computeCommandEncoder();
   if (!blit) {
     cmd->release();
     staging->release();
@@ -2595,16 +2596,13 @@ MTL::Texture* MetalRenderTargetCache::GetColorRenderTargetTexture(
   return GetRenderTargetTexture(key);
 }
 
-void MetalRenderTargetCache::StoreTiledData(MTL::CommandBuffer* command_buffer,
-                                            MTL::Texture* texture,
-                                            uint32_t edram_base,
-                                            uint32_t pitch_tiles,
-                                            uint32_t height_tiles,
-                                            bool is_depth) {
+void MetalRenderTargetCache::StoreTiledData(
+    MTL4::CommandBuffer* command_buffer, MTL::Texture* texture,
+    uint32_t edram_base, uint32_t pitch_tiles, uint32_t height_tiles,
+    bool is_depth) {
   MTL::Texture* source_texture = texture;
   MTL::Texture* temp_texture = nullptr;
 
-  // Check if this is a depth/stencil texture
   bool is_depth_stencil_format =
       texture->pixelFormat() == MTL::PixelFormatDepth32Float_Stencil8 ||
       texture->pixelFormat() == MTL::PixelFormatDepth32Float ||
@@ -2613,23 +2611,16 @@ void MetalRenderTargetCache::StoreTiledData(MTL::CommandBuffer* command_buffer,
       texture->pixelFormat() == MTL::PixelFormatX32_Stencil8;
 
   if (is_depth_stencil_format) {
-    // For storing depth/stencil data back to EDRAM, we would need to read
-    // from the depth texture This is complex because depth textures can't be
-    // directly read in compute shaders. For now, we'll skip storing depth
-    // data back to EDRAM since depth buffers are typically write-only during
-    // rendering and don't need to be preserved across frames.
     return;
   }
 
-  // If texture is multisample, create a temporary non-multisample texture and
-  // resolve to it first
   if (texture->textureType() == MTL::TextureType2DMultisample) {
     MTL::TextureDescriptor* desc = MTL::TextureDescriptor::alloc()->init();
     desc->setWidth(texture->width());
     desc->setHeight(texture->height());
     desc->setPixelFormat(texture->pixelFormat());
-    desc->setTextureType(MTL::TextureType2D);  // Regular 2D texture
-    desc->setSampleCount(1);                   // Non-multisample
+    desc->setTextureType(MTL::TextureType2D);
+    desc->setSampleCount(1);
     desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
     desc->setStorageMode(MTL::StorageModePrivate);
 
@@ -2643,34 +2634,37 @@ void MetalRenderTargetCache::StoreTiledData(MTL::CommandBuffer* command_buffer,
     if (!temp_texture) {
       REXLOG_ERROR(
           "MetalRenderTargetCache::StoreTiledData - Failed to create "
-          "temporary "
-          "texture");
+          "temporary texture");
       return;
     }
 
-    // Resolve multisample texture to temporary texture
     MTL::RenderPassDescriptor* resolve_desc =
         MTL::RenderPassDescriptor::renderPassDescriptor();
     if (resolve_desc) {
       auto* color_attachment = resolve_desc->colorAttachments()->object(0);
-      color_attachment->setTexture(texture);              // Multisample source
-      color_attachment->setResolveTexture(temp_texture);  // Resolved output
+      color_attachment->setTexture(texture);
+      color_attachment->setResolveTexture(temp_texture);
       color_attachment->setLoadAction(MTL::LoadActionLoad);
       color_attachment->setStoreAction(MTL::StoreActionMultisampleResolve);
 
-      MTL::RenderCommandEncoder* render_encoder =
-          command_buffer->renderCommandEncoder(resolve_desc);
-      if (render_encoder) {
-        render_encoder->endEncoding();
-        // render_encoder is autoreleased - do not release
+      Metal4Context* mtl4 = command_processor_.GetMetal4Context();
+      MTL4::RenderPassDescriptor* mtl4_rpd =
+          mtl4 ? mtl4->CreateRenderPassDescriptor(resolve_desc) : nullptr;
+      if (mtl4_rpd) {
+        MTL4::RenderCommandEncoder* render_encoder =
+            command_buffer->renderCommandEncoder(mtl4_rpd);
+        if (render_encoder) {
+          render_encoder->endEncoding();
+        }
+        mtl4_rpd->release();
       }
+      resolve_desc->release();
     }
 
     source_texture = temp_texture;
   }
 
-  // Create compute encoder
-  MTL::ComputeCommandEncoder* encoder = command_buffer->computeCommandEncoder();
+  MTL4::ComputeCommandEncoder* encoder = command_buffer->computeCommandEncoder();
   if (!encoder) {
     if (temp_texture) {
       temp_texture->release();
@@ -2678,7 +2672,6 @@ void MetalRenderTargetCache::StoreTiledData(MTL::CommandBuffer* command_buffer,
     return;
   }
 
-  // Set compute pipeline
   if (!edram_store_pipeline_) {
     REXLOG_ERROR("StoreTiledData: edram_store_pipeline_ is null");
     encoder->endEncoding();
@@ -2689,28 +2682,20 @@ void MetalRenderTargetCache::StoreTiledData(MTL::CommandBuffer* command_buffer,
   }
   encoder->setComputePipelineState(edram_store_pipeline_);
 
-  // Bind input texture (either original or resolved)
-  encoder->setTexture(source_texture, 0);
+  Metal4Context* mtl4 = command_processor_.GetMetal4Context();
+  mtl4->SetComputeTexture(source_texture->gpuResourceID(), 0);
+  mtl4->SetComputeAddress(edram_buffer_->gpuAddress(), 0);
 
-  // Bind EDRAM buffer
-  encoder->setBuffer(edram_buffer_, 0, 0);
-  encoder->useResource(source_texture, MTL::ResourceUsageRead);
-  encoder->useResource(edram_buffer_, MTL::ResourceUsageWrite);
+  mtl4->SetComputeAddress(mtl4->AllocInlineConstant(&edram_base, sizeof(uint32_t)), 1);
+  mtl4->SetComputeAddress(mtl4->AllocInlineConstant(&pitch_tiles, sizeof(uint32_t)), 2);
+  mtl4->FlushComputeBindings(encoder);
 
-  // Pass parameters inline via setBytes (avoids transient buffer allocation)
-  uint32_t params[2] = {edram_base, pitch_tiles};
-  encoder->setBytes(&params[0], sizeof(uint32_t), 1);
-  encoder->setBytes(&params[1], sizeof(uint32_t), 2);
-
-  // Calculate thread group sizes
   MTL::Size threads_per_threadgroup = MTL::Size::Make(8, 8, 1);
   MTL::Size threadgroups = MTL::Size::Make(
       (source_texture->width() + 7) / 8, (source_texture->height() + 7) / 8, 1);
 
-  // Dispatch compute
   encoder->dispatchThreadgroups(threadgroups, threads_per_threadgroup);
   encoder->endEncoding();
-  // encoder is autoreleased - do not release
 
   if (temp_texture) {
     temp_texture->release();
@@ -2719,7 +2704,7 @@ void MetalRenderTargetCache::StoreTiledData(MTL::CommandBuffer* command_buffer,
 
 void MetalRenderTargetCache::DumpRenderTargets(
     uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
-    uint32_t dump_pitch, MTL::CommandBuffer* command_buffer) {
+    uint32_t dump_pitch, MTL4::CommandBuffer* command_buffer) {
   REXGPU_DEBUG(
       "MetalRenderTargetCache::DumpRenderTargets: base={} row_length_used={} "
       "rows={} pitch={}",
@@ -2765,7 +2750,7 @@ void MetalRenderTargetCache::DumpRenderTargets(
 
   ScopedAutoreleasePool autorelease_pool;
   bool standalone = false;
-  MTL::CommandBuffer* cmd = command_buffer;
+  MTL4::CommandBuffer* cmd = command_buffer;
   if (!cmd) {
     cmd = command_processor_.CreateStandaloneTransferCommandBuffer(
         "XeniaCB reason=rt-dump");
@@ -2776,7 +2761,7 @@ void MetalRenderTargetCache::DumpRenderTargets(
     standalone = true;
   }
 
-  MTL::ComputeCommandEncoder* encoder = cmd->computeCommandEncoder();
+  MTL4::ComputeCommandEncoder* encoder = cmd->computeCommandEncoder();
   if (!encoder) {
     REXLOG_ERROR("MetalRenderTargetCache::DumpRenderTargets: no compute encoder");
     if (standalone) {
@@ -2785,8 +2770,9 @@ void MetalRenderTargetCache::DumpRenderTargets(
     return;
   }
 
-  encoder->setBuffer(edram_buffer_, 0, 0);
-  encoder->useResource(edram_buffer_, MTL::ResourceUsageWrite);
+  Metal4Context* mtl4 = command_processor_.GetMetal4Context();
+  mtl4->SetComputeAddress(edram_buffer_->gpuAddress(), 0);
+  mtl4->FlushComputeBindings(encoder);
 
   uint32_t scale_x = draw_resolution_scale_x();
   uint32_t scale_y = draw_resolution_scale_y();
@@ -2946,15 +2932,12 @@ void MetalRenderTargetCache::DumpRenderTargets(
       constants.padding = 0;
 
       encoder->setComputePipelineState(dump_pipeline);
-      encoder->setTexture(tex, 0);
+      mtl4->SetComputeTexture(tex->gpuResourceID(), 0);
       if (stencil_tex) {
-        encoder->setTexture(stencil_tex, 1);
+        mtl4->SetComputeTexture(stencil_tex->gpuResourceID(), 1);
       }
-      encoder->useResource(tex, MTL::ResourceUsageRead);
-      if (stencil_tex) {
-        encoder->useResource(stencil_tex, MTL::ResourceUsageRead);
-      }
-      encoder->setBytes(&constants, sizeof(constants), 1);
+      mtl4->SetComputeAddress(mtl4->AllocInlineConstant(&constants, sizeof(constants)), 1);
+      mtl4->FlushComputeBindings(encoder);
 
       // Thread group dispatch:
       // - 40x16 threads per group (same as D3D12/Vulkan)
@@ -3260,7 +3243,7 @@ MTL::RenderPipelineState* MetalRenderTargetCache::GetOrCreateEdramLoadPipeline(
 
 bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                                      uint32_t& written_length,
-                                     MTL::CommandBuffer* command_buffer) {
+                                     MTL4::CommandBuffer* command_buffer) {
   written_address = 0;
   written_length = 0;
   const RegisterFile& regs = register_file();
@@ -3480,7 +3463,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
         {
           ScopedAutoreleasePool autorelease_pool;
           bool standalone = false;
-          MTL::CommandBuffer* cmd = command_buffer;
+          MTL4::CommandBuffer* cmd = command_buffer;
           if (!cmd) {
             cmd = command_processor_.CreateStandaloneTransferCommandBuffer(
                 "XeniaCB reason=resolve-compute");
@@ -3492,7 +3475,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
             standalone = (cmd != nullptr);
           }
           if (cmd) {
-            MTL::ComputeCommandEncoder* encoder = cmd->computeCommandEncoder();
+            MTL4::ComputeCommandEncoder* encoder = cmd->computeCommandEncoder();
             if (!encoder) {
               REXLOG_ERROR(
                   "MetalRenderTargetCache::Resolve: failed to get compute "
@@ -3503,21 +3486,24 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
             } else {
               encoder->setComputePipelineState(pipeline);
 
-              // Buffer 0: push constants
+              Metal4Context* mtl4 = command_processor_.GetMetal4Context();
+
               if (draw_resolution_scaled) {
-                encoder->setBytes(&copy_constants.dest_relative,
-                                  sizeof(copy_constants.dest_relative), 0);
+                mtl4->SetComputeAddress(
+                    mtl4->AllocInlineConstant(&copy_constants.dest_relative,
+                                              sizeof(copy_constants.dest_relative)),
+                    0);
               } else {
-                encoder->setBytes(&copy_constants, sizeof(copy_constants), 0);
+                mtl4->SetComputeAddress(
+                    mtl4->AllocInlineConstant(&copy_constants,
+                                              sizeof(copy_constants)),
+                    0);
               }
 
-              // Buffer 1: destination memory (shared or scaled resolve).
-              encoder->setBuffer(dest_buffer, dest_buffer_offset, 1);
-
-              // Buffer 2: EDRAM source buffer.
-              encoder->setBuffer(edram_buffer_, 0, 2);
-              encoder->useResource(dest_buffer, MTL::ResourceUsageWrite);
-              encoder->useResource(edram_buffer_, MTL::ResourceUsageRead);
+              mtl4->SetComputeAddress(
+                  dest_buffer->gpuAddress() + dest_buffer_offset, 1);
+              mtl4->SetComputeAddress(edram_buffer_->gpuAddress(), 2);
+              mtl4->FlushComputeBindings(encoder);
 
               encoder->dispatchThreadgroups(
                   MTL::Size::Make(group_count_x, group_count_y, 1),
@@ -3598,7 +3584,7 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
     const std::vector<Transfer>* render_target_transfers,
     const uint64_t* render_target_resolve_clear_values,
     const Transfer::Rectangle* resolve_clear_rectangle,
-    MTL::CommandBuffer* command_buffer) {
+    MTL4::CommandBuffer* command_buffer) {
   if (!render_targets || !render_target_transfers) {
     return;
   }
@@ -3634,14 +3620,11 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
     return;
   }
 
-  MTL::CommandBuffer* cmd = command_buffer;
+  MTL4::CommandBuffer* cmd = command_buffer;
   if (!cmd) {
-    // RequestTransferCommandBuffer ends any active render encoder and
-    // ensures a command buffer exists in one step.
-    cmd = command_processor_.RequestTransferCommandBuffer();
+    cmd = command_processor_.CreateStandaloneTransferCommandBuffer(
+        "XeniaCB reason=rt-transfer");
   } else {
-    // An externally-provided command buffer still requires the render
-    // encoder to be ended before transfer work can proceed.
     command_processor_.EndRenderEncoder();
   }
   if (!cmd) {
@@ -3666,7 +3649,7 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
   // Use a single compute encoder for all depth store dispatches.
   bool host_depth_store_dispatched = false;
   if (host_depth_store_needed) {
-    MTL::ComputeCommandEncoder* depth_store_encoder = nullptr;
+    MTL4::ComputeCommandEncoder* depth_store_encoder = nullptr;
     for (uint32_t i = 0; i < render_target_count; ++i) {
       RenderTarget* dest_rt = render_targets[i];
       if (!dest_rt) {
@@ -3715,12 +3698,10 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
           }
           depth_store_encoder->setComputePipelineState(
               host_depth_store_pipelines_[pipeline_index]);
-          depth_store_encoder->setBuffer(edram_buffer_, 0, 1);
-          depth_store_encoder->setTexture(depth_texture, 0);
-          depth_store_encoder->useResource(edram_buffer_,
-                                           MTL::ResourceUsageWrite);
-          depth_store_encoder->useResource(depth_texture,
-                                           MTL::ResourceUsageRead);
+          Metal4Context* mtl4 = command_processor_.GetMetal4Context();
+          mtl4->SetComputeAddress(edram_buffer_->gpuAddress(), 1);
+          mtl4->SetComputeTexture(depth_texture->gpuResourceID(), 0);
+          mtl4->FlushComputeBindings(depth_store_encoder);
         }
         for (uint32_t rect_index = 0; rect_index < rectangle_count;
              ++rect_index) {
@@ -3736,7 +3717,10 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
           HostDepthStoreConstants constants = {};
           constants.rectangle = rectangle_constant;
           constants.render_target = render_target_constant;
-          depth_store_encoder->setBytes(&constants, sizeof(constants), 0);
+          Metal4Context* mtl4 = command_processor_.GetMetal4Context();
+          mtl4->SetComputeAddress(
+              mtl4->AllocInlineConstant(&constants, sizeof(constants)), 0);
+          mtl4->FlushComputeBindings(depth_store_encoder);
           depth_store_encoder->dispatchThreadgroups(
               MTL::Size::Make(group_count_x, group_count_y, 1),
               MTL::Size::Make(8, 8, 1));
@@ -3822,7 +3806,7 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
       return true;
     };
 
-    auto set_rect_viewport = [&](MTL::RenderCommandEncoder* encoder,
+    auto set_rect_viewport = [&](MTL4::RenderCommandEncoder* encoder,
                                  const Transfer::Rectangle& rect) -> bool {
       uint32_t scaled_x = 0;
       uint32_t scaled_y = 0;
@@ -4236,10 +4220,10 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
 
     std::vector<Transfer> filtered_transfers;
     bool used_blit = false;
-    MTL::BlitCommandEncoder* blit_encoder = nullptr;
-    auto ensure_blit_encoder = [&]() -> MTL::BlitCommandEncoder* {
+    MTL4::ComputeCommandEncoder* blit_encoder = nullptr;
+    auto ensure_blit_encoder = [&]() -> MTL4::ComputeCommandEncoder* {
       if (!blit_encoder) {
-        blit_encoder = cmd->blitCommandEncoder();
+        blit_encoder = cmd->computeCommandEncoder();
       }
       return blit_encoder;
     };
@@ -4296,7 +4280,7 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
           return false;
         }
 
-        MTL::BlitCommandEncoder* blit = ensure_blit_encoder();
+        MTL4::ComputeCommandEncoder* blit = ensure_blit_encoder();
         if (!blit) {
           return false;
         }
@@ -4640,8 +4624,8 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
       transfer_load_action = MTL::LoadActionDontCare;
     }
 
-    MTL::RenderCommandEncoder* transfer_encoder = nullptr;
-    auto ensure_transfer_encoder = [&]() -> MTL::RenderCommandEncoder* {
+    MTL4::RenderCommandEncoder* transfer_encoder = nullptr;
+    auto ensure_transfer_encoder = [&]() -> MTL4::RenderCommandEncoder* {
       if (transfer_encoder) {
         return transfer_encoder;
       }
@@ -4674,7 +4658,14 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
           ca->setClearColor(resolve_clear_color);
         }
       }
-      transfer_encoder = cmd->renderCommandEncoder(rp);
+      Metal4Context* mtl4 = command_processor_.GetMetal4Context();
+      MTL4::RenderPassDescriptor* mtl4_rp =
+          mtl4 ? mtl4->CreateRenderPassDescriptor(rp) : nullptr;
+      if (mtl4_rp) {
+        transfer_encoder = cmd->renderCommandEncoder(mtl4_rp);
+        mtl4_rp->release();
+      }
+      rp->release();
       return transfer_encoder;
     };
 
@@ -4806,14 +4797,17 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
         MTL::DepthStencilState* stencil_clear_state =
             GetTransferStencilClearState();
         if (clear_pipeline && stencil_clear_state) {
-          MTL::RenderCommandEncoder* encoder = ensure_transfer_encoder();
+          MTL4::RenderCommandEncoder* encoder = ensure_transfer_encoder();
           if (encoder) {
             TransferClearDepthConstants constants = {};
             constants.depth = 0.0f;
             encoder->setRenderPipelineState(clear_pipeline);
             encoder->setDepthStencilState(stencil_clear_state);
             encoder->setStencilReferenceValue(0);
-            encoder->setFragmentBytes(&constants, sizeof(constants), 0);
+            Metal4Context* mtl4 = command_processor_.GetMetal4Context();
+            mtl4->SetFragmentAddress(
+                mtl4->AllocInlineConstant(&constants, sizeof(constants)), 0);
+            mtl4->FlushRenderBindings(encoder);
             for (const Transfer& transfer : transfers_for_shaders) {
               Transfer::Rectangle
                   rectangles[Transfer::kMaxRectanglesWithCutout];
@@ -4833,7 +4827,7 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
           }
         }
       }
-      MTL::RenderCommandEncoder* encoder = ensure_transfer_encoder();
+      MTL4::RenderCommandEncoder* encoder = ensure_transfer_encoder();
       if (encoder) {
         bool transfer_viewport_full_set = false;
         MTL::ScissorRect last_transfer_scissor = {};
@@ -4854,6 +4848,7 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
         size_t last_transfer_vertex_buffer_1_offset = 0;
         bool last_transfer_vertex_bytes_1_valid = false;
         TransferRectInstance last_transfer_vertex_bytes_1 = {};
+        Metal4Context* mtl4 = command_processor_.GetMetal4Context();
         auto bind_transfer_pipeline = [&](MTL::RenderPipelineState* pipeline) {
           if (last_transfer_pipeline != pipeline) {
             encoder->setRenderPipelineState(pipeline);
@@ -4872,13 +4867,15 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
             return;
           }
           if (last_transfer_fragment_textures[index] != texture) {
-            encoder->setFragmentTexture(texture, index);
+            mtl4->SetFragmentTexture(texture->gpuResourceID(), index);
+            mtl4->FlushRenderBindings(encoder);
             last_transfer_fragment_textures[index] = texture;
           }
         };
         auto bind_transfer_fragment_buffer_1 = [&](MTL::Buffer* buffer) {
           if (last_transfer_fragment_buffer_1 != buffer) {
-            encoder->setFragmentBuffer(buffer, 0, 1);
+            mtl4->SetFragmentAddress(buffer->gpuAddress(), 1);
+            mtl4->FlushRenderBindings(encoder);
             last_transfer_fragment_buffer_1 = buffer;
           }
         };
@@ -4895,8 +4892,11 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
               if (!transfer_constants_valid ||
                   std::memcmp(&last_transfer_constants, &constants,
                               sizeof(constants)) != 0) {
-                encoder->setVertexBytes(&constants, sizeof(constants), 0);
-                encoder->setFragmentBytes(&constants, sizeof(constants), 0);
+                MTL::GPUAddress addr =
+                    mtl4->AllocInlineConstant(&constants, sizeof(constants));
+                mtl4->SetVertexAddress(addr, 0);
+                mtl4->SetFragmentAddress(addr, 0);
+                mtl4->FlushRenderBindings(encoder);
                 last_transfer_constants = constants;
                 transfer_constants_valid = true;
               }
@@ -4918,7 +4918,8 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
                   TransferVertexSlot1Binding::kBuffer ||
               last_transfer_vertex_buffer_1 != buffer ||
               last_transfer_vertex_buffer_1_offset != offset) {
-            encoder->setVertexBuffer(buffer, offset, 1);
+            mtl4->SetVertexAddress(buffer->gpuAddress() + offset, 1);
+            mtl4->FlushRenderBindings(encoder);
             last_transfer_vertex_slot_1_binding =
                 TransferVertexSlot1Binding::kBuffer;
             last_transfer_vertex_buffer_1 = buffer;
@@ -4933,8 +4934,11 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
                   !last_transfer_vertex_bytes_1_valid ||
                   std::memcmp(&last_transfer_vertex_bytes_1, &rect_instance,
                               sizeof(rect_instance)) != 0) {
-                encoder->setVertexBytes(&rect_instance, sizeof(rect_instance),
-                                        1);
+                mtl4->SetVertexAddress(
+                    mtl4->AllocInlineConstant(&rect_instance,
+                                              sizeof(rect_instance)),
+                    1);
+                mtl4->FlushRenderBindings(encoder);
                 last_transfer_vertex_slot_1_binding =
                     TransferVertexSlot1Binding::kBytes;
                 last_transfer_vertex_buffer_1 = nullptr;
@@ -4949,10 +4953,12 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
               if (!rect_instances || !rect_instance_count) {
                 return;
               }
-              encoder->setVertexBytes(
-                  rect_instances,
-                  size_t(rect_instance_count) * sizeof(TransferRectInstance),
+              mtl4->SetVertexAddress(
+                  mtl4->AllocInlineConstant(
+                      rect_instances,
+                      size_t(rect_instance_count) * sizeof(TransferRectInstance)),
                   1);
+              mtl4->FlushRenderBindings(encoder);
               last_transfer_vertex_slot_1_binding =
                   TransferVertexSlot1Binding::kBytes;
               last_transfer_vertex_buffer_1 = nullptr;
@@ -5388,7 +5394,7 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
                                              dest_sample_count);
         MTL::DepthStencilState* clear_state = GetTransferDepthClearState();
         if (clear_pipeline && clear_state) {
-          MTL::RenderCommandEncoder* clear_encoder = ensure_transfer_encoder();
+          MTL4::RenderCommandEncoder* clear_encoder = ensure_transfer_encoder();
           if (clear_encoder) {
             TransferClearDepthConstants constants = {};
             constants.depth = depth_host_clear_value;
@@ -5396,7 +5402,10 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
             clear_encoder->setDepthStencilState(clear_state);
             clear_encoder->setStencilReferenceValue(uint32_t(clear_value) &
                                                     0xFF);
-            clear_encoder->setFragmentBytes(&constants, sizeof(constants), 0);
+            Metal4Context* mtl4_clear = command_processor_.GetMetal4Context();
+            mtl4_clear->SetFragmentAddress(
+                mtl4_clear->AllocInlineConstant(&constants, sizeof(constants)), 0);
+            mtl4_clear->FlushRenderBindings(clear_encoder);
             Transfer::Rectangle clear_rect = *resolve_clear_rectangle;
             if (set_rect_viewport(clear_encoder, clear_rect)) {
               clear_encoder->drawPrimitives(MTL::PrimitiveTypeTriangle,
@@ -5529,7 +5538,7 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
               GetOrCreateTransferClearPipeline(clear_format, clear_use_uint,
                                                false, dest_sample_count);
           if (clear_pipeline) {
-            MTL::RenderCommandEncoder* clear_encoder =
+            MTL4::RenderCommandEncoder* clear_encoder =
                 ensure_transfer_encoder();
             if (clear_encoder) {
               MTL::DepthStencilState* no_depth_state =
@@ -5539,13 +5548,19 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
               }
               clear_encoder->setRenderPipelineState(clear_pipeline);
               clear_encoder->setDepthStencilState(no_depth_state);
+              Metal4Context* mtl4_color = command_processor_.GetMetal4Context();
               if (clear_use_uint) {
-                clear_encoder->setFragmentBytes(&uint_constants,
-                                                sizeof(uint_constants), 0);
+                mtl4_color->SetFragmentAddress(
+                    mtl4_color->AllocInlineConstant(&uint_constants,
+                                              sizeof(uint_constants)),
+                    0);
               } else {
-                clear_encoder->setFragmentBytes(&float_constants,
-                                                sizeof(float_constants), 0);
+                mtl4_color->SetFragmentAddress(
+                    mtl4_color->AllocInlineConstant(&float_constants,
+                                              sizeof(float_constants)),
+                    0);
               }
+              mtl4_color->FlushRenderBindings(clear_encoder);
               Transfer::Rectangle clear_rect = *resolve_clear_rectangle;
               if (set_rect_viewport(clear_encoder, clear_rect)) {
                 clear_encoder->drawPrimitives(MTL::PrimitiveTypeTriangle,

@@ -62,7 +62,8 @@ set(REXGRAPHICS_VULKAN_SOURCES
 set(REXGRAPHICS_METAL_SOURCES
     metal/graphics_system.cpp
     metal/metal_cpp_impl.cpp
-    metal/ir_runtime_impl.cpp
+    metal/metal4_context.cpp
+    metal/metal4_ir_runtime.cpp
     metal/command_processor.cpp
     metal/primitive_processor.cpp
     metal/render_target_cache.cpp

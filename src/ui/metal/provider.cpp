@@ -1,5 +1,6 @@
 #include <rex/ui/metal/provider.h>
 #include <rex/ui/metal/presenter.h>
+#include <rex/graphics/metal/metal4_context.h>
 #include <Metal/Metal.hpp>
 #include <rex/logging/macros.h>
 
@@ -23,24 +24,25 @@ std::unique_ptr<MetalProvider> MetalProvider::Create() {
 MetalProvider::MetalProvider() = default;
 
 MetalProvider::~MetalProvider() {
-  if (command_queue_) command_queue_->release();
+  metal4_context_.reset();
   if (device_) device_->release();
 }
 
 bool MetalProvider::Initialize() {
-  fprintf(stderr, "[metal] Provider::Initialize: creating device\n"); fflush(stderr);
   device_ = MTL::CreateSystemDefaultDevice();
   if (!device_) {
-    fprintf(stderr, "[metal] Provider::Initialize: failed to create Metal device\n"); fflush(stderr);
+    REXLOG_ERROR("MetalProvider: Failed to create Metal device");
     return false;
   }
-  fprintf(stderr, "[metal] Provider::Initialize: device=%s\n", device_->name()->utf8String()); fflush(stderr);
-  command_queue_ = device_->newCommandQueue();
-  if (!command_queue_) {
-    fprintf(stderr, "[metal] Provider::Initialize: failed to create command queue\n"); fflush(stderr);
+  REXLOG_INFO("MetalProvider: device={}", device_->name()->utf8String());
+
+  metal4_context_ = std::make_unique<graphics::metal::Metal4Context>();
+  if (!metal4_context_->Initialize(device_)) {
+    REXLOG_ERROR("MetalProvider: Failed to initialize Metal4Context");
     return false;
   }
-  fprintf(stderr, "[metal] Provider::Initialize: complete\n"); fflush(stderr);
+
+  REXLOG_INFO("MetalProvider: Initialized (MTL4)");
   return true;
 }
 

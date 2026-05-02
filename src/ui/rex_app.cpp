@@ -17,6 +17,7 @@
 #include <rex/filesystem.h>
 #include <rex/logging/sink.h>
 #include <rex/logging.h>
+#include <unistd.h>
 #include <rex/ui/overlay/console_overlay.h>
 #include <rex/ui/overlay/debug_overlay.h>
 #include <rex/ui/overlay/settings_overlay.h>
@@ -332,10 +333,12 @@ void ReXApp::OnClosing(ui::UIEvent& e) {
   (void)e;
   REXLOG_INFO("Window closing, shutting down...");
   shutting_down_.store(true, std::memory_order_release);
-  if (runtime_ && runtime_->kernel_state()) {
-    runtime_->kernel_state()->TerminateTitle();
-  }
-  app_context().QuitFromUIThread();
+
+  // Force-terminate the process. TerminateTitle() blocks the UI thread waiting
+  // for guest threads to join, but guest threads may be stuck in spin-waits or
+  // GPU page-fault loops, causing a hang.  _exit skips atexit handlers and
+  // thread joins — appropriate for an emulator with no persistent state.
+  _exit(0);
 }
 
 void ReXApp::OnDestroy() {

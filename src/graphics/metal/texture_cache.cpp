@@ -32,6 +32,7 @@
 #include <rex/math.h>
 #include <rex/profiling.h>
 #include <rex/graphics/metal/command_processor.h>
+#include <rex/graphics/metal/metal4_context.h>
 #include <rex/graphics/metal/shared_memory.h>
 #include <rex/graphics/shaders/bytecode/metal/texture_load_128bpb_cs.h>
 #include <rex/graphics/shaders/bytecode/metal/texture_load_128bpb_scaled_cs.h>
@@ -344,7 +345,7 @@ class MetalTextureCache::UploadBufferPool
     }
   }
 
-  void ReleaseAfter(MTL::CommandBuffer* cmd, MTL::Buffer* buffer) {
+  void ReleaseAfter(MTL4::CommandBuffer* cmd, MTL::Buffer* buffer) {
     if (!buffer) {
       return;
     }
@@ -352,18 +353,18 @@ class MetalTextureCache::UploadBufferPool
       ReleaseImmediate(buffer);
       return;
     }
-    bool add_handler = false;
-    {
-      std::lock_guard<std::mutex> lock(PendingReleasesMutex());
-      auto& pending = PendingReleasesMap()[cmd];
-      add_handler = pending.empty();
-      pending.push_back({shared_from_this(), buffer});
-    }
-    if (add_handler) {
-      cmd->addCompletedHandler(^(MTL::CommandBuffer* completed_cmd) {
-        UploadBufferPool::HandleCommandBufferCompleted(completed_cmd);
-      });
-    }
+    std::lock_guard<std::mutex> lock(PendingReleasesMutex());
+    auto& pending = PendingReleasesMap()[cmd];
+    pending.push_back({shared_from_this(), buffer});
+  }
+
+  static void HandleCommandBufferCompleted(MTL4::CommandBuffer* cmd);
+
+  static bool HasPendingReleases(MTL4::CommandBuffer* cmd) {
+    std::lock_guard<std::mutex> lock(PendingReleasesMutex());
+    auto& map = PendingReleasesMap();
+    auto it = map.find(cmd);
+    return it != map.end() && !it->second.empty();
   }
 
   void Shutdown() {
@@ -403,7 +404,7 @@ class MetalTextureCache::UploadBufferPool
   };
 
   using PendingReleasesByCommandBuffer =
-      std::unordered_map<MTL::CommandBuffer*, std::vector<PendingRelease>>;
+      std::unordered_map<MTL4::CommandBuffer*, std::vector<PendingRelease>>;
 
   static std::mutex& PendingReleasesMutex() {
     // Heap-allocated and intentionally leaked to avoid static destruction order
@@ -419,8 +420,6 @@ class MetalTextureCache::UploadBufferPool
     return *pending_releases;
   }
 
-  static void HandleCommandBufferCompleted(MTL::CommandBuffer* cmd);
-
   mutable std::mutex mutex_;
   std::vector<Entry> entries_;
   MTL::Device* device_ = nullptr;
@@ -431,7 +430,7 @@ class MetalTextureCache::UploadBufferPool
 };
 
 void MetalTextureCache::UploadBufferPool::HandleCommandBufferCompleted(
-    MTL::CommandBuffer* cmd) {
+    MTL4::CommandBuffer* cmd) {
   std::vector<PendingRelease> releases;
   {
     std::lock_guard<std::mutex> lock(PendingReleasesMutex());
@@ -486,14 +485,10 @@ void MetalTextureCache::BeginUploadCommandBufferBatch() {
   if (!ShouldUploadViaBlit() || !command_processor_) {
     return;
   }
-  // Avoid cross-command-buffer upload batching while a draw/copy command
-  // buffer is already active in the command processor. Keeping upload work on
-  // a separate command buffer in that state can reorder with in-flight render
-  // setup and lead to startup rendering regressions.
   if (command_processor_->HasActiveSubmission()) {
     return;
   }
-  MTL::CommandBuffer* cmd =
+  MTL4::CommandBuffer* cmd =
       command_processor_->CreateStandaloneTransferCommandBuffer(
           "XeniaCB reason=texture-upload-batch");
   if (!cmd) {
@@ -511,7 +506,7 @@ void MetalTextureCache::EndUploadCommandBufferBatch() {
   if (upload_batch_depth_ != 0) {
     return;
   }
-  MTL::CommandBuffer* cmd = upload_batch_command_buffer_;
+  MTL4::CommandBuffer* cmd = upload_batch_command_buffer_;
   upload_batch_command_buffer_ = nullptr;
   bool has_work = upload_batch_command_buffer_has_work_;
   upload_batch_command_buffer_has_work_ = false;
@@ -530,7 +525,7 @@ void MetalTextureCache::EndUploadCommandBufferBatch() {
 }
 
 void MetalTextureCache::AbortUploadCommandBufferBatch(bool commit_if_has_work) {
-  MTL::CommandBuffer* cmd = upload_batch_command_buffer_;
+  MTL4::CommandBuffer* cmd = upload_batch_command_buffer_;
   upload_batch_command_buffer_ = nullptr;
   bool has_work = upload_batch_command_buffer_has_work_;
   upload_batch_command_buffer_has_work_ = false;
@@ -542,7 +537,15 @@ void MetalTextureCache::AbortUploadCommandBufferBatch(bool commit_if_has_work) {
     return;
   }
   if (command_processor_) {
-    command_processor_->CommitStandaloneAsync(cmd);
+    if (upload_buffer_pool_ &&
+        UploadBufferPool::HasPendingReleases(cmd)) {
+      command_processor_->CommitStandaloneAsyncWithCallback(
+          cmd, [](MTL4::CommandBuffer* completed_cmd) {
+            UploadBufferPool::HandleCommandBufferCompleted(completed_cmd);
+          });
+    } else {
+      command_processor_->CommitStandaloneAsync(cmd);
+    }
   } else {
     cmd->release();
   }
@@ -965,7 +968,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   if (!device) {
     return false;
   }
-  if (!command_processor_->GetMetalCommandQueue()) {
+  if (!command_processor_->GetMetal4Context()) {
     return false;
   }
 
@@ -1001,7 +1004,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     }
     buffer->release();
   };
-  auto release_buffer_after = [&](MTL::CommandBuffer* cmd, MTL::Buffer* buffer,
+  auto release_buffer_after = [&](MTL4::CommandBuffer* cmd, MTL::Buffer* buffer,
                                   size_t size) {
     if (!buffer) {
       return;
@@ -1010,9 +1013,6 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       buffer_pool->ReleaseAfter(cmd, buffer);
       return;
     }
-    cmd->addCompletedHandler(^(MTL::CommandBuffer*) {
-      buffer->release();
-    });
   };
 
   MTL::Buffer* dest_buffer = acquire_buffer(size_t(dest_buffer_size));
@@ -1051,9 +1051,6 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
                   command_processor_->CanJoinActiveSubmissionForTransfer();
   bool use_upload_batch = use_blit_upload && upload_batch_command_buffer_ &&
                           command_processor_ && !has_active_submission;
-  // Reuse the current command buffer whenever no render pass encoder is active.
-  // This keeps copy/resolve and texture-upload ordering within one submission.
-  bool use_current_command_buffer = use_blit_upload && can_join;
   if (use_upload_batch && texture_resolution_scaled) {
     bool needs_base_scaled_range = false;
     bool needs_mips_scaled_range = false;
@@ -1077,13 +1074,12 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   }
 
   ScopedAutoreleasePool autorelease_pool;
-  MTL::CommandBuffer* cmd = nullptr;
+  MTL4::CommandBuffer* cmd = nullptr;
   bool standalone_cmd = false;
   if (use_upload_batch) {
     cmd = upload_batch_command_buffer_;
-  } else if (use_current_command_buffer) {
-    cmd = command_processor_->GetCurrentCommandBuffer();
-  } else {
+  }
+  if (!cmd) {
     cmd = command_processor_->CreateStandaloneTransferCommandBuffer(
         "XeniaCB reason=texture-upload");
     standalone_cmd = (cmd != nullptr);
@@ -1095,8 +1091,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   }
   bool command_buffer_has_work = false;
   auto handle_upload_failure = [&](bool abort_batch) {
-    if ((use_upload_batch || use_current_command_buffer) &&
-        command_buffer_has_work) {
+    if (use_upload_batch && command_buffer_has_work) {
       release_buffer_after(cmd, constants_buffer, constants_buffer_size);
       release_buffer_after(cmd, dest_buffer, size_t(dest_buffer_size));
       if (use_upload_batch) {
@@ -1115,14 +1110,16 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     }
   };
 
-  MTL::ComputeCommandEncoder* encoder = cmd->computeCommandEncoder();
+  MTL4::ComputeCommandEncoder* encoder = cmd->computeCommandEncoder();
   if (!encoder) {
     handle_upload_failure(true);
     return false;
   }
   encoder->setComputePipelineState(pipeline);
+  Metal4Context* mtl4 = command_processor_->GetMetal4Context();
   if (!texture_resolution_scaled) {
-    encoder->setBuffer(shared_buffer, 0, 2);
+    mtl4->SetComputeAddress(shared_buffer->gpuAddress(), 2);
+    mtl4->FlushComputeBindings(encoder);
   }
 
   uint32_t guest_x_blocks_per_group_log2 =
@@ -1157,7 +1154,9 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
         handle_upload_failure(false);
         return false;
       }
-      encoder->setBuffer(source_buffer, source_buffer_offset, 2);
+      mtl4->SetComputeAddress(
+          source_buffer->gpuAddress() + source_buffer_offset, 2);
+      mtl4->FlushComputeBindings(encoder);
       if (!is_base_storage) {
         scaled_mips_source_set_up = true;
       }
@@ -1228,11 +1227,13 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
           dispatch_index * constants_size;
       std::memcpy(constants_ptr, &constants, sizeof(constants));
 
-      encoder->setBuffer(constants_buffer, dispatch_index * constants_size, 0);
-      encoder->setBuffer(dest_buffer,
-                         stored_level.dest_offset_bytes +
-                             slice * stored_level.slice_size_bytes,
-                         1);
+      mtl4->SetComputeAddress(
+          constants_buffer->gpuAddress() + dispatch_index * constants_size, 0);
+      mtl4->SetComputeAddress(
+          dest_buffer->gpuAddress() + stored_level.dest_offset_bytes +
+              slice * stored_level.slice_size_bytes,
+          1);
+      mtl4->FlushComputeBindings(encoder);
       encoder->dispatchThreadgroups(threadgroups, threads_per_group);
       command_buffer_has_work = true;
       ++dispatch_index;
@@ -1243,7 +1244,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
 
   MTL::Texture* mtl_texture = metal_texture->metal_texture();
   if (use_blit_upload) {
-    MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
+    MTL4::ComputeCommandEncoder* blit = cmd->computeCommandEncoder();
     if (!blit) {
       handle_upload_failure(true);
       return false;
@@ -1373,14 +1374,19 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     if (use_upload_batch) {
       upload_batch_command_buffer_has_work_ = true;
     } else if (standalone_cmd) {
-      command_processor_->CommitStandaloneAsync(cmd);
+      if (buffer_pool && UploadBufferPool::HasPendingReleases(cmd)) {
+        command_processor_->CommitStandaloneAsyncWithCallback(
+            cmd, [](MTL4::CommandBuffer* completed_cmd) {
+              UploadBufferPool::HandleCommandBufferCompleted(completed_cmd);
+            });
+      } else {
+        command_processor_->CommitStandaloneAsync(cmd);
+      }
     }
   } else {
     if (standalone_cmd) {
       command_processor_->CommitStandaloneAndWait(cmd);
-    } else {
-      cmd->commit();
-      cmd->waitUntilCompleted();
+      UploadBufferPool::HandleCommandBufferCompleted(cmd);
     }
 
     uint8_t* dest_data = static_cast<uint8_t*>(dest_buffer->contents());
@@ -3190,20 +3196,16 @@ bool MetalTextureCache::EnsureScaledResolveBufferRange(uint64_t start_scaled,
 
   if (!overlap_indices.empty()) {
     bool standalone = false;
-    MTL::CommandBuffer* cmd =
-        retain_overlaps ? command_processor_->GetCurrentCommandBuffer()
-                        : nullptr;
+    MTL4::CommandBuffer* cmd =
+        command_processor_->CreateStandaloneTransferCommandBuffer(
+            "XeniaCB reason=scaled-resolve-blit");
     if (!cmd) {
-      cmd = command_processor_->CreateStandaloneTransferCommandBuffer(
-          "XeniaCB reason=scaled-resolve-blit");
-      if (!cmd) {
-        new_buffer->release();
-        return false;
-      }
-      standalone = true;
+      new_buffer->release();
+      return false;
     }
+    standalone = true;
 
-    MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
+    MTL4::ComputeCommandEncoder* blit = cmd->computeCommandEncoder();
     if (!blit) {
       if (standalone) {
         cmd->release();
