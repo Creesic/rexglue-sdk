@@ -58,6 +58,14 @@ class GraphicsSystem : public system::IGraphicsSystem {
   ::rex::ui::GraphicsProvider* provider() const { return provider_.get(); }
   ::rex::ui::Presenter* presenter() const { return presenter_.get(); }
 
+  std::pair<uint32_t, uint32_t> GetScaledAspectRatio() const {
+    return {scaled_aspect_x_, scaled_aspect_y_};
+  }
+  void SetScaledAspectRatio(uint32_t x, uint32_t y) {
+    scaled_aspect_x_ = x;
+    scaled_aspect_y_ = y;
+  }
+
   X_STATUS SetupPresentation(::rex::ui::WindowedAppContext* app_context) override;
   X_STATUS SetupGuestGpu(runtime::FunctionDispatcher* function_dispatcher,
                          system::KernelState* kernel_state) override;
@@ -136,6 +144,9 @@ class GraphicsSystem : public system::IGraphicsSystem {
   std::unique_ptr<::rex::ui::Presenter> presenter_;
 
   std::atomic_flag host_gpu_loss_reported_;
+
+  uint32_t scaled_aspect_x_ = 16;
+  uint32_t scaled_aspect_y_ = 9;
 };
 
 }  // namespace rex::graphics

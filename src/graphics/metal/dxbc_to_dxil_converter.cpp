@@ -78,9 +78,7 @@ bool DxbcToDxilConverter::Initialize() {
   }
 
   IDxbcConverter* test_converter = nullptr;
-  fprintf(stderr, "[dxbc2dxil] Calling DxilConvCreateInstance...\n");
   HRESULT hr = DxilConvCreateInstance(reinterpret_cast<void**>(&test_converter));
-  fprintf(stderr, "[dxbc2dxil] Result: hr=0x%08X converter=%p\n", static_cast<unsigned>(hr), test_converter);
   if (hr != S_OK || !test_converter) {
     REXLOG_ERROR("DxbcToDxilConverter: Failed to create IDxbcConverter (hr=0x{:08X})",
            static_cast<unsigned>(hr));

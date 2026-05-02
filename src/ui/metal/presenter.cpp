@@ -303,6 +303,56 @@ bool MetalPresenter::RefreshGuestOutputImpl(
   return true;
 }
 
+bool MetalPresenter::UpdateGammaRamp(const void* table_data, size_t table_bytes,
+                                     const void* pwl_data, size_t pwl_bytes) {
+  if (!table_data || !pwl_data || !table_bytes || !pwl_bytes || !device_) {
+    gamma_ramp_table_valid_ = false;
+    gamma_ramp_pwl_valid_ = false;
+    return false;
+  }
+
+  size_t total_bytes = table_bytes + pwl_bytes;
+  if (!gamma_ramp_buffer_ || gamma_ramp_buffer_size_ < total_bytes) {
+    if (gamma_ramp_table_texture_) { gamma_ramp_table_texture_->release(); gamma_ramp_table_texture_ = nullptr; }
+    if (gamma_ramp_pwl_texture_) { gamma_ramp_pwl_texture_->release(); gamma_ramp_pwl_texture_ = nullptr; }
+    if (gamma_ramp_buffer_) { gamma_ramp_buffer_->release(); gamma_ramp_buffer_ = nullptr; }
+
+    gamma_ramp_buffer_ = device_->newBuffer(total_bytes, MTL::ResourceStorageModeShared);
+    if (!gamma_ramp_buffer_) {
+      gamma_ramp_buffer_size_ = 0;
+      gamma_ramp_table_valid_ = false;
+      gamma_ramp_pwl_valid_ = false;
+      return false;
+    }
+    gamma_ramp_buffer_size_ = static_cast<uint32_t>(total_bytes);
+  }
+
+  void* contents = gamma_ramp_buffer_->contents();
+  std::memcpy(contents, table_data, table_bytes);
+  std::memcpy(reinterpret_cast<uint8_t*>(contents) + table_bytes, pwl_data, pwl_bytes);
+
+  if (!gamma_ramp_table_texture_) {
+    MTL::TextureDescriptor* table_desc = MTL::TextureDescriptor::textureBufferDescriptor(
+        MTL::PixelFormatRGB10A2Unorm, 256, MTL::ResourceStorageModeShared,
+        MTL::TextureUsageShaderRead);
+    gamma_ramp_table_texture_ = gamma_ramp_buffer_->newTexture(
+        table_desc, 0, 256 * sizeof(uint32_t));
+    table_desc->release();
+  }
+  if (!gamma_ramp_pwl_texture_) {
+    MTL::TextureDescriptor* pwl_desc = MTL::TextureDescriptor::textureBufferDescriptor(
+        MTL::PixelFormatRG16Uint, 384, MTL::ResourceStorageModeShared,
+        MTL::TextureUsageShaderRead);
+    gamma_ramp_pwl_texture_ = gamma_ramp_buffer_->newTexture(
+        pwl_desc, table_bytes, 384 * sizeof(uint32_t));
+    pwl_desc->release();
+  }
+
+  gamma_ramp_table_valid_ = gamma_ramp_table_texture_ != nullptr;
+  gamma_ramp_pwl_valid_ = gamma_ramp_pwl_texture_ != nullptr;
+  return gamma_ramp_table_valid_ && gamma_ramp_pwl_valid_;
+}
+
 }  // namespace metal
 }  // namespace ui
 }  // namespace rex

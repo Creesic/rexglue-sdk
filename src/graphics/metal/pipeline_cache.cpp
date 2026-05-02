@@ -498,16 +498,12 @@ bool MetalPipelineCache::InitializeShaderTranslation(
       false);  // force_emit_source_map
 
   dxbc_to_dxil_converter_ = std::make_unique<DxbcToDxilConverter>();
-  fprintf(stderr, "[metal-pc] Initializing DXBC to DXIL converter...\n");
   if (!dxbc_to_dxil_converter_->Initialize()) {
-    fprintf(stderr, "[metal-pc] FAIL: DXBC to DXIL converter init\n");
     return false;
   }
 
   metal_shader_converter_ = std::make_unique<MetalShaderConverter>();
-  fprintf(stderr, "[metal-pc] Initializing Metal Shader Converter...\n");
   if (!metal_shader_converter_->Initialize()) {
-    fprintf(stderr, "[metal-pc] FAIL: Metal Shader Converter init\n");
     return false;
   }
 

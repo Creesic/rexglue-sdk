@@ -588,9 +588,7 @@ bool MetalCommandProcessor::SetupContext() {
   gamma_ramp_256_entry_table_up_to_date_ = false;
   gamma_ramp_pwl_up_to_date_ = false;
 
-  fprintf(stderr, "[metal-cp] SetupContext: base SetupContext...\n");
   if (!CommandProcessor::SetupContext()) {
-    fprintf(stderr, "[metal-cp] FAIL: base SetupContext\n");
     return false;
   }
 
@@ -618,18 +616,14 @@ bool MetalCommandProcessor::SetupContext() {
   bool supports_mac2 = device_->supportsFamily(MTL::GPUFamilyMac2);
   mesh_shader_supported_ = supports_apple7 || supports_mac2;
 
-  fprintf(stderr, "[metal-cp] SetupContext: shared_memory...\n");
   shared_memory_ = std::make_unique<MetalSharedMemory>(*this, *memory_);
   if (!shared_memory_->Initialize()) {
-    fprintf(stderr, "[metal-cp] FAIL: shared_memory\n");
     return false;
   }
 
-  fprintf(stderr, "[metal-cp] SetupContext: primitive_processor...\n");
   primitive_processor_ = std::make_unique<MetalPrimitiveProcessor>(
       *this, *register_file_, *memory_, trace_writer_, *shared_memory_);
   if (!primitive_processor_->Initialize()) {
-    fprintf(stderr, "[metal-cp] FAIL: primitive_processor\n");
     return false;
   }
 
@@ -667,23 +661,18 @@ bool MetalCommandProcessor::SetupContext() {
   sampler_bindless_heap_next_ = 0;
   sampler_bindless_heap_exhausted_logged_ = false;
 
-  fprintf(stderr, "[metal-cp] SetupContext: texture_cache...\n");
   texture_cache_ = std::make_unique<MetalTextureCache>(this, *register_file_,
-                                                       *shared_memory_, 1, 1);
+                                                      *shared_memory_, 1, 1);
   if (!texture_cache_->Initialize()) {
-    fprintf(stderr, "[metal-cp] FAIL: texture_cache\n");
     return false;
   }
 
-  fprintf(stderr, "[metal-cp] SetupContext: render_target_cache...\n");
   render_target_cache_ = std::make_unique<MetalRenderTargetCache>(
       *register_file_, *memory_, &trace_writer_, 1, 1, *this);
   if (!render_target_cache_->Initialize()) {
-    fprintf(stderr, "[metal-cp] FAIL: render_target_cache\n");
     return false;
   }
 
-  fprintf(stderr, "[metal-cp] SetupContext: pipeline_cache shader translation...\n");
   pipeline_cache_ =
       std::make_unique<MetalPipelineCache>(device_, *register_file_);
   {
@@ -696,7 +685,6 @@ bool MetalCommandProcessor::SetupContext() {
             render_target_cache_->msaa_2x_supported(),
             render_target_cache_->draw_resolution_scale_x(),
             render_target_cache_->draw_resolution_scale_y())) {
-      fprintf(stderr, "[metal-cp] FAIL: pipeline_cache InitializeShaderTranslation\n");
       return false;
     }
   }
@@ -1232,7 +1220,9 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                 sizeof(reg::DC_LUT_30_COLOR) * 256;
             constexpr size_t kGammaRampPwlBytes =
                 sizeof(reg::DC_LUT_PWL_DATA) * 128 * 3;
-            if (true) {  // TODO: UpdateGammaRamp stub
+            if (presenter->UpdateGammaRamp(
+                    gamma_ramp_256_entry_table(), kGammaRampTableBytes,
+                    gamma_ramp_pwl_rgb(), kGammaRampPwlBytes)) {
               gamma_ramp_256_entry_table_up_to_date_ = true;
               gamma_ramp_pwl_up_to_date_ = true;
             } else {
@@ -1269,7 +1259,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       uint32_t source_height = output_height;
       bool force_swap_rb_copy = force_swap_rb;
       bool use_pwl_gamma_ramp_copy = use_pwl_gamma_ramp;
-      auto aspect = std::make_pair(float(output_width), float(output_height));  // TODO: GetScaledAspectRatio
+      auto aspect = graphics_system_->GetScaledAspectRatio();
       presenter->RefreshGuestOutput(
           output_width, output_height, aspect.first, aspect.second,
           [source_texture, metal_presenter, source_width, source_height,
@@ -3763,11 +3753,11 @@ void MetalCommandProcessor::UpdateSystemConstantValues(
   uint32_t vgt_min_vtx_indx = regs.Get<reg::VGT_MIN_VTX_INDX>().min_indx;
 
   uint32_t dirty = 0u;
-  uint32_t dirty_float_mask = 0;  // TODO: ARM float mask
+  uint32_t dirty_float_mask = 0;
 
   auto update_dirty_floatmask = [&dirty_float_mask](float x, float y) {
-    dirty_float_mask =
-        0U /* TODO: ArchORFloatMask */;
+    dirty_float_mask |=
+        static_cast<uint32_t>(-static_cast<int32_t>(x != y));
   };
   auto update_dirty_uint32_cmp = [&dirty](uint32_t x, uint32_t y) {
     dirty |= (x ^ y);
@@ -4041,7 +4031,7 @@ void MetalCommandProcessor::UpdateSystemConstantValues(
   system_constants_.edram_blend_constant[2] = blend_blue;
   system_constants_.edram_blend_constant[3] = blend_alpha;
 
-  // TODO: dirty |= ArchFloatMaskSignbit(dirty_float_mask);
+  dirty |= (dirty_float_mask >> 31);
   cbuffer_binding_system_up_to_date_ &= !dirty;
 }
 
