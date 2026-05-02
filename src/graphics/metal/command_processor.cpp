@@ -588,8 +588,9 @@ bool MetalCommandProcessor::SetupContext() {
   gamma_ramp_256_entry_table_up_to_date_ = false;
   gamma_ramp_pwl_up_to_date_ = false;
 
+  fprintf(stderr, "[metal-cp] SetupContext: base SetupContext...\n");
   if (!CommandProcessor::SetupContext()) {
-    REXLOG_ERROR("Failed to initialize base command processor context");
+    fprintf(stderr, "[metal-cp] FAIL: base SetupContext\n");
     return false;
   }
 
@@ -617,18 +618,18 @@ bool MetalCommandProcessor::SetupContext() {
   bool supports_mac2 = device_->supportsFamily(MTL::GPUFamilyMac2);
   mesh_shader_supported_ = supports_apple7 || supports_mac2;
 
-  // Initialize shared memory
+  fprintf(stderr, "[metal-cp] SetupContext: shared_memory...\n");
   shared_memory_ = std::make_unique<MetalSharedMemory>(*this, *memory_);
   if (!shared_memory_->Initialize()) {
-    REXLOG_ERROR("Failed to initialize shared memory");
+    fprintf(stderr, "[metal-cp] FAIL: shared_memory\n");
     return false;
   }
 
-  // Initialize primitive processor (index/primitive conversion like D3D12).
+  fprintf(stderr, "[metal-cp] SetupContext: primitive_processor...\n");
   primitive_processor_ = std::make_unique<MetalPrimitiveProcessor>(
       *this, *register_file_, *memory_, trace_writer_, *shared_memory_);
   if (!primitive_processor_->Initialize()) {
-    REXLOG_ERROR("Failed to initialize Metal primitive processor");
+    fprintf(stderr, "[metal-cp] FAIL: primitive_processor\n");
     return false;
   }
 
@@ -666,23 +667,23 @@ bool MetalCommandProcessor::SetupContext() {
   sampler_bindless_heap_next_ = 0;
   sampler_bindless_heap_exhausted_logged_ = false;
 
+  fprintf(stderr, "[metal-cp] SetupContext: texture_cache...\n");
   texture_cache_ = std::make_unique<MetalTextureCache>(this, *register_file_,
                                                        *shared_memory_, 1, 1);
   if (!texture_cache_->Initialize()) {
-    REXLOG_ERROR("Failed to initialize Metal texture cache");
+    fprintf(stderr, "[metal-cp] FAIL: texture_cache\n");
     return false;
   }
 
-  // Initialize render target cache
+  fprintf(stderr, "[metal-cp] SetupContext: render_target_cache...\n");
   render_target_cache_ = std::make_unique<MetalRenderTargetCache>(
       *register_file_, *memory_, &trace_writer_, 1, 1, *this);
   if (!render_target_cache_->Initialize()) {
-    REXLOG_ERROR("Failed to initialize Metal render target cache");
+    fprintf(stderr, "[metal-cp] FAIL: render_target_cache\n");
     return false;
   }
 
-  // Create and initialize pipeline cache (shader translation + pipeline
-  // management).
+  fprintf(stderr, "[metal-cp] SetupContext: pipeline_cache shader translation...\n");
   pipeline_cache_ =
       std::make_unique<MetalPipelineCache>(device_, *register_file_);
   {
@@ -695,7 +696,7 @@ bool MetalCommandProcessor::SetupContext() {
             render_target_cache_->msaa_2x_supported(),
             render_target_cache_->draw_resolution_scale_x(),
             render_target_cache_->draw_resolution_scale_y())) {
-      REXLOG_ERROR("Failed to initialize shader translation");
+      fprintf(stderr, "[metal-cp] FAIL: pipeline_cache InitializeShaderTranslation\n");
       return false;
     }
   }

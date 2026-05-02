@@ -22,6 +22,7 @@
 #include <string>
 
 #include "DxbcConverter.h"
+
 #include <rex/logging.h>
 
 namespace rex {
@@ -31,11 +32,14 @@ namespace metal {
 namespace {
 constexpr wchar_t kDefaultExtraOptions[] = L"-skip-container-parts";
 
+extern "C" HRESULT DxilConvCreateInstance(void** ppv);
+
 const CLSID kClsidDxbcConverter = {
     0x4900391e,
     0xb752,
     0x4edd,
     {0xa8, 0x85, 0x6f, 0xb7, 0x6e, 0x25, 0xad, 0xdb}};
+
 std::wstring WidenAscii(const std::string& value) {
   std::wstring out;
   out.reserve(value.size());
@@ -74,8 +78,9 @@ bool DxbcToDxilConverter::Initialize() {
   }
 
   IDxbcConverter* test_converter = nullptr;
-  HRESULT hr = DxcCreateInstance(kClsidDxbcConverter, __uuidof(IDxbcConverter),
-                                 reinterpret_cast<void**>(&test_converter));
+  fprintf(stderr, "[dxbc2dxil] Calling DxilConvCreateInstance...\n");
+  HRESULT hr = DxilConvCreateInstance(reinterpret_cast<void**>(&test_converter));
+  fprintf(stderr, "[dxbc2dxil] Result: hr=0x%08X converter=%p\n", static_cast<unsigned>(hr), test_converter);
   if (hr != S_OK || !test_converter) {
     REXLOG_ERROR("DxbcToDxilConverter: Failed to create IDxbcConverter (hr=0x{:08X})",
            static_cast<unsigned>(hr));
@@ -203,9 +208,8 @@ IDxbcConverter* DxbcToDxilConverter::GetThreadConverter(
     return thread_state.converter;
   }
 
-  HRESULT hr =
-      DxcCreateInstance(kClsidDxbcConverter, __uuidof(IDxbcConverter),
-                        reinterpret_cast<void**>(&thread_state.converter));
+   HRESULT hr =
+       DxilConvCreateInstance(reinterpret_cast<void**>(&thread_state.converter));
   if (hr != S_OK || !thread_state.converter) {
     if (error_message) {
       *error_message =
