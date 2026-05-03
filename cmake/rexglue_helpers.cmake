@@ -259,6 +259,7 @@ function(rexglue_configure_target target_name)
         if(NOT "${_rexglue_macos_metal_runtime_root}" STREQUAL "")
             target_link_options(${target_name} PRIVATE
                 "LINKER:-rpath,${_rexglue_macos_metal_runtime_root}"
+                "LINKER:-rpath,@executable_path"
             )
             _rexglue_copy_macos_metal_runtime(${target_name}
                 "${_rexglue_macos_metal_runtime_root}")
