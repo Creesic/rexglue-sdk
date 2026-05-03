@@ -25,24 +25,20 @@ MetalProvider::MetalProvider() = default;
 
 MetalProvider::~MetalProvider() {
   metal4_context_.reset();
-  if (device_) device_->release();
+  if (command_queue_) { command_queue_->release(); command_queue_ = nullptr; }
+  if (device_) { device_->release(); device_ = nullptr; }
 }
 
 bool MetalProvider::Initialize() {
   device_ = MTL::CreateSystemDefaultDevice();
-  if (!device_) {
-    REXLOG_ERROR("MetalProvider: Failed to create Metal device");
-    return false;
-  }
-  REXLOG_INFO("MetalProvider: device={}", device_->name()->utf8String());
+  if (!device_) return false;
+
+  command_queue_ = device_->newCommandQueue();
+  if (!command_queue_) return false;
 
   metal4_context_ = std::make_unique<graphics::metal::Metal4Context>();
-  if (!metal4_context_->Initialize(device_)) {
-    REXLOG_ERROR("MetalProvider: Failed to initialize Metal4Context");
-    return false;
-  }
+  if (!metal4_context_->Initialize(device_)) return false;
 
-  REXLOG_INFO("MetalProvider: Initialized (MTL4)");
   return true;
 }
 

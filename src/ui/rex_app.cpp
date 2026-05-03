@@ -288,7 +288,9 @@ bool ReXApp::OnInitialize() {
   }
 
   // Launch module in background
+  fprintf(stderr, "[app] Scheduling deferred module launch\n");
   app_context().CallInUIThreadDeferred([this]() {
+    fprintf(stderr, "[app] Deferred module launch callback executing\n");
     OnPreLaunchModule();
 
     auto main_thread = runtime_->PrepareModuleLaunch();
@@ -322,6 +324,7 @@ bool ReXApp::OnInitialize() {
     });
   });
 
+  fprintf(stderr, "[app] OnInitialize returning true\n");
   return true;
 }
 

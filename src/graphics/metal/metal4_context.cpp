@@ -12,25 +12,27 @@ Metal4Context::~Metal4Context() { Shutdown(); }
 
 bool Metal4Context::Initialize(MTL::Device* device) {
   device_ = device;
-  if (!device_) return false;
+  if (!device_) { fprintf(stderr, "[mtl4] Init: no device\n"); return false; }
 
   queue_ = device_->newMTL4CommandQueue();
   if (!queue_) {
-    REXLOG_ERROR("Metal4Context: Failed to create MTL4 CommandQueue");
+    fprintf(stderr, "[mtl4] Init: FAILED to create MTL4 CommandQueue\n");
     return false;
   }
+  fprintf(stderr, "[mtl4] Init: MTL4 queue=%p\n", (void*)queue_);
 
   allocator_ = device_->newCommandAllocator();
   if (!allocator_) {
-    REXLOG_ERROR("Metal4Context: Failed to create CommandAllocator");
+    fprintf(stderr, "[mtl4] Init: FAILED to create CommandAllocator\n");
     return false;
   }
 
   standalone_allocator_ = device_->newCommandAllocator();
   if (!standalone_allocator_) {
-    REXLOG_ERROR("Metal4Context: Failed to create standalone CommandAllocator");
+    fprintf(stderr, "[mtl4] Init: FAILED to create standalone CommandAllocator\n");
     return false;
   }
+  fprintf(stderr, "[mtl4] Init: allocators ok, creating arg tables\n");
 
   MTL4::ArgumentTableDescriptor* arg_desc =
       MTL4::ArgumentTableDescriptor::alloc()->init();
@@ -71,11 +73,12 @@ bool Metal4Context::Initialize(MTL::Device* device) {
   inline_constants_buffer_ = device_->newBuffer(
       kInlineConstantsSize, MTL::ResourceStorageModeShared);
   if (!inline_constants_buffer_) {
-    REXLOG_ERROR("Metal4Context: Failed to create inline constants buffer");
+    fprintf(stderr, "[mtl4] Init: FAILED to create inline constants buffer\n");
     return false;
   }
 
-  REXLOG_INFO("Metal4Context: Initialized successfully");
+  fprintf(stderr, "[mtl4] Init: success - queue=%p alloc=%p standalone_alloc=%p inline_buf=%p\n",
+          (void*)queue_, (void*)allocator_, (void*)standalone_allocator_, (void*)inline_constants_buffer_);
   return true;
 }
 
@@ -269,10 +272,24 @@ void Metal4Context::FlushRenderBindings(MTL4::RenderCommandEncoder* enc,
     }
     enc->setArgumentTable(vertex_arg_table_, stages);
     vertex_bindings_dirty_ = false;
+    static int vf = 0;
+    if (vf < 5) {
+      fprintf(stderr, "[mtl4] FlushRender vertex: table=%p stages=%d\n",
+              (void*)vertex_arg_table_, (int)stages);
+      fflush(stderr);
+      vf++;
+    }
   }
   if (fragment_bindings_dirty_) {
     enc->setArgumentTable(fragment_arg_table_, MTL::RenderStageFragment);
     fragment_bindings_dirty_ = false;
+    static int ff = 0;
+    if (ff < 5) {
+      fprintf(stderr, "[mtl4] FlushRender fragment: table=%p\n",
+              (void*)fragment_arg_table_);
+      fflush(stderr);
+      ff++;
+    }
   }
 }
 
