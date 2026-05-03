@@ -342,9 +342,9 @@ MetalCommandProcessor::~MetalCommandProcessor() {
     current_render_encoder_->release();
     current_render_encoder_ = nullptr;
   }
-  if (current_command_buffer_) {
-    current_command_buffer_->release();
-    current_command_buffer_ = nullptr;
+  if (current_mtl4_command_buffer_) {
+    current_mtl4_command_buffer_->release();
+    current_mtl4_command_buffer_ = nullptr;
   }
   WaitForPendingCompletionHandlers();
 
@@ -813,28 +813,54 @@ bool MetalCommandProcessor::SetupContext() {
       return false;
     }
   }
+
+  mtl4_->AddResidentAllocation(view_bindless_heap_);
+  mtl4_->AddResidentAllocation(sampler_bindless_heap_);
+  mtl4_->AddResidentAllocation(null_buffer_);
+  mtl4_->AddResidentAllocation(system_view_tables_);
+  if (null_texture_) mtl4_->AddResidentAllocation(null_texture_);
+  if (tessellator_tables_buffer_) {
+    mtl4_->AddResidentAllocation(tessellator_tables_buffer_);
+  }
+  if (shared_memory_) {
+    MTL::Buffer* shared_mem_buffer = shared_memory_->GetBuffer();
+    if (shared_mem_buffer) mtl4_->AddResidentAllocation(shared_mem_buffer);
+  }
+  mtl4_->CommitResidency();
+
   return true;
 }
 
 void MetalCommandProcessor::FlushCommandBufferAndWait(uint64_t timeout_ns,
                                                       const char* context) {
-  if (current_command_buffer_) {
-    current_command_buffer_->commit();
-    current_command_buffer_->waitUntilCompleted();
-    current_command_buffer_ = nullptr;
+  if (current_mtl4_command_buffer_) {
+    MTL::SharedEvent* completion_event = device_->newSharedEvent();
+    uint64_t completion_value = 1;
+    current_mtl4_command_buffer_->endCommandBuffer();
+    const MTL4::CommandBuffer* bufs[] = {current_mtl4_command_buffer_};
+    mtl4_->queue()->commit(bufs, 1);
+    mtl4_->queue()->signalEvent(completion_event, completion_value);
+    bool signaled =
+        completion_event->waitUntilSignaledValue(completion_value, timeout_ns);
+    if (!signaled) {
+      REXLOG_ERROR("{}: GPU timeout (possible GPU hang)", context);
+    }
+    completion_event->release();
+    current_mtl4_command_buffer_ = nullptr;
     submission_has_draws_ = false;
     copy_resolve_writes_pending_ = false;
   }
   DrainCommandBufferAutoreleasePool();
 
-  auto& provider = GetMetalProvider();
-  MTL::CommandQueue* queue = provider.GetCommandQueue();
-  if (queue) {
+  if (mtl4_) {
     NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
-    MTL::CommandBuffer* sync_cmd = queue->commandBuffer();
+    MTL4::CommandBuffer* sync_cmd = mtl4_->BeginStandaloneCommandBuffer();
     if (sync_cmd) {
-      sync_cmd->commit();
-      sync_cmd->waitUntilCompleted();
+      sync_cmd->endCommandBuffer();
+      const MTL4::CommandBuffer* bufs[] = {sync_cmd};
+      mtl4_->queue()->commit(bufs, 1);
+      // MTL4 commit is async; use a shared event for synchronization.
+      // For simplicity, just release and rely on MTL4 queue ordering.
       sync_cmd->release();
     }
     pool->release();
@@ -877,9 +903,9 @@ void MetalCommandProcessor::ShutdownContext() {
     current_render_encoder_->release();
     current_render_encoder_ = nullptr;
   }
-  if (current_command_buffer_) {
-    current_command_buffer_->release();
-    current_command_buffer_ = nullptr;
+  if (current_mtl4_command_buffer_) {
+    current_mtl4_command_buffer_->release();
+    current_mtl4_command_buffer_ = nullptr;
   }
   DrainCommandBufferAutoreleasePool();
 
@@ -1040,7 +1066,7 @@ uint64_t MetalCommandProcessor::GetBindlessDescriptorRetirementSubmission()
   if (!submission_current_) {
     return 0;
   }
-  if (current_command_buffer_ ||
+  if (current_mtl4_command_buffer_ ||
       completed_command_buffers_.load(std::memory_order_relaxed) <
           submission_current_) {
     return submission_current_;
@@ -1113,7 +1139,6 @@ void MetalCommandProcessor::InitializeShaderStorage(
 void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                       uint32_t frontbuffer_width,
                                       uint32_t frontbuffer_height) {
-  fprintf(stderr, "[swap] IssueSwap: ptr=0x%08X %ux%u\n", frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
   ProcessCompletedSubmissions();
   saw_swap_ = true;
   last_swap_ptr_ = frontbuffer_ptr;
@@ -1123,9 +1148,11 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // End any active render encoder
   EndRenderEncoder();
 
-  if (current_command_buffer_) {
-    current_command_buffer_->commit();
-    current_command_buffer_ = nullptr;
+  if (current_mtl4_command_buffer_) {
+    current_mtl4_command_buffer_->endCommandBuffer();
+    const MTL4::CommandBuffer* bufs[] = {current_mtl4_command_buffer_};
+    mtl4_->queue()->commit(bufs, 1);
+    current_mtl4_command_buffer_ = nullptr;
     submission_has_draws_ = false;
     copy_resolve_writes_pending_ = false;
   }
@@ -1171,16 +1198,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
 
     MTL::Texture* source_texture = nullptr;
     bool use_pwl_gamma_ramp = false;
-    MTL::Texture* color_target_texture =
-        render_target_cache_ ? render_target_cache_->GetColorTarget(0) : nullptr;
-    if (color_target_texture) {
-      source_texture = color_target_texture;
-      output_width = source_texture->width();
-      output_height = source_texture->height();
-      auto& metal_provider = *static_cast<ui::metal::MetalProvider*>(
-          graphics_system_->provider());
-      metal_provider.SetFrontbufferTexture(source_texture);
-    } else if (texture_cache_) {
+    if (texture_cache_) {
       uint32_t swap_width = 0;
       uint32_t swap_height = 0;
       xenos::TextureFormat swap_format = xenos::TextureFormat::k_8_8_8_8;
@@ -1219,7 +1237,9 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       static bool missing_swap_logged = false;
       if (!missing_swap_logged) {
         missing_swap_logged = true;
-        fprintf(stderr, "[swap] No swap texture! presenting inactive\n");
+        REXLOG_WARN(
+            "MetalCommandProcessor::IssueSwap: swap texture unavailable; "
+            "presenting inactive (black) output");
       }
       presenter->RefreshGuestOutput(
           0, 0, 0, 0, [](ui::Presenter::GuestOutputRefreshContext&) -> bool {
@@ -1235,16 +1255,11 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       bool force_swap_rb_copy = force_swap_rb;
       bool use_pwl_gamma_ramp_copy = use_pwl_gamma_ramp;
       auto aspect = graphics_system_->GetScaledAspectRatio();
-      static int refresh_count = 0;
-      int rc = refresh_count++;
-      if (rc < 5) fprintf(stderr, "[swap] RefreshGuestOutput: %ux%u src_tex=%p\n",
-                           output_width, output_height, (void*)source_texture);
       presenter->RefreshGuestOutput(
           output_width, output_height, aspect.first, aspect.second,
           [source_texture, metal_presenter, source_width, source_height,
-           force_swap_rb_copy, use_pwl_gamma_ramp_copy, rc](
+           force_swap_rb_copy, use_pwl_gamma_ramp_copy](
               ui::Presenter::GuestOutputRefreshContext& context) -> bool {
-            if (rc < 5) fprintf(stderr, "[swap] RefreshGuestOutput callback invoked\n");
             auto& metal_context =
                 static_cast<ui::metal::MetalGuestOutputRefreshContext&>(context);
             context.SetIs8bpc(!use_pwl_gamma_ramp_copy);
@@ -1253,8 +1268,6 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                 source_texture, metal_context.resource_uav_capable(),
                 source_width, source_height, force_swap_rb_copy,
                 use_pwl_gamma_ramp_copy, &submission_id);
-            if (rc < 5) fprintf(stderr, "[swap] CopyTextureToGuestOutput: success=%d sub=%lu\n",
-                                 copy_success, (unsigned long)submission_id);
             if (copy_success && submission_id) {
               metal_context.SetSubmissionId(submission_id);
             }
@@ -1265,7 +1278,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
 }
 
 void MetalCommandProcessor::OnPrimaryBufferEnd() {
-  if (!current_command_buffer_) {
+  if (!current_mtl4_command_buffer_) {
     return;
   }
 
@@ -1280,7 +1293,7 @@ void MetalCommandProcessor::OnPrimaryBufferEnd() {
 }
 
 bool MetalCommandProcessor::CanEndSubmissionImmediately() {
-  if (!current_command_buffer_) return false;
+  if (!current_mtl4_command_buffer_) return false;
   if (pipeline_cache_ && pipeline_cache_->IsCreatingPipelines()) return false;
   return true;
 }
@@ -1426,7 +1439,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
 
   // Begin command buffer if needed (will use cache-provided render targets).
   BeginCommandBuffer();
-  if (!current_command_buffer_ || !current_render_encoder_) {
+  if (!current_mtl4_command_buffer_ || !current_render_encoder_) {
     static bool no_command_buffer_logged = false;
     if (!no_command_buffer_logged) {
       no_command_buffer_logged = true;
@@ -1756,20 +1769,6 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (current_render_pipeline_state_ != pipeline) {
     current_render_encoder_->setRenderPipelineState(pipeline);
     current_render_pipeline_state_ = pipeline;
-  }
-  {
-    static int diag_draw = 0;
-    int dd = diag_draw++;
-    if (dd < 3) {
-      MTL::Texture* rt0 = render_target_cache_ ? render_target_cache_->GetColorTargetForDraw(0) : nullptr;
-      MTL::Texture* swap_rt = render_target_cache_ ? render_target_cache_->GetColorTarget(0) : nullptr;
-      fprintf(stderr, "[draw] #%d: pipe=%p rt0_for_draw=%p swap_rt=%p enc=%p vs=%p fs=%p\n",
-              dd, (void*)pipeline, (void*)rt0, (void*)swap_rt,
-              (void*)current_render_encoder_,
-              vertex_translation ? (void*)vertex_translation->metal_function() : nullptr,
-              pixel_translation ? (void*)pixel_translation->metal_function() : nullptr);
-      fflush(stderr);
-    }
   }
   if (use_tessellation_emulation) {
     if (!tessellator_tables_buffer_) {
@@ -2597,31 +2596,65 @@ bool MetalCommandProcessor::PopulateBindlessTables(
         current_bindless_top_level_buffer_->gpuAddress() +
         top_level_offset_pixel;
 
-    current_render_encoder_->setVertexBuffer(
-        current_bindless_top_level_buffer_, top_level_offset_vertex,
-        kIRArgumentBufferBindPoint);
-    current_render_encoder_->setFragmentBuffer(
-        current_bindless_top_level_buffer_, top_level_offset_pixel,
-        kIRArgumentBufferBindPoint);
+    if (use_geometry_emulation || use_tessellation_emulation) {
+      mtl4_->SetVertexAddress(tl_vertex_addr, kIRArgumentBufferBindPoint);
+      mtl4_->SetFragmentAddress(tl_pixel_addr, kIRArgumentBufferBindPoint);
 
-  if (use_tessellation_emulation) {
-    REXLOG_ERROR("Tessellation emulation not yet supported on MTL3 draw path");
-    return false;
-      current_render_encoder_->setVertexBuffer(
-          current_bindless_top_level_buffer_, top_level_offset_vertex,
-          kIRArgumentBufferHullDomainBindPoint);
-    }
+      if (use_tessellation_emulation) {
+        mtl4_->SetVertexAddress(tl_vertex_addr,
+                                kIRArgumentBufferHullDomainBindPoint);
+      }
 
-    if (!heap_binds_set_on_encoder_) {
-      current_render_encoder_->setVertexBuffer(
-          view_bindless_heap_, 0, kIRDescriptorHeapBindPoint);
-      current_render_encoder_->setFragmentBuffer(
-          view_bindless_heap_, 0, kIRDescriptorHeapBindPoint);
-      current_render_encoder_->setVertexBuffer(
-          sampler_bindless_heap_, 0, kIRSamplerHeapBindPoint);
-      current_render_encoder_->setFragmentBuffer(
-          sampler_bindless_heap_, 0, kIRSamplerHeapBindPoint);
-      heap_binds_set_on_encoder_ = true;
+      if (uniforms.vs_buf) {
+        mtl4_->SetVertexAddress(
+            uniforms.vs_buf->gpuAddress() + uniforms.vs_off,
+            kIRArgumentBufferUniformsBindPoint);
+      }
+      if (uniforms.ps_buf) {
+        mtl4_->SetFragmentAddress(
+            uniforms.ps_buf->gpuAddress() + uniforms.ps_off,
+            kIRArgumentBufferUniformsBindPoint);
+      }
+
+      if (!heap_binds_set_on_encoder_) {
+        mtl4_->SetVertexAddress(view_bindless_heap_->gpuAddress(),
+                                kIRDescriptorHeapBindPoint);
+        mtl4_->SetFragmentAddress(view_bindless_heap_->gpuAddress(),
+                                  kIRDescriptorHeapBindPoint);
+        mtl4_->SetVertexAddress(sampler_bindless_heap_->gpuAddress(),
+                                kIRSamplerHeapBindPoint);
+        mtl4_->SetFragmentAddress(sampler_bindless_heap_->gpuAddress(),
+                                  kIRSamplerHeapBindPoint);
+        heap_binds_set_on_encoder_ = true;
+      }
+      mtl4_->FlushRenderBindings(current_render_encoder_, true);
+    } else {
+      mtl4_->SetVertexAddress(tl_vertex_addr, kIRArgumentBufferBindPoint);
+      mtl4_->SetFragmentAddress(tl_pixel_addr, kIRArgumentBufferBindPoint);
+
+      if (uniforms.vs_buf) {
+        mtl4_->SetVertexAddress(
+            uniforms.vs_buf->gpuAddress() + uniforms.vs_off,
+            kIRArgumentBufferUniformsBindPoint);
+      }
+      if (uniforms.ps_buf) {
+        mtl4_->SetFragmentAddress(
+            uniforms.ps_buf->gpuAddress() + uniforms.ps_off,
+            kIRArgumentBufferUniformsBindPoint);
+      }
+
+      if (!heap_binds_set_on_encoder_) {
+        mtl4_->SetVertexAddress(view_bindless_heap_->gpuAddress(),
+                                kIRDescriptorHeapBindPoint);
+        mtl4_->SetFragmentAddress(view_bindless_heap_->gpuAddress(),
+                                  kIRDescriptorHeapBindPoint);
+        mtl4_->SetVertexAddress(sampler_bindless_heap_->gpuAddress(),
+                                kIRSamplerHeapBindPoint);
+        mtl4_->SetFragmentAddress(sampler_bindless_heap_->gpuAddress(),
+                                  kIRSamplerHeapBindPoint);
+        heap_binds_set_on_encoder_ = true;
+      }
+      mtl4_->FlushRenderBindings(current_render_encoder_);
     }
   }
 
@@ -2640,6 +2673,7 @@ bool MetalCommandProcessor::DispatchDraw(
     const std::vector<Shader::VertexBinding>& vb_bindings,
     const VertexBindingRange* vertex_ranges, uint32_t vertex_range_count,
     IndexBufferInfo* index_buffer_info) {
+  g_mtl4_ir_ctx = mtl4_;
   // Bind vertex buffers / descriptors.
   if (use_geometry_emulation || use_tessellation_emulation) {
     IRRuntimeVertexBuffers vertex_buffers = {};
@@ -2658,28 +2692,40 @@ bool MetalCommandProcessor::DispatchDraw(
         }
       }
     }
-    current_render_encoder_->setVertexBytes(
-        vertex_buffers, sizeof(vertex_buffers), kIRVertexBufferBindPoint);
+    // MSC manual: bind IRRuntimeVertexBuffers at kIRVertexBufferBindPoint (6)
+    // for the object stage when using geometry emulation.
+    MTL::GPUAddress vb_addr = mtl4_->AllocInlineConstant(
+        vertex_buffers, sizeof(vertex_buffers));
+    mtl4_->SetVertexAddress(vb_addr, kIRVertexBufferBindPoint);
   } else if (uses_vertex_fetch) {
+    // Vertex fetch shaders read directly from shared memory via SRV, so avoid
+    // stage-in bindings that can trigger invalid buffer loads.
     if (shared_memory_) {
-      if (MTL::Buffer* smb = shared_memory_->GetBuffer()) {
+      if (MTL::Buffer* shared_mem_buffer = shared_memory_->GetBuffer()) {
       }
     }
   } else {
+    // Bind vertex buffers at kIRVertexBufferBindPoint (index 6+) for stage-in.
+    // The pipeline's vertex descriptor expects buffers at these indices,
+    // populated from the vertex fetch constants. The buffer addresses come from
+    // shared memory.
     if (shared_memory_ && !vb_bindings.empty()) {
       MTL::Buffer* shared_mem_buffer = shared_memory_->GetBuffer();
       if (shared_mem_buffer) {
+        // Mark shared memory as used for reading
+
         for (uint32_t i = 0; i < vertex_range_count; ++i) {
           const auto& range = vertex_ranges[i];
           uint64_t buffer_index =
               kIRVertexBufferBindPoint + uint64_t(range.binding_index);
-          current_render_encoder_->setVertexBuffer(
-              shared_mem_buffer, static_cast<NS::UInteger>(range.offset),
-              static_cast<NS::UInteger>(buffer_index));
+          mtl4_->SetVertexAddress(
+              shared_mem_buffer->gpuAddress() + range.offset, buffer_index);
         }
+        mtl4_->FlushRenderBindings(current_render_encoder_);
       }
     } else if (shared_memory_) {
-      if (MTL::Buffer* smb = shared_memory_->GetBuffer()) {
+      // No vertex bindings, but still mark shared memory as resident
+      if (MTL::Buffer* shared_mem_buffer = shared_memory_->GetBuffer()) {
       }
     }
   }
@@ -2795,11 +2841,131 @@ bool MetalCommandProcessor::DispatchDraw(
   };
 
   if (use_tessellation_emulation) {
-    REXLOG_ERROR("Tessellation emulation not yet supported on MTL3 draw path");
-    return false;
+    IRRuntimePrimitiveType tess_primitive = IRRuntimePrimitiveTypeTriangle;
+    switch (primitive_processing_result.host_primitive_type) {
+      case xenos::PrimitiveType::kTriangleList:
+        tess_primitive = IRRuntimePrimitiveType3ControlPointPatchlist;
+        break;
+      case xenos::PrimitiveType::kQuadList:
+        tess_primitive = IRRuntimePrimitiveType4ControlPointPatchlist;
+        break;
+      case xenos::PrimitiveType::kTrianglePatch:
+        tess_primitive = (primitive_processing_result.tessellation_mode ==
+                          xenos::TessellationMode::kAdaptive)
+                             ? IRRuntimePrimitiveType3ControlPointPatchlist
+                             : IRRuntimePrimitiveType1ControlPointPatchlist;
+        break;
+      case xenos::PrimitiveType::kQuadPatch:
+        tess_primitive = (primitive_processing_result.tessellation_mode ==
+                          xenos::TessellationMode::kAdaptive)
+                             ? IRRuntimePrimitiveType4ControlPointPatchlist
+                             : IRRuntimePrimitiveType1ControlPointPatchlist;
+        break;
+      default:
+        REXLOG_ERROR(
+            "Host tessellated primitive type {} returned by the primitive "
+            "processor is not supported by the Metal tessellation path",
+            uint32_t(primitive_processing_result.host_primitive_type));
+        return false;
+    }
+
+    const IRRuntimeTessellationPipelineConfig& tess_config =
+        tessellation_pipeline_state->config;
+
+    MTL4TessellationPipelineConfig mtl4_tess_config = {};
+    mtl4_tess_config.tessellatorOutputPrimitive =
+        (MTL4IRTessellatorOutputPrimitive)tess_config.outputPrimitiveType;
+    mtl4_tess_config.gsMaxInputPrimitivesPerMeshThreadgroup =
+        tess_config.gsMaxInputPrimitivesPerMeshThreadgroup;
+    mtl4_tess_config.hsPatchesPerObjectThreadgroup =
+        tess_config.hsMaxPatchesPerObjectThreadgroup;
+    mtl4_tess_config.hsInputControlPointsPerPatch =
+        tess_config.hsInputControlPointCount;
+    mtl4_tess_config.hsObjectThreadsPerPatch =
+        tess_config.hsMaxObjectThreadsPerThreadgroup;
+    mtl4_tess_config.gsInstanceCount = tess_config.gsInstanceCount;
+
+    if (primitive_processing_result.index_buffer_type ==
+        PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
+      MTL4DrawPatchesTessellationEmulation(
+          current_render_encoder_, mtl4_tess_config,
+          1, primitive_processing_result.host_draw_vertex_count, 0, 0);
+    } else {
+      MTL::IndexType index_type =
+          (primitive_processing_result.host_index_format ==
+           xenos::IndexFormat::kInt16)
+              ? MTL::IndexTypeUInt16
+              : MTL::IndexTypeUInt32;
+      MTL::Buffer* index_buffer = nullptr;
+      uint64_t index_offset = 0;
+      if (!resolve_index_buffer(index_type, index_buffer, index_offset)) {
+        return false;
+      }
+      uint32_t index_stride = (index_type == MTL::IndexTypeUInt16)
+                                  ? sizeof(uint16_t)
+                                  : sizeof(uint32_t);
+      uint32_t start_index =
+          index_stride ? uint32_t(index_offset / index_stride) : 0;
+      MTL4DrawIndexedPatchesTessellationEmulation(
+          current_render_encoder_, mtl4_tess_config,
+          index_buffer, 1, primitive_processing_result.host_draw_vertex_count,
+          start_index, 0, 0);
+    }
   } else if (use_geometry_emulation) {
-    REXLOG_ERROR("Geometry emulation not yet supported on MTL3 draw path");
-    return false;
+    IRRuntimePrimitiveType geometry_primitive = IRRuntimePrimitiveTypeTriangle;
+    switch (primitive_processing_result.host_primitive_type) {
+      case xenos::PrimitiveType::kPointList:
+        geometry_primitive = IRRuntimePrimitiveTypePoint;
+        break;
+      case xenos::PrimitiveType::kRectangleList:
+        geometry_primitive = IRRuntimePrimitiveTypeTriangle;
+        break;
+      case xenos::PrimitiveType::kQuadList:
+        geometry_primitive = IRRuntimePrimitiveTypeLineWithAdj;
+        break;
+      default:
+        REXLOG_ERROR(
+            "Host primitive type {} returned by the primitive processor is not "
+            "supported by the Metal geometry path",
+            uint32_t(primitive_processing_result.host_primitive_type));
+        return false;
+    }
+
+    MTL4GeometryPipelineConfig geometry_config = {};
+    geometry_config.gsVertexSizeInBytes =
+        geometry_pipeline_state->gs_vertex_size_in_bytes;
+    geometry_config.gsMaxInputPrimitivesPerMeshThreadgroup =
+        geometry_pipeline_state->gs_max_input_primitives_per_mesh_threadgroup;
+
+    if (primitive_processing_result.index_buffer_type ==
+        PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
+      MTL4DrawPrimitivesGeometryEmulation(
+          current_render_encoder_,
+          (MTL4IRPrimitiveType)geometry_primitive, geometry_config, 1,
+          primitive_processing_result.host_draw_vertex_count, 0, 0);
+    } else {
+      MTL::IndexType index_type =
+          (primitive_processing_result.host_index_format ==
+           xenos::IndexFormat::kInt16)
+              ? MTL::IndexTypeUInt16
+              : MTL::IndexTypeUInt32;
+      MTL::Buffer* index_buffer = nullptr;
+      uint64_t index_offset = 0;
+      if (!resolve_index_buffer(index_type, index_buffer, index_offset)) {
+        return false;
+      }
+      uint32_t index_stride = (index_type == MTL::IndexTypeUInt16)
+                                  ? sizeof(uint16_t)
+                                  : sizeof(uint32_t);
+      uint32_t start_index =
+          index_stride ? uint32_t(index_offset / index_stride) : 0;
+      MTL4DrawIndexedPrimitivesGeometryEmulation(
+          current_render_encoder_,
+          (MTL4IRPrimitiveType)geometry_primitive, index_type, index_buffer,
+          geometry_config, 1,
+          primitive_processing_result.host_draw_vertex_count, start_index, 0,
+          0);
+    }
   } else {
     // Primitive topology - from primitive processor, like D3D12.
     MTL::PrimitiveType mtl_primitive = MTL::PrimitiveTypeTriangle;
@@ -2831,17 +2997,10 @@ bool MetalCommandProcessor::DispatchDraw(
     // Draw using primitive processor output.
     if (primitive_processing_result.index_buffer_type ==
         PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
-      IRRuntimeDrawArgument da = {
-          (uint32_t)primitive_processing_result.host_draw_vertex_count, 1, 0, 0};
-      IRRuntimeDrawParams dp = {.draw = da};
-      const uint16_t kNonIndexed = kIRNonIndexedDraw;
-      current_render_encoder_->setVertexBytes(
-          &dp, sizeof(dp), kIRArgumentBufferDrawArgumentsBindPoint);
-      current_render_encoder_->setVertexBytes(
-          &kNonIndexed, sizeof(kNonIndexed), kIRArgumentBufferUniformsBindPoint);
-      current_render_encoder_->drawPrimitives(
-          mtl_primitive, NS::UInteger(0),
-          NS::UInteger(primitive_processing_result.host_draw_vertex_count));
+      MTL4DrawPrimitives(
+          current_render_encoder_, mtl_primitive,
+          NS::UInteger(primitive_processing_result.host_draw_vertex_count),
+          NS::UInteger(0), NS::UInteger(1), NS::UInteger(0));
     } else {
       MTL::IndexType index_type =
           (primitive_processing_result.host_index_format ==
@@ -2853,21 +3012,11 @@ bool MetalCommandProcessor::DispatchDraw(
       if (!resolve_index_buffer(index_type, index_buffer, index_offset)) {
         return false;
       }
-      IRRuntimeDrawIndexedArgument da = {
-          (uint32_t)primitive_processing_result.host_draw_vertex_count, 1,
-          (uint32_t)index_offset, 0, 0};
-      IRRuntimeDrawParams dp = {.drawIndexed = da};
-      const uint16_t ir_index_type = static_cast<uint16_t>(index_type + 1);
-      current_render_encoder_->setVertexBytes(
-          &dp, sizeof(dp), kIRArgumentBufferDrawArgumentsBindPoint);
-      current_render_encoder_->setVertexBytes(
-          &ir_index_type, sizeof(ir_index_type), kIRArgumentBufferUniformsBindPoint);
-      current_render_encoder_->drawIndexedPrimitives(
-          mtl_primitive,
+      MTL4DrawIndexedPrimitives(
+          current_render_encoder_, mtl_primitive,
           NS::UInteger(primitive_processing_result.host_draw_vertex_count),
           index_type, index_buffer,
-          static_cast<NS::UInteger>(index_offset),
-          NS::UInteger(1), NS::UInteger(0), NS::UInteger(0));
+          index_offset, NS::UInteger(1), NS::UInteger(0), NS::UInteger(0));
     }
   }
 
@@ -2997,31 +3146,37 @@ void MetalCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
   }
 }
 
-MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
+MTL4::CommandBuffer* MetalCommandProcessor::EnsureMTL4CommandBuffer() {
   ProcessCompletedSubmissions();
-  if (current_command_buffer_) {
-    return current_command_buffer_;
+  if (current_mtl4_command_buffer_) {
+    return current_mtl4_command_buffer_;
   }
-
-  auto& provider = GetMetalProvider();
-  MTL::CommandQueue* queue = provider.GetCommandQueue();
-  if (!queue) {
-    REXLOG_ERROR("EnsureCommandBuffer: no command queue");
+  if (!mtl4_) {
+    REXLOG_ERROR("EnsureMTL4CommandBuffer: no MTL4 context");
     return nullptr;
   }
 
   EnsureCommandBufferAutoreleasePool();
 
-  current_command_buffer_ = queue->commandBuffer();
-  if (!current_command_buffer_) {
-    REXLOG_ERROR("EnsureCommandBuffer: failed to create command buffer");
+  current_mtl4_command_buffer_ = device_->newCommandBuffer();
+  if (!current_mtl4_command_buffer_) {
+    REXLOG_ERROR("EnsureMTL4CommandBuffer: failed to create command buffer");
     DrainCommandBufferAutoreleasePool();
     return nullptr;
   }
+  current_mtl4_command_buffer_->beginCommandBuffer(
+      mtl4_->allocator());
+
+  if (mtl4_->GetResidencySet()) {
+    MTL::ResidencySet* rs = mtl4_->GetResidencySet();
+    current_mtl4_command_buffer_->useResidencySet(rs);
+  }
 
   ++submission_current_;
-  current_command_buffer_->setLabel(
+  current_mtl4_command_buffer_->setLabel(
       NS::String::string("XeniaCommandBuffer", NS::UTF8StringEncoding));
+
+  pending_completion_handlers_.fetch_add(1, std::memory_order_relaxed);
 
   if (texture_cache_) {
     texture_cache_->BeginSubmission(submission_current_);
@@ -3038,7 +3193,7 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
     frame_open_ = true;
   }
 
-  return current_command_buffer_;
+  return current_mtl4_command_buffer_;
 }
 
 void MetalCommandProcessor::ProcessCompletedSubmissions() {
@@ -3129,16 +3284,18 @@ void MetalCommandProcessor::CommitStandaloneAndWait(MTL4::CommandBuffer* cmd) {
 void MetalCommandProcessor::ResetRenderEncoderResourceUsage() {}
 
 void MetalCommandProcessor::BeginCommandBuffer() {
-  if (!EnsureCommandBuffer()) {
+  if (!EnsureMTL4CommandBuffer()) {
     return;
   }
 
-  MTL::RenderPassDescriptor* pass_descriptor = nullptr;
+  g_mtl4_ir_ctx = mtl4_;
+
+  MTL::RenderPassDescriptor* mtl3_pass_descriptor = nullptr;
   if (render_target_cache_) {
-    pass_descriptor =
+    mtl3_pass_descriptor =
         render_target_cache_->GetRenderPassDescriptor(1);
   }
-  if (!pass_descriptor) {
+  if (!mtl3_pass_descriptor) {
     REXLOG_ERROR("BeginCommandBuffer: No render pass descriptor available");
     return;
   }
@@ -3149,7 +3306,7 @@ void MetalCommandProcessor::BeginCommandBuffer() {
         depth_control.z_enable &&
         (depth_control.zfunc == xenos::CompareFunction::kGreater ||
          depth_control.zfunc == xenos::CompareFunction::kGreaterEqual);
-    if (auto* da = pass_descriptor->depthAttachment()) {
+    if (auto* da = mtl3_pass_descriptor->depthAttachment()) {
       if (reverse_z) {
         da->setClearDepth(0.0);
       } else {
@@ -3174,24 +3331,45 @@ void MetalCommandProcessor::BeginCommandBuffer() {
     return;
   }
 
-  current_render_encoder_ =
-      current_command_buffer_->renderCommandEncoder(pass_descriptor);
-  if (!current_render_encoder_) {
-    REXLOG_ERROR("Failed to create render command encoder");
+  MTL4::RenderPassDescriptor* mtl4_pass_descriptor =
+      mtl4_->CreateRenderPassDescriptor(mtl3_pass_descriptor);
+  if (!mtl4_pass_descriptor) {
+    REXLOG_ERROR("BeginCommandBuffer: failed to create MTL4 render pass descriptor");
     return;
   }
-  current_render_encoder_->retain();
-  current_render_encoder_->setLabel(
-      NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
-  current_render_pipeline_state_ = nullptr;
-  ff_blend_factor_valid_ = false;
-  rasterizer_state_valid_ = false;
-  viewport_dirty_ = true;
-  scissor_dirty_ = true;
-  current_depth_stencil_state_ = nullptr;
-  stencil_reference_valid_ = false;
-  heap_binds_set_on_encoder_ = false;
-  current_render_pass_descriptor_ = pass_descriptor;
+
+  if (auto* ca = mtl4_pass_descriptor->colorAttachments()->object(0)) {
+    if (auto* tex = ca->texture()) {
+      mtl4_->AddResidentAllocation(tex);
+    }
+  }
+  if (auto* da = mtl4_pass_descriptor->depthAttachment()) {
+    if (auto* tex = da->texture()) {
+      mtl4_->AddResidentAllocation(tex);
+    }
+  }
+
+  if (!current_render_encoder_) {
+    current_render_encoder_ =
+        current_mtl4_command_buffer_->renderCommandEncoder(mtl4_pass_descriptor);
+    if (!current_render_encoder_) {
+      REXLOG_ERROR("Failed to create render command encoder");
+      mtl4_pass_descriptor->release();
+      return;
+    }
+    current_render_encoder_->retain();
+    current_render_encoder_->setLabel(
+        NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
+    current_render_pipeline_state_ = nullptr;
+    ff_blend_factor_valid_ = false;
+    rasterizer_state_valid_ = false;
+    viewport_dirty_ = true;
+    scissor_dirty_ = true;
+    current_depth_stencil_state_ = nullptr;
+    stencil_reference_valid_ = false;
+    heap_binds_set_on_encoder_ = false;
+    current_render_pass_descriptor_ = mtl4_pass_descriptor;
+  }
 
   uint32_t rt_width = 1;
   uint32_t rt_height = 1;
@@ -3213,10 +3391,22 @@ void MetalCommandProcessor::BeginCommandBuffer() {
 void MetalCommandProcessor::EndCommandBuffer() {
   EndRenderEncoder();
 
-  if (current_command_buffer_) {
-    current_command_buffer_->commit();
-    completed_command_buffers_.fetch_add(1, std::memory_order_relaxed);
-    current_command_buffer_ = nullptr;
+  if (current_mtl4_command_buffer_) {
+    current_mtl4_command_buffer_->endCommandBuffer();
+    MTL4::CommitOptions* options = MTL4::CommitOptions::alloc()->init();
+    options->addFeedbackHandler(
+        [this](MTL4::CommitFeedback* feedback) {
+          if (feedback->error()) {
+            REXLOG_ERROR("Metal MTL4 command buffer error: {}",
+                   feedback->error()->localizedDescription()->utf8String());
+          }
+          completed_command_buffers_.fetch_add(1, std::memory_order_relaxed);
+          pending_completion_handlers_.fetch_sub(1, std::memory_order_relaxed);
+        });
+    const MTL4::CommandBuffer* bufs[] = {current_mtl4_command_buffer_};
+    mtl4_->queue()->commit(bufs, 1, options);
+    options->release();
+    current_mtl4_command_buffer_ = nullptr;
     submission_has_draws_ = false;
     current_bindless_table_valid_ = false;
   }

@@ -77,12 +77,34 @@ bool Metal4Context::Initialize(MTL::Device* device) {
     return false;
   }
 
-  fprintf(stderr, "[mtl4] Init: success - queue=%p alloc=%p standalone_alloc=%p inline_buf=%p\n",
-          (void*)queue_, (void*)allocator_, (void*)standalone_allocator_, (void*)inline_constants_buffer_);
+  MTL::ResidencySetDescriptor* rs_desc =
+      MTL::ResidencySetDescriptor::alloc()->init();
+  rs_desc->setInitialCapacity(8192);
+  err = nullptr;
+  residency_set_ = device_->newResidencySet(rs_desc, &err);
+  if (!residency_set_) {
+    fprintf(stderr, "[mtl4] Init: FAILED to create residency set: %s\n",
+            err ? err->localizedDescription()->utf8String() : "unknown");
+    rs_desc->release();
+    return false;
+  }
+  residency_set_->addAllocation(inline_constants_buffer_);
+  residency_set_->commit();
+  rs_desc->release();
+
+  queue_->addResidencySet(residency_set_);
+
+  fprintf(stderr, "[mtl4] Init: success - queue=%p alloc=%p standalone_alloc=%p inline_buf=%p residency=%p\n",
+          (void*)queue_, (void*)allocator_, (void*)standalone_allocator_,
+          (void*)inline_constants_buffer_, (void*)residency_set_);
   return true;
 }
 
 void Metal4Context::Shutdown() {
+  if (residency_set_) {
+    residency_set_->release();
+    residency_set_ = nullptr;
+  }
   if (inline_constants_buffer_) {
     inline_constants_buffer_->release();
     inline_constants_buffer_ = nullptr;
@@ -291,6 +313,7 @@ void Metal4Context::FlushRenderBindings(MTL4::RenderCommandEncoder* enc,
       ff++;
     }
   }
+  CommitResidency();
 }
 
 void Metal4Context::SetComputeAddress(MTL::GPUAddress addr, uint32_t idx) {
@@ -389,6 +412,20 @@ MTL4::RenderPassDescriptor* Metal4Context::CreateRenderPassDescriptor(
 void Metal4Context::ResetFrameState() {
   inline_constants_offset_ = 0;
   allocator_->reset();
+}
+
+void Metal4Context::AddResidentAllocation(MTL::Allocation* alloc) {
+  if (residency_set_ && alloc) {
+    residency_set_->addAllocation(alloc);
+    residency_dirty_ = true;
+  }
+}
+
+void Metal4Context::CommitResidency() {
+  if (residency_set_ && residency_dirty_) {
+    residency_set_->commit();
+    residency_dirty_ = false;
+  }
 }
 
 }  // namespace metal

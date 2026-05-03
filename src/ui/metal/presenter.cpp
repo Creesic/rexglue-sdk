@@ -96,12 +96,7 @@ bool MetalPresenter::CopyTextureToGuestOutput(
     uint32_t source_width, uint32_t source_height,
     bool force_swap_rb, bool use_pwl_gamma_ramp,
     uint64_t* submission_out) {
-  static int copy_count = 0;
-  int cc = copy_count++;
-  if (cc < 5) fprintf(stderr, "[presenter] CopyTextureToGuestOutput: src=%p dst=%p %ux%u mtl4=%p\n",
-                       source_texture, dest_texture, source_width, source_height, (void*)mtl4_);
   if (!source_texture || !dest_texture || !mtl4_) {
-    if (cc < 5) fprintf(stderr, "[presenter] CopyTextureToGuestOutput: FAILED null check\n");
     return false;
   }
 
@@ -154,58 +149,60 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
   }
 
   MTL::Texture* dst = drawable->texture();
-  MTL::Texture* src = provider_ ? provider_->GetFrontbufferTexture() : nullptr;
 
-  static int pc = 0;
-  int cpc = pc++;
-  if (cpc < 5) {
-    fprintf(stderr, "[presenter] Paint #%d: src=%p dst=%p (%ux%u)\n",
-            cpc, (void*)src, (void*)dst,
-            dst ? (unsigned)dst->width() : 0,
-            dst ? (unsigned)dst->height() : 0);
-    if (src) fprintf(stderr, "[presenter]   src fmt=%d %ux%u\n",
-                     (int)src->pixelFormat(),
-                     (unsigned)src->width(), (unsigned)src->height());
-    fflush(stderr);
+  uint32_t mailbox_index = last_guest_output_mailbox_index_.load(
+      std::memory_order_relaxed);
+  MTL::Texture* guest_output_texture = nullptr;
+  if (mailbox_index < guest_output_textures_.size()) {
+    guest_output_texture = guest_output_textures_[mailbox_index];
   }
 
-  if (src) {
-    MTL4::CommandBuffer* cmd = mtl4_->BeginStandaloneCommandBuffer();
-    if (cmd) {
+  MTL4::CommandBuffer* cmd = mtl4_->BeginCommandBuffer();
+  if (!cmd) { pool->drain(); return PaintResult::kNotPresented; }
+
+  if (guest_output_texture && blit_lib_) {
+    MTL::RenderPipelineState* pipe = GetOrCreateBlitPipeline(dst->pixelFormat());
+    if (pipe) {
       MTL4::RenderPassDescriptor* rpd = MTL4::RenderPassDescriptor::alloc()->init();
       auto* ca = rpd->colorAttachments()->object(0);
       ca->setTexture(dst);
-      ca->setLoadAction(MTL::LoadActionDontCare);
+      ca->setLoadAction(MTL::LoadActionClear);
+      ca->setClearColor(MTL::ClearColor(0, 0, 0, 1));
       ca->setStoreAction(MTL::StoreActionStore);
       MTL4::RenderCommandEncoder* enc = cmd->renderCommandEncoder(rpd);
-      bool drew = false;
-      if (enc && blit_lib_) {
-        MTL::RenderPipelineState* pipe = GetOrCreateBlitPipeline(dst->pixelFormat());
-        if (pipe) {
-          enc->setRenderPipelineState(pipe);
-          struct { float w, h, src_w, src_h; } ub = {
-            (float)dst->width(), (float)dst->height(),
-            (float)src->width(), (float)src->height()
-          };
-          mtl4_->SetVertexAddress(mtl4_->AllocInlineConstant(&ub, sizeof(ub)), 0);
-          mtl4_->SetFragmentTexture(src->gpuResourceID(), 0);
-          mtl4_->SetFragmentSampler(GetNearestSampler()->gpuResourceID(), 0);
-          mtl4_->FlushRenderBindings(enc);
-          enc->drawPrimitives(MTL::PrimitiveTypeTriangle, 0, 3);
-          drew = true;
-        }
+      if (enc) {
+        enc->setRenderPipelineState(pipe);
+
+        float src_h = guest_output_texture->height() > 720 ? 720.0f
+                          : (float)guest_output_texture->height();
+        struct {
+          float w, h, src_w, src_h;
+        } ub = {(float)dst->width(), (float)dst->height(),
+                (float)guest_output_texture->width(), src_h};
+
+        mtl4_->SetVertexAddress(mtl4_->AllocInlineConstant(&ub, sizeof(ub)), 0);
+        mtl4_->SetFragmentTexture(guest_output_texture->gpuResourceID(), 0);
+        mtl4_->SetFragmentSampler(GetNearestSampler()->gpuResourceID(), 0);
+        mtl4_->FlushRenderBindings(enc);
+
+        enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0),
+                            NS::UInteger(3));
         enc->endEncoding();
       }
       rpd->release();
-      if (cpc < 5) {
-        fprintf(stderr, "[presenter]   render blit drew=%d\n", drew);
-        fflush(stderr);
-      }
-      mtl4_->CommitStandaloneAsync(cmd);
+    }
+  } else {
+    static bool logged_once = false;
+    if (!logged_once) {
+      REXLOG_WARN("Metal Paint: No guest output texture (mailbox_idx={}, tex={})",
+                  mailbox_index, (void*)guest_output_texture);
+      logged_once = true;
     }
   }
 
+  mtl4_->Commit(cmd);
   mtl4_->SignalDrawable(drawable);
+
   pool->drain();
   return PaintResult::kPresented;
 }

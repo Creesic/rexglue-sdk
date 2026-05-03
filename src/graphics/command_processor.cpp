@@ -1156,7 +1156,7 @@ bool CommandProcessor::ExecutePacketType3_INTERRUPT(memory::RingBuffer* reader, 
 
 bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, uint32_t packet,
                                                    uint32_t count) {
-  if constexpr (kGpuVerboseDiagnostics) {
+  {
   static int xe_swap_log = 0;
   if (xe_swap_log < 5) {
     fprintf(stderr, "[gpu] XE_SWAP EXECUTED: count=%u\n", count); fflush(stderr);
