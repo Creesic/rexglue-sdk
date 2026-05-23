@@ -146,7 +146,7 @@ if(REXGLUE_USE_D3D12)
     list(APPEND REXGRAPHICS_SOURCES ${REXGRAPHICS_DXBC_THIRDPARTY_SOURCES} ${REXGRAPHICS_DXBC_SOURCES} ${REXGRAPHICS_D3D12_SOURCES})
 endif()
 
-add_library(rexgraphics STATIC ${REXGRAPHICS_SOURCES})
+add_library(rexgraphics OBJECT ${REXGRAPHICS_SOURCES})
 add_library(rex::graphics ALIAS rexgraphics)
 
 target_include_directories(rexgraphics PUBLIC
@@ -158,9 +158,10 @@ target_include_directories(rexgraphics PRIVATE
     ${REXGLUE_ROOT}  # For thirdparty/dxbc/DXBCChecksum.h include
 )
 
+target_compile_options(rexgraphics PRIVATE -Wno-unused-variable)
+
 target_link_libraries(rexgraphics PUBLIC
     rexcore
-    rexsystem
     rexui
     xxHash::xxhash
     snappy
