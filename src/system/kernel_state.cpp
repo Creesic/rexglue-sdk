@@ -1105,6 +1105,37 @@ void KernelState::EndDPCImpersonation(const DPCImpersonationScope& scope) {
   pcr->current_irql = scope.previous_irql_;
 }
 
+void KernelState::EmulateCPInterruptDPC(uint32_t interrupt_callback,
+                                        uint32_t interrupt_callback_data, uint32_t source,
+                                        uint32_t cpu) {
+  if (!interrupt_callback) {
+    return;
+  }
+
+  auto* thread = XThread::GetCurrentThread();
+  assert_not_null(thread);
+
+  if (cpu == 0xFFFFFFFF) {
+    cpu = 2;
+  }
+  thread->SetActiveCpu(cpu);
+
+  auto* context = thread->thread_state()->context();
+  auto* pcr = memory_->TranslateVirtual<X_KPCR*>(static_cast<uint32_t>(context->r13.u64));
+
+  auto dpc_scope = BeginDPCImpersonation();
+
+  pcr->processtype_value_in_dpc = static_cast<uint8_t>(X_PROCTYPE_USER);
+
+  uint64_t args[] = {source, interrupt_callback_data};
+  function_dispatcher_->ExecuteInterrupt(thread->thread_state(), interrupt_callback,
+                                         args, rex::countof(args));
+
+  pcr->processtype_value_in_dpc = static_cast<uint8_t>(X_PROCTYPE_IDLE);
+
+  EndDPCImpersonation(dpc_scope);
+}
+
 bool KernelState::Save(stream::ByteStream* stream) {
   REXSYS_DEBUG("Serializing the kernel...");
   stream->Write(kKernelSaveSignature);

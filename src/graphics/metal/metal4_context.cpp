@@ -174,6 +174,9 @@ MTL4::CommandBuffer* Metal4Context::BeginStandaloneCommandBuffer() {
   MTL4::CommandBuffer* cmd = device_->newCommandBuffer();
   if (!cmd) return nullptr;
   cmd->beginCommandBuffer(standalone_allocator_);
+  if (residency_set_) {
+    cmd->useResidencySet(residency_set_);
+  }
   return cmd;
 }
 
@@ -345,6 +348,7 @@ void Metal4Context::FlushComputeBindings(MTL4::ComputeCommandEncoder* enc) {
     enc->setArgumentTable(compute_arg_table_);
     compute_bindings_dirty_ = false;
   }
+  CommitResidency();
 }
 
 MTL::GPUAddress Metal4Context::AllocInlineConstant(const void* data,

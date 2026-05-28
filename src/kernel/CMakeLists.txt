@@ -66,4 +66,18 @@ set(REXKERNEL_SOURCES
 list(TRANSFORM REXKERNEL_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 target_sources(rexruntime PRIVATE ${REXKERNEL_SOURCES})
 
-target_link_libraries(rexruntime PRIVATE o1heap rexcore rexfilesystem rexgraphics rexui rexaudio rexinput imgui)
+target_link_libraries(rexruntime PRIVATE rexgraphics o1heap rexcore rexfilesystem rexui rexaudio rexinput imgui)
+
+# Propagate graphics backend compile definitions to consumers.
+# These are normally set by rexgraphics via PUBLIC compile definitions,
+# but since we link it PRIVATE to avoid transitive export issues,
+# we re-declare them here.
+if(REXGLUE_USE_METAL)
+    target_compile_definitions(rexruntime PUBLIC REX_HAS_METAL=1)
+endif()
+if(REXGLUE_USE_VULKAN)
+    target_compile_definitions(rexruntime PUBLIC REX_HAS_VULKAN=1)
+endif()
+if(REXGLUE_USE_D3D12)
+    target_compile_definitions(rexruntime PUBLIC REX_HAS_D3D12=1)
+endif()

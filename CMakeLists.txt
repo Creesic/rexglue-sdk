@@ -81,7 +81,7 @@ elseif(APPLE)
 endif()
 
 # Enforce Clang18 compiler
-if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$")
     message(FATAL_ERROR "ReXGlue requires Clang compiler. Please set CMAKE_CXX_COMPILER to clang++")
 endif()
 

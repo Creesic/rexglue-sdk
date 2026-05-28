@@ -228,7 +228,9 @@ void XmaDecoder::ReleaseContext(uint32_t guest_ptr) {
 
 bool XmaDecoder::BlockOnContext(uint32_t guest_ptr, bool poll) {
   auto context_id = GetContextId(guest_ptr);
-  assert_true(context_id >= 0);
+  if (context_id < 0) {
+    return true;
+  }
 
   XmaContext& context = contexts_[context_id];
   return context.Block(poll);

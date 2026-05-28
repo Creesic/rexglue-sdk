@@ -39,8 +39,13 @@
 #include <rex/thread/mutex.h>
 
 namespace rex::kernel::xboxkrnl {
+
 using namespace rex::system;
 using rex::runtime::current_ppc_context;
+
+namespace {
+std::atomic<uint32_t> g_likely_vblank_wait_handle{0};
+}
 
 // r13 + 0x100: pointer to thread local state
 // Thread local state:
@@ -835,33 +840,61 @@ uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason, uint32_
   return result;
 }
 
+void xeSignalLikelyVblankWaitObject() {
+  uint32_t handle = g_likely_vblank_wait_handle.load(std::memory_order_relaxed);
+  if (!handle) {
+    return;
+  }
+
+  static uint32_t signal_log_count = 0;
+
+  if (auto ev = REX_KERNEL_OBJECTS()->LookupObject<XEvent>(handle)) {
+    ev->Set(0, false);
+    if (signal_log_count < 20) {
+      ++signal_log_count;
+      REXLOG_INFO("[vblank-wait] signaled event handle=0x{:08X}", handle);
+    }
+    return;
+  }
+  if (auto sem = REX_KERNEL_OBJECTS()->LookupObject<XSemaphore>(handle)) {
+    int32_t previous_count = 0;
+    sem->ReleaseSemaphore(1, &previous_count);
+    if (signal_log_count < 20) {
+      ++signal_log_count;
+      REXLOG_INFO("[vblank-wait] released semaphore handle=0x{:08X} prev_count={}",
+                  handle, previous_count);
+    }
+  }
+}
+
 u32 KeWaitForSingleObject_entry(mapped_void object_ptr, u32 wait_reason, u32 processor_mode,
                                 u32 alertable, mapped_u64 timeout_ptr) {
   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
-  static int wait_log_count = 0;
-  if (wait_log_count < 100) {
-    wait_log_count++;
-    auto thid = rex::system::XThread::GetCurrentThread()->thread_id();
-    REXLOG_INFO("[KeWaitForSingleObject] thid={} obj=0x{:08X} reason={} alertable={} timeout={}",
-                thid, object_ptr.guest_address(), (uint32_t)wait_reason,
-                (uint32_t)alertable, timeout_ptr ? (int64_t)timeout : -1);
+  if (timeout_ptr && static_cast<int64_t>(timeout) == -300000 && wait_reason == 3 &&
+      alertable == 0) {
+    auto object_for_capture = XObject::GetNativeObject<XObject>(REX_KERNEL_STATE(), object_ptr);
+    if (object_for_capture &&
+        (object_for_capture->type() == XObject::Type::Event ||
+         object_for_capture->type() == XObject::Type::Semaphore)) {
+      uint32_t handle = object_for_capture->handle();
+      g_likely_vblank_wait_handle.store(handle, std::memory_order_relaxed);
+      static uint32_t capture_log_count = 0;
+      if (capture_log_count < 20) {
+        ++capture_log_count;
+        REXLOG_INFO("[vblank-wait] captured handle=0x{:08X} type={}", handle,
+                    static_cast<int>(object_for_capture->type()));
+      }
+    }
   }
   auto result = xeKeWaitForSingleObject(object_ptr, wait_reason, processor_mode, alertable,
                                         timeout_ptr ? &timeout : nullptr);
+
   return result;
 }
 
 u32 NtWaitForSingleObjectEx_entry(u32 object_handle, u32 wait_mode, u32 alertable,
                                   mapped_u64 timeout_ptr) {
   X_STATUS result = X_STATUS_SUCCESS;
-  static int ntwait_log_count = 0;
-  if (ntwait_log_count < 100) {
-    ntwait_log_count++;
-    uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
-    auto thid = rex::system::XThread::GetCurrentThread()->thread_id();
-    REXLOG_INFO("[NtWaitForSingleObjectEx] thid={} handle=0x{:08X} wait_mode={} alertable={} timeout={}",
-                thid, object_handle, wait_mode, alertable, timeout_ptr ? (int64_t)timeout : -1);
-  }
 
   auto object = REX_KERNEL_OBJECTS()->LookupObject<XObject>(object_handle);
   if (object) {

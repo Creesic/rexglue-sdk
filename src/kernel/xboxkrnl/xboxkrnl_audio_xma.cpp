@@ -28,6 +28,11 @@
 namespace rex::kernel::xboxkrnl {
 using namespace rex::system;
 
+#define XMA_GUARD_CONTEXT(context_ptr, retval) \
+  if (context_ptr.guest_address() == 0) {      \
+    return retval;                              \
+  }
+
 using rex::audio::XMA_CONTEXT_DATA;
 
 // See audio_system.cc for implementation details.
@@ -77,6 +82,7 @@ u32 XMACreateContext_entry(mapped_u32 context_out_ptr) {
 }
 
 u32 XMAReleaseContext_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   auto xma_decoder =
       static_cast<audio::AudioSystem*>(REX_KERNEL_STATE()->emulator()->audio_system())
           ->xma_decoder();
@@ -123,6 +129,7 @@ struct XMA_CONTEXT_INIT {
 static_assert_size(XMA_CONTEXT_INIT, 56);
 
 u32 XMAInitializeContext_entry(mapped_void context_ptr, ppc_ptr_t<XMA_CONTEXT_INIT> context_init) {
+  XMA_GUARD_CONTEXT(context_ptr, X_E_FALSE);
   // Input buffers may be null (buffer 1 in 415607D4).
   // Convert to host endianness.
   uint32_t input_buffer_0_guest_ptr = context_init->input_buffer_0_ptr;
@@ -192,6 +199,7 @@ u32 XMAInitializeContext_entry(mapped_void context_ptr, ppc_ptr_t<XMA_CONTEXT_IN
 }
 
 u32 XMASetLoopData_entry(mapped_void context_ptr, ppc_ptr_t<XMA_CONTEXT_DATA> loop_data) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
 
   context.loop_start = loop_data->loop_start;
@@ -206,11 +214,13 @@ u32 XMASetLoopData_entry(mapped_void context_ptr, ppc_ptr_t<XMA_CONTEXT_DATA> lo
 }
 
 u32 XMAGetInputBufferReadOffset_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   return context.input_buffer_read_offset;
 }
 
 u32 XMASetInputBufferReadOffset_entry(mapped_void context_ptr, u32 value) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   context.input_buffer_read_offset = value;
   context.Store(context_ptr);
@@ -219,6 +229,7 @@ u32 XMASetInputBufferReadOffset_entry(mapped_void context_ptr, u32 value) {
 }
 
 u32 XMASetInputBuffer0_entry(mapped_void context_ptr, mapped_void buffer, u32 packet_count) {
+  XMA_GUARD_CONTEXT(context_ptr, X_E_FALSE);
   uint32_t buffer_physical_address =
       REX_KERNEL_MEMORY()->GetPhysicalAddress(buffer.guest_address());
   assert_true(buffer_physical_address != UINT32_MAX);
@@ -240,11 +251,13 @@ u32 XMASetInputBuffer0_entry(mapped_void context_ptr, mapped_void buffer, u32 pa
 }
 
 u32 XMAIsInputBuffer0Valid_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   return context.input_buffer_0_valid;
 }
 
 u32 XMASetInputBuffer0Valid_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   context.input_buffer_0_valid = 1;
   context.Store(context_ptr);
@@ -253,6 +266,7 @@ u32 XMASetInputBuffer0Valid_entry(mapped_void context_ptr) {
 }
 
 u32 XMASetInputBuffer1_entry(mapped_void context_ptr, mapped_void buffer, u32 packet_count) {
+  XMA_GUARD_CONTEXT(context_ptr, X_E_FALSE);
   uint32_t buffer_physical_address =
       REX_KERNEL_MEMORY()->GetPhysicalAddress(buffer.guest_address());
   assert_true(buffer_physical_address != UINT32_MAX);
@@ -274,11 +288,13 @@ u32 XMASetInputBuffer1_entry(mapped_void context_ptr, mapped_void buffer, u32 pa
 }
 
 u32 XMAIsInputBuffer1Valid_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   return context.input_buffer_1_valid;
 }
 
 u32 XMASetInputBuffer1Valid_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   context.input_buffer_1_valid = 1;
   context.Store(context_ptr);
@@ -287,11 +303,13 @@ u32 XMASetInputBuffer1Valid_entry(mapped_void context_ptr) {
 }
 
 u32 XMAIsOutputBufferValid_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   return context.output_buffer_valid;
 }
 
 u32 XMASetOutputBufferValid_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   context.output_buffer_valid = 1;
   context.Store(context_ptr);
@@ -300,11 +318,13 @@ u32 XMASetOutputBufferValid_entry(mapped_void context_ptr) {
 }
 
 u32 XMAGetOutputBufferReadOffset_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   return context.output_buffer_read_offset;
 }
 
 u32 XMASetOutputBufferReadOffset_entry(mapped_void context_ptr, u32 value) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   context.output_buffer_read_offset = value;
   context.Store(context_ptr);
@@ -313,21 +333,27 @@ u32 XMASetOutputBufferReadOffset_entry(mapped_void context_ptr, u32 value) {
 }
 
 u32 XMAGetOutputBufferWriteOffset_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   return context.output_buffer_write_offset;
 }
 
 u32 XMAGetPacketMetadata_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   XMA_CONTEXT_DATA context(context_ptr);
   return context.packet_metadata;
 }
 
 u32 XMAEnableContext_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   StoreXmaContextIndexedRegister(REX_KERNEL_STATE(), 0x1940, context_ptr.guest_address());
   return 0;
 }
 
 u32 XMADisableContext_entry(mapped_void context_ptr, u32 wait) {
+  if (context_ptr.guest_address() == 0) {
+    return X_E_SUCCESS;
+  }
   X_HRESULT result = X_E_SUCCESS;
   StoreXmaContextIndexedRegister(REX_KERNEL_STATE(), 0x1A40, context_ptr.guest_address());
   if (!static_cast<audio::AudioSystem*>(REX_KERNEL_STATE()->emulator()->audio_system())
@@ -339,6 +365,7 @@ u32 XMADisableContext_entry(mapped_void context_ptr, u32 wait) {
 }
 
 u32 XMABlockWhileInUse_entry(mapped_void context_ptr) {
+  XMA_GUARD_CONTEXT(context_ptr, 0);
   do {
     XMA_CONTEXT_DATA context(context_ptr);
     if (!context.input_buffer_0_valid && !context.input_buffer_1_valid) {

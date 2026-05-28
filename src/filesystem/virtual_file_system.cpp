@@ -119,7 +119,12 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
   auto it = std::find_if(devices_.cbegin(), devices_.cend(), [&](const auto& d) {
     return rex::string::utf8_starts_with_case(normalized_path, d->mount_path());
   });
-  if (it == devices_.cend()) {
+    if (it == devices_.cend()) {
+      if (rex::string::utf8_find_first_of(normalized_path, ":") ==
+          std::string_view::npos) {
+        auto* entry = ResolvePath("game:\\" + std::string(normalized_path));
+        if (entry) return entry;
+      }
     REXFS_WARN("VFS: '{}' -> [no device]", path);
     // Supress logging the error for ShaderDumpxe:\CompareBackEnds as this is
     // not an actual problem nor something we care about.

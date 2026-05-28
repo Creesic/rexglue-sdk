@@ -710,6 +710,10 @@ bool MetalRenderTargetCache::Initialize() {
   }
   edram_buffer_->setLabel(
       NS::String::string("EDRAM Buffer", NS::UTF8StringEncoding));
+  if (auto* mtl4 = command_processor_.GetMetal4Context()) {
+    mtl4->AddResidentAllocation(edram_buffer_);
+    mtl4->CommitResidency();
+  }
   if (edram_cpu_visible) {
     void* edram_contents = edram_buffer_->contents();
     if (edram_contents) {
@@ -2224,6 +2228,7 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
 
   bool has_any_render_target = false;
   bool has_any_color_target = false;
+  uint32_t color_target_count = 0;
   bool needs_descriptor_refresh = false;
   uint32_t coverage_width = 0;
   uint32_t coverage_height = 0;
@@ -2310,6 +2315,7 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
 
       has_any_render_target = true;
       has_any_color_target = true;
+      ++color_target_count;
 
       // Track this as a real render target for capture
       last_real_color_targets_[i] = current_color_targets_[i];
@@ -2491,6 +2497,17 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
                 dummy_color_target_->draw_texture()->sampleCount()));
       }
     }
+  }
+
+  static uint32_t rp_debug_log_count = 0;
+  if (rp_debug_log_count < 64) {
+    fprintf(stderr,
+            "[rp] expected_samples=%u color_targets=%u has_depth=%d used_dummy=%d cov=%ux%u\n",
+            expected_sample_count, color_target_count,
+            (current_depth_target_ && current_depth_target_->texture()) ? 1 : 0,
+            has_any_color_target ? 0 : 1, coverage_width, coverage_height);
+    fflush(stderr);
+    ++rp_debug_log_count;
   }
 
   render_pass_descriptor_dirty_ = needs_descriptor_refresh;
@@ -2784,9 +2801,100 @@ void MetalRenderTargetCache::DumpRenderTargets(
     }
 
     RenderTargetKey key = rt->key();
+    static uint32_t dump_rt_key_log_count = 0;
+    if (dump_rt_key_log_count < 24) {
+      fprintf(stderr,
+              "[dump-rt-key] key=0x%08X base=%u pitch32=%u msaa=%u fmt=%u depth=%u\n",
+              key.key, key.base_tiles, key.pitch_tiles_at_32bpp,
+              static_cast<unsigned>(key.msaa_samples), key.resource_format,
+              key.is_depth);
+      fflush(stderr);
+      ++dump_rt_key_log_count;
+    }
     MTL::Texture* tex = rt->texture();
     if (!tex) {
       continue;
+    }
+
+    static uint32_t dump_source_probe_log_count = 0;
+    if (false && dump_source_probe_log_count < 6) {
+      size_t bpp = 0;
+      if (tex->pixelFormat() == MTL::PixelFormatRGBA8Unorm ||
+          tex->pixelFormat() == MTL::PixelFormatBGRA8Unorm) {
+        bpp = 4;
+      } else if (tex->pixelFormat() == MTL::PixelFormatRGBA16Float) {
+        bpp = 8;
+      }
+      if (bpp) {
+        uint32_t probe_w = static_cast<uint32_t>(tex->width());
+        uint32_t probe_h = static_cast<uint32_t>(tex->height());
+        size_t probe_row_bytes = size_t(probe_w) * bpp;
+        size_t probe_size = probe_row_bytes * size_t(probe_h);
+        MTL::Buffer* probe_buffer =
+            device_->newBuffer(probe_size, MTL::ResourceStorageModeShared);
+        if (probe_buffer) {
+          MTL4::CommandBuffer* probe_cmd =
+              command_processor_.GetMetal4Context()->BeginStandaloneCommandBuffer();
+          if (probe_cmd) {
+            MTL4::ComputeCommandEncoder* probe_enc =
+                probe_cmd->computeCommandEncoder();
+            if (probe_enc) {
+              probe_enc->copyFromTexture(tex, 0, 0, MTL::Origin(0, 0, 0),
+                                         MTL::Size(probe_w, probe_h, 1),
+                                         probe_buffer, 0, probe_row_bytes,
+                                         probe_size);
+              probe_enc->endEncoding();
+              command_processor_.GetMetal4Context()->CommitStandaloneAndWait(
+                  probe_cmd);
+              const uint8_t* bytes =
+                  reinterpret_cast<const uint8_t*>(probe_buffer->contents());
+              size_t nonzero = 0;
+              uint32_t min_x = probe_w;
+              uint32_t min_y = probe_h;
+              uint32_t max_x = 0;
+              uint32_t max_y = 0;
+              bool any = false;
+              for (uint32_t y = 0; y < probe_h; ++y) {
+                const uint8_t* row = bytes + size_t(y) * probe_row_bytes;
+                for (uint32_t x = 0; x < probe_w; ++x) {
+                  const uint8_t* px = row + size_t(x) * bpp;
+                  bool nz = false;
+                  for (size_t c = 0; c < bpp; ++c) {
+                    if (px[c] != 0) {
+                      nz = true;
+                      break;
+                    }
+                  }
+                  if (nz) {
+                    nonzero += bpp;
+                    any = true;
+                    if (x < min_x) min_x = x;
+                    if (y < min_y) min_y = y;
+                    if (x > max_x) max_x = x;
+                    if (y > max_y) max_y = y;
+                  }
+                }
+              }
+              if (any) {
+                fprintf(stderr,
+                        "[dump-src] tex=%p fmt=%u probe=%ux%u nonzero_bytes=%zu bbox=[%u,%u]-[%u,%u]\n",
+                        (void*)tex, static_cast<uint32_t>(tex->pixelFormat()),
+                        probe_w, probe_h, nonzero, min_x, min_y, max_x, max_y);
+              } else {
+                fprintf(stderr,
+                        "[dump-src] tex=%p fmt=%u probe=%ux%u nonzero_bytes=0\n",
+                        (void*)tex, static_cast<uint32_t>(tex->pixelFormat()),
+                        probe_w, probe_h);
+              }
+              fflush(stderr);
+              ++dump_source_probe_log_count;
+            } else {
+              probe_cmd->release();
+            }
+          }
+          probe_buffer->release();
+        }
+      }
     }
     if (key.is_depth) {
       MTL::PixelFormat expected_format =
@@ -2809,6 +2917,15 @@ void MetalRenderTargetCache::DumpRenderTargets(
       stencil_tex = GetStencilTextureView(rt);
       if (stencil_tex) {
         dump_flags |= kMetalEdramDumpFlagHasStencil;
+      }
+    }
+
+    // MTL4 residency: ensure source textures are explicitly resident for
+    // compute dump dispatches.
+    if (mtl4) {
+      mtl4->AddResidentAllocation(tex);
+      if (stencil_tex) {
+        mtl4->AddResidentAllocation(stencil_tex);
       }
     }
 
@@ -3244,6 +3361,13 @@ MTL::RenderPipelineState* MetalRenderTargetCache::GetOrCreateEdramLoadPipeline(
 bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                                      uint32_t& written_length,
                                      MTL4::CommandBuffer* command_buffer) {
+  static uint32_t resolve_call_debug = 0;
+  uint32_t resolve_call_id = resolve_call_debug++;
+  bool resolve_log = resolve_call_id < 16;
+  if (resolve_log) {
+    fprintf(stderr, "[resolve-step] call=%u start\n", resolve_call_id);
+    fflush(stderr);
+  }
   written_address = 0;
   written_length = 0;
   const RegisterFile& regs = register_file();
@@ -3264,6 +3388,13 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                                  fixed_rgba16_trunc, resolve_info)) {
     REXLOG_ERROR("MetalRenderTargetCache::Resolve: GetResolveInfo failed");
     return false;
+  }
+  if (resolve_log) {
+    fprintf(stderr,
+            "[resolve-step] call=%u got_info width8=%u height8=%u copy_len=%u\n",
+            resolve_call_id, resolve_info.coordinate_info.width_div_8,
+            resolve_info.height_div_8, resolve_info.copy_dest_extent_length);
+    fflush(stderr);
   }
 
   // Nothing to do.
@@ -3286,8 +3417,65 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   // Match D3D12/Vulkan: dump host RT ownership into EDRAM, then resolve
   // from EDRAM to shared memory. Resolve-time blend fallback is not correct
   // because blending state is per-draw, not per-resolve.
+  if (resolve_log) {
+    fprintf(stderr,
+            "[resolve-step] call=%u before_dump_rt base=0x%X rows=%u pitch=%u\n",
+            resolve_call_id, dump_base, dump_rows, dump_pitch);
+    fflush(stderr);
+  }
   DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch,
                     command_buffer);
+  if (resolve_log) {
+    fprintf(stderr, "[resolve-step] call=%u after_dump_rt\n", resolve_call_id);
+    fflush(stderr);
+  }
+
+  static uint32_t edram_probe_log_count = 0;
+  Metal4Context* debug_mtl4 = command_processor_.GetMetal4Context();
+  if (false && edram_probe_log_count < 6 && edram_buffer_ && debug_mtl4) {
+    size_t tile_stride_bytes =
+        size_t(xenos::kEdramTileWidthSamples) *
+        size_t(xenos::kEdramTileHeightSamples) * sizeof(uint32_t);
+    size_t edram_offset = size_t(dump_base) * tile_stride_bytes;
+    size_t probe_size = std::min<size_t>(
+        size_t(1280) * size_t(720) * size_t(4),
+        edram_offset < edram_buffer_->length()
+            ? edram_buffer_->length() - edram_offset
+            : size_t(0));
+    if (probe_size) {
+      MTL::Buffer* probe_buffer =
+          device_->newBuffer(probe_size, MTL::ResourceStorageModeShared);
+      if (probe_buffer) {
+        MTL4::CommandBuffer* probe_cmd = debug_mtl4->BeginStandaloneCommandBuffer();
+        if (probe_cmd) {
+          MTL4::ComputeCommandEncoder* probe_enc =
+              probe_cmd->computeCommandEncoder();
+          if (probe_enc) {
+            probe_enc->copyFromBuffer(edram_buffer_, edram_offset, probe_buffer,
+                                      0, probe_size);
+            probe_enc->endEncoding();
+            debug_mtl4->CommitStandaloneAndWait(probe_cmd);
+            const uint8_t* bytes =
+                reinterpret_cast<const uint8_t*>(probe_buffer->contents());
+            size_t nonzero = 0;
+            for (size_t i = 0; i < probe_size; ++i) {
+              if (bytes[i]) {
+                ++nonzero;
+              }
+            }
+            fprintf(stderr,
+                    "[resolve-edram] base=0x%X probe=%zu nonzero=%zu\n",
+                    dump_base, probe_size, nonzero);
+            fflush(stderr);
+            ++edram_probe_log_count;
+          } else {
+            probe_cmd->release();
+          }
+        }
+        probe_buffer->release();
+      }
+    }
+  }
 
   // Try GPU compute resolve first (RT -> EDRAM -> shared memory), matching
   // D3D12/Vulkan behavior for the supported cases.
@@ -3314,6 +3502,20 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
           resolve_info.GetCopyShader(draw_resolution_scale_x(),
                                      draw_resolution_scale_y(), copy_constants,
                                      group_count_x, group_count_y);
+
+      static uint32_t resolve_debug_log_count = 0;
+      if (resolve_debug_log_count < 32) {
+        fprintf(stderr,
+                "[resolve] base=0x%08X extent_start=0x%08X extent_len=%u "
+                "swap=%d shader=%d groups=%ux%u wh=%ux%u\n",
+                dest_base, resolve_info.copy_dest_extent_start,
+                resolve_info.copy_dest_extent_length,
+                resolve_info.copy_dest_info.copy_dest_swap ? 1 : 0,
+                static_cast<int>(copy_shader), group_count_x, group_count_y,
+                resolve_width, resolve_height);
+        fflush(stderr);
+        ++resolve_debug_log_count;
+      }
 
       // Select the appropriate Metal pipeline for this shader.
       MTL::ComputePipelineState* pipeline = nullptr;
@@ -3503,6 +3705,10 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
               mtl4->SetComputeAddress(
                   dest_buffer->gpuAddress() + dest_buffer_offset, 1);
               mtl4->SetComputeAddress(edram_buffer_->gpuAddress(), 2);
+              // MTL4 residency: resolve compute touches destination shared/scaled
+              // buffer and EDRAM buffer directly.
+              mtl4->AddResidentAllocation(dest_buffer);
+              mtl4->AddResidentAllocation(edram_buffer_);
               mtl4->FlushComputeBindings(encoder);
 
               encoder->dispatchThreadgroups(

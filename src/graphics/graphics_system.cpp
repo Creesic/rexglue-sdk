@@ -22,6 +22,7 @@
 #include <rex/cvar.h>
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/flags.h>
+#include <rex/kernel/xboxkrnl/threading.h>
 #include <rex/kernel/xboxkrnl/video.h>
 #include <rex/logging.h>
 #include <rex/stream.h>
@@ -30,6 +31,10 @@
 #include <rex/ui/graphics_provider.h>
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
+
+namespace rex::kernel::xboxkrnl {
+void xeSignalLikelyVblankWaitObject();
+}
 
 REXCVAR_DEFINE_STRING(trace_gpu_prefix, "", "GPU", "GPU trace file prefix");
 
@@ -343,6 +348,12 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
       src0_log_count++;
       REXGPU_INFO("source=0: vblank_ctr={} frame_ctr={} notify_fn=0x{:08X}",
                    vblank_ctr, frame_ctr, notify_fn);
+    }
+
+    // Some titles block on a likely vblank wait object while notify_fn remains
+    // unset. Nudge that wait target so the game can continue issuing GPU work.
+    if (notify_fn == 0) {
+      rex::kernel::xboxkrnl::xeSignalLikelyVblankWaitObject();
     }
   }
 

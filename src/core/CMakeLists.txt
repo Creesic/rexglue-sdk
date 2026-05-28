@@ -60,6 +60,7 @@ elseif(APPLE)
         socket_posix.cpp
         string_posix.cpp
         threading_mac.cpp
+        system_posix.cpp
     )
 elseif(UNIX)
     target_sources(rexcore PRIVATE

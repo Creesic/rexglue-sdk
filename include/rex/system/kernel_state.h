@@ -224,6 +224,8 @@ class KernelState {
 
   DPCImpersonationScope BeginDPCImpersonation();
   void EndDPCImpersonation(const DPCImpersonationScope& scope);
+  void EmulateCPInterruptDPC(uint32_t interrupt_callback, uint32_t interrupt_callback_data,
+                             uint32_t source, uint32_t cpu);
 
   uint32_t AllocateTLS(PPCContext* context);
   void FreeTLS(PPCContext* context, uint32_t slot);

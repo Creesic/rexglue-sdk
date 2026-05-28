@@ -2613,6 +2613,18 @@ MTL::Texture* MetalTextureCache::RequestSwapTexture(
   xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(0);
   TextureKey key;
   BindingInfoFromFetchConstant(fetch, key, nullptr);
+  static uint32_t swap_fetch_debug_log_count = 0;
+  if (swap_fetch_debug_log_count < 32) {
+    fprintf(stderr,
+            "[swap-fetch] valid=%d base=0x%08X pitch=%u wh=%ux%u fmt=%u dim=%u "
+            "endian=%u scaled=%d\n",
+            key.is_valid ? 1 : 0, key.base_page << 12, uint32_t(key.pitch),
+            key.GetWidth(), key.GetHeight(), static_cast<uint32_t>(key.format),
+            static_cast<uint32_t>(key.dimension),
+            static_cast<uint32_t>(key.endianness), key.scaled_resolve ? 1 : 0);
+    fflush(stderr);
+    ++swap_fetch_debug_log_count;
+  }
   if (!key.is_valid || key.base_page == 0 ||
       key.dimension != xenos::DataDimension::k2DOrStacked) {
     if (!logged_invalid) {
@@ -2641,6 +2653,7 @@ MTL::Texture* MetalTextureCache::RequestSwapTexture(
     return nullptr;
   }
 
+  uint32_t swap_outdated_before = texture->outdated_mask();
   if (!LoadTextureData(*texture)) {
     bool logged_reason = false;
     if (key.scaled_resolve && !IsScaledResolveSupportedForFormat(key)) {
@@ -2681,6 +2694,14 @@ MTL::Texture* MetalTextureCache::RequestSwapTexture(
       log_swap_failure_once(SwapFailure::kLoad, key, "LoadTextureData failed");
     }
     return nullptr;
+  }
+
+  static uint32_t swap_load_debug_log_count = 0;
+  if (swap_load_debug_log_count < 32) {
+    fprintf(stderr, "[swap-load] outdated_before=0x%X outdated_after=0x%X\n",
+            swap_outdated_before, texture->outdated_mask());
+    fflush(stderr);
+    ++swap_load_debug_log_count;
   }
 
   texture->MarkAsUsed();

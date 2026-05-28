@@ -841,12 +841,13 @@ bool CommandProcessor::ExecutePacket(memory::RingBuffer* reader) {
   const uint32_t packet_type = packet >> 30;
 
   static int packet_log_count = 0;
-  if (packet_log_count < 50 && packet != 0) {
+  if (packet_log_count < 200 && packet != 0) {
     packet_log_count++;
     const char* type_name = packet_type == 0 ? "Type0" : packet_type == 1 ? "Type1"
                             : packet_type == 2             ? "Type2"
                                                           : "Type3";
-    REXGPU_INFO("Packet #{:2d}: type={} (0x{:08X})", packet_log_count, type_name, packet);
+    REXGPU_INFO("Packet #{:3d}: type={} raw=0x{:08X} rb_read_off=0x{:X}",
+                packet_log_count, type_name, packet, reader->read_offset());
   }
 
   if (packet == 0) {
@@ -951,6 +952,13 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
       trace_writer_.WritePacketEnd();
       return true;
     }
+  }
+
+  static int type3_begin_log_count = 0;
+  if (type3_begin_log_count < 300) {
+    ++type3_begin_log_count;
+    REXGPU_INFO("Type3 begin opcode=0x{:02X} count={} data_off=0x{:X}", opcode, count,
+                data_start_offset);
   }
 
   bool result = false;
@@ -1094,6 +1102,12 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
       break;
   }
 
+  static int type3_end_log_count = 0;
+  if (type3_end_log_count < 300) {
+    ++type3_end_log_count;
+    REXGPU_INFO("Type3 end   opcode=0x{:02X} result={}", opcode, result ? 1 : 0);
+  }
+
   trace_writer_.WritePacketEnd();
   if (opcode == PM4_XE_SWAP) {
     // End the trace writer frame.
@@ -1226,37 +1240,15 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
 
   bool is_memory = (wait_info & 0x10) != 0;
 
-  if (is_memory) {
-    auto addr = memory_->TranslatePhysical(poll_reg_addr & ~uint32_t(0x3));
-    auto endian = static_cast<xenos::Endian>(poll_reg_addr & 0x3);
-    uint32_t value = xenos::GpuSwap(*reinterpret_cast<uint32_t*>(addr), endian);
-    static std::atomic<int> wrm_count{0};
-    int wc = wrm_count.fetch_add(1);
-    if (wc < 20) {
-      fprintf(stderr, "[cp] WAIT_REG_MEM mem: addr=0x%08X val=0x%08X ref=0x%08X mask=0x%08X -> %s\n",
-              poll_reg_addr, value, ref, mask,
-              (value & mask) != ref ? "FORCED" : "ok");
-      fflush(stderr);
-    }
-    if ((value & mask) != ref) {
-      REXGPU_INFO("WAIT_REG_MEM: forcing addr=0x{:08X} val=0x{:08X} -> ref=0x{:08X}", poll_reg_addr, value, ref);
-      *reinterpret_cast<uint32_t*>(addr) = xenos::GpuSwap(ref, endian);
-    }
-    return true;
-  }
-
-  static std::atomic<int> wrm_reg_count{0};
-  int wrc = wrm_reg_count.fetch_add(1);
-  if (wrc < 20) {
-    fprintf(stderr, "[cp] WAIT_REG_MEM reg: addr=0x%08X ref=0x%08X mask=0x%08X func=%d\n",
-            poll_reg_addr, ref, mask, wait_info & 0x7);
-    fflush(stderr);
-  }
-
   bool matched = false;
   do {
     uint32_t value = 0;
-    {
+    if (is_memory) {
+      auto mem_addr = poll_reg_addr & ~uint32_t(0x3);
+      value = *reinterpret_cast<uint32_t*>(memory_->TranslatePhysical(mem_addr));
+      trace_writer_.WriteMemoryRead(CpuToGpu(mem_addr), sizeof(uint32_t));
+      value = xenos::GpuSwap(value, static_cast<xenos::Endian>(poll_reg_addr & 0x3));
+    } else {
       value = ReadRegisterValue(poll_reg_addr);
       if (poll_reg_addr == XE_GPU_REG_COHER_STATUS_HOST) {
         MakeCoherent();
@@ -1644,7 +1636,7 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
       draw_viz_skip_count.fetch_add(1);
     }
     if (!(viz_query.viz_query_ena && viz_query.kill_pix_post_hi_z)) {
-      draw_issued_count.fetch_add(1);
+      int issued_id = draw_issued_count.fetch_add(1);
       // TODO(Triang3l): Don't drop the draw call completely if the vertex
       // shader has memexport.
       // TODO(Triang3l || JoelLinn): Handle this properly in the render
@@ -1652,8 +1644,18 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
 
       bool major_mode_explicit =
           xenos::IsMajorModeExplicit(vgt_draw_initiator.major_mode, vgt_draw_initiator.prim_type);
+      if (issued_id < 80) {
+        REXGPU_INFO(
+            "Draw enter id={} opcode={} indices={} prim={} source={} major={} explicit_major={}",
+            issued_id, opcode_name, static_cast<uint32_t>(vgt_draw_initiator.num_indices),
+            uint32_t(vgt_draw_initiator.prim_type), uint32_t(vgt_draw_initiator.source_select),
+            uint32_t(vgt_draw_initiator.major_mode), uint32_t(major_mode_explicit));
+      }
       draw_succeeded = IssueDraw(vgt_draw_initiator.prim_type, vgt_draw_initiator.num_indices,
                                  is_indexed ? &index_buffer_info : nullptr, major_mode_explicit);
+      if (issued_id < 80) {
+        REXGPU_INFO("Draw exit  id={} ok={}", issued_id, draw_succeeded ? 1 : 0);
+      }
       if (!draw_succeeded) {
         auto vgt_output_path_cntl = register_file_->Get<reg::VGT_OUTPUT_PATH_CNTL>();
         auto vgt_hos_cntl = register_file_->Get<reg::VGT_HOS_CNTL>();

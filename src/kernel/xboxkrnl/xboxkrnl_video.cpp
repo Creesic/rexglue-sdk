@@ -13,6 +13,7 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
 #include <algorithm>
+#include <cstdio>
 #include <string>
 
 #include <rex/cvar.h>
@@ -80,8 +81,8 @@ float GetConfiguredVideoModeRefreshRate() {
 }  // namespace
 
 namespace rex::kernel::xboxkrnl {
-using namespace rex::system;
 
+using namespace rex::system;
 REX_EXPORT_STUB(__imp__VdBlockUntilGUIIdle);
 REX_EXPORT_STUB(__imp__VdDisplayFatalError);
 REX_EXPORT_STUB(__imp__VdEnableClosedCaption);
@@ -308,10 +309,20 @@ u32 VdEnableDisableClockGating_entry(u32 enabled) {
 
 void VdSetGraphicsInterruptCallback_entry(u32 callback, mapped_void user_data) {
   REXLOG_INFO("[video] VdSetGraphicsInterruptCallback: callback=0x{:08X}", callback);
-  auto* graphics_system =
-      static_cast<graphics::GraphicsSystem*>(REX_KERNEL_STATE()->emulator()->graphics_system());
-  if (!graphics_system)
+  fprintf(stderr, "[video] VdSetGraphicsInterruptCallback cb=0x%08X user=0x%08X\n", callback,
+          user_data.guest_address());
+  fflush(stderr);
+  auto* kernel_state = REX_KERNEL_STATE();
+  if (!kernel_state) {
+    REXLOG_WARN("[video] REX_KERNEL_STATE() returned null");
     return;
+  }
+  auto* graphics_system =
+      static_cast<graphics::GraphicsSystem*>(kernel_state->emulator()->graphics_system());
+  if (!graphics_system) {
+    REXLOG_WARN("[video] graphics_system is null");
+    return;
+  }
   graphics_system->SetInterruptCallback(callback, user_data.guest_address());
 }
 
@@ -429,6 +440,18 @@ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
                   mapped_u32 frontbuffer_ptr,  // ptr to frontbuffer address
                   mapped_u32 texture_format_ptr, mapped_u32 color_space_ptr, mapped_u32 width,
                   mapped_u32 height) {
+  static int vdswap_log_count = 0;
+  if (vdswap_log_count < 20) {
+    ++vdswap_log_count;
+    fprintf(stderr,
+            "[video] VdSwap #%d: buffer=0x%08X fetch=0x%08X front_ptr=0x%08X "
+            "front_val=0x%08X fmt=0x%08X wh=%ux%u\n",
+            vdswap_log_count, buffer_ptr.guest_address(), fetch_ptr.guest_address(),
+            frontbuffer_ptr.guest_address(), *frontbuffer_ptr,
+            texture_format_ptr.value(), width.value(), height.value());
+    fflush(stderr);
+  }
+
   // All of these parameters are REQUIRED.
   assert(buffer_ptr);
   assert(fetch_ptr);
@@ -462,6 +485,13 @@ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
     return;
   }
   gpu_fetch.base_address = frontbuffer_physical_address >> 12;
+  if (vdswap_log_count <= 20) {
+    fprintf(stderr,
+            "[video] VdSwap map: fetch_base_va=0x%08X front_va=0x%08X front_pa=0x%08X\n",
+            frontbuffer_virtual_address, *frontbuffer_ptr,
+            frontbuffer_physical_address);
+    fflush(stderr);
+  }
 
   auto texture_format = rex::graphics::xenos::TextureFormat(texture_format_ptr.value());
   auto color_space = *color_space_ptr;

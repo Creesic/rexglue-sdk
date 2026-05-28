@@ -255,6 +255,8 @@ VirtualKey TranslateKeyCode(unsigned short key_code) {
   // framebufferOnly=YES tells Metal the layer is used exclusively as a render
   // target, enabling GPU driver optimisations (e.g. lossless compression).
   layer.framebufferOnly = NO;
+  layer.opaque = YES;
+  layer.backgroundColor = NSColor.blackColor.CGColor;
   return layer;
 }
 
@@ -441,6 +443,8 @@ bool MacWindow::OpenImpl() {
   }
 
   ns_window_.title = [NSString stringWithUTF8String:GetTitle().c_str()];
+  ns_window_.opaque = YES;
+  ns_window_.backgroundColor = NSColor.blackColor;
   [ns_window_ center];
 
   metal_view_ = [[RexMetalView alloc] initWithFrame:content_rect cppWindow:this];
@@ -621,7 +625,12 @@ std::unique_ptr<Surface> MacWindow::CreateSurfaceImpl(Surface::TypeFlags allowed
 
 void MacWindow::RequestPaintImpl() {
   MacWindow* win = this;
+  RexMetalView* view = metal_view_;
+  if (!view) {
+    return;
+  }
   dispatch_async(dispatch_get_main_queue(), ^{
+    [view setNeedsDisplay:YES];
     win->PaintForDisplayUpdate();
   });
 }
