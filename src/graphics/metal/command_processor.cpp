@@ -1244,39 +1244,46 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
         fflush(stderr);
         ++swap_submission_state_log_count;
       }
-      uint32_t swap_width = 0;
-      uint32_t swap_height = 0;
-      xenos::TextureFormat swap_format = xenos::TextureFormat::k_8_8_8_8;
-      source_texture = texture_cache_->RequestSwapTexture(
-          swap_width, swap_height, swap_format);
-      if (source_texture) {
-        output_width = swap_width;
-        output_height = swap_height;
-        use_pwl_gamma_ramp =
-            swap_format == xenos::TextureFormat::k_2_10_10_10 ||
-            swap_format == xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16;
-        static int logged_swap_texture_source = 0;
-        if (logged_swap_texture_source < 10) {
-          fprintf(stderr,
-                  "[swap] source=swap tex=%p %ux%u mtlfmt=%u xfmt=%u\n",
-                  (void*)source_texture, output_width, output_height,
-                  static_cast<uint32_t>(source_texture->pixelFormat()),
-                  static_cast<uint32_t>(swap_format));
-          fflush(stderr);
-          ++logged_swap_texture_source;
-        }
-        if (presenter) {
-          if (!gamma_ramp_256_entry_table_up_to_date_ ||
-              !gamma_ramp_pwl_up_to_date_) {
-            constexpr size_t kGammaRampTableBytes =
-                sizeof(reg::DC_LUT_30_COLOR) * 256;
-            constexpr size_t kGammaRampPwlBytes =
-                sizeof(reg::DC_LUT_PWL_DATA) * 128 * 3;
-            if (true) {
-              gamma_ramp_256_entry_table_up_to_date_ = true;
-              gamma_ramp_pwl_up_to_date_ = true;
-            } else {
-              REXLOG_WARN("Metal IssueSwap: gamma ramp upload failed");
+
+      // Prefer presenting directly from the active render target path on Metal.
+      // In this backend, swap-texture updates can lag/arrive sparse while the
+      // RT path already contains the frame we're about to present.
+      constexpr bool kPreferRenderTargetPresentPath = true;
+      if (!kPreferRenderTargetPresentPath) {
+        uint32_t swap_width = 0;
+        uint32_t swap_height = 0;
+        xenos::TextureFormat swap_format = xenos::TextureFormat::k_8_8_8_8;
+        source_texture = texture_cache_->RequestSwapTexture(
+            swap_width, swap_height, swap_format);
+        if (source_texture) {
+          output_width = swap_width;
+          output_height = swap_height;
+          use_pwl_gamma_ramp =
+              swap_format == xenos::TextureFormat::k_2_10_10_10 ||
+              swap_format == xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16;
+          static int logged_swap_texture_source = 0;
+          if (logged_swap_texture_source < 10) {
+            fprintf(stderr,
+                    "[swap] source=swap tex=%p %ux%u mtlfmt=%u xfmt=%u\n",
+                    (void*)source_texture, output_width, output_height,
+                    static_cast<uint32_t>(source_texture->pixelFormat()),
+                    static_cast<uint32_t>(swap_format));
+            fflush(stderr);
+            ++logged_swap_texture_source;
+          }
+          if (presenter) {
+            if (!gamma_ramp_256_entry_table_up_to_date_ ||
+                !gamma_ramp_pwl_up_to_date_) {
+              constexpr size_t kGammaRampTableBytes =
+                  sizeof(reg::DC_LUT_30_COLOR) * 256;
+              constexpr size_t kGammaRampPwlBytes =
+                  sizeof(reg::DC_LUT_PWL_DATA) * 128 * 3;
+              if (true) {
+                gamma_ramp_256_entry_table_up_to_date_ = true;
+                gamma_ramp_pwl_up_to_date_ = true;
+              } else {
+                REXLOG_WARN("Metal IssueSwap: gamma ramp upload failed");
+              }
             }
           }
         }

@@ -98,220 +98,16 @@ bool MetalPresenter::CopyTextureToGuestOutput(
     uint32_t source_width, uint32_t source_height,
     bool force_swap_rb, bool use_pwl_gamma_ramp,
     uint64_t* submission_out) {
+  (void)force_swap_rb;
+  (void)use_pwl_gamma_ramp;
+
   if (submission_out) {
     *submission_out = 0;
-  }
-  static int copy_log_count = 0;
-  if (copy_log_count < 12) {
-    fprintf(stderr,
-            "[present] copy src=%p dst=%p %ux%u srcfmt=%u dstfmt=%u srcuse=0x%X dstuse=0x%X rb=%d gamma=%d\n",
-            (void*)source_texture, (void*)dest_texture, source_width,
-            source_height,
-            source_texture ? static_cast<uint32_t>(source_texture->pixelFormat())
-                           : 0u,
-            dest_texture ? static_cast<uint32_t>(dest_texture->pixelFormat())
-                         : 0u,
-            source_texture ? static_cast<uint32_t>(source_texture->usage()) : 0u,
-            dest_texture ? static_cast<uint32_t>(dest_texture->usage()) : 0u,
-            force_swap_rb ? 1 : 0, use_pwl_gamma_ramp ? 1 : 0);
-    fflush(stderr);
-    ++copy_log_count;
-  }
-  if (source_texture && device_ &&
-      (source_texture->pixelFormat() == MTL::PixelFormatRGBA8Unorm ||
-       source_texture->pixelFormat() == MTL::PixelFormatRGBA16Float)) {
-    static int readback_log_count = 0;
-    if (readback_log_count < 8) {
-      struct SamplePoint {
-        uint32_t x;
-        uint32_t y;
-      };
-      SamplePoint points[4] = {
-          {0, 0},
-          {std::min<uint32_t>(100, static_cast<uint32_t>(source_texture->width() - 1)),
-           std::min<uint32_t>(100, static_cast<uint32_t>(source_texture->height() - 1))},
-          {static_cast<uint32_t>(source_texture->width() / 2),
-           static_cast<uint32_t>(source_texture->height() / 2)},
-          {std::max<uint32_t>(1, static_cast<uint32_t>(source_texture->width())) - 1,
-           std::max<uint32_t>(1, static_cast<uint32_t>(source_texture->height())) - 1},
-      };
-      const bool is_rgba8 =
-          source_texture->pixelFormat() == MTL::PixelFormatRGBA8Unorm;
-      size_t sample_bytes = is_rgba8 ? size_t(4) : size_t(8);
-      MTL::Buffer* readback_buffer = device_->newBuffer(
-          sample_bytes * size_t(4), MTL::ResourceStorageModeShared);
-      if (readback_buffer) {
-        MTL4::CommandBuffer* readback_cmd = mtl4_->BeginStandaloneCommandBuffer();
-        if (readback_cmd) {
-          MTL4::ComputeCommandEncoder* readback_enc =
-              readback_cmd->computeCommandEncoder();
-          if (readback_enc) {
-            for (size_t i = 0; i < 4; ++i) {
-              readback_enc->copyFromTexture(
-                  source_texture, 0, 0,
-                  MTL::Origin(points[i].x, points[i].y, 0), MTL::Size(1, 1, 1),
-                  readback_buffer, i * sample_bytes, sample_bytes, sample_bytes);
-            }
-            readback_enc->endEncoding();
-            mtl4_->CommitStandaloneAndWait(readback_cmd);
-            const uint8_t* px =
-                reinterpret_cast<const uint8_t*>(readback_buffer->contents());
-            if (is_rgba8) {
-              fprintf(
-                  stderr,
-                  "[present] src8 samples: (0,0)=0x%02X%02X%02X%02X "
-                  "(%u,%u)=0x%02X%02X%02X%02X "
-                  "(%u,%u)=0x%02X%02X%02X%02X "
-                  "(%u,%u)=0x%02X%02X%02X%02X",
-                  px[0], px[1], px[2], px[3], points[1].x, points[1].y, px[4],
-                  px[5], px[6], px[7], points[2].x, points[2].y, px[8], px[9],
-                  px[10], px[11], points[3].x, points[3].y, px[12], px[13],
-                  px[14], px[15]);
-              if (readback_log_count < 4) {
-                uint32_t probe_w = std::min<uint32_t>(
-                    1280, static_cast<uint32_t>(source_texture->width()));
-                uint32_t probe_h = static_cast<uint32_t>(source_texture->height());
-                size_t probe_row_bytes = size_t(probe_w) * size_t(4);
-                size_t probe_size = probe_row_bytes * size_t(probe_h);
-                MTL::Buffer* probe_buffer = device_->newBuffer(
-                    probe_size, MTL::ResourceStorageModeShared);
-                if (probe_buffer) {
-                  MTL4::CommandBuffer* probe_cmd =
-                      mtl4_->BeginStandaloneCommandBuffer();
-                  if (probe_cmd) {
-                    MTL4::ComputeCommandEncoder* probe_enc =
-                        probe_cmd->computeCommandEncoder();
-                    if (probe_enc) {
-                      probe_enc->copyFromTexture(
-                          source_texture, 0, 0, MTL::Origin(0, 0, 0),
-                          MTL::Size(probe_w, probe_h, 1), probe_buffer, 0,
-                          probe_row_bytes, probe_size);
-                      probe_enc->endEncoding();
-                      mtl4_->CommitStandaloneAndWait(probe_cmd);
-                      const uint8_t* probe =
-                          reinterpret_cast<const uint8_t*>(
-                              probe_buffer->contents());
-                      uint32_t nonzero = 0;
-                      uint32_t first_x = probe_w;
-                      uint32_t first_y = probe_h;
-                      uint32_t last_x = 0;
-                      uint32_t last_y = 0;
-                      for (uint32_t y = 0; y < probe_h; ++y) {
-                        const uint8_t* row = probe + size_t(y) * probe_row_bytes;
-                        for (uint32_t x = 0; x < probe_w; ++x) {
-                          const uint8_t* p = row + size_t(x) * 4u;
-                          if (p[0] || p[1] || p[2] || p[3]) {
-                            ++nonzero;
-                            first_x = std::min(first_x, x);
-                            first_y = std::min(first_y, y);
-                            last_x = std::max(last_x, x);
-                            last_y = std::max(last_y, y);
-                          }
-                        }
-                      }
-                      if (nonzero) {
-                        fprintf(stderr,
-                                " [scan8] nonzero=%u bbox=[%u,%u]-[%u,%u]",
-                                nonzero, first_x, first_y, last_x, last_y);
-                      } else {
-                        fprintf(stderr, " [scan8] nonzero=0");
-                      }
-                    } else {
-                      probe_cmd->release();
-                    }
-                  }
-                  probe_buffer->release();
-                }
-              }
-              fprintf(stderr, "\n");
-            } else {
-              auto u16 = reinterpret_cast<const uint16_t*>(px);
-              fprintf(
-                  stderr,
-                  "[present] src16f samples: (0,0)={%04X,%04X,%04X,%04X} "
-                  "(%u,%u)={%04X,%04X,%04X,%04X} "
-                  "(%u,%u)={%04X,%04X,%04X,%04X} "
-                  "(%u,%u)={%04X,%04X,%04X,%04X}\n",
-                  u16[0], u16[1], u16[2], u16[3], points[1].x, points[1].y,
-                  u16[4], u16[5], u16[6], u16[7], points[2].x, points[2].y,
-                  u16[8], u16[9], u16[10], u16[11], points[3].x, points[3].y,
-                  u16[12], u16[13], u16[14], u16[15]);
-              if (readback_log_count < 4) {
-                uint32_t probe_w = std::min<uint32_t>(
-                    1280, static_cast<uint32_t>(source_texture->width()));
-                uint32_t probe_h = static_cast<uint32_t>(source_texture->height());
-                size_t probe_row_bytes = size_t(probe_w) * size_t(8);
-                size_t probe_size = probe_row_bytes * size_t(probe_h);
-                MTL::Buffer* probe_buffer = device_->newBuffer(
-                    probe_size, MTL::ResourceStorageModeShared);
-                if (probe_buffer) {
-                  MTL4::CommandBuffer* probe_cmd =
-                      mtl4_->BeginStandaloneCommandBuffer();
-                  if (probe_cmd) {
-                    MTL4::ComputeCommandEncoder* probe_enc =
-                        probe_cmd->computeCommandEncoder();
-                    if (probe_enc) {
-                      probe_enc->copyFromTexture(
-                          source_texture, 0, 0, MTL::Origin(0, 0, 0),
-                          MTL::Size(probe_w, probe_h, 1), probe_buffer, 0,
-                          probe_row_bytes, probe_size);
-                      probe_enc->endEncoding();
-                      mtl4_->CommitStandaloneAndWait(probe_cmd);
-                      const uint16_t* probe =
-                          reinterpret_cast<const uint16_t*>(
-                              probe_buffer->contents());
-                      uint32_t nonzero = 0;
-                      uint32_t first_x = probe_w;
-                      uint32_t first_y = probe_h;
-                      uint32_t last_x = 0;
-                      uint32_t last_y = 0;
-                      for (uint32_t y = 0; y < probe_h; ++y) {
-                        const uint16_t* row =
-                            probe + (size_t(y) * size_t(probe_w) * 4u);
-                        for (uint32_t x = 0; x < probe_w; ++x) {
-                          const uint16_t* p = row + size_t(x) * 4u;
-                          if (p[0] || p[1] || p[2] || p[3]) {
-                            ++nonzero;
-                            first_x = std::min(first_x, x);
-                            first_y = std::min(first_y, y);
-                            last_x = std::max(last_x, x);
-                            last_y = std::max(last_y, y);
-                          }
-                        }
-                      }
-                      if (nonzero) {
-                        fprintf(stderr,
-                                " [scan16f] nonzero=%u bbox=[%u,%u]-[%u,%u]",
-                                nonzero, first_x, first_y, last_x, last_y);
-                      } else {
-                        fprintf(stderr, " [scan16f] nonzero=0");
-                      }
-                    } else {
-                      probe_cmd->release();
-                    }
-                  }
-                  probe_buffer->release();
-                }
-              }
-              fprintf(stderr, "\n");
-            }
-            fflush(stderr);
-            ++readback_log_count;
-          } else {
-            readback_cmd->release();
-          }
-        }
-        readback_buffer->release();
-      }
-    }
   }
   if (!source_texture || !dest_texture || !mtl4_) {
     return false;
   }
 
-  MTL4::CommandBuffer* cmd = mtl4_->BeginCommandBuffer();
-  if (!cmd) return false;
-  bool copy_success = false;
   uint32_t copy_width = std::min<uint32_t>(
       source_width,
       std::min<uint32_t>(static_cast<uint32_t>(source_texture->width()),
@@ -320,99 +116,43 @@ bool MetalPresenter::CopyTextureToGuestOutput(
       source_height,
       std::min<uint32_t>(static_cast<uint32_t>(source_texture->height()),
                          static_cast<uint32_t>(dest_texture->height())));
-
-  MTL::PixelFormat source_format = source_texture->pixelFormat();
-  MTL::PixelFormat dest_format = dest_texture->pixelFormat();
-  bool can_raw_copy = source_format == dest_format;
-  if (!can_raw_copy && force_swap_rb &&
-      source_format == MTL::PixelFormatRGBA8Unorm &&
-      dest_format == MTL::PixelFormatBGRA8Unorm) {
-    can_raw_copy = true;
-  }
-  if (copy_width && copy_height && can_raw_copy) {
-    static int raw_copy_log_count = 0;
-    if (raw_copy_log_count < 8) {
-      fprintf(stderr, "[present] copy-path=rawcopy %ux%u\n", copy_width,
-              copy_height);
-      fflush(stderr);
-      ++raw_copy_log_count;
-    }
-    MTL4::ComputeCommandEncoder* compute = cmd->computeCommandEncoder();
-    if (compute) {
-      compute->copyFromTexture(source_texture, 0, 0, MTL::Origin(0, 0, 0),
-                               MTL::Size(copy_width, copy_height, 1),
-                               dest_texture, 0, 0, MTL::Origin(0, 0, 0));
-      compute->endEncoding();
-      copy_success = true;
-    }
-  } else if (blit_lib_) {
-    static int shader_copy_log_count = 0;
-    if (shader_copy_log_count < 8) {
-      fprintf(stderr, "[present] copy-path=shadercopy srcfmt=%u dstfmt=%u\n",
-              static_cast<uint32_t>(source_texture->pixelFormat()),
-              static_cast<uint32_t>(dest_texture->pixelFormat()));
-      fflush(stderr);
-      ++shader_copy_log_count;
-    }
-    MTL::RenderPipelineState* pipe =
-        GetOrCreateBlitPipeline(dest_texture->pixelFormat());
-    if (pipe) {
-      MTL4::RenderPassDescriptor* rpd =
-          MTL4::RenderPassDescriptor::alloc()->init();
-      auto* ca = rpd->colorAttachments()->object(0);
-      ca->setTexture(dest_texture);
-      ca->setLoadAction(MTL::LoadActionClear);
-      ca->setClearColor(MTL::ClearColor(0, 0, 0, 1));
-      ca->setStoreAction(MTL::StoreActionStore);
-      MTL4::RenderCommandEncoder* enc = cmd->renderCommandEncoder(rpd);
-      if (enc) {
-        enc->setRenderPipelineState(pipe);
-        struct {
-          float w, h, src_w, src_h;
-        } ub = {(float)dest_texture->width(), (float)dest_texture->height(),
-                (float)source_texture->width(), (float)source_texture->height()};
-        mtl4_->SetVertexAddress(mtl4_->AllocInlineConstant(&ub, sizeof(ub)), 0);
-        mtl4_->SetFragmentTexture(source_texture->gpuResourceID(), 0);
-        mtl4_->SetFragmentSampler(GetNearestSampler()->gpuResourceID(), 0);
-        mtl4_->FlushRenderBindings(enc);
-        enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0),
-                            NS::UInteger(3));
-        enc->endEncoding();
-        copy_success = true;
-      }
-      rpd->release();
-    }
+  if (!copy_width || !copy_height) {
+    return false;
   }
 
-  if (!copy_success) {
+  MTL4::CommandBuffer* cmd = mtl4_->BeginCommandBuffer();
+  if (!cmd) {
+    return false;
+  }
+
+  MTL4::ComputeCommandEncoder* compute = cmd->computeCommandEncoder();
+  if (!compute) {
     mtl4_->Commit(cmd);
     return false;
   }
 
+  // MTL4 explicit residency: source/destination textures in the present path
+  // may not be tracked by draw-time bindings for this command buffer.
+  mtl4_->AddResidentAllocation(source_texture);
+  mtl4_->AddResidentAllocation(dest_texture);
+  mtl4_->CommitResidency();
+
+  compute->copyFromTexture(source_texture, 0, 0, MTL::Origin(0, 0, 0),
+                           MTL::Size(copy_width, copy_height, 1),
+                           dest_texture, 0, 0, MTL::Origin(0, 0, 0));
+  compute->endEncoding();
+
   uint64_t submission_id = 0;
   if (guest_output_shared_event_) {
-    submission_id = guest_output_submission_counter_.fetch_add(1,
-                    std::memory_order_relaxed) + 1;
+    submission_id =
+        guest_output_submission_counter_.fetch_add(1, std::memory_order_relaxed) +
+        1;
   }
 
   mtl4_->Commit(cmd);
 
   if (submission_id && guest_output_shared_event_) {
     mtl4_->SignalEvent(guest_output_shared_event_, submission_id);
-    // Validation mode: force producer completion before exposing mailbox.
-    // This removes any queue-order ambiguity between copy submission and
-    // subsequent presenter sampling.
-    bool signaled = guest_output_shared_event_->waitUntilSignaledValue(
-        submission_id, /*timeoutNS=*/5000000000ULL);
-    if (!signaled) {
-      static bool logged_wait_timeout = false;
-      if (!logged_wait_timeout) {
-        logged_wait_timeout = true;
-        REXLOG_WARN(
-            "MetalPresenter: timeout waiting for guest output submission {}",
-            submission_id);
-      }
-    }
   }
 
   if (submission_out) {
