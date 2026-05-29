@@ -862,11 +862,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       ++scaled_load_log_count;
     }
   }
-  static uint32_t texture_load_probe_log_count = 0;
-  const bool probe_texture_load =
-      REXCVAR_GET(metal_texture_debug_probes) &&
-      texture_load_probe_log_count < 24 &&
-      key.dimension == xenos::DataDimension::k2DOrStacked;
+  const bool probe_texture_load = false;
   uint32_t probe_guest_offset = 0;
   uint32_t probe_guest_pitch_blocks = 0;
   uint32_t probe_size_blocks_x = 0;
@@ -1516,7 +1512,6 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
                 probe_texture_px[0], probe_texture_px[1], probe_texture_px[2],
                 probe_texture_px[3]);
         fflush(stderr);
-        ++texture_load_probe_log_count;
       } else if (buffer_pool && UploadBufferPool::HasPendingReleases(cmd)) {
         command_processor_->CommitStandaloneAsyncWithCallback(
             cmd, [](MTL4::CommandBuffer* completed_cmd) {
