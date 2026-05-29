@@ -95,8 +95,9 @@
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/xenos.h>
 
-
-
+REXCVAR_DEFINE_BOOL(
+    metal_texture_debug_probes, false, "GPU",
+    "Enable expensive Metal texture/swap debug probes and logs");
 namespace rex {
 namespace graphics {
 namespace metal {
@@ -861,6 +862,21 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       ++scaled_load_log_count;
     }
   }
+  static uint32_t texture_load_probe_log_count = 0;
+  const bool probe_texture_load =
+      REXCVAR_GET(metal_texture_debug_probes) &&
+      texture_load_probe_log_count < 24 &&
+      key.dimension == xenos::DataDimension::k2DOrStacked;
+  uint32_t probe_guest_offset = 0;
+  uint32_t probe_guest_pitch_blocks = 0;
+  uint32_t probe_size_blocks_x = 0;
+  uint32_t probe_size_blocks_y = 0;
+  uint32_t probe_shared_s0 = 0;
+  uint32_t probe_shared_s1 = 0;
+  uint32_t probe_shared_s2 = 0;
+  uint32_t probe_shared_mid = 0;
+  uint32_t probe_shared_end = 0;
+  bool probe_shared_nonzero = false;
 
   bool is_block_compressed_format =
       key.format == xenos::TextureFormat::k_DXT1 ||
@@ -1117,6 +1133,10 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   }
   encoder->setComputePipelineState(pipeline);
   Metal4Context* mtl4 = command_processor_->GetMetal4Context();
+  mtl4->AddResidentAllocation(shared_buffer);
+  mtl4->AddResidentAllocation(dest_buffer);
+  mtl4->AddResidentAllocation(constants_buffer);
+  mtl4->AddResidentAllocation(metal_texture->metal_texture());
   if (!texture_resolution_scaled) {
     mtl4->SetComputeAddress(shared_buffer->gpuAddress(), 2);
     mtl4->FlushComputeBindings(encoder);
@@ -1154,6 +1174,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
         handle_upload_failure(false);
         return false;
       }
+      mtl4->AddResidentAllocation(source_buffer);
       mtl4->SetComputeAddress(
           source_buffer->gpuAddress() + source_buffer_offset, 2);
       mtl4->FlushComputeBindings(encoder);
@@ -1174,8 +1195,8 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       }
       level_guest_offset += mip_offset;
     }
-    // Use guest layout pitch (blocks) - new XeSL expects blocks for both tiled
-    // and linear
+    // Metal guest-load shaders consume pitch in blocks for both tiled and
+    // linear paths.
     uint32_t guest_pitch_aligned =
         level_guest_layout.row_pitch_bytes / bytes_per_block;
 
@@ -1226,6 +1247,42 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
           static_cast<uint8_t*>(constants_buffer->contents()) +
           dispatch_index * constants_size;
       std::memcpy(constants_ptr, &constants, sizeof(constants));
+      if (probe_texture_load && dispatch_index == 0) {
+        probe_guest_offset = constants.guest_offset;
+        probe_guest_pitch_blocks = constants.guest_pitch_aligned;
+        probe_size_blocks_x = constants.size_blocks[0];
+        probe_size_blocks_y = constants.size_blocks[1];
+        const uint8_t* shared_bytes =
+            reinterpret_cast<const uint8_t*>(shared_buffer->contents());
+        size_t shared_len = shared_buffer->length();
+        if (shared_bytes && probe_guest_offset + 12u < shared_len) {
+          std::memcpy(&probe_shared_s0, shared_bytes + probe_guest_offset + 0u,
+                      sizeof(uint32_t));
+          std::memcpy(&probe_shared_s1, shared_bytes + probe_guest_offset + 4u,
+                      sizeof(uint32_t));
+          std::memcpy(&probe_shared_s2, shared_bytes + probe_guest_offset + 8u,
+                      sizeof(uint32_t));
+          size_t row_bytes = size_t(constants.guest_pitch_aligned) *
+                             size_t(bytes_per_block);
+          size_t image_bytes = row_bytes * size_t(constants.size_blocks[1]);
+          auto sample_u32_at = [&](size_t rel_byte_offset) -> uint32_t {
+            if (probe_guest_offset + rel_byte_offset + 4u > shared_len) {
+              return 0;
+            }
+            uint32_t v = 0;
+            std::memcpy(&v, shared_bytes + probe_guest_offset + rel_byte_offset,
+                        sizeof(uint32_t));
+            return v;
+          };
+          if (image_bytes >= 4u) {
+            probe_shared_mid = sample_u32_at((image_bytes / 2u) & ~size_t(3u));
+            probe_shared_end = sample_u32_at(image_bytes - 4u);
+          }
+          probe_shared_nonzero =
+              (probe_shared_s0 | probe_shared_s1 | probe_shared_s2 |
+               probe_shared_mid | probe_shared_end) != 0;
+        }
+      }
 
       mtl4->SetComputeAddress(
           constants_buffer->gpuAddress() + dispatch_index * constants_size, 0);
@@ -1334,6 +1391,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
             handle_upload_failure(true);
             return false;
           }
+          mtl4->AddResidentAllocation(staging_buffer);
 
           for (uint32_t z = 0; z < level_depth; ++z) {
             size_t src_z_offset =
@@ -1374,7 +1432,92 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     if (use_upload_batch) {
       upload_batch_command_buffer_has_work_ = true;
     } else if (standalone_cmd) {
-      if (buffer_pool && UploadBufferPool::HasPendingReleases(cmd)) {
+      if (probe_texture_load) {
+        command_processor_->CommitStandaloneAndWait(cmd);
+        UploadBufferPool::HandleCommandBufferCompleted(cmd);
+
+        uint32_t probe_dest_s0 = 0;
+        uint32_t probe_dest_s1 = 0;
+        uint32_t probe_dest_s2 = 0;
+        const uint8_t* dest_bytes =
+            reinterpret_cast<const uint8_t*>(dest_buffer->contents());
+        if (dest_bytes && dest_buffer->length() >= 12u) {
+          std::memcpy(&probe_dest_s0, dest_bytes + 0u, sizeof(uint32_t));
+          std::memcpy(&probe_dest_s1, dest_bytes + 4u, sizeof(uint32_t));
+          std::memcpy(&probe_dest_s2, dest_bytes + 8u, sizeof(uint32_t));
+        }
+
+        uint8_t probe_texture_px[4] = {0, 0, 0, 0};
+        bool texture_probe_nonzero = false;
+        MTL::Buffer* probe_buffer =
+            device->newBuffer(size_t(16), MTL::ResourceStorageModeShared);
+        if (probe_buffer) {
+          mtl4->AddResidentAllocation(probe_buffer);
+          mtl4->AddResidentAllocation(mtl_texture);
+          mtl4->CommitResidency();
+          std::memset(probe_buffer->contents(), 0, 16);
+          MTL4::CommandBuffer* probe_cmd =
+              command_processor_->CreateStandaloneTransferCommandBuffer(
+                  "XeniaCB reason=texture-load-probe");
+          if (probe_cmd) {
+            MTL4::ComputeCommandEncoder* probe_blit =
+                probe_cmd->computeCommandEncoder();
+            if (probe_blit) {
+              uint32_t probe_w =
+                  key.GetWidth() * (texture_resolution_scaled
+                                        ? draw_resolution_scale_x()
+                                        : 1u);
+              uint32_t probe_h =
+                  key.GetHeight() * (texture_resolution_scaled
+                                         ? draw_resolution_scale_y()
+                                         : 1u);
+              if (probe_w == 0) {
+                probe_w = 1;
+              }
+              if (probe_h == 0) {
+                probe_h = 1;
+              }
+              uint32_t px = std::min<uint32_t>(probe_w / 2u, probe_w - 1u);
+              uint32_t py = std::min<uint32_t>(probe_h / 2u, probe_h - 1u);
+              probe_blit->copyFromTexture(
+                  mtl_texture, 0, 0, MTL::Origin::Make(px, py, 0),
+                  MTL::Size::Make(1, 1, 1), probe_buffer, 0, 4, 4);
+              probe_blit->endEncoding();
+              command_processor_->CommitStandaloneAndWait(probe_cmd);
+              const uint8_t* pb = reinterpret_cast<const uint8_t*>(
+                  probe_buffer->contents());
+              if (pb) {
+                probe_texture_px[0] = pb[0];
+                probe_texture_px[1] = pb[1];
+                probe_texture_px[2] = pb[2];
+                probe_texture_px[3] = pb[3];
+                texture_probe_nonzero =
+                    (pb[0] | pb[1] | pb[2] | pb[3]) != 0;
+              }
+            } else {
+              probe_cmd->release();
+            }
+          }
+          probe_buffer->release();
+        }
+        fprintf(stderr,
+                "[texload-probe] base=0x%08X fmt=%u tiled=%u pitch=%u shader=%u "
+                "goff=0x%08X gpitch=%u blocks=%ux%u src_nz=%u src=0x%08X/0x%08X/0x%08X "
+                "src_mid=0x%08X src_end=0x%08X dst=0x%08X/0x%08X/0x%08X tex_nz=%u "
+                "tex=0x%02X%02X%02X%02X\n",
+                key.base_page << 12, static_cast<uint32_t>(key.format),
+                key.tiled ? 1u : 0u, uint32_t(key.pitch),
+                static_cast<uint32_t>(load_shader), probe_guest_offset,
+                probe_guest_pitch_blocks, probe_size_blocks_x,
+                probe_size_blocks_y, probe_shared_nonzero ? 1u : 0u,
+                probe_shared_s0, probe_shared_s1, probe_shared_s2,
+                probe_shared_mid, probe_shared_end, probe_dest_s0,
+                probe_dest_s1, probe_dest_s2, texture_probe_nonzero ? 1u : 0u,
+                probe_texture_px[0], probe_texture_px[1], probe_texture_px[2],
+                probe_texture_px[3]);
+        fflush(stderr);
+        ++texture_load_probe_log_count;
+      } else if (buffer_pool && UploadBufferPool::HasPendingReleases(cmd)) {
         command_processor_->CommitStandaloneAsyncWithCallback(
             cmd, [](MTL4::CommandBuffer* completed_cmd) {
               UploadBufferPool::HandleCommandBufferCompleted(completed_cmd);
@@ -2613,15 +2756,45 @@ MTL::Texture* MetalTextureCache::RequestSwapTexture(
   xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(0);
   TextureKey key;
   BindingInfoFromFetchConstant(fetch, key, nullptr);
+  // Preserve decoded metadata for validation and logging before any override.
+  const TextureKey decoded_key = key;
+  const uint32_t key_base_address = key.base_page << 12;
+  const uint32_t decoded_width = decoded_key.GetWidth();
+  const uint32_t decoded_height = decoded_key.GetHeight();
+  bool force_linear_swap_decode = false;
+  bool is_frontbuffer_ptr_load = false;
+  if (command_processor_) {
+    const uint32_t frontbuffer_ptr = command_processor_->last_swap_ptr();
+    // Swap-present frontbuffer resolves are consumed as linear in this path.
+    is_frontbuffer_ptr_load =
+        frontbuffer_ptr != 0 && key_base_address == frontbuffer_ptr;
+    // Frontbuffer loads may still be declared tiled by guest fetch metadata
+    // (as in PGR3). Forcing linear in that case corrupts output, so only force
+    // linear when the decoded fetch itself is non-tiled.
+    force_linear_swap_decode = is_frontbuffer_ptr_load && !decoded_key.tiled;
+    if (force_linear_swap_decode) {
+      key.tiled = 0;
+    }
+  }
   static uint32_t swap_fetch_debug_log_count = 0;
-  if (swap_fetch_debug_log_count < 32) {
+  if (REXCVAR_GET(metal_texture_debug_probes) &&
+      swap_fetch_debug_log_count < 32) {
     fprintf(stderr,
             "[swap-fetch] valid=%d base=0x%08X pitch=%u wh=%ux%u fmt=%u dim=%u "
-            "endian=%u scaled=%d\n",
-            key.is_valid ? 1 : 0, key.base_page << 12, uint32_t(key.pitch),
+            "tiled=%u packed=%u endian=%u scaled=%d forced_linear=%u "
+            "frontbuffer_load=%u "
+            "decoded_fmt=%u decoded_endian=%u decoded_pitch=%u decoded_wh=%ux%u "
+            "decoded_tiled=%u\n",
+            key.is_valid ? 1 : 0, key_base_address, uint32_t(key.pitch),
             key.GetWidth(), key.GetHeight(), static_cast<uint32_t>(key.format),
-            static_cast<uint32_t>(key.dimension),
-            static_cast<uint32_t>(key.endianness), key.scaled_resolve ? 1 : 0);
+            static_cast<uint32_t>(key.dimension), key.tiled ? 1u : 0u,
+            key.packed_mips ? 1u : 0u, static_cast<uint32_t>(key.endianness),
+            key.scaled_resolve ? 1 : 0, force_linear_swap_decode ? 1u : 0u,
+            is_frontbuffer_ptr_load ? 1u : 0u,
+            static_cast<uint32_t>(decoded_key.format),
+            static_cast<uint32_t>(decoded_key.endianness),
+            uint32_t(decoded_key.pitch), decoded_width, decoded_height,
+            decoded_key.tiled ? 1u : 0u);
     fflush(stderr);
     ++swap_fetch_debug_log_count;
   }
@@ -2697,7 +2870,8 @@ MTL::Texture* MetalTextureCache::RequestSwapTexture(
   }
 
   static uint32_t swap_load_debug_log_count = 0;
-  if (swap_load_debug_log_count < 32) {
+  if (REXCVAR_GET(metal_texture_debug_probes) &&
+      swap_load_debug_log_count < 32) {
     fprintf(stderr, "[swap-load] outdated_before=0x%X outdated_after=0x%X\n",
             swap_outdated_before, texture->outdated_mask());
     fflush(stderr);

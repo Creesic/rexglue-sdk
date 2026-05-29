@@ -143,6 +143,9 @@ MTL4::CommandBuffer* Metal4Context::BeginCommandBuffer() {
     return nullptr;
   }
   cmd->beginCommandBuffer(allocator_);
+  if (residency_set_) {
+    cmd->useResidencySet(residency_set_);
+  }
   return cmd;
 }
 
@@ -233,6 +236,12 @@ void Metal4Context::SignalDrawable(CA::MetalDrawable* drawable) {
   if (queue_ && drawable) {
     queue_->signalDrawable(
         reinterpret_cast<MTL::Drawable*>(drawable));
+  }
+}
+
+void Metal4Context::WaitDrawable(CA::MetalDrawable* drawable) {
+  if (queue_ && drawable) {
+    queue_->wait(reinterpret_cast<MTL::Drawable*>(drawable));
   }
 }
 

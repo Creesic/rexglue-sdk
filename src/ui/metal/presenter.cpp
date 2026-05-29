@@ -16,6 +16,8 @@
 
 REXCVAR_DEFINE_BOOL(metal_hud, true, "GPU", "Enable Metal performance HUD overlay");
 REXCVAR_DEFINE_BOOL(metal_frame_timing, true, "GPU", "Log GPU frame timing info");
+REXCVAR_DEFINE_BOOL(metal_present_debug_probes, false, "GPU",
+                    "Enable extra Metal present-path debug probes/logs");
 
 namespace rex {
 namespace ui {
@@ -68,6 +70,37 @@ bool MetalPresenter::Initialize() {
                  err ? err->localizedDescription()->utf8String() : "unknown");
   }
 
+  MTL4::ArgumentTableDescriptor* blit_v_desc =
+      MTL4::ArgumentTableDescriptor::alloc()->init();
+  blit_v_desc->setMaxBufferBindCount(1);
+  blit_v_desc->setMaxTextureBindCount(0);
+  blit_v_desc->setMaxSamplerStateBindCount(0);
+  blit_v_desc->setInitializeBindings(true);
+  err = nullptr;
+  blit_vertex_arg_table_ = device_->newArgumentTable(blit_v_desc, &err);
+  blit_v_desc->release();
+  if (!blit_vertex_arg_table_) {
+    REXLOG_ERROR("MetalPresenter: Failed to create blit vertex argument table: {}",
+                 err ? err->localizedDescription()->utf8String() : "unknown");
+    return false;
+  }
+
+  MTL4::ArgumentTableDescriptor* blit_f_desc =
+      MTL4::ArgumentTableDescriptor::alloc()->init();
+  blit_f_desc->setMaxBufferBindCount(0);
+  blit_f_desc->setMaxTextureBindCount(1);
+  blit_f_desc->setMaxSamplerStateBindCount(1);
+  blit_f_desc->setInitializeBindings(true);
+  err = nullptr;
+  blit_fragment_arg_table_ = device_->newArgumentTable(blit_f_desc, &err);
+  blit_f_desc->release();
+  if (!blit_fragment_arg_table_) {
+    REXLOG_ERROR(
+        "MetalPresenter: Failed to create blit fragment argument table: {}",
+        err ? err->localizedDescription()->utf8String() : "unknown");
+    return false;
+  }
+
   REXLOG_INFO("MetalPresenter: Initialized (MTL4) on device {}", device_->name()->utf8String());
   return true;
 }
@@ -77,6 +110,8 @@ void MetalPresenter::Shutdown() {
   if (gamma_ramp_table_texture_) { gamma_ramp_table_texture_->release(); gamma_ramp_table_texture_ = nullptr; }
   if (gamma_ramp_buffer_) { gamma_ramp_buffer_->release(); gamma_ramp_buffer_ = nullptr; }
   if (guest_output_shared_event_) { guest_output_shared_event_->release(); guest_output_shared_event_ = nullptr; }
+  if (blit_fragment_arg_table_) { blit_fragment_arg_table_->release(); blit_fragment_arg_table_ = nullptr; }
+  if (blit_vertex_arg_table_) { blit_vertex_arg_table_->release(); blit_vertex_arg_table_ = nullptr; }
   for (auto& tex : guest_output_textures_) {
     if (tex) tex->release();
     tex = nullptr;
@@ -98,9 +133,6 @@ bool MetalPresenter::CopyTextureToGuestOutput(
     uint32_t source_width, uint32_t source_height,
     bool force_swap_rb, bool use_pwl_gamma_ramp,
     uint64_t* submission_out) {
-  (void)force_swap_rb;
-  (void)use_pwl_gamma_ramp;
-
   if (submission_out) {
     *submission_out = 0;
   }
@@ -120,27 +152,225 @@ bool MetalPresenter::CopyTextureToGuestOutput(
     return false;
   }
 
-  MTL4::CommandBuffer* cmd = mtl4_->BeginCommandBuffer();
-  if (!cmd) {
-    return false;
+  MTL::Texture* sample_texture = source_texture;
+  MTL::Texture* present_view = nullptr;
+  if (sample_texture->textureType() == MTL::TextureType2DArray) {
+    NS::Range level_range = NS::Range::Make(0, sample_texture->mipmapLevelCount());
+    NS::Range slice_range = NS::Range::Make(0, 1);
+    present_view = sample_texture->newTextureView(
+        sample_texture->pixelFormat(), MTL::TextureType2D, level_range,
+        slice_range, sample_texture->swizzle());
+    if (present_view) {
+      sample_texture = present_view;
+    }
   }
 
-  MTL4::ComputeCommandEncoder* compute = cmd->computeCommandEncoder();
-  if (!compute) {
-    mtl4_->Commit(cmd);
+  MTL::Texture* swizzle_view = nullptr;
+  bool swap_rb_in_shader = force_swap_rb;
+  if (force_swap_rb) {
+    NS::Range level_range = NS::Range::Make(0, sample_texture->mipmapLevelCount());
+    NS::Range slice_range = NS::Range::Make(0, sample_texture->arrayLength());
+    MTL::TextureSwizzleChannels swizzle = {
+        MTL::TextureSwizzleBlue, MTL::TextureSwizzleGreen,
+        MTL::TextureSwizzleRed, MTL::TextureSwizzleAlpha};
+    swizzle_view = sample_texture->newTextureView(
+        sample_texture->pixelFormat(), sample_texture->textureType(),
+        level_range, slice_range, swizzle);
+    if (swizzle_view) {
+      sample_texture = swizzle_view;
+      swap_rb_in_shader = false;
+    }
+  }
+
+  auto release_views = [&]() {
+    if (swizzle_view) {
+      swizzle_view->release();
+      swizzle_view = nullptr;
+    }
+    if (present_view) {
+      present_view->release();
+      present_view = nullptr;
+    }
+  };
+  MTL4::ArgumentTable* copy_vertex_arg_table = nullptr;
+  MTL4::ArgumentTable* copy_fragment_arg_table = nullptr;
+  auto release_copy_tables = [&]() {
+    if (copy_fragment_arg_table) {
+      copy_fragment_arg_table->release();
+      copy_fragment_arg_table = nullptr;
+    }
+    if (copy_vertex_arg_table) {
+      copy_vertex_arg_table->release();
+      copy_vertex_arg_table = nullptr;
+    }
+  };
+  auto commit_with_view_lifetime = [&](MTL4::CommandBuffer* cb) {
+    if (!cb) {
+      return;
+    }
+    if (swizzle_view || present_view || copy_vertex_arg_table ||
+        copy_fragment_arg_table) {
+      if (swizzle_view) {
+        swizzle_view->retain();
+      }
+      if (present_view) {
+        present_view->retain();
+      }
+      if (copy_vertex_arg_table) {
+        copy_vertex_arg_table->retain();
+      }
+      if (copy_fragment_arg_table) {
+        copy_fragment_arg_table->retain();
+      }
+      MTL::Texture* swizzle_to_release = swizzle_view;
+      MTL::Texture* present_to_release = present_view;
+      MTL4::ArgumentTable* vertex_table_to_release = copy_vertex_arg_table;
+      MTL4::ArgumentTable* fragment_table_to_release = copy_fragment_arg_table;
+      MTL4::CommitOptions* options = MTL4::CommitOptions::alloc()->init();
+      options->addFeedbackHandler(
+          [swizzle_to_release, present_to_release, vertex_table_to_release,
+           fragment_table_to_release](MTL4::CommitFeedback*) {
+            if (swizzle_to_release) {
+              swizzle_to_release->release();
+            }
+            if (present_to_release) {
+              present_to_release->release();
+            }
+            if (vertex_table_to_release) {
+              vertex_table_to_release->release();
+            }
+            if (fragment_table_to_release) {
+              fragment_table_to_release->release();
+            }
+          });
+      mtl4_->Commit(cb, options);
+      options->release();
+    } else {
+      mtl4_->Commit(cb);
+    }
+  };
+
+  const bool needs_shader_copy =
+      swap_rb_in_shader || use_pwl_gamma_ramp ||
+      sample_texture->pixelFormat() != dest_texture->pixelFormat() ||
+      sample_texture->textureType() != MTL::TextureType2D;
+  static uint32_t copy_path_log_count = 0;
+  if (REXCVAR_GET(metal_present_debug_probes) && copy_path_log_count < 64) {
+    fprintf(stderr,
+            "[present-copy-path] %s srcfmt=%u dstfmt=%u rb=%u gamma=%u "
+            "src_type=%u dst_type=%u\n",
+            needs_shader_copy ? "shader" : "raw",
+            static_cast<uint32_t>(sample_texture->pixelFormat()),
+            static_cast<uint32_t>(dest_texture->pixelFormat()),
+            force_swap_rb ? 1u : 0u, use_pwl_gamma_ramp ? 1u : 0u,
+            static_cast<uint32_t>(sample_texture->textureType()),
+            static_cast<uint32_t>(dest_texture->textureType()));
+    fflush(stderr);
+    ++copy_path_log_count;
+  }
+
+  MTL4::CommandBuffer* cmd = mtl4_->BeginCommandBuffer();
+  if (!cmd) {
+    release_views();
     return false;
   }
 
   // MTL4 explicit residency: source/destination textures in the present path
   // may not be tracked by draw-time bindings for this command buffer.
   mtl4_->AddResidentAllocation(source_texture);
+  mtl4_->AddResidentAllocation(sample_texture);
   mtl4_->AddResidentAllocation(dest_texture);
   mtl4_->CommitResidency();
 
-  compute->copyFromTexture(source_texture, 0, 0, MTL::Origin(0, 0, 0),
-                           MTL::Size(copy_width, copy_height, 1),
-                           dest_texture, 0, 0, MTL::Origin(0, 0, 0));
-  compute->endEncoding();
+  bool copy_success = false;
+  if (!needs_shader_copy) {
+    MTL4::ComputeCommandEncoder* compute = cmd->computeCommandEncoder();
+    if (compute) {
+      compute->copyFromTexture(sample_texture, 0, 0, MTL::Origin(0, 0, 0),
+                               MTL::Size(copy_width, copy_height, 1),
+                               dest_texture, 0, 0, MTL::Origin(0, 0, 0));
+      compute->endEncoding();
+      copy_success = true;
+    }
+  } else {
+    if (blit_lib_) {
+      MTL::RenderPipelineState* pipe =
+          GetOrCreateBlitPipeline(dest_texture->pixelFormat());
+      if (pipe) {
+        MTL4::ArgumentTableDescriptor* blit_v_desc =
+            MTL4::ArgumentTableDescriptor::alloc()->init();
+        blit_v_desc->setMaxBufferBindCount(1);
+        blit_v_desc->setMaxTextureBindCount(0);
+        blit_v_desc->setMaxSamplerStateBindCount(0);
+        blit_v_desc->setInitializeBindings(true);
+        NS::Error* table_err = nullptr;
+        copy_vertex_arg_table = device_->newArgumentTable(blit_v_desc, &table_err);
+        blit_v_desc->release();
+        if (!copy_vertex_arg_table) {
+          REXLOG_WARN(
+              "MetalPresenter: Failed to create copy vertex argument table: {}",
+              table_err ? table_err->localizedDescription()->utf8String()
+                        : "unknown");
+        }
+        MTL4::ArgumentTableDescriptor* blit_f_desc =
+            MTL4::ArgumentTableDescriptor::alloc()->init();
+        blit_f_desc->setMaxBufferBindCount(0);
+        blit_f_desc->setMaxTextureBindCount(1);
+        blit_f_desc->setMaxSamplerStateBindCount(1);
+        blit_f_desc->setInitializeBindings(true);
+        table_err = nullptr;
+        copy_fragment_arg_table =
+            device_->newArgumentTable(blit_f_desc, &table_err);
+        blit_f_desc->release();
+        if (!copy_fragment_arg_table) {
+          REXLOG_WARN(
+              "MetalPresenter: Failed to create copy fragment argument table: {}",
+              table_err ? table_err->localizedDescription()->utf8String()
+                        : "unknown");
+        }
+        MTL4::RenderPassDescriptor* rpd = MTL4::RenderPassDescriptor::alloc()->init();
+        auto* ca = rpd->colorAttachments()->object(0);
+        ca->setTexture(dest_texture);
+        ca->setLoadAction(MTL::LoadActionClear);
+        ca->setClearColor(MTL::ClearColor(0, 0, 0, 1));
+        ca->setStoreAction(MTL::StoreActionStore);
+        MTL4::RenderCommandEncoder* enc = cmd->renderCommandEncoder(rpd);
+        if (enc) {
+          enc->setRenderPipelineState(pipe);
+          enc->setViewport(
+              MTL::Viewport(0.0, 0.0, double(copy_width), double(copy_height), 0.0, 1.0));
+          enc->setScissorRect(MTL::ScissorRect(0, 0, copy_width, copy_height));
+          struct {
+            float w, h, src_w, src_h;
+          } ub = {(float)dest_texture->width(), (float)dest_texture->height(),
+                  (float)sample_texture->width(), (float)sample_texture->height()};
+          if (copy_vertex_arg_table && copy_fragment_arg_table) {
+            copy_vertex_arg_table->setAddress(
+                mtl4_->AllocInlineConstant(&ub, sizeof(ub)), 0);
+            copy_fragment_arg_table->setTexture(sample_texture->gpuResourceID(),
+                                                0);
+            copy_fragment_arg_table->setSamplerState(
+                GetNearestSampler()->gpuResourceID(), 0);
+            enc->setArgumentTable(copy_vertex_arg_table, MTL::RenderStageVertex);
+            enc->setArgumentTable(copy_fragment_arg_table,
+                                  MTL::RenderStageFragment);
+          }
+          enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0),
+                              NS::UInteger(3));
+          enc->endEncoding();
+          copy_success = true;
+        }
+        rpd->release();
+      }
+    }
+  }
+
+  if (!copy_success) {
+    commit_with_view_lifetime(cmd);
+    release_views();
+    release_copy_tables();
+    return false;
+  }
 
   uint64_t submission_id = 0;
   if (guest_output_shared_event_) {
@@ -149,7 +379,64 @@ bool MetalPresenter::CopyTextureToGuestOutput(
         1;
   }
 
-  mtl4_->Commit(cmd);
+  commit_with_view_lifetime(cmd);
+
+  static uint32_t copy_probe_log_count = 0;
+  if (REXCVAR_GET(metal_present_debug_probes) && copy_probe_log_count < 8 &&
+      device_ && mtl4_) {
+    constexpr size_t kProbeStride = 16;
+    MTL::Buffer* probe_buffer =
+        device_->newBuffer(kProbeStride * 2, MTL::ResourceStorageModeShared);
+    if (probe_buffer) {
+      MTL4::CommandBuffer* probe_cmd = mtl4_->BeginStandaloneCommandBuffer();
+      if (probe_cmd) {
+        MTL4::ComputeCommandEncoder* probe_enc = probe_cmd->computeCommandEncoder();
+        if (probe_enc) {
+          const uint32_t src_x = std::min<uint32_t>(
+              copy_width - 1, static_cast<uint32_t>(sample_texture->width() / 2));
+          const uint32_t src_y = std::min<uint32_t>(
+              copy_height - 1, static_cast<uint32_t>(sample_texture->height() / 2));
+          const uint32_t dst_x = std::min<uint32_t>(
+              copy_width - 1, static_cast<uint32_t>(dest_texture->width() / 2));
+          const uint32_t dst_y = std::min<uint32_t>(
+              copy_height - 1, static_cast<uint32_t>(dest_texture->height() / 2));
+          mtl4_->AddResidentAllocation(sample_texture);
+          mtl4_->AddResidentAllocation(dest_texture);
+          mtl4_->AddResidentAllocation(probe_buffer);
+          mtl4_->CommitResidency();
+          probe_enc->copyFromTexture(sample_texture, 0, 0,
+                                     MTL::Origin(src_x, src_y, 0),
+                                     MTL::Size(1, 1, 1), probe_buffer, 0,
+                                     kProbeStride, kProbeStride);
+          probe_enc->copyFromTexture(dest_texture, 0, 0,
+                                     MTL::Origin(dst_x, dst_y, 0),
+                                     MTL::Size(1, 1, 1), probe_buffer,
+                                     kProbeStride, kProbeStride, kProbeStride);
+          probe_enc->endEncoding();
+          mtl4_->CommitStandaloneAndWait(probe_cmd);
+          const uint8_t* b =
+              reinterpret_cast<const uint8_t*>(probe_buffer->contents());
+          uint32_t src_nonzero = 0;
+          uint32_t dst_nonzero = 0;
+          for (size_t i = 0; i < kProbeStride; ++i) {
+            src_nonzero += b[i] ? 1u : 0u;
+            dst_nonzero += b[kProbeStride + i] ? 1u : 0u;
+          }
+          fprintf(stderr,
+                  "[present-probe] src_nonzero=%u dst_nonzero=%u "
+                  "src8=0x%02X%02X%02X%02X dst8=0x%02X%02X%02X%02X\n",
+                  src_nonzero, dst_nonzero, b[0], b[1], b[2], b[3],
+                  b[kProbeStride + 0], b[kProbeStride + 1], b[kProbeStride + 2],
+                  b[kProbeStride + 3]);
+          fflush(stderr);
+          ++copy_probe_log_count;
+        } else {
+          probe_cmd->release();
+        }
+      }
+      probe_buffer->release();
+    }
+  }
 
   if (submission_id && guest_output_shared_event_) {
     mtl4_->SignalEvent(guest_output_shared_event_, submission_id);
@@ -158,6 +445,8 @@ bool MetalPresenter::CopyTextureToGuestOutput(
   if (submission_out) {
     *submission_out = submission_id;
   }
+  release_views();
+  release_copy_tables();
   return true;
 }
 
@@ -176,6 +465,14 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
   }
 
   MTL::Texture* dst = drawable->texture();
+  static uint32_t drawable_probe_log_count = 0;
+  const bool probe_drawable =
+      REXCVAR_GET(metal_present_debug_probes) && drawable_probe_log_count < 8;
+  MTL::Buffer* drawable_probe_buffer = nullptr;
+  if (probe_drawable && device_) {
+    drawable_probe_buffer =
+        device_->newBuffer(size_t(16), MTL::ResourceStorageModeShared);
+  }
 
   uint32_t mailbox_index = UINT32_MAX;
   GuestOutputProperties guest_output_properties;
@@ -218,12 +515,106 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
     ++paint_log_count;
   }
 
+  static uint32_t paint_probe_log_count = 0;
+  if (REXCVAR_GET(metal_present_debug_probes) && paint_probe_log_count < 8 &&
+      guest_output_texture && device_ && mtl4_) {
+    constexpr size_t kProbeStride = 16;
+    MTL::Buffer* probe_buffer =
+        device_->newBuffer(kProbeStride, MTL::ResourceStorageModeShared);
+    if (probe_buffer) {
+      MTL4::CommandBuffer* probe_cmd = mtl4_->BeginStandaloneCommandBuffer();
+      if (probe_cmd) {
+        MTL4::ComputeCommandEncoder* probe_enc = probe_cmd->computeCommandEncoder();
+        if (probe_enc) {
+          const uint32_t src_x = static_cast<uint32_t>(guest_output_texture->width() / 2);
+          const uint32_t src_y = static_cast<uint32_t>(guest_output_texture->height() / 2);
+          mtl4_->AddResidentAllocation(guest_output_texture);
+          mtl4_->AddResidentAllocation(probe_buffer);
+          mtl4_->CommitResidency();
+          probe_enc->copyFromTexture(guest_output_texture, 0, 0,
+                                     MTL::Origin(src_x, src_y, 0),
+                                     MTL::Size(1, 1, 1), probe_buffer, 0,
+                                     kProbeStride, kProbeStride);
+          probe_enc->endEncoding();
+          mtl4_->CommitStandaloneAndWait(probe_cmd);
+          const uint8_t* b =
+              reinterpret_cast<const uint8_t*>(probe_buffer->contents());
+          uint32_t nonzero = 0;
+          for (size_t i = 0; i < kProbeStride; ++i) {
+            nonzero += b[i] ? 1u : 0u;
+          }
+          fprintf(stderr,
+                  "[paint-probe] nonzero=%u px8=0x%02X%02X%02X%02X tex=%ux%u\n",
+                  nonzero, b[0], b[1], b[2], b[3],
+                  static_cast<uint32_t>(guest_output_texture->width()),
+                  static_cast<uint32_t>(guest_output_texture->height()));
+          fflush(stderr);
+          ++paint_probe_log_count;
+        } else {
+          probe_cmd->release();
+        }
+      }
+      probe_buffer->release();
+    }
+  }
+
   MTL4::CommandBuffer* cmd = mtl4_->BeginCommandBuffer();
   if (!cmd) { pool->drain(); return PaintResult::kNotPresented; }
+  MTL4::ArgumentTable* paint_vertex_arg_table = nullptr;
+  MTL4::ArgumentTable* paint_fragment_arg_table = nullptr;
+  auto release_paint_tables = [&]() {
+    if (paint_fragment_arg_table) {
+      paint_fragment_arg_table->release();
+      paint_fragment_arg_table = nullptr;
+    }
+    if (paint_vertex_arg_table) {
+      paint_vertex_arg_table->release();
+      paint_vertex_arg_table = nullptr;
+    }
+  };
+
+  // MTL4 explicit residency: the present pass writes directly into the
+  // drawable and samples the mailbox texture, so both allocations must be
+  // resident for this command buffer.
+  mtl4_->AddResidentAllocation(dst);
+  if (guest_output_texture) {
+    mtl4_->AddResidentAllocation(guest_output_texture);
+  }
+  mtl4_->CommitResidency();
 
   if (guest_output_texture && blit_lib_) {
     MTL::RenderPipelineState* pipe = GetOrCreateBlitPipeline(dst->pixelFormat());
     if (pipe) {
+      MTL4::ArgumentTableDescriptor* blit_v_desc =
+          MTL4::ArgumentTableDescriptor::alloc()->init();
+      blit_v_desc->setMaxBufferBindCount(1);
+      blit_v_desc->setMaxTextureBindCount(0);
+      blit_v_desc->setMaxSamplerStateBindCount(0);
+      blit_v_desc->setInitializeBindings(true);
+      NS::Error* table_err = nullptr;
+      paint_vertex_arg_table = device_->newArgumentTable(blit_v_desc, &table_err);
+      blit_v_desc->release();
+      if (!paint_vertex_arg_table) {
+        REXLOG_WARN(
+            "MetalPresenter: Failed to create paint vertex argument table: {}",
+            table_err ? table_err->localizedDescription()->utf8String()
+                      : "unknown");
+      }
+      MTL4::ArgumentTableDescriptor* blit_f_desc =
+          MTL4::ArgumentTableDescriptor::alloc()->init();
+      blit_f_desc->setMaxBufferBindCount(0);
+      blit_f_desc->setMaxTextureBindCount(1);
+      blit_f_desc->setMaxSamplerStateBindCount(1);
+      blit_f_desc->setInitializeBindings(true);
+      table_err = nullptr;
+      paint_fragment_arg_table = device_->newArgumentTable(blit_f_desc, &table_err);
+      blit_f_desc->release();
+      if (!paint_fragment_arg_table) {
+        REXLOG_WARN(
+            "MetalPresenter: Failed to create paint fragment argument table: {}",
+            table_err ? table_err->localizedDescription()->utf8String()
+                      : "unknown");
+      }
       MTL4::RenderPassDescriptor* rpd = MTL4::RenderPassDescriptor::alloc()->init();
       auto* ca = rpd->colorAttachments()->object(0);
       ca->setTexture(dst);
@@ -233,6 +624,10 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
       MTL4::RenderCommandEncoder* enc = cmd->renderCommandEncoder(rpd);
       if (enc) {
         enc->setRenderPipelineState(pipe);
+        enc->setViewport(
+            MTL::Viewport(0.0, 0.0, double(dst->width()), double(dst->height()), 0.0, 1.0));
+        enc->setScissorRect(
+            MTL::ScissorRect(0, 0, uint32_t(dst->width()), uint32_t(dst->height())));
 
         float src_h = guest_output_texture->height() > 720 ? 720.0f
                           : (float)guest_output_texture->height();
@@ -241,10 +636,17 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
         } ub = {(float)dst->width(), (float)dst->height(),
                 (float)guest_output_texture->width(), src_h};
 
-        mtl4_->SetVertexAddress(mtl4_->AllocInlineConstant(&ub, sizeof(ub)), 0);
-        mtl4_->SetFragmentTexture(guest_output_texture->gpuResourceID(), 0);
-        mtl4_->SetFragmentSampler(GetNearestSampler()->gpuResourceID(), 0);
-        mtl4_->FlushRenderBindings(enc);
+        if (paint_vertex_arg_table && paint_fragment_arg_table) {
+          paint_vertex_arg_table->setAddress(
+              mtl4_->AllocInlineConstant(&ub, sizeof(ub)), 0);
+          paint_fragment_arg_table->setTexture(guest_output_texture->gpuResourceID(),
+                                               0);
+          paint_fragment_arg_table->setSamplerState(
+              GetNearestSampler()->gpuResourceID(), 0);
+          enc->setArgumentTable(paint_vertex_arg_table, MTL::RenderStageVertex);
+          enc->setArgumentTable(paint_fragment_arg_table,
+                                MTL::RenderStageFragment);
+        }
 
         enc->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0),
                             NS::UInteger(3));
@@ -261,8 +663,85 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
     }
   }
 
-  mtl4_->Commit(cmd);
+  if (drawable_probe_buffer) {
+    MTL4::ComputeCommandEncoder* drawable_probe_enc = cmd->computeCommandEncoder();
+    if (drawable_probe_enc) {
+      const uint32_t probe_x = std::min<uint32_t>(
+          std::max<uint32_t>(1u, uint32_t(dst->width())) - 1u,
+          uint32_t(dst->width() / 2));
+      const uint32_t probe_y = std::min<uint32_t>(
+          std::max<uint32_t>(1u, uint32_t(dst->height())) - 1u,
+          uint32_t(dst->height() / 2));
+      std::memset(drawable_probe_buffer->contents(), 0, 16);
+      drawable_probe_enc->copyFromTexture(
+          dst, 0, 0, MTL::Origin::Make(probe_x, probe_y, 0),
+          MTL::Size::Make(1, 1, 1), drawable_probe_buffer, 0, 4, 4);
+      drawable_probe_enc->endEncoding();
+    } else {
+      drawable_probe_buffer->release();
+      drawable_probe_buffer = nullptr;
+    }
+  }
+
+  MTL4::CommitOptions* paint_commit_options = nullptr;
+  if (paint_vertex_arg_table || paint_fragment_arg_table ||
+      drawable_probe_buffer) {
+    if (paint_vertex_arg_table) {
+      paint_vertex_arg_table->retain();
+    }
+    if (paint_fragment_arg_table) {
+      paint_fragment_arg_table->retain();
+    }
+    if (drawable_probe_buffer) {
+      drawable_probe_buffer->retain();
+    }
+    MTL4::ArgumentTable* vertex_table_to_release = paint_vertex_arg_table;
+    MTL4::ArgumentTable* fragment_table_to_release = paint_fragment_arg_table;
+    MTL::Buffer* probe_buffer_to_log = drawable_probe_buffer;
+    const uint32_t probe_w = uint32_t(dst->width());
+    const uint32_t probe_h = uint32_t(dst->height());
+    paint_commit_options = MTL4::CommitOptions::alloc()->init();
+    paint_commit_options->addFeedbackHandler(
+        [vertex_table_to_release, fragment_table_to_release,
+         probe_buffer_to_log, probe_w, probe_h](MTL4::CommitFeedback*) {
+          if (vertex_table_to_release) {
+            vertex_table_to_release->release();
+          }
+          if (fragment_table_to_release) {
+            fragment_table_to_release->release();
+          }
+          if (probe_buffer_to_log) {
+            const uint8_t* b = reinterpret_cast<const uint8_t*>(
+                probe_buffer_to_log->contents());
+            if (b) {
+              uint32_t nonzero = 0;
+              for (size_t i = 0; i < 16; ++i) {
+                nonzero += b[i] ? 1u : 0u;
+              }
+              fprintf(stderr,
+                      "[drawable-probe] nonzero=%u px8=0x%02X%02X%02X%02X tex=%ux%u\n",
+                      nonzero, b[0], b[1], b[2], b[3], probe_w, probe_h);
+              fflush(stderr);
+            }
+            probe_buffer_to_log->release();
+          }
+        });
+  }
+  mtl4_->WaitDrawable(drawable);
+  if (paint_commit_options) {
+    mtl4_->Commit(cmd, paint_commit_options);
+    paint_commit_options->release();
+  } else {
+    mtl4_->Commit(cmd);
+  }
   mtl4_->SignalDrawable(drawable);
+  drawable->present();
+  if (drawable_probe_buffer) {
+    drawable_probe_buffer->release();
+    drawable_probe_buffer = nullptr;
+    ++drawable_probe_log_count;
+  }
+  release_paint_tables();
 
   pool->drain();
   return PaintResult::kPresented;

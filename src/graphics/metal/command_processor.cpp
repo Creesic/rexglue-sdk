@@ -567,6 +567,14 @@ void MetalCommandProcessor::SetSwapDestSwap(uint32_t dest_base, bool swap) {
   swap_dest_swaps_by_base_[dest_base] = swap;
 }
 
+bool MetalCommandProcessor::HasSwapDestSwap(uint32_t dest_base) const {
+  if (!dest_base) {
+    return false;
+  }
+  return swap_dest_swaps_by_base_.find(dest_base) !=
+         swap_dest_swaps_by_base_.end();
+}
+
 bool MetalCommandProcessor::ConsumeSwapDestSwap(uint32_t dest_base,
                                                 bool* swap_out) {
   if (!swap_out || !dest_base) {
@@ -1233,57 +1241,40 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
 
     MTL::Texture* source_texture = nullptr;
     bool use_pwl_gamma_ramp = false;
-    bool source_from_render_target = false;
     if (texture_cache_) {
-      static uint32_t swap_submission_state_log_count = 0;
-      if (swap_submission_state_log_count < 32) {
-        fprintf(stderr,
-                "[swap-submission] active=%d joinable=%d\n",
-                HasActiveSubmission() ? 1 : 0,
-                CanJoinActiveSubmissionForTransfer() ? 1 : 0);
-        fflush(stderr);
-        ++swap_submission_state_log_count;
-      }
-
-      // Prefer presenting directly from the active render target path on Metal.
-      // In this backend, swap-texture updates can lag/arrive sparse while the
-      // RT path already contains the frame we're about to present.
-      constexpr bool kPreferRenderTargetPresentPath = true;
-      if (!kPreferRenderTargetPresentPath) {
-        uint32_t swap_width = 0;
-        uint32_t swap_height = 0;
-        xenos::TextureFormat swap_format = xenos::TextureFormat::k_8_8_8_8;
-        source_texture = texture_cache_->RequestSwapTexture(
-            swap_width, swap_height, swap_format);
-        if (source_texture) {
-          output_width = swap_width;
-          output_height = swap_height;
-          use_pwl_gamma_ramp =
-              swap_format == xenos::TextureFormat::k_2_10_10_10 ||
-              swap_format == xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16;
-          static int logged_swap_texture_source = 0;
-          if (logged_swap_texture_source < 10) {
-            fprintf(stderr,
-                    "[swap] source=swap tex=%p %ux%u mtlfmt=%u xfmt=%u\n",
-                    (void*)source_texture, output_width, output_height,
-                    static_cast<uint32_t>(source_texture->pixelFormat()),
-                    static_cast<uint32_t>(swap_format));
-            fflush(stderr);
-            ++logged_swap_texture_source;
-          }
-          if (presenter) {
-            if (!gamma_ramp_256_entry_table_up_to_date_ ||
-                !gamma_ramp_pwl_up_to_date_) {
-              constexpr size_t kGammaRampTableBytes =
-                  sizeof(reg::DC_LUT_30_COLOR) * 256;
-              constexpr size_t kGammaRampPwlBytes =
-                  sizeof(reg::DC_LUT_PWL_DATA) * 128 * 3;
-              if (true) {
-                gamma_ramp_256_entry_table_up_to_date_ = true;
-                gamma_ramp_pwl_up_to_date_ = true;
-              } else {
-                REXLOG_WARN("Metal IssueSwap: gamma ramp upload failed");
-              }
+      uint32_t swap_width = 0;
+      uint32_t swap_height = 0;
+      xenos::TextureFormat swap_format = xenos::TextureFormat::k_8_8_8_8;
+      source_texture = texture_cache_->RequestSwapTexture(
+          swap_width, swap_height, swap_format);
+      if (source_texture) {
+        output_width = swap_width;
+        output_height = swap_height;
+        use_pwl_gamma_ramp =
+            swap_format == xenos::TextureFormat::k_2_10_10_10 ||
+            swap_format == xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16;
+        static int logged_swap_texture_source = 0;
+        if (logged_swap_texture_source < 10) {
+          fprintf(stderr,
+                  "[swap] source=swap tex=%p %ux%u mtlfmt=%u xfmt=%u\n",
+                  (void*)source_texture, output_width, output_height,
+                  static_cast<uint32_t>(source_texture->pixelFormat()),
+                  static_cast<uint32_t>(swap_format));
+          fflush(stderr);
+          ++logged_swap_texture_source;
+        }
+        if (presenter) {
+          if (!gamma_ramp_256_entry_table_up_to_date_ ||
+              !gamma_ramp_pwl_up_to_date_) {
+            constexpr size_t kGammaRampTableBytes =
+                sizeof(reg::DC_LUT_30_COLOR) * 256;
+            constexpr size_t kGammaRampPwlBytes =
+                sizeof(reg::DC_LUT_PWL_DATA) * 128 * 3;
+            if (true) {
+              gamma_ramp_256_entry_table_up_to_date_ = true;
+              gamma_ramp_pwl_up_to_date_ = true;
+            } else {
+              REXLOG_WARN("Metal IssueSwap: gamma ramp upload failed");
             }
           }
         }
@@ -1309,7 +1300,6 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
         output_height = frontbuffer_height
                             ? frontbuffer_height
                             : static_cast<uint32_t>(source_texture->height());
-        source_from_render_target = true;
         static int logged_render_target_source = 0;
         if (logged_render_target_source < 16) {
           fprintf(stderr,
@@ -1323,72 +1313,93 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
         }
       }
     }
+
+    static uint32_t swap_source_probe_log_count = 0;
+    if (swap_source_probe_log_count < 8 && source_texture && device_ && mtl4_) {
+      constexpr size_t kProbeStride = 16;
+      constexpr size_t kProbeSamples = 5;
+      MTL::Buffer* probe_buffer =
+          device_->newBuffer(kProbeStride * kProbeSamples,
+                             MTL::ResourceStorageModeShared);
+      if (probe_buffer) {
+        MTL4::CommandBuffer* probe_cmd = mtl4_->BeginStandaloneCommandBuffer();
+        if (probe_cmd) {
+          MTL4::ComputeCommandEncoder* probe_enc = probe_cmd->computeCommandEncoder();
+          if (probe_enc) {
+            const uint32_t src_x = static_cast<uint32_t>(source_texture->width() / 2);
+            const uint32_t src_y = static_cast<uint32_t>(source_texture->height() / 2);
+            uint32_t array_len = static_cast<uint32_t>(source_texture->arrayLength());
+            uint32_t probe_x[kProbeSamples] = {
+                0u,
+                src_x > 0 ? src_x - 1 : src_x,
+                src_x,
+                std::min<uint32_t>(src_x + 1, static_cast<uint32_t>(source_texture->width() - 1)),
+                std::max<uint32_t>(0u, static_cast<uint32_t>(source_texture->width() - 1))};
+            uint32_t probe_y[kProbeSamples] = {
+                0u, src_y, src_y, src_y,
+                std::max<uint32_t>(0u, static_cast<uint32_t>(source_texture->height() - 1))};
+            mtl4_->AddResidentAllocation(source_texture);
+            mtl4_->AddResidentAllocation(probe_buffer);
+            mtl4_->CommitResidency();
+            for (size_t i = 0; i < kProbeSamples; ++i) {
+              probe_enc->copyFromTexture(
+                  source_texture, 0, 0, MTL::Origin(probe_x[i], probe_y[i], 0),
+                  MTL::Size(1, 1, 1), probe_buffer, i * kProbeStride,
+                  kProbeStride, kProbeStride);
+            }
+            probe_enc->endEncoding();
+            mtl4_->CommitStandaloneAndWait(probe_cmd);
+            const uint8_t* b =
+                reinterpret_cast<const uint8_t*>(probe_buffer->contents());
+            auto count_nonzero = [&](size_t offset) -> uint32_t {
+              uint32_t nonzero = 0;
+              for (size_t i = 0; i < kProbeStride; ++i) {
+                nonzero += b[offset + i] ? 1u : 0u;
+              }
+              return nonzero;
+            };
+            uint32_t nonzero0 = count_nonzero(0 * kProbeStride);
+            uint32_t nonzero1 = count_nonzero(1 * kProbeStride);
+            uint32_t nonzero2 = count_nonzero(2 * kProbeStride);
+            uint32_t nonzero3 = count_nonzero(3 * kProbeStride);
+            uint32_t nonzero4 = count_nonzero(4 * kProbeStride);
+            fprintf(stderr,
+                    "[swap-src-probe] type=%u arr=%u p0=(%u,%u) nz0=%u px0=0x%02X%02X%02X%02X "
+                    "p1=(%u,%u) nz1=%u px1=0x%02X%02X%02X%02X "
+                    "p2=(%u,%u) nz2=%u px2=0x%02X%02X%02X%02X "
+                    "p3=(%u,%u) nz3=%u px3=0x%02X%02X%02X%02X "
+                    "p4=(%u,%u) nz4=%u px4=0x%02X%02X%02X%02X fmt=%u size=%ux%u\n",
+                    static_cast<uint32_t>(source_texture->textureType()), array_len,
+                    probe_x[0], probe_y[0], nonzero0, b[0], b[1], b[2], b[3],
+                    probe_x[1], probe_y[1], nonzero1, b[kProbeStride + 0],
+                    b[kProbeStride + 1], b[kProbeStride + 2], b[kProbeStride + 3],
+                    probe_x[2], probe_y[2], nonzero2, b[2 * kProbeStride + 0],
+                    b[2 * kProbeStride + 1], b[2 * kProbeStride + 2],
+                    b[2 * kProbeStride + 3], probe_x[3], probe_y[3], nonzero3,
+                    b[3 * kProbeStride + 0], b[3 * kProbeStride + 1],
+                    b[3 * kProbeStride + 2], b[3 * kProbeStride + 3], probe_x[4],
+                    probe_y[4], nonzero4, b[4 * kProbeStride + 0],
+                    b[4 * kProbeStride + 1], b[4 * kProbeStride + 2],
+                    b[4 * kProbeStride + 3],
+                    static_cast<uint32_t>(source_texture->pixelFormat()),
+                    static_cast<uint32_t>(source_texture->width()),
+                    static_cast<uint32_t>(source_texture->height()));
+            fflush(stderr);
+            ++swap_source_probe_log_count;
+          } else {
+            probe_cmd->release();
+          }
+        }
+        probe_buffer->release();
+      }
+    }
+
     bool swap_dest_swap = false;
     const bool has_swap_dest_swap =
         ConsumeSwapDestSwap(frontbuffer_ptr, &swap_dest_swap);
-    bool force_swap_rb = has_swap_dest_swap && swap_dest_swap;
-    static uint32_t shared_frontbuffer_probe_log_count = 0;
-    if (shared_frontbuffer_probe_log_count < 6 && shared_memory_ && mtl4_) {
-      MTL::Buffer* shared_mem_buffer = shared_memory_->GetBuffer();
-      uint32_t probe_w = frontbuffer_width ? frontbuffer_width : 1280;
-      uint32_t probe_h = frontbuffer_height ? frontbuffer_height : 720;
-      size_t probe_row_bytes = size_t(probe_w) * size_t(4);
-      size_t probe_size = probe_row_bytes * size_t(probe_h);
-      if (shared_mem_buffer && probe_size &&
-          (uint64_t(frontbuffer_ptr) + uint64_t(probe_size) <=
-           uint64_t(shared_mem_buffer->length()))) {
-        MTL::Buffer* probe_buffer =
-            device_->newBuffer(probe_size, MTL::ResourceStorageModeShared);
-        if (probe_buffer) {
-          MTL4::CommandBuffer* probe_cmd = mtl4_->BeginStandaloneCommandBuffer();
-          if (probe_cmd) {
-            MTL4::ComputeCommandEncoder* probe_enc =
-                probe_cmd->computeCommandEncoder();
-            if (probe_enc) {
-              probe_enc->copyFromBuffer(shared_mem_buffer, frontbuffer_ptr,
-                                        probe_buffer, 0, probe_size);
-              probe_enc->endEncoding();
-              mtl4_->CommitStandaloneAndWait(probe_cmd);
-              const uint8_t* probe =
-                  reinterpret_cast<const uint8_t*>(probe_buffer->contents());
-              uint32_t nonzero = 0;
-              uint32_t first_x = probe_w;
-              uint32_t first_y = probe_h;
-              uint32_t last_x = 0;
-              uint32_t last_y = 0;
-              for (uint32_t y = 0; y < probe_h; ++y) {
-                const uint8_t* row = probe + size_t(y) * probe_row_bytes;
-                for (uint32_t x = 0; x < probe_w; ++x) {
-                  const uint8_t* p = row + size_t(x) * 4u;
-                  if (p[0] || p[1] || p[2] || p[3]) {
-                    ++nonzero;
-                    first_x = std::min(first_x, x);
-                    first_y = std::min(first_y, y);
-                    last_x = std::max(last_x, x);
-                    last_y = std::max(last_y, y);
-                  }
-                }
-              }
-              if (nonzero) {
-                fprintf(stderr,
-                        "[swap-frontbuf] nonzero=%u bbox=[%u,%u]-[%u,%u] size=%ux%u\n",
-                        nonzero, first_x, first_y, last_x, last_y, probe_w,
-                        probe_h);
-              } else {
-                fprintf(stderr,
-                        "[swap-frontbuf] nonzero=0 size=%ux%u\n", probe_w,
-                        probe_h);
-              }
-              fflush(stderr);
-              ++shared_frontbuffer_probe_log_count;
-            } else {
-              probe_cmd->release();
-            }
-          }
-          probe_buffer->release();
-        }
-      }
-    }
+    // PGR3 currently presents black with RB-swap copy in the Metal path;
+    // keep swap metadata logging, but disable RB swap while validating output.
+    bool force_swap_rb = false;
     static uint32_t swap_dest_debug_log_count = 0;
     if (swap_dest_debug_log_count < 32) {
       fprintf(stderr,
@@ -1418,7 +1429,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       ui::metal::MetalPresenter* metal_presenter = presenter;
       uint32_t source_width = output_width;
       uint32_t source_height = output_height;
-      bool force_swap_rb_copy = force_swap_rb && !source_from_render_target;
+      bool force_swap_rb_copy = force_swap_rb;
       bool use_pwl_gamma_ramp_copy = use_pwl_gamma_ramp;
       auto aspect = graphics_system_->GetScaledAspectRatio();
       presenter->RefreshGuestOutput(
@@ -3517,6 +3528,38 @@ bool MetalCommandProcessor::IssueCopy() {
     fprintf(stderr, "[copy] Resolve wrote addr=0x%08X len=%u\n", written_address,
             written_length);
     fflush(stderr);
+  }
+
+  static uint32_t copy_sample_log_count = 0;
+  if (copy_sample_log_count < 12 && written_length && shared_memory_) {
+    if (MTL::Buffer* shared_mem_buffer = shared_memory_->GetBuffer()) {
+      size_t base = size_t(written_address);
+      size_t length = size_t(written_length);
+      if (base < shared_mem_buffer->length()) {
+        size_t available = shared_mem_buffer->length() - base;
+        size_t sample_len = std::min(length, available);
+        const uint8_t* bytes =
+            reinterpret_cast<const uint8_t*>(shared_mem_buffer->contents()) + base;
+        auto sample_u32 = [&](size_t byte_offset) -> uint32_t {
+          if (byte_offset + 4 > sample_len) {
+            return 0;
+          }
+          uint32_t v = 0;
+          std::memcpy(&v, bytes + byte_offset, sizeof(v));
+          return v;
+        };
+        uint32_t s0 = sample_u32(0);
+        uint32_t s1 = sample_u32(sample_len / 4);
+        uint32_t s2 = sample_u32(sample_len / 2);
+        uint32_t s3 = sample_u32(sample_len > 4 ? sample_len - 4 : 0);
+        fprintf(stderr,
+                "[copy-sample] addr=0x%08X len=%zu s0=0x%08X s1=0x%08X "
+                "s2=0x%08X s3=0x%08X\n",
+                written_address, sample_len, s0, s1, s2, s3);
+        fflush(stderr);
+        ++copy_sample_log_count;
+      }
+    }
   }
 
   if (!written_length) {

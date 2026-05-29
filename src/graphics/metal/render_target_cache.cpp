@@ -2789,6 +2789,9 @@ void MetalRenderTargetCache::DumpRenderTargets(
 
   Metal4Context* mtl4 = command_processor_.GetMetal4Context();
   mtl4->SetComputeAddress(edram_buffer_->gpuAddress(), 0);
+  // The dump compute writes directly to EDRAM; ensure it's resident on this
+  // command buffer (mirrors other resolve/transfer paths).
+  mtl4->AddResidentAllocation(edram_buffer_);
   mtl4->FlushComputeBindings(encoder);
 
   uint32_t scale_x = draw_resolution_scale_x();
@@ -3505,14 +3508,19 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
 
       static uint32_t resolve_debug_log_count = 0;
       if (resolve_debug_log_count < 32) {
+        const auto& dst_coord = copy_constants.dest_relative.dest_coordinate_info;
         fprintf(stderr,
                 "[resolve] base=0x%08X extent_start=0x%08X extent_len=%u "
-                "swap=%d shader=%d groups=%ux%u wh=%ux%u\n",
+                "swap=%d shader=%d groups=%ux%u wh=%ux%u "
+                "dpitch=%u dheight=%u doff=(%u,%u) dbase=0x%08X\n",
                 dest_base, resolve_info.copy_dest_extent_start,
                 resolve_info.copy_dest_extent_length,
                 resolve_info.copy_dest_info.copy_dest_swap ? 1 : 0,
                 static_cast<int>(copy_shader), group_count_x, group_count_y,
-                resolve_width, resolve_height);
+                resolve_width, resolve_height, dst_coord.pitch_aligned_div_32 << 5,
+                dst_coord.height_aligned_div_32 << 5,
+                dst_coord.offset_x_div_8 << 3, dst_coord.offset_y_div_8 << 3,
+                copy_constants.dest_base);
         fflush(stderr);
         ++resolve_debug_log_count;
       }
@@ -3596,6 +3604,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
       }
 
       if (pipeline && group_count_x && group_count_y) {
+        const draw_util::ResolveCopyShaderInfo& copy_shader_info =
+            draw_util::resolve_copy_shader_info[size_t(copy_shader)];
         uint32_t dest_pitch_pixels =
             copy_constants.dest_relative.dest_coordinate_info
                 .pitch_aligned_div_32
@@ -3700,6 +3710,16 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                     mtl4->AllocInlineConstant(&copy_constants,
                                               sizeof(copy_constants)),
                     0);
+              }
+
+              // Resolve copy shaders read EDRAM via t0 (raw/typed buffer SRV in
+              // D3D12/Vulkan terms). Bind the matching texture-buffer view so
+              // t0 isn't left as a stale texture binding from prior passes.
+              MTL::Texture* edram_source_view =
+                  GetEdramUintPow2BufferView(copy_shader_info.source_bpe_log2);
+              if (edram_source_view) {
+                mtl4->SetComputeTexture(edram_source_view->gpuResourceID(), 0);
+                mtl4->AddResidentAllocation(edram_source_view);
               }
 
               mtl4->SetComputeAddress(
