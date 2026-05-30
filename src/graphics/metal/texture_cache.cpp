@@ -98,6 +98,12 @@
 REXCVAR_DEFINE_BOOL(
     metal_texture_debug_probes, false, "GPU",
     "Enable expensive Metal texture/swap debug probes and logs");
+REXCVAR_DEFINE_BOOL(
+    metal_force_linear_swap_decode, true, "GPU",
+    "Force linear decoding for swap frontbuffer texture loads in Metal.");
+REXCVAR_DEFINE_BOOL(
+    metal_swap_raw_upload, false, "GPU",
+    "Bypass swap decode shader and upload resolved frontbuffer bytes directly.");
 namespace rex {
 namespace graphics {
 namespace metal {
@@ -862,7 +868,15 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       ++scaled_load_log_count;
     }
   }
-  const bool probe_texture_load = false;
+  static uint32_t swap_texload_probe_log_count = 0;
+  const uint32_t key_base_address = key.base_page << 12;
+  const uint32_t last_swap_ptr =
+      command_processor_ ? command_processor_->last_swap_ptr() : 0u;
+  const bool is_swap_frontbuffer_load =
+      last_swap_ptr != 0u && key_base_address == last_swap_ptr;
+  const bool probe_texture_load =
+      REXCVAR_GET(metal_texture_debug_probes) && is_swap_frontbuffer_load &&
+      swap_texload_probe_log_count < 24;
   uint32_t probe_guest_offset = 0;
   uint32_t probe_guest_pitch_blocks = 0;
   uint32_t probe_size_blocks_x = 0;
@@ -1512,6 +1526,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
                 probe_texture_px[0], probe_texture_px[1], probe_texture_px[2],
                 probe_texture_px[3]);
         fflush(stderr);
+        ++swap_texload_probe_log_count;
       } else if (buffer_pool && UploadBufferPool::HasPendingReleases(cmd)) {
         command_processor_->CommitStandaloneAsyncWithCallback(
             cmd, [](MTL4::CommandBuffer* completed_cmd) {
@@ -2756,40 +2771,83 @@ MTL::Texture* MetalTextureCache::RequestSwapTexture(
   const uint32_t key_base_address = key.base_page << 12;
   const uint32_t decoded_width = decoded_key.GetWidth();
   const uint32_t decoded_height = decoded_key.GetHeight();
+  MetalCommandProcessor::SwapDestMetadata swap_metadata = {};
+  bool has_swap_metadata = false;
   bool force_linear_swap_decode = false;
   bool is_frontbuffer_ptr_load = false;
+  uint64_t swap_sequence = 0;
   if (command_processor_) {
     const uint32_t frontbuffer_ptr = command_processor_->last_swap_ptr();
+    swap_sequence = command_processor_->current_swap_sequence();
     // Swap-present frontbuffer resolves are consumed as linear in this path.
     is_frontbuffer_ptr_load =
         frontbuffer_ptr != 0 && key_base_address == frontbuffer_ptr;
-    // Frontbuffer loads may still be declared tiled by guest fetch metadata
-    // (as in PGR3). Forcing linear in that case corrupts output, so only force
-    // linear when the decoded fetch itself is non-tiled.
-    force_linear_swap_decode = is_frontbuffer_ptr_load && !decoded_key.tiled;
+    if (is_frontbuffer_ptr_load &&
+        command_processor_->has_active_swap_dest_metadata()) {
+      swap_metadata = command_processor_->active_swap_dest_metadata();
+      has_swap_metadata = true;
+      if (swap_metadata.frontbuffer_width > 0 &&
+          swap_metadata.frontbuffer_width <= 8192) {
+        key.width_minus_1 = swap_metadata.frontbuffer_width - 1;
+      }
+      if (swap_metadata.frontbuffer_height > 0 &&
+          swap_metadata.frontbuffer_height <= 8192) {
+        key.height_minus_1 = swap_metadata.frontbuffer_height - 1;
+      }
+      if (swap_metadata.dest_pitch_bytes >= 32) {
+        const uint32_t pitch_div_32 = swap_metadata.dest_pitch_bytes >> 5;
+        key.pitch = std::min<uint32_t>(std::max<uint32_t>(pitch_div_32, 1u), 0x1FFu);
+      }
+    }
+
+    force_linear_swap_decode =
+        is_frontbuffer_ptr_load && REXCVAR_GET(metal_force_linear_swap_decode);
     if (force_linear_swap_decode) {
       key.tiled = 0;
+    } else if (is_frontbuffer_ptr_load && has_swap_metadata) {
+      // Resolve destination metadata is authoritative for swap-path decode.
+      key.tiled = 0;
+    } else if (is_frontbuffer_ptr_load && !has_swap_metadata) {
+      static uint32_t missing_swap_metadata_log_count = 0;
+      if (missing_swap_metadata_log_count < 8) {
+        fprintf(stderr,
+                "[swap-fetch] warning=missing-metadata seq=%llu base=0x%08X "
+                "decode=fallback-fetch\n",
+                static_cast<unsigned long long>(swap_sequence),
+                key_base_address);
+        fflush(stderr);
+        ++missing_swap_metadata_log_count;
+      }
     }
   }
   static uint32_t swap_fetch_debug_log_count = 0;
   if (REXCVAR_GET(metal_texture_debug_probes) &&
       swap_fetch_debug_log_count < 32) {
     fprintf(stderr,
-            "[swap-fetch] valid=%d base=0x%08X pitch=%u wh=%ux%u fmt=%u dim=%u "
-            "tiled=%u packed=%u endian=%u scaled=%d forced_linear=%u "
-            "frontbuffer_load=%u "
+            "[swap-fetch] seq=%llu valid=%d base=0x%08X pitch=%u wh=%ux%u "
+            "fmt=%u dim=%u tiled=%u packed=%u endian=%u scaled=%d "
+            "forced_linear=%u frontbuffer_load=%u meta=%u "
             "decoded_fmt=%u decoded_endian=%u decoded_pitch=%u decoded_wh=%ux%u "
-            "decoded_tiled=%u\n",
+            "decoded_tiled=%u meta_swap=%u meta_extent=0x%08X+%u "
+            "meta_pitch=%u meta_h=%u meta_off=(%u,%u) meta_fb=%ux%u "
+            "meta_shader=%u meta_seq=%llu\n",
+            static_cast<unsigned long long>(swap_sequence),
             key.is_valid ? 1 : 0, key_base_address, uint32_t(key.pitch),
             key.GetWidth(), key.GetHeight(), static_cast<uint32_t>(key.format),
             static_cast<uint32_t>(key.dimension), key.tiled ? 1u : 0u,
             key.packed_mips ? 1u : 0u, static_cast<uint32_t>(key.endianness),
             key.scaled_resolve ? 1 : 0, force_linear_swap_decode ? 1u : 0u,
-            is_frontbuffer_ptr_load ? 1u : 0u,
+            is_frontbuffer_ptr_load ? 1u : 0u, has_swap_metadata ? 1u : 0u,
             static_cast<uint32_t>(decoded_key.format),
             static_cast<uint32_t>(decoded_key.endianness),
             uint32_t(decoded_key.pitch), decoded_width, decoded_height,
-            decoded_key.tiled ? 1u : 0u);
+            decoded_key.tiled ? 1u : 0u, swap_metadata.swap_dest_swap ? 1u : 0u,
+            swap_metadata.resolve_extent_start, swap_metadata.resolve_extent_length,
+            swap_metadata.dest_pitch_bytes, swap_metadata.dest_height_aligned,
+            swap_metadata.dest_offset_x_bytes, swap_metadata.dest_offset_y,
+            swap_metadata.frontbuffer_width, swap_metadata.frontbuffer_height,
+            swap_metadata.resolve_shader_id,
+            static_cast<unsigned long long>(swap_metadata.swap_sequence));
     fflush(stderr);
     ++swap_fetch_debug_log_count;
   }
@@ -2819,6 +2877,66 @@ MTL::Texture* MetalTextureCache::RequestSwapTexture(
     log_swap_failure_once(SwapFailure::kView, key,
                           "failed to create swap texture view");
     return nullptr;
+  }
+
+  if (is_frontbuffer_ptr_load && REXCVAR_GET(metal_swap_raw_upload) &&
+      key.format == xenos::TextureFormat::k_8_8_8_8 && command_processor_) {
+    const uint32_t raw_width = key.GetWidth();
+    const uint32_t raw_height = key.GetHeight();
+    const uint32_t raw_row_pitch = raw_width * 4u;
+    const uint32_t raw_copy_bytes = raw_row_pitch * raw_height;
+    if (raw_width && raw_height && raw_copy_bytes) {
+      auto* device = command_processor_->GetMetalDevice();
+      auto* mtl4 = command_processor_->GetMetal4Context();
+      const uint8_t* raw_src_base =
+          static_cast<const MetalSharedMemory&>(shared_memory()).GetXboxRamBase();
+      const uint8_t* raw_src =
+          raw_src_base ? raw_src_base + (key_base_address & 0x1FFFFFFFu) : nullptr;
+      if (device && mtl4 && raw_src) {
+        MTL::Buffer* raw_buffer = device->newBuffer(
+            raw_copy_bytes, MTL::ResourceStorageModeShared);
+        if (raw_buffer) {
+          std::memcpy(raw_buffer->contents(), raw_src, raw_copy_bytes);
+          MTL4::CommandBuffer* raw_cmd =
+              command_processor_->CreateStandaloneTransferCommandBuffer(
+                  "XeniaCB reason=swap-raw-upload");
+          if (raw_cmd) {
+            mtl4->AddResidentAllocation(raw_buffer);
+            mtl4->AddResidentAllocation(view);
+            mtl4->CommitResidency();
+            MTL4::ComputeCommandEncoder* raw_enc =
+                raw_cmd->computeCommandEncoder();
+            if (raw_enc) {
+              raw_enc->copyFromBuffer(
+                  raw_buffer, 0, raw_row_pitch, raw_copy_bytes,
+                  MTL::Size::Make(raw_width, raw_height, 1), view, 0, 0,
+                  MTL::Origin::Make(0, 0, 0));
+              raw_enc->endEncoding();
+              command_processor_->CommitStandaloneAndWait(raw_cmd);
+              raw_buffer->release();
+              texture->MarkAsUsed();
+              key = texture->key();
+              width_scaled_out = key.GetWidth();
+              height_scaled_out = key.GetHeight();
+              format_out = key.format;
+              static uint32_t swap_raw_upload_log_count = 0;
+              if (REXCVAR_GET(metal_texture_debug_probes) &&
+                  swap_raw_upload_log_count < 16) {
+                fprintf(stderr,
+                        "[swap-raw-upload] base=0x%08X wh=%ux%u pitch=%u bytes=%u\n",
+                        key_base_address, raw_width, raw_height, raw_row_pitch,
+                        raw_copy_bytes);
+                fflush(stderr);
+                ++swap_raw_upload_log_count;
+              }
+              return view;
+            }
+            raw_cmd->release();
+          }
+          raw_buffer->release();
+        }
+      }
+    }
   }
 
   uint32_t swap_outdated_before = texture->outdated_mask();

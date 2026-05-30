@@ -8,9 +8,11 @@
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
 
+#include <array>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <utility>
 
 #include "shaders/blit_metallib.h"
 
@@ -132,7 +134,7 @@ bool MetalPresenter::CopyTextureToGuestOutput(
     MTL::Texture* source_texture, MTL::Texture* dest_texture,
     uint32_t source_width, uint32_t source_height,
     bool force_swap_rb, bool use_pwl_gamma_ramp,
-    uint64_t* submission_out) {
+    uint64_t* submission_out, uint64_t swap_sequence) {
   if (submission_out) {
     *submission_out = 0;
   }
@@ -257,8 +259,9 @@ bool MetalPresenter::CopyTextureToGuestOutput(
   static uint32_t copy_path_log_count = 0;
   if (REXCVAR_GET(metal_present_debug_probes) && copy_path_log_count < 64) {
     fprintf(stderr,
-            "[present-copy-path] %s srcfmt=%u dstfmt=%u rb=%u gamma=%u "
-            "src_type=%u dst_type=%u\n",
+            "[present-copy-path] seq=%llu %s srcfmt=%u dstfmt=%u rb=%u "
+            "gamma=%u src_type=%u dst_type=%u\n",
+            static_cast<unsigned long long>(swap_sequence),
             needs_shader_copy ? "shader" : "raw",
             static_cast<uint32_t>(sample_texture->pixelFormat()),
             static_cast<uint32_t>(dest_texture->pixelFormat()),
@@ -385,49 +388,89 @@ bool MetalPresenter::CopyTextureToGuestOutput(
   if (REXCVAR_GET(metal_present_debug_probes) && copy_probe_log_count < 8 &&
       device_ && mtl4_) {
     constexpr size_t kProbeStride = 16;
+    constexpr size_t kProbePointCount = 5;
+    auto make_probe_points = [](uint32_t w, uint32_t h)
+        -> std::array<std::pair<uint32_t, uint32_t>, kProbePointCount> {
+      const uint32_t max_x = w ? (w - 1) : 0;
+      const uint32_t max_y = h ? (h - 1) : 0;
+      return {{{max_x / 2, max_y / 2},
+               {max_x / 4, max_y / 4},
+               {(max_x * 3) / 4, max_y / 4},
+               {max_x / 4, (max_y * 3) / 4},
+               {(max_x * 3) / 4, (max_y * 3) / 4}}};
+    };
+    const auto src_points =
+        make_probe_points(static_cast<uint32_t>(sample_texture->width()),
+                          static_cast<uint32_t>(sample_texture->height()));
+    const auto dst_points =
+        make_probe_points(static_cast<uint32_t>(dest_texture->width()),
+                          static_cast<uint32_t>(dest_texture->height()));
     MTL::Buffer* probe_buffer =
-        device_->newBuffer(kProbeStride * 2, MTL::ResourceStorageModeShared);
+        device_->newBuffer(kProbeStride * kProbePointCount * 2,
+                           MTL::ResourceStorageModeShared);
     if (probe_buffer) {
       MTL4::CommandBuffer* probe_cmd = mtl4_->BeginStandaloneCommandBuffer();
       if (probe_cmd) {
         MTL4::ComputeCommandEncoder* probe_enc = probe_cmd->computeCommandEncoder();
         if (probe_enc) {
-          const uint32_t src_x = std::min<uint32_t>(
-              copy_width - 1, static_cast<uint32_t>(sample_texture->width() / 2));
-          const uint32_t src_y = std::min<uint32_t>(
-              copy_height - 1, static_cast<uint32_t>(sample_texture->height() / 2));
-          const uint32_t dst_x = std::min<uint32_t>(
-              copy_width - 1, static_cast<uint32_t>(dest_texture->width() / 2));
-          const uint32_t dst_y = std::min<uint32_t>(
-              copy_height - 1, static_cast<uint32_t>(dest_texture->height() / 2));
           mtl4_->AddResidentAllocation(sample_texture);
           mtl4_->AddResidentAllocation(dest_texture);
           mtl4_->AddResidentAllocation(probe_buffer);
           mtl4_->CommitResidency();
-          probe_enc->copyFromTexture(sample_texture, 0, 0,
-                                     MTL::Origin(src_x, src_y, 0),
-                                     MTL::Size(1, 1, 1), probe_buffer, 0,
-                                     kProbeStride, kProbeStride);
-          probe_enc->copyFromTexture(dest_texture, 0, 0,
-                                     MTL::Origin(dst_x, dst_y, 0),
-                                     MTL::Size(1, 1, 1), probe_buffer,
-                                     kProbeStride, kProbeStride, kProbeStride);
+          for (size_t i = 0; i < kProbePointCount; ++i) {
+            const size_t src_off = i * kProbeStride;
+            const size_t dst_off = (kProbePointCount * kProbeStride) + src_off;
+            probe_enc->copyFromTexture(
+                sample_texture, 0, 0,
+                MTL::Origin(src_points[i].first, src_points[i].second, 0),
+                MTL::Size(1, 1, 1), probe_buffer, src_off, kProbeStride,
+                kProbeStride);
+            probe_enc->copyFromTexture(
+                dest_texture, 0, 0,
+                MTL::Origin(dst_points[i].first, dst_points[i].second, 0),
+                MTL::Size(1, 1, 1), probe_buffer, dst_off, kProbeStride,
+                kProbeStride);
+          }
           probe_enc->endEncoding();
           mtl4_->CommitStandaloneAndWait(probe_cmd);
           const uint8_t* b =
               reinterpret_cast<const uint8_t*>(probe_buffer->contents());
-          uint32_t src_nonzero = 0;
-          uint32_t dst_nonzero = 0;
-          for (size_t i = 0; i < kProbeStride; ++i) {
-            src_nonzero += b[i] ? 1u : 0u;
-            dst_nonzero += b[kProbeStride + i] ? 1u : 0u;
+          uint32_t src_coherence = 0;
+          uint32_t dst_coherence = 0;
+          std::array<uint32_t, kProbePointCount> src_nonzero = {};
+          std::array<uint32_t, kProbePointCount> dst_nonzero = {};
+          std::array<uint32_t, kProbePointCount> src_rgba = {};
+          std::array<uint32_t, kProbePointCount> dst_rgba = {};
+          for (size_t p = 0; p < kProbePointCount; ++p) {
+            const size_t src_off = p * kProbeStride;
+            const size_t dst_off = (kProbePointCount * kProbeStride) + src_off;
+            for (size_t i = 0; i < kProbeStride; ++i) {
+              src_nonzero[p] += b[src_off + i] ? 1u : 0u;
+              dst_nonzero[p] += b[dst_off + i] ? 1u : 0u;
+            }
+            src_rgba[p] = uint32_t(b[src_off + 0]) |
+                          (uint32_t(b[src_off + 1]) << 8) |
+                          (uint32_t(b[src_off + 2]) << 16) |
+                          (uint32_t(b[src_off + 3]) << 24);
+            dst_rgba[p] = uint32_t(b[dst_off + 0]) |
+                          (uint32_t(b[dst_off + 1]) << 8) |
+                          (uint32_t(b[dst_off + 2]) << 16) |
+                          (uint32_t(b[dst_off + 3]) << 24);
+            src_coherence += src_nonzero[p] ? 1u : 0u;
+            dst_coherence += dst_nonzero[p] ? 1u : 0u;
           }
           fprintf(stderr,
-                  "[present-probe] src_nonzero=%u dst_nonzero=%u "
-                  "src8=0x%02X%02X%02X%02X dst8=0x%02X%02X%02X%02X\n",
-                  src_nonzero, dst_nonzero, b[0], b[1], b[2], b[3],
-                  b[kProbeStride + 0], b[kProbeStride + 1], b[kProbeStride + 2],
-                  b[kProbeStride + 3]);
+                  "[present-probe] seq=%llu src_coh=%u dst_coh=%u "
+                  "c=%u/0x%08X->%u/0x%08X ul=%u/0x%08X->%u/0x%08X "
+                  "ur=%u/0x%08X->%u/0x%08X ll=%u/0x%08X->%u/0x%08X "
+                  "lr=%u/0x%08X->%u/0x%08X\n",
+                  static_cast<unsigned long long>(swap_sequence), src_coherence,
+                  dst_coherence, src_nonzero[0], src_rgba[0], dst_nonzero[0],
+                  dst_rgba[0], src_nonzero[1], src_rgba[1], dst_nonzero[1],
+                  dst_rgba[1], src_nonzero[2], src_rgba[2], dst_nonzero[2],
+                  dst_rgba[2], src_nonzero[3], src_rgba[3], dst_nonzero[3],
+                  dst_rgba[3], src_nonzero[4], src_rgba[4], dst_nonzero[4],
+                  dst_rgba[4]);
           fflush(stderr);
           ++copy_probe_log_count;
         } else {
@@ -465,13 +508,27 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
   }
 
   MTL::Texture* dst = drawable->texture();
+  const uint64_t paint_sequence =
+      present_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+  constexpr size_t kProbePointCount = 5;
+  auto make_probe_points = [](uint32_t w, uint32_t h)
+      -> std::array<std::pair<uint32_t, uint32_t>, kProbePointCount> {
+    const uint32_t max_x = w ? (w - 1) : 0;
+    const uint32_t max_y = h ? (h - 1) : 0;
+    return {{{max_x / 2, max_y / 2},
+             {max_x / 4, max_y / 4},
+             {(max_x * 3) / 4, max_y / 4},
+             {max_x / 4, (max_y * 3) / 4},
+             {(max_x * 3) / 4, (max_y * 3) / 4}}};
+  };
   static uint32_t drawable_probe_log_count = 0;
   const bool probe_drawable =
       REXCVAR_GET(metal_present_debug_probes) && drawable_probe_log_count < 8;
   MTL::Buffer* drawable_probe_buffer = nullptr;
   if (probe_drawable && device_) {
     drawable_probe_buffer =
-        device_->newBuffer(size_t(16), MTL::ResourceStorageModeShared);
+        device_->newBuffer(size_t(16 * kProbePointCount),
+                           MTL::ResourceStorageModeShared);
   }
 
   uint32_t mailbox_index = UINT32_MAX;
@@ -500,8 +557,10 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
   static int paint_log_count = 0;
   if (paint_log_count < 12) {
     fprintf(stderr,
-            "[present] paint mailbox=%u tex=%p direct=%p draw=%ux%u tex=%ux%u\n",
-            mailbox_index, (void*)guest_output_texture,
+            "[present] seq=%llu paint mailbox=%u tex=%p direct=%p draw=%ux%u "
+            "tex=%ux%u\n",
+            static_cast<unsigned long long>(paint_sequence), mailbox_index,
+            (void*)guest_output_texture,
             (void*)nullptr,
             static_cast<uint32_t>(dst->width()),
             static_cast<uint32_t>(dst->height()),
@@ -519,33 +578,50 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
   if (REXCVAR_GET(metal_present_debug_probes) && paint_probe_log_count < 8 &&
       guest_output_texture && device_ && mtl4_) {
     constexpr size_t kProbeStride = 16;
+    const auto probe_points = make_probe_points(
+        static_cast<uint32_t>(guest_output_texture->width()),
+        static_cast<uint32_t>(guest_output_texture->height()));
     MTL::Buffer* probe_buffer =
-        device_->newBuffer(kProbeStride, MTL::ResourceStorageModeShared);
+        device_->newBuffer(kProbeStride * kProbePointCount,
+                           MTL::ResourceStorageModeShared);
     if (probe_buffer) {
       MTL4::CommandBuffer* probe_cmd = mtl4_->BeginStandaloneCommandBuffer();
       if (probe_cmd) {
         MTL4::ComputeCommandEncoder* probe_enc = probe_cmd->computeCommandEncoder();
         if (probe_enc) {
-          const uint32_t src_x = static_cast<uint32_t>(guest_output_texture->width() / 2);
-          const uint32_t src_y = static_cast<uint32_t>(guest_output_texture->height() / 2);
           mtl4_->AddResidentAllocation(guest_output_texture);
           mtl4_->AddResidentAllocation(probe_buffer);
           mtl4_->CommitResidency();
-          probe_enc->copyFromTexture(guest_output_texture, 0, 0,
-                                     MTL::Origin(src_x, src_y, 0),
-                                     MTL::Size(1, 1, 1), probe_buffer, 0,
-                                     kProbeStride, kProbeStride);
+          for (size_t i = 0; i < kProbePointCount; ++i) {
+            probe_enc->copyFromTexture(
+                guest_output_texture, 0, 0,
+                MTL::Origin(probe_points[i].first, probe_points[i].second, 0),
+                MTL::Size(1, 1, 1), probe_buffer, i * kProbeStride,
+                kProbeStride, kProbeStride);
+          }
           probe_enc->endEncoding();
           mtl4_->CommitStandaloneAndWait(probe_cmd);
           const uint8_t* b =
               reinterpret_cast<const uint8_t*>(probe_buffer->contents());
-          uint32_t nonzero = 0;
-          for (size_t i = 0; i < kProbeStride; ++i) {
-            nonzero += b[i] ? 1u : 0u;
+          std::array<uint32_t, kProbePointCount> nonzero = {};
+          std::array<uint32_t, kProbePointCount> rgba = {};
+          uint32_t coherence = 0;
+          for (size_t p = 0; p < kProbePointCount; ++p) {
+            const size_t off = p * kProbeStride;
+            for (size_t i = 0; i < kProbeStride; ++i) {
+              nonzero[p] += b[off + i] ? 1u : 0u;
+            }
+            rgba[p] = uint32_t(b[off + 0]) | (uint32_t(b[off + 1]) << 8) |
+                      (uint32_t(b[off + 2]) << 16) |
+                      (uint32_t(b[off + 3]) << 24);
+            coherence += nonzero[p] ? 1u : 0u;
           }
           fprintf(stderr,
-                  "[paint-probe] nonzero=%u px8=0x%02X%02X%02X%02X tex=%ux%u\n",
-                  nonzero, b[0], b[1], b[2], b[3],
+                  "[paint-probe] seq=%llu coh=%u c=%u/0x%08X ul=%u/0x%08X "
+                  "ur=%u/0x%08X ll=%u/0x%08X lr=%u/0x%08X tex=%ux%u\n",
+                  static_cast<unsigned long long>(paint_sequence), coherence,
+                  nonzero[0], rgba[0], nonzero[1], rgba[1], nonzero[2],
+                  rgba[2], nonzero[3], rgba[3], nonzero[4], rgba[4],
                   static_cast<uint32_t>(guest_output_texture->width()),
                   static_cast<uint32_t>(guest_output_texture->height()));
           fflush(stderr);
@@ -666,16 +742,19 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
   if (drawable_probe_buffer) {
     MTL4::ComputeCommandEncoder* drawable_probe_enc = cmd->computeCommandEncoder();
     if (drawable_probe_enc) {
-      const uint32_t probe_x = std::min<uint32_t>(
-          std::max<uint32_t>(1u, uint32_t(dst->width())) - 1u,
-          uint32_t(dst->width() / 2));
-      const uint32_t probe_y = std::min<uint32_t>(
-          std::max<uint32_t>(1u, uint32_t(dst->height())) - 1u,
-          uint32_t(dst->height() / 2));
-      std::memset(drawable_probe_buffer->contents(), 0, 16);
-      drawable_probe_enc->copyFromTexture(
-          dst, 0, 0, MTL::Origin::Make(probe_x, probe_y, 0),
-          MTL::Size::Make(1, 1, 1), drawable_probe_buffer, 0, 4, 4);
+      constexpr size_t kProbeStride = 16;
+      const auto probe_points = make_probe_points(
+          static_cast<uint32_t>(dst->width()),
+          static_cast<uint32_t>(dst->height()));
+      std::memset(drawable_probe_buffer->contents(), 0,
+                  kProbeStride * kProbePointCount);
+      for (size_t i = 0; i < kProbePointCount; ++i) {
+        drawable_probe_enc->copyFromTexture(
+            dst, 0, 0,
+            MTL::Origin::Make(probe_points[i].first, probe_points[i].second, 0),
+            MTL::Size::Make(1, 1, 1), drawable_probe_buffer, i * kProbeStride,
+            kProbeStride, kProbeStride);
+      }
       drawable_probe_enc->endEncoding();
     } else {
       drawable_probe_buffer->release();
@@ -700,10 +779,12 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
     MTL::Buffer* probe_buffer_to_log = drawable_probe_buffer;
     const uint32_t probe_w = uint32_t(dst->width());
     const uint32_t probe_h = uint32_t(dst->height());
+    const uint64_t probe_sequence = paint_sequence;
     paint_commit_options = MTL4::CommitOptions::alloc()->init();
     paint_commit_options->addFeedbackHandler(
         [vertex_table_to_release, fragment_table_to_release,
-         probe_buffer_to_log, probe_w, probe_h](MTL4::CommitFeedback*) {
+         probe_buffer_to_log, probe_w, probe_h, probe_sequence](
+            MTL4::CommitFeedback*) {
           if (vertex_table_to_release) {
             vertex_table_to_release->release();
           }
@@ -714,13 +795,29 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
             const uint8_t* b = reinterpret_cast<const uint8_t*>(
                 probe_buffer_to_log->contents());
             if (b) {
-              uint32_t nonzero = 0;
-              for (size_t i = 0; i < 16; ++i) {
-                nonzero += b[i] ? 1u : 0u;
+              constexpr size_t kProbeStride = 16;
+              constexpr size_t kLocalProbePointCount = 5;
+              std::array<uint32_t, kLocalProbePointCount> nonzero = {};
+              std::array<uint32_t, kLocalProbePointCount> rgba = {};
+              uint32_t coherence = 0;
+              for (size_t p = 0; p < kLocalProbePointCount; ++p) {
+                const size_t off = p * kProbeStride;
+                for (size_t i = 0; i < kProbeStride; ++i) {
+                  nonzero[p] += b[off + i] ? 1u : 0u;
+                }
+                rgba[p] = uint32_t(b[off + 0]) | (uint32_t(b[off + 1]) << 8) |
+                          (uint32_t(b[off + 2]) << 16) |
+                          (uint32_t(b[off + 3]) << 24);
+                coherence += nonzero[p] ? 1u : 0u;
               }
               fprintf(stderr,
-                      "[drawable-probe] nonzero=%u px8=0x%02X%02X%02X%02X tex=%ux%u\n",
-                      nonzero, b[0], b[1], b[2], b[3], probe_w, probe_h);
+                      "[drawable-probe] seq=%llu coh=%u c=%u/0x%08X "
+                      "ul=%u/0x%08X ur=%u/0x%08X ll=%u/0x%08X lr=%u/0x%08X "
+                      "tex=%ux%u\n",
+                      static_cast<unsigned long long>(probe_sequence),
+                      coherence, nonzero[0], rgba[0], nonzero[1], rgba[1],
+                      nonzero[2], rgba[2], nonzero[3], rgba[3], nonzero[4],
+                      rgba[4], probe_w, probe_h);
               fflush(stderr);
             }
             probe_buffer_to_log->release();

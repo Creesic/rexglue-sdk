@@ -557,27 +557,45 @@ void MetalCommandProcessor::ForceIssueSwap() {
   IssueSwap(0, 1280, 720);
 }
 
-void MetalCommandProcessor::SetSwapDestSwap(uint32_t dest_base, bool swap) {
+void MetalCommandProcessor::SetSwapDestMetadata(
+    uint32_t dest_base, const SwapDestMetadata& metadata) {
   if (!dest_base) {
     return;
   }
-  if (swap_dest_swaps_by_base_.size() > 256) {
-    swap_dest_swaps_by_base_.clear();
+  if (swap_dest_metadata_by_base_.size() > 256) {
+    swap_dest_metadata_by_base_.clear();
   }
-  swap_dest_swaps_by_base_[dest_base] = swap;
+  swap_dest_metadata_by_base_[dest_base] = metadata;
 }
 
-bool MetalCommandProcessor::ConsumeSwapDestSwap(uint32_t dest_base,
-                                                bool* swap_out) {
-  if (!swap_out || !dest_base) {
+bool MetalCommandProcessor::ConsumeSwapDestMetadata(
+    uint32_t dest_base, uint64_t current_swap_sequence,
+    SwapDestMetadata* metadata_out) {
+  if (!metadata_out || !dest_base) {
     return false;
   }
-  auto it = swap_dest_swaps_by_base_.find(dest_base);
-  if (it == swap_dest_swaps_by_base_.end()) {
+  auto it = swap_dest_metadata_by_base_.find(dest_base);
+  if (it == swap_dest_metadata_by_base_.end()) {
     return false;
   }
-  *swap_out = it->second;
-  swap_dest_swaps_by_base_.erase(it);
+  *metadata_out = it->second;
+  swap_dest_metadata_by_base_.erase(it);
+
+  const bool stale = (metadata_out->swap_sequence + 1) < current_swap_sequence;
+  if (stale) {
+    static uint32_t stale_swap_dest_log_count = 0;
+    if (stale_swap_dest_log_count < 8) {
+      fprintf(stderr,
+              "[swap-dest] stale metadata ignored base=0x%08X meta_seq=%llu "
+              "swap_seq=%llu\n",
+              dest_base,
+              static_cast<unsigned long long>(metadata_out->swap_sequence),
+              static_cast<unsigned long long>(current_swap_sequence));
+      fflush(stderr);
+      ++stale_swap_dest_log_count;
+    }
+    return false;
+  }
   return true;
 }
 
@@ -586,7 +604,9 @@ bool MetalCommandProcessor::SetupContext() {
   last_swap_ptr_ = 0;
   last_swap_width_ = 0;
   last_swap_height_ = 0;
-  swap_dest_swaps_by_base_.clear();
+  swap_sequence_ = 0;
+  swap_dest_metadata_by_base_.clear();
+  active_swap_dest_metadata_valid_ = false;
   gamma_ramp_256_entry_table_up_to_date_ = false;
   gamma_ramp_pwl_up_to_date_ = false;
 
@@ -1127,9 +1147,11 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                       uint32_t frontbuffer_height) {
   ProcessCompletedSubmissions();
   saw_swap_ = true;
+  ++swap_sequence_;
   last_swap_ptr_ = frontbuffer_ptr;
   last_swap_width_ = frontbuffer_width;
   last_swap_height_ = frontbuffer_height;
+  active_swap_dest_metadata_valid_ = false;
 
   // End any active render encoder
   EndRenderEncoder();
@@ -1208,6 +1230,38 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
     uint32_t output_width = frontbuffer_width ? frontbuffer_width : 1280;
     uint32_t output_height = frontbuffer_height ? frontbuffer_height : 720;
 
+    SwapDestMetadata swap_dest_metadata;
+    const bool has_swap_dest_metadata = ConsumeSwapDestMetadata(
+        frontbuffer_ptr, swap_sequence_, &swap_dest_metadata);
+    if (has_swap_dest_metadata) {
+      active_swap_dest_metadata_ = swap_dest_metadata;
+      active_swap_dest_metadata_valid_ = true;
+    }
+    const bool swap_dest_swap =
+        has_swap_dest_metadata ? swap_dest_metadata.swap_dest_swap : false;
+    bool force_swap_rb = swap_dest_swap;
+    static uint32_t swap_dest_debug_log_count = 0;
+    if (swap_dest_debug_log_count < 32) {
+      fprintf(stderr,
+              "[swap-dest] seq=%llu front=0x%08X found=%d swap=%d "
+              "force_rb=%d extent=0x%08X+%u pitch=%u h_aligned=%u "
+              "off=(%u,%u) fb=%ux%u shader=%u meta_seq=%llu\n",
+              static_cast<unsigned long long>(swap_sequence_), frontbuffer_ptr,
+              has_swap_dest_metadata ? 1 : 0, swap_dest_swap ? 1 : 0,
+              force_swap_rb ? 1 : 0, swap_dest_metadata.resolve_extent_start,
+              swap_dest_metadata.resolve_extent_length,
+              swap_dest_metadata.dest_pitch_bytes,
+              swap_dest_metadata.dest_height_aligned,
+              swap_dest_metadata.dest_offset_x_bytes,
+              swap_dest_metadata.dest_offset_y,
+              swap_dest_metadata.frontbuffer_width,
+              swap_dest_metadata.frontbuffer_height,
+              swap_dest_metadata.resolve_shader_id,
+              static_cast<unsigned long long>(swap_dest_metadata.swap_sequence));
+      fflush(stderr);
+      ++swap_dest_debug_log_count;
+    }
+
     MTL::Texture* source_texture = nullptr;
     bool use_pwl_gamma_ramp = false;
     bool source_from_render_target = false;
@@ -1285,20 +1339,6 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       }
     }
 
-    bool swap_dest_swap = false;
-    const bool has_swap_dest_swap =
-        ConsumeSwapDestSwap(frontbuffer_ptr, &swap_dest_swap);
-    bool force_swap_rb = false;
-    static uint32_t swap_dest_debug_log_count = 0;
-    if (swap_dest_debug_log_count < 32) {
-      fprintf(stderr,
-              "[swap-dest] front=0x%08X found=%d swap=%d force_rb=%d\n",
-              frontbuffer_ptr, has_swap_dest_swap ? 1 : 0,
-              swap_dest_swap ? 1 : 0, force_swap_rb ? 1 : 0);
-      fflush(stderr);
-      ++swap_dest_debug_log_count;
-    }
-
     if (!source_texture) {
       static bool missing_swap_logged = false;
       if (!missing_swap_logged) {
@@ -1307,6 +1347,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
             "MetalCommandProcessor::IssueSwap: swap texture unavailable; "
             "presenting inactive (black) output");
       }
+      active_swap_dest_metadata_valid_ = false;
       presenter->RefreshGuestOutput(
           0, 0, 0, 0, [](ui::Presenter::GuestOutputRefreshContext&) -> bool {
             return false;
@@ -1320,11 +1361,12 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       uint32_t source_height = output_height;
       bool force_swap_rb_copy = force_swap_rb && !source_from_render_target;
       bool use_pwl_gamma_ramp_copy = use_pwl_gamma_ramp;
+      uint64_t swap_sequence_copy = swap_sequence_;
       auto aspect = graphics_system_->GetScaledAspectRatio();
       presenter->RefreshGuestOutput(
           output_width, output_height, aspect.first, aspect.second,
           [source_texture, metal_presenter, source_width, source_height,
-           force_swap_rb_copy, use_pwl_gamma_ramp_copy](
+           force_swap_rb_copy, use_pwl_gamma_ramp_copy, swap_sequence_copy](
               ui::Presenter::GuestOutputRefreshContext& context) -> bool {
             auto& metal_context =
                 static_cast<ui::metal::MetalGuestOutputRefreshContext&>(context);
@@ -1333,13 +1375,14 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
             bool copy_success = metal_presenter->CopyTextureToGuestOutput(
                 source_texture, metal_context.resource_uav_capable(),
                 source_width, source_height, force_swap_rb_copy,
-                use_pwl_gamma_ramp_copy, &submission_id);
+                use_pwl_gamma_ramp_copy, &submission_id, swap_sequence_copy);
             if (copy_success && submission_id) {
               metal_context.SetSubmissionId(submission_id);
             }
             return copy_success;
           });
     }
+    active_swap_dest_metadata_valid_ = false;
   }
 }
 

@@ -3487,9 +3487,6 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
       uint32_t dest_local_end =
           dest_local_start + resolve_info.copy_dest_extent_length;
 
-      command_processor_.SetSwapDestSwap(
-          dest_base, resolve_info.copy_dest_info.copy_dest_swap);
-
       // For now, only apply the 8888 restriction to color resolves; depth
       // resolves may use different destination formats.
       uint32_t bytes_per_pixel = 4;
@@ -3500,10 +3497,23 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
           resolve_info.GetCopyShader(draw_resolution_scale_x(),
                                      draw_resolution_scale_y(), copy_constants,
                                      group_count_x, group_count_y);
+      const auto& dst_coord = copy_constants.dest_relative.dest_coordinate_info;
+      MetalCommandProcessor::SwapDestMetadata swap_metadata;
+      swap_metadata.swap_dest_swap = resolve_info.copy_dest_info.copy_dest_swap;
+      swap_metadata.resolve_extent_start = resolve_info.copy_dest_extent_start;
+      swap_metadata.resolve_extent_length = resolve_info.copy_dest_extent_length;
+      swap_metadata.dest_pitch_bytes = dst_coord.pitch_aligned_div_32 << 5;
+      swap_metadata.dest_height_aligned = dst_coord.height_aligned_div_32 << 5;
+      swap_metadata.dest_offset_x_bytes = dst_coord.offset_x_div_8 << 3;
+      swap_metadata.dest_offset_y = dst_coord.offset_y_div_8 << 3;
+      swap_metadata.frontbuffer_width = resolve_width;
+      swap_metadata.frontbuffer_height = resolve_height;
+      swap_metadata.resolve_shader_id = static_cast<uint32_t>(copy_shader);
+      swap_metadata.swap_sequence = command_processor_.current_swap_sequence();
+      command_processor_.SetSwapDestMetadata(dest_base, swap_metadata);
 
       static uint32_t resolve_debug_log_count = 0;
       if (resolve_debug_log_count < 32) {
-        const auto& dst_coord = copy_constants.dest_relative.dest_coordinate_info;
         fprintf(stderr,
                 "[resolve] base=0x%08X extent_start=0x%08X extent_len=%u "
                 "swap=%d shader=%d groups=%ux%u wh=%ux%u "
