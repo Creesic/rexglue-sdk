@@ -2805,8 +2805,9 @@ MTL::Texture* MetalTextureCache::RequestSwapTexture(
     if (force_linear_swap_decode) {
       key.tiled = 0;
     } else if (is_frontbuffer_ptr_load && has_swap_metadata) {
-      // Resolve destination metadata is authoritative for swap-path decode.
-      key.tiled = 0;
+      // Non-forced path: until resolve metadata carries an explicit tiling
+      // mode, fall back to fetch-constant tiled bit for FM2 parity checks.
+      key.tiled = decoded_key.tiled;
     } else if (is_frontbuffer_ptr_load && !has_swap_metadata) {
       static uint32_t missing_swap_metadata_log_count = 0;
       if (missing_swap_metadata_log_count < 8) {

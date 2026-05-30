@@ -89,6 +89,7 @@ bool Metal4Context::Initialize(MTL::Device* device) {
     return false;
   }
   residency_set_->addAllocation(inline_constants_buffer_);
+  residency_allocations_[inline_constants_buffer_] = residency_epoch_;
   residency_set_->commit();
   rs_desc->release();
 
@@ -382,10 +383,40 @@ MTL::GPUAddress Metal4Context::AllocInlineConstant(const void* data,
 void Metal4Context::ResetFrameState() {
   inline_constants_offset_ = 0;
   allocator_->reset();
+  ++residency_epoch_;
+
+  if (!residency_set_) {
+    return;
+  }
+  // Keep a small rolling window of recent allocations to avoid retaining
+  // one-off transient buffers forever while still covering in-flight frames.
+  constexpr uint64_t kResidencyKeepEpochWindow = 4;
+  residency_prune_candidates_.clear();
+  for (const auto& [alloc, last_epoch] : residency_allocations_) {
+    if (!alloc || alloc == inline_constants_buffer_) {
+      continue;
+    }
+    if (last_epoch + kResidencyKeepEpochWindow < residency_epoch_) {
+      residency_prune_candidates_.insert(alloc);
+    }
+  }
+  if (!residency_prune_candidates_.empty()) {
+    for (MTL::Allocation* alloc : residency_prune_candidates_) {
+      residency_set_->removeAllocation(alloc);
+      residency_allocations_.erase(alloc);
+    }
+    residency_dirty_ = true;
+  }
 }
 
 void Metal4Context::AddResidentAllocation(MTL::Allocation* alloc) {
   if (residency_set_ && alloc) {
+    auto [it, inserted] =
+        residency_allocations_.emplace(alloc, residency_epoch_);
+    if (!inserted) {
+      it->second = residency_epoch_;
+      return;
+    }
     residency_set_->addAllocation(alloc);
     residency_dirty_ = true;
   }
