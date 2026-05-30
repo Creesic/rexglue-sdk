@@ -379,49 +379,6 @@ MTL::GPUAddress Metal4Context::AllocInlineConstant(const void* data,
   return addr;
 }
 
-MTL4::RenderPassDescriptor* Metal4Context::CreateRenderPassDescriptor(
-    MTL::RenderPassDescriptor* mtl3_desc) {
-  if (!mtl3_desc) return nullptr;
-
-  MTL4::RenderPassDescriptor* desc = MTL4::RenderPassDescriptor::alloc()->init();
-
-  auto* src_colors = mtl3_desc->colorAttachments();
-  auto* dst_colors = desc->colorAttachments();
-  for (uint32_t i = 0; i < 4; ++i) {
-    auto* src = src_colors ? src_colors->object(i) : nullptr;
-    if (!src) continue;
-    auto* dst = dst_colors->object(i);
-    if (src->texture()) dst->setTexture(src->texture());
-    if (src->resolveTexture()) dst->setResolveTexture(src->resolveTexture());
-    dst->setLoadAction(src->loadAction());
-    dst->setStoreAction(src->storeAction());
-    dst->setClearColor(src->clearColor());
-  }
-
-  if (auto* src_depth = mtl3_desc->depthAttachment()) {
-    auto* dst_depth = MTL::RenderPassDepthAttachmentDescriptor::alloc()->init();
-    dst_depth->setTexture(src_depth->texture());
-    dst_depth->setLoadAction(src_depth->loadAction());
-    dst_depth->setStoreAction(src_depth->storeAction());
-    dst_depth->setClearDepth(src_depth->clearDepth());
-    desc->setDepthAttachment(dst_depth);
-    dst_depth->release();
-  }
-
-  if (auto* src_stencil = mtl3_desc->stencilAttachment()) {
-    auto* dst_stencil =
-        MTL::RenderPassStencilAttachmentDescriptor::alloc()->init();
-    dst_stencil->setTexture(src_stencil->texture());
-    dst_stencil->setLoadAction(src_stencil->loadAction());
-    dst_stencil->setStoreAction(src_stencil->storeAction());
-    dst_stencil->setClearStencil(src_stencil->clearStencil());
-    desc->setStencilAttachment(dst_stencil);
-    dst_stencil->release();
-  }
-
-  return desc;
-}
-
 void Metal4Context::ResetFrameState() {
   inline_constants_offset_ = 0;
   allocator_->reset();

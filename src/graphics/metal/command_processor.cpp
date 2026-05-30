@@ -107,7 +107,7 @@ void ClampScissorToBounds(draw_util::Scissor& scissor, uint32_t width,
 constexpr size_t kResolvedMemoryRangesMax = 8192;
 PipelineAttachmentFormats ResolvePipelineAttachmentFormats(
     const MetalRenderTargetCache* render_target_cache,
-    MTL::RenderPassDescriptor* pass_descriptor, bool pixel_shader_writes_depth,
+    MTL4::RenderPassDescriptor* pass_descriptor, bool pixel_shader_writes_depth,
     const char* pipeline_name) {
   PipelineAttachmentFormats result;
   result.sample_count = 1;
@@ -833,37 +833,24 @@ bool MetalCommandProcessor::SetupContext() {
 
 void MetalCommandProcessor::FlushCommandBufferAndWait(uint64_t timeout_ns,
                                                       const char* context) {
-  if (current_mtl4_command_buffer_) {
-    MTL::SharedEvent* completion_event = device_->newSharedEvent();
-    uint64_t completion_value = 1;
-    current_mtl4_command_buffer_->endCommandBuffer();
-    const MTL4::CommandBuffer* bufs[] = {current_mtl4_command_buffer_};
-    mtl4_->queue()->commit(bufs, 1);
-    mtl4_->queue()->signalEvent(completion_event, completion_value);
-    bool signaled =
-        completion_event->waitUntilSignaledValue(completion_value, timeout_ns);
-    if (!signaled) {
-      REXLOG_ERROR("{}: GPU timeout (possible GPU hang)", context);
-    }
-    completion_event->release();
-    current_mtl4_command_buffer_ = nullptr;
-    submission_has_draws_ = false;
-    copy_resolve_writes_pending_ = false;
-  }
-  DrainCommandBufferAutoreleasePool();
+  EndCommandBuffer();
 
-  if (mtl4_) {
-    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
-    MTL4::CommandBuffer* sync_cmd = mtl4_->BeginStandaloneCommandBuffer();
-    if (sync_cmd) {
-      sync_cmd->endCommandBuffer();
-      const MTL4::CommandBuffer* bufs[] = {sync_cmd};
-      mtl4_->queue()->commit(bufs, 1);
-      // MTL4 commit is async; use a shared event for synchronization.
-      // For simplicity, just release and rely on MTL4 queue ordering.
-      sync_cmd->release();
+  if (timeout_ns == 0) {
+    return;
+  }
+  auto start = std::chrono::steady_clock::now();
+  while (pending_completion_handlers_.load(std::memory_order_acquire) != 0) {
+    if (timeout_ns != std::numeric_limits<uint64_t>::max()) {
+      uint64_t elapsed_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - start)
+              .count());
+      if (elapsed_ns >= timeout_ns) {
+        REXLOG_ERROR("{}: GPU timeout waiting for completion handlers", context);
+        break;
+      }
     }
-    pool->release();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
 
@@ -907,7 +894,6 @@ void MetalCommandProcessor::ShutdownContext() {
     current_mtl4_command_buffer_->release();
     current_mtl4_command_buffer_ = nullptr;
   }
-  DrainCommandBufferAutoreleasePool();
 
   constant_buffer_pool_.reset();
 
@@ -1147,16 +1133,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
 
   // End any active render encoder
   EndRenderEncoder();
-
-  if (current_mtl4_command_buffer_) {
-    current_mtl4_command_buffer_->endCommandBuffer();
-    const MTL4::CommandBuffer* bufs[] = {current_mtl4_command_buffer_};
-    mtl4_->queue()->commit(bufs, 1);
-    current_mtl4_command_buffer_ = nullptr;
-    submission_has_draws_ = false;
-    copy_resolve_writes_pending_ = false;
-  }
-  DrainCommandBufferAutoreleasePool();
+  EndCommandBuffer();
 
   if (primitive_processor_ && frame_open_) {
     primitive_processor_->EndFrame();
@@ -1816,13 +1793,19 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (use_geometry_emulation && !pixel_translation) {
     pixel_shader_writes_depth_for_fmts = true;  // depth-only PS fallback
   }
-  MTL::RenderPassDescriptor* pass_desc_for_fmts =
+  MTL4::RenderPassDescriptor* pass_desc_for_fmts =
       render_target_cache_
           ? render_target_cache_->GetRenderPassDescriptor(1)
           : nullptr;
+  if (pass_desc_for_fmts) {
+    pass_desc_for_fmts->retain();
+  }
   auto attachment_formats = ResolvePipelineAttachmentFormats(
       render_target_cache_.get(), pass_desc_for_fmts,
       pixel_shader_writes_depth_for_fmts, "Pipeline");
+  if (pass_desc_for_fmts) {
+    pass_desc_for_fmts->release();
+  }
 
   // Derive the shared rendering key (color mask, blend, alpha-to-mask) once
   // for all pipeline paths instead of re-reading registers in each method.
@@ -3504,18 +3487,11 @@ MTL4::CommandBuffer* MetalCommandProcessor::EnsureMTL4CommandBuffer() {
 
   EnsureCommandBufferAutoreleasePool();
 
-  current_mtl4_command_buffer_ = device_->newCommandBuffer();
+  current_mtl4_command_buffer_ = mtl4_->BeginCommandBuffer();
   if (!current_mtl4_command_buffer_) {
     REXLOG_ERROR("EnsureMTL4CommandBuffer: failed to create command buffer");
     DrainCommandBufferAutoreleasePool();
     return nullptr;
-  }
-  current_mtl4_command_buffer_->beginCommandBuffer(
-      mtl4_->allocator());
-
-  if (mtl4_->GetResidencySet()) {
-    MTL::ResidencySet* rs = mtl4_->GetResidencySet();
-    current_mtl4_command_buffer_->useResidencySet(rs);
   }
 
   ++submission_current_;
@@ -3645,15 +3621,18 @@ void MetalCommandProcessor::BeginCommandBuffer() {
 
   g_mtl4_ir_ctx = mtl4_;
 
-  MTL::RenderPassDescriptor* mtl3_pass_descriptor = nullptr;
+  MTL4::RenderPassDescriptor* mtl4_pass_descriptor = nullptr;
   if (render_target_cache_) {
-    mtl3_pass_descriptor =
+    mtl4_pass_descriptor =
         render_target_cache_->GetRenderPassDescriptor(1);
   }
-  if (!mtl3_pass_descriptor) {
+  if (!mtl4_pass_descriptor) {
     REXLOG_ERROR("BeginCommandBuffer: No render pass descriptor available");
     return;
   }
+  // Keep the descriptor alive across this method, even if cache state
+  // changes concurrently and drops its cached reference.
+  mtl4_pass_descriptor->retain();
 
   if (register_file_) {
     auto depth_control = register_file_->Get<reg::RB_DEPTHCONTROL>();
@@ -3661,7 +3640,7 @@ void MetalCommandProcessor::BeginCommandBuffer() {
         depth_control.z_enable &&
         (depth_control.zfunc == xenos::CompareFunction::kGreater ||
          depth_control.zfunc == xenos::CompareFunction::kGreaterEqual);
-    if (auto* da = mtl3_pass_descriptor->depthAttachment()) {
+    if (auto* da = mtl4_pass_descriptor->depthAttachment()) {
       if (reverse_z) {
         da->setClearDepth(0.0);
       } else {
@@ -3670,27 +3649,11 @@ void MetalCommandProcessor::BeginCommandBuffer() {
     }
   }
 
+  // Do not reuse an existing encoder here. We've observed stale/internally
+  // invalid encoder state on long runs (AGX crash in setViewport). Recreate
+  // the encoder from a fresh pass descriptor each BeginCommandBuffer call.
   if (current_render_encoder_) {
-    uint32_t rt_width = 1;
-    uint32_t rt_height = 1;
-    GetBoundRenderTargetSize(render_target_cache_.get(), 1280, 720, rt_width,
-                             rt_height);
-    MTL::Viewport viewport = {
-        0.0, 0.0, static_cast<double>(rt_width), static_cast<double>(rt_height),
-        0.0, 1.0};
-    current_render_encoder_->setViewport(viewport);
-    MTL::ScissorRect scissor = {0, 0, rt_width, rt_height};
-    current_render_encoder_->setScissorRect(scissor);
-    viewport_dirty_ = true;
-    scissor_dirty_ = true;
-    return;
-  }
-
-  MTL4::RenderPassDescriptor* mtl4_pass_descriptor =
-      mtl4_->CreateRenderPassDescriptor(mtl3_pass_descriptor);
-  if (!mtl4_pass_descriptor) {
-    REXLOG_ERROR("BeginCommandBuffer: failed to create MTL4 render pass descriptor");
-    return;
+    EndRenderEncoder();
   }
 
   if (auto* ca = mtl4_pass_descriptor->colorAttachments()->object(0)) {
@@ -3747,7 +3710,6 @@ void MetalCommandProcessor::EndCommandBuffer() {
   EndRenderEncoder();
 
   if (current_mtl4_command_buffer_) {
-    current_mtl4_command_buffer_->endCommandBuffer();
     MTL4::CommitOptions* options = MTL4::CommitOptions::alloc()->init();
     options->addFeedbackHandler(
         [this](MTL4::CommitFeedback* feedback) {
@@ -3758,8 +3720,7 @@ void MetalCommandProcessor::EndCommandBuffer() {
           completed_command_buffers_.fetch_add(1, std::memory_order_relaxed);
           pending_completion_handlers_.fetch_sub(1, std::memory_order_relaxed);
         });
-    const MTL4::CommandBuffer* bufs[] = {current_mtl4_command_buffer_};
-    mtl4_->queue()->commit(bufs, 1, options);
+    mtl4_->Commit(current_mtl4_command_buffer_, options);
     options->release();
     current_mtl4_command_buffer_ = nullptr;
     submission_has_draws_ = false;

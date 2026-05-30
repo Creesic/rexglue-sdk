@@ -2200,7 +2200,7 @@ MTL::Texture* MetalRenderTargetCache::GetStencilTextureView(
   return view;
 }
 
-MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
+MTL4::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
     uint32_t expected_sample_count) {
   if (!render_pass_descriptor_dirty_ && cached_render_pass_descriptor_ &&
       cached_render_pass_descriptor_sample_count_ == expected_sample_count) {
@@ -2218,12 +2218,11 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
 
   // Create new descriptor
   cached_render_pass_descriptor_ =
-      MTL::RenderPassDescriptor::renderPassDescriptor();
+      MTL4::RenderPassDescriptor::alloc()->init();
   if (!cached_render_pass_descriptor_) {
     REXLOG_ERROR("MetalRenderTargetCache: Failed to create render pass descriptor");
     return nullptr;
   }
-  cached_render_pass_descriptor_->retain();
   cached_render_pass_descriptor_sample_count_ = expected_sample_count;
 
   bool has_any_render_target = false;
@@ -2655,8 +2654,8 @@ void MetalRenderTargetCache::StoreTiledData(
       return;
     }
 
-    MTL::RenderPassDescriptor* resolve_desc =
-        MTL::RenderPassDescriptor::renderPassDescriptor();
+    MTL4::RenderPassDescriptor* resolve_desc =
+        MTL4::RenderPassDescriptor::alloc()->init();
     if (resolve_desc) {
       auto* color_attachment = resolve_desc->colorAttachments()->object(0);
       color_attachment->setTexture(texture);
@@ -2664,16 +2663,12 @@ void MetalRenderTargetCache::StoreTiledData(
       color_attachment->setLoadAction(MTL::LoadActionLoad);
       color_attachment->setStoreAction(MTL::StoreActionMultisampleResolve);
 
-      Metal4Context* mtl4 = command_processor_.GetMetal4Context();
-      MTL4::RenderPassDescriptor* mtl4_rpd =
-          mtl4 ? mtl4->CreateRenderPassDescriptor(resolve_desc) : nullptr;
-      if (mtl4_rpd) {
+      if (resolve_desc) {
         MTL4::RenderCommandEncoder* render_encoder =
-            command_buffer->renderCommandEncoder(mtl4_rpd);
+            command_buffer->renderCommandEncoder(resolve_desc);
         if (render_encoder) {
           render_encoder->endEncoding();
         }
-        mtl4_rpd->release();
       }
       resolve_desc->release();
     }
@@ -4855,8 +4850,8 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
       if (transfer_encoder) {
         return transfer_encoder;
       }
-      MTL::RenderPassDescriptor* rp =
-          MTL::RenderPassDescriptor::renderPassDescriptor();
+      MTL4::RenderPassDescriptor* rp =
+          MTL4::RenderPassDescriptor::alloc()->init();
       if (dest_is_depth) {
         auto* da = rp->depthAttachment();
         da->setTexture(dest_texture);
@@ -4884,12 +4879,8 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
           ca->setClearColor(resolve_clear_color);
         }
       }
-      Metal4Context* mtl4 = command_processor_.GetMetal4Context();
-      MTL4::RenderPassDescriptor* mtl4_rp =
-          mtl4 ? mtl4->CreateRenderPassDescriptor(rp) : nullptr;
-      if (mtl4_rp) {
-        transfer_encoder = cmd->renderCommandEncoder(mtl4_rp);
-        mtl4_rp->release();
+      if (rp) {
+        transfer_encoder = cmd->renderCommandEncoder(rp);
       }
       rp->release();
       return transfer_encoder;
