@@ -37,7 +37,11 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/user_module.h>
 
-REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
+REXCVAR_DEFINE_BOOL(vsync, false, "GPU", "Enable vertical sync");
+REXCVAR_DEFINE_INT32(vsync_off_vblank_hz, 1000, "GPU",
+                     "Guest vblank rate in Hz when vsync is disabled")
+    .range(1, 2000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
                     "Refresh page-valid state from GPU-written memory at frame end. "
@@ -104,6 +108,23 @@ REXCVAR_DEFINE_BOOL(gpu_wait_reg_mem_yield_short_waits, true, "GPU/Diagnostics",
 REXCVAR_DEFINE_UINT32(gpu_wait_reg_mem_short_wait_yield_interval, 256, "GPU/Diagnostics",
                       "Yield once every N failed polls for short WAIT_REG_MEM waits")
     .range(1, 65536)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(gpu_cp_stall_spin_threshold, 500, "GPU/Diagnostics",
+                      "Command processor stall-loop poll count before entering timed wait")
+    .range(0, 1000000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(gpu_cp_stall_wait_ms, 5, "GPU/Diagnostics",
+                      "Timed wait duration in ms used after gpu_cp_stall_spin_threshold polls "
+                      "(0 disables timed waits and only yields)")
+    .range(0, 1000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(gpu_cp_stall_wait_us, 0, "GPU/Diagnostics",
+                      "Microsecond stall wait override used after gpu_cp_stall_spin_threshold polls "
+                      "(0 keeps gpu_cp_stall_wait_ms behavior; supports sub-ms values like 200)")
+    .range(0, 1000000)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(gpu_mem_write_trace_addr, 0, "GPU/Diagnostics",
@@ -874,13 +895,38 @@ void CommandProcessor::WorkerThreadMain() {
       uint64_t stats_stall_start_tick = BeginCommandStatsStall();
       uint64_t stats_stall_polls = 0;
       uint64_t stats_stall_waits = 0;
+      const uint32_t stall_spin_threshold = REXCVAR_GET(gpu_cp_stall_spin_threshold);
+      const uint32_t stall_wait_ms = REXCVAR_GET(gpu_cp_stall_wait_ms);
+      const uint32_t stall_wait_us = REXCVAR_GET(gpu_cp_stall_wait_us);
+      const uint64_t host_tick_frequency = stall_wait_us ? rex::chrono::Clock::QueryHostTickFrequency() : 0;
       do {
         // If we spin around too much, revert to a "low-power" state.
-        if (loop_count > 500) {
-          const int wait_time_ms = 5;
+        if (loop_count > stall_spin_threshold) {
           ++stats_stall_waits;
-          rex::thread::Wait(write_ptr_index_event_.get(), true,
-                            std::chrono::milliseconds(wait_time_ms));
+          if (stall_wait_us > 0) {
+            if (stall_wait_us < 1000) {
+              // WaitForSingleObjectEx only supports milliseconds. For sub-ms waits, poll
+              // the event with a bounded microsecond yield loop.
+              uint64_t wait_start_tick = rex::chrono::Clock::QueryHostTickCount();
+              uint64_t wait_budget_ticks =
+                  host_tick_frequency ? ((host_tick_frequency * stall_wait_us) + 999999) / 1000000 : 0;
+              do {
+                auto wait_result = rex::thread::Wait(write_ptr_index_event_.get(), true,
+                                                     std::chrono::milliseconds(0));
+                if (wait_result != rex::thread::WaitResult::kTimeout) {
+                  break;
+                }
+                rex::thread::MaybeYield();
+              } while (host_tick_frequency &&
+                       (rex::chrono::Clock::QueryHostTickCount() - wait_start_tick) < wait_budget_ticks);
+            } else {
+              rex::thread::Wait(write_ptr_index_event_.get(), true,
+                                std::chrono::milliseconds(stall_wait_us / 1000));
+            }
+          } else if (stall_wait_ms > 0) {
+            rex::thread::Wait(write_ptr_index_event_.get(), true,
+                              std::chrono::milliseconds(stall_wait_ms));
+          }
         }
 
         rex::thread::MaybeYield();

@@ -20,6 +20,7 @@ set(REXUI_CORE_SOURCES
 set(REXUI_OVERLAY_SOURCES
     overlay/debug_overlay.cpp
     overlay/console_overlay.cpp
+    overlay/audio_voices_overlay.cpp
     overlay/settings_overlay.cpp
 )
 
@@ -159,5 +160,4 @@ if(REXGLUE_USE_D3D12)
         dxc-headers
     )
 endif()
-
 

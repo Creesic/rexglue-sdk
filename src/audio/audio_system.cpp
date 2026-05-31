@@ -53,6 +53,7 @@ AudioSystem::AudioSystem(runtime::FunctionDispatcher* function_dispatcher)
       function_dispatcher_(function_dispatcher),
       worker_running_(false) {
   std::memset(clients_, 0, sizeof(clients_));
+  std::memset(submitted_frames_, 0, sizeof(submitted_frames_));
 
   queued_frames_ = std::min(
       static_cast<uint32_t>(kMaximumQueuedFrames),
@@ -229,6 +230,7 @@ X_STATUS AudioSystem::RegisterClient(uint32_t callback, uint32_t callback_arg, s
   memory::store_and_swap<uint32_t>(memory()->TranslateVirtual(ptr), callback_arg);
 
   clients_[index] = {driver, callback, callback_arg, ptr, true};
+  submitted_frames_[index] = 0;
 
   if (out_index) {
     *out_index = index;
@@ -250,6 +252,7 @@ void AudioSystem::SubmitFrame(size_t index, uint32_t samples_ptr) {
         index < kMaximumClientCount ? static_cast<void*>(clients_[index].driver) : nullptr);
     return;
   }
+  submitted_frames_[index]++;
   (clients_[index].driver)->SubmitFrame(samples_ptr);
 }
 
@@ -261,6 +264,7 @@ void AudioSystem::UnregisterClient(size_t index) {
   DestroyDriver(clients_[index].driver);
   memory()->SystemHeapFree(clients_[index].wrapped_callback_arg);
   clients_[index] = {nullptr, 0, 0, 0, false};
+  submitted_frames_[index] = 0;
 
   // Drain the semaphore of its count.
   auto client_semaphore = client_semaphores_[index].get();
@@ -339,6 +343,7 @@ bool AudioSystem::Restore(stream::ByteStream* stream) {
 
     assert_not_null(driver);
     client.driver = driver;
+    submitted_frames_[id] = 0;
   }
 
   return true;
@@ -366,6 +371,25 @@ void AudioSystem::Resume() {
   resume_event_->Set();
 
   xma_decoder_->Resume();
+}
+
+AudioSystem::DebugSnapshot AudioSystem::GetDebugSnapshot() {
+  DebugSnapshot snapshot{};
+  snapshot.paused = paused_;
+  snapshot.queued_frames = queued_frames_;
+
+  auto global_lock = global_critical_region_.Acquire();
+  for (size_t i = 0; i < kMaximumClientCount; ++i) {
+    auto& out = snapshot.clients[i];
+    auto& in = clients_[i];
+    out.in_use = in.in_use;
+    out.callback = in.callback;
+    out.callback_arg = in.callback_arg;
+    out.wrapped_callback_arg = in.wrapped_callback_arg;
+    out.driver_handle = in.in_use ? (0x41550000u | static_cast<uint32_t>(i)) : 0;
+    out.submitted_frames = submitted_frames_[i];
+  }
+  return snapshot;
 }
 
 }  // namespace rex::audio

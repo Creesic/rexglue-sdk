@@ -34,18 +34,39 @@ X_STATUS StfsContainerFile::ReadSync(std::span<uint8_t> buffer, size_t byte_offs
     return X_STATUS_END_OF_FILE;
   }
 
+  const auto& blocks = entry_->block_list();
+
+  // Sequential reads are common during loads. Reuse the previous block as a
+  // starting point to avoid rescanning from block 0 each call.
+  size_t start_index = 0;
   size_t src_offset = 0;
+  if (has_last_block_ && last_block_index_ < blocks.size()) {
+    const auto& last_block = blocks[last_block_index_];
+    const size_t last_block_end = last_block_src_offset_ + last_block.length;
+    if (byte_offset >= last_block_src_offset_) {
+      start_index = last_block_index_;
+      src_offset = last_block_src_offset_;
+      if (byte_offset >= last_block_end) {
+        start_index = last_block_index_ + 1;
+        src_offset = last_block_end;
+      }
+    }
+  }
+
   uint8_t* p = buffer.data();
   size_t remaining_length = std::min(buffer.size(), entry_->size() - byte_offset);
 
   *out_bytes_read = 0;
-  for (size_t i = 0; i < entry_->block_list().size(); i++) {
-    auto& record = entry_->block_list()[i];
+  for (size_t i = start_index; i < blocks.size(); i++) {
+    const auto& record = blocks[i];
     if (src_offset + record.length <= byte_offset) {
       // Doesn't begin in this region. Skip it.
       src_offset += record.length;
       continue;
     }
+    has_last_block_ = true;
+    last_block_index_ = i;
+    last_block_src_offset_ = src_offset;
 
     size_t read_offset = (byte_offset > src_offset) ? byte_offset - src_offset : 0;
     size_t read_length = std::min(record.length - read_offset, remaining_length);

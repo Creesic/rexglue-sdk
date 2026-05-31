@@ -160,12 +160,16 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
         uint64_t guest_tick_frequency = chrono::Clock::guest_tick_frequency();
         uint64_t vsync_interval_ticks =
             std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
-        uint64_t no_vsync_interval_ticks = std::max(uint64_t(1), guest_tick_frequency / 1000);
         uint64_t last_frame_time = chrono::Clock::QueryGuestTickCount();
         while (vsync_worker_running_) {
           uint64_t current_time = chrono::Clock::QueryGuestTickCount();
-          uint64_t interval_ticks =
-              REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
+          uint64_t interval_ticks = vsync_interval_ticks;
+          if (!REXCVAR_GET(vsync)) {
+            // Keep unlocked pacing configurable so title-specific stability tuning doesn't
+            // require source edits.
+            uint64_t vsync_off_hz = uint64_t(std::max(1, REXCVAR_GET(vsync_off_vblank_hz)));
+            interval_ticks = std::max(uint64_t(1), guest_tick_frequency / vsync_off_hz);
+          }
           while (current_time - last_frame_time >= interval_ticks) {
             MarkVblank();
             last_frame_time += interval_ticks;

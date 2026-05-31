@@ -14,9 +14,51 @@
 
 #include <rex/memory/utils.h>
 #include <rex/ppc.h>
+#include <rex/cvar.h>
 #include <rex/system/kernel_state.h>
+#include <rex/thread.h>
 
 namespace {
+
+REXCVAR_DEFINE_BOOL(
+    fm2_break_before_load_637f8, false, "FM2",
+    "Break once in FM2HelperEntry637F8 (set true while debugging load transitions)");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_break_before_load_lr, 0, "FM2",
+    "Break once in FM2HelperEntry63768 when LR (r12) equals this guest address; 0 disables");
+
+REXCVAR_DEFINE_BOOL(
+    fm2_prod_guard_stats, false, "FM2",
+    "Emit per-second counters for FM2_ProducerProgressGuard_82369340 outcomes");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_prod_guard_wait_pause_count, 0, "FM2",
+    "On FM2_ProducerProgressGuard wait-return path, execute this many delay_execution() calls per hit (0 disables)");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_prod_guard_wait_yield_interval, 0, "FM2",
+    "On FM2_ProducerProgressGuard wait-return path, call MaybeYield every N hits (0 disables)");
+
+REXCVAR_DEFINE_BOOL(
+    fm2_prod_guard_trace, false, "FM2",
+    "Emit deeper per-second decision counters for FM2_ProducerProgressGuard_82369340");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_prod_guard_trace_sample_interval, 0, "FM2",
+    "When fm2_prod_guard_trace is enabled, emit one detailed wait-path sample every N hits (0 disables)");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_prod_waitloop_spin_min_gap, 0, "FM2",
+    "In sub_823729E0, continue producer wait-loop only if (avail - need) is greater than this gap (0 keeps original behavior)");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_prod_waitloop_yield_interval, 0, "FM2",
+    "In sub_823729E0 wait-loop, call MaybeYield every N spin iterations (0 disables)");
+
+REXCVAR_DEFINE_BOOL(
+    fm2_apu_mix_stats, false, "FM2",
+    "Emit per-second call/timing counters for FM2_ApuMixRenderCore_82697F08");
 
 uint8_t* GuestBase() {
   auto* kernel_state = rex::system::kernel_state();
@@ -28,12 +70,35 @@ uint8_t* GuestBase() {
 
 bool GuestReadableByte(uint8_t* base, uint32_t guest_address) {
   (void)base;
+  constexpr uint32_t kPageMask = ~uint32_t(0xFFFu);
+  constexpr uint32_t kPageCacheSlots = 32u;
+  struct PageCacheEntry {
+    uint32_t page = 0;
+    uint8_t readable = 0;
+    uint8_t valid = 0;
+  };
+  thread_local PageCacheEntry cache[kPageCacheSlots];
+
+  const uint32_t page = guest_address & kPageMask;
+  const uint32_t slot = (page >> 12) & (kPageCacheSlots - 1);
+  PageCacheEntry& e = cache[slot];
+  if (e.valid && e.page == page) {
+    return e.readable != 0;
+  }
+
   size_t length = 1;
   rex::memory::PageAccess access = rex::memory::PageAccess::kNoAccess;
-  if (!rex::memory::QueryProtect(REX_RAW_ADDR(guest_address), length, access)) {
+  if (!rex::memory::QueryProtect(REX_RAW_ADDR(page), length, access)) {
+    e.page = page;
+    e.readable = 0;
+    e.valid = 1;
     return false;
   }
-  return access != rex::memory::PageAccess::kNoAccess;
+  const bool readable = access != rex::memory::PageAccess::kNoAccess;
+  e.page = page;
+  e.readable = readable ? 1 : 0;
+  e.valid = 1;
+  return readable;
 }
 
 bool GuestReadableRange(uint8_t* base, uint32_t guest_address, uint32_t byte_count) {
@@ -88,11 +153,383 @@ bool HasCallableVtableSlot(uint8_t* base, uint32_t object, uint32_t slot_offset)
   return (target & 3) == 0 && target >= REX_CODE_BASE && target < code_end;
 }
 
+bool MaybeBreakOnLoadPoint637F8() {
+  static std::atomic<uint32_t> last_enabled{0};
+  static std::atomic<uint32_t> fired{0};
+  const uint32_t enabled = REXCVAR_GET(fm2_break_before_load_637f8) ? 1u : 0u;
+  const uint32_t previous = last_enabled.exchange(enabled, std::memory_order_relaxed);
+  if (previous != enabled) {
+    fired.store(0, std::memory_order_relaxed);
+  }
+  if (!enabled || !IsDebuggerPresent()) {
+    return false;
+  }
+  const uint32_t prior = fired.fetch_add(1, std::memory_order_relaxed);
+  if (prior == 0) {
+    __debugbreak();
+    return true;
+  }
+  return false;
+}
+
+bool MaybeBreakOnLoadPointLR(uint32_t lr) {
+  static std::atomic<uint32_t> last_lr_cfg{0};
+  static std::atomic<uint32_t> fired{0};
+  const uint32_t cfg_lr = REXCVAR_GET(fm2_break_before_load_lr);
+  const uint32_t previous_cfg = last_lr_cfg.exchange(cfg_lr, std::memory_order_relaxed);
+  if (previous_cfg != cfg_lr) {
+    fired.store(0, std::memory_order_relaxed);
+  }
+  if (cfg_lr == 0 || lr != cfg_lr || !IsDebuggerPresent()) {
+    return false;
+  }
+  const uint32_t prior = fired.fetch_add(1, std::memory_order_relaxed);
+  if (prior == 0) {
+    __debugbreak();
+    return true;
+  }
+  return false;
+}
+
 uint64_t NowSec() {
   using clock = std::chrono::steady_clock;
   const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch())
                       .count();
   return static_cast<uint64_t>(ns / 1000000000LL);
+}
+
+uint64_t NowNs() {
+  using clock = std::chrono::steady_clock;
+  const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch())
+                      .count();
+  return static_cast<uint64_t>(ns);
+}
+
+struct ProdGuardDiagState {
+  std::atomic<uint64_t> entries{0};
+  std::atomic<uint64_t> lr_82217e28{0};
+  std::atomic<uint64_t> lr_82266490{0};
+  std::atomic<uint64_t> lr_82289640{0};
+  std::atomic<uint64_t> lr_8245d048{0};
+  std::atomic<uint64_t> lr_other{0};
+  std::atomic<uint32_t> last_lr{0};
+  std::atomic<uint64_t> flag_blocked{0};
+  std::atomic<uint64_t> cursor_eq{0};
+  std::atomic<uint64_t> cursor_ne{0};
+  std::atomic<uint64_t> wait_delta_lt64{0};
+  std::atomic<uint64_t> wait_delta_64_255{0};
+  std::atomic<uint64_t> wait_delta_256_1023{0};
+  std::atomic<uint64_t> wait_delta_1024_4095{0};
+  std::atomic<uint64_t> wait_delta_4096_4999{0};
+  std::atomic<uint64_t> timeout_delta_ge5000{0};
+  std::atomic<uint64_t> wait_delta_sum{0};
+  std::atomic<uint64_t> timeout_delta_sum{0};
+  std::atomic<uint64_t> wait_delta_max{0};
+  std::atomic<uint64_t> timeout_delta_max{0};
+  std::atomic<uint32_t> last_wait_delta{0};
+  std::atomic<uint32_t> last_timeout_delta{0};
+  std::atomic<uint64_t> sample_wait_logs{0};
+  std::atomic<uint64_t> loop72_hits{0};
+  std::atomic<uint64_t> loop72_guard_ret1{0};
+  std::atomic<uint64_t> loop72_guard_ret0{0};
+  std::atomic<uint64_t> loop72_obj_zero{0};
+  std::atomic<uint64_t> loop72_limit_zero{0};
+  std::atomic<uint64_t> loop72_cursor_zero{0};
+  std::atomic<uint64_t> loop72_target_zero{0};
+  std::atomic<uint64_t> loop72_need_lt_avail{0};
+  std::atomic<uint64_t> loop72_need_ge_avail{0};
+  std::atomic<uint32_t> loop72_last_obj{0};
+  std::atomic<uint32_t> loop72_last_target{0};
+  std::atomic<uint32_t> loop72_last_limit{0};
+  std::atomic<uint32_t> loop72_last_cursor{0};
+  std::atomic<uint32_t> loop72_last_need{0};
+  std::atomic<uint32_t> loop72_last_avail{0};
+  std::atomic<uint32_t> loop72_last_flag12944{0};
+  std::atomic<uint64_t> loop72_small_gap_breaks{0};
+  std::atomic<uint32_t> loop72_last_gap{0};
+  std::atomic<uint32_t> loop72_last_break_threshold{0};
+  std::atomic<uint64_t> loop72_yields{0};
+  std::atomic<uint32_t> loop72_last_yield_interval{0};
+  std::atomic<uint64_t> call73078_pre{0};
+  std::atomic<uint64_t> call73078_post{0};
+  std::atomic<uint64_t> call73078_changed{0};
+  std::atomic<uint32_t> call73078_last_lim_before{0};
+  std::atomic<uint32_t> call73078_last_cur_before{0};
+  std::atomic<uint32_t> call73078_last_lim_after{0};
+  std::atomic<uint32_t> call73078_last_cur_after{0};
+  std::atomic<uint64_t> wait_ret1{0};
+  std::atomic<uint64_t> timeout_call{0};
+  std::atomic<uint64_t> ret0{0};
+  std::atomic<uint64_t> last_emit_sec{0};
+  std::mutex log_mutex;
+  FILE* log_file = nullptr;
+};
+
+ProdGuardDiagState& ProdGuardDiag() {
+  static ProdGuardDiagState state;
+  return state;
+}
+
+void LogLineProdGuard(const char* fmt, ...) {
+  auto& d = ProdGuardDiag();
+  std::lock_guard<std::mutex> lock(d.log_mutex);
+  if (!d.log_file) {
+    d.log_file = std::fopen("C:\\temp\\fm2-clean.log", "a");
+    if (!d.log_file) {
+      return;
+    }
+  }
+  va_list args;
+  va_start(args, fmt);
+  std::vfprintf(d.log_file, fmt, args);
+  va_end(args);
+  std::fputc('\n', d.log_file);
+  std::fflush(d.log_file);
+}
+
+void MaybeEmitProdGuardPerSec() {
+  if (!REXCVAR_GET(fm2_prod_guard_stats)) {
+    return;
+  }
+  auto& d = ProdGuardDiag();
+  const uint64_t now_sec = NowSec();
+  uint64_t last_sec = d.last_emit_sec.load(std::memory_order_relaxed);
+  if (last_sec == 0) {
+    d.last_emit_sec.store(now_sec, std::memory_order_relaxed);
+    return;
+  }
+  if (now_sec == last_sec) {
+    return;
+  }
+  if (!d.last_emit_sec.compare_exchange_strong(last_sec, now_sec, std::memory_order_relaxed)) {
+    return;
+  }
+
+  const uint64_t wait_ret1 = d.wait_ret1.exchange(0, std::memory_order_relaxed);
+  const uint64_t timeout_call = d.timeout_call.exchange(0, std::memory_order_relaxed);
+  const uint64_t ret0 = d.ret0.exchange(0, std::memory_order_relaxed);
+  const uint64_t total = wait_ret1 + ret0;
+  const uint64_t ret0_non_timeout = ret0 > timeout_call ? (ret0 - timeout_call) : 0;
+  const uint32_t wait_pct = total ? static_cast<uint32_t>((wait_ret1 * 100u) / total) : 0u;
+
+  LogLineProdGuard(
+      "FM2_PROD_GUARD_PERSEC sec=%llu total=%llu wait_ret1=%llu ret0=%llu "
+      "timeout_call=%llu ret0_non_timeout=%llu wait_pct=%u",
+      static_cast<unsigned long long>(now_sec), static_cast<unsigned long long>(total),
+      static_cast<unsigned long long>(wait_ret1), static_cast<unsigned long long>(ret0),
+      static_cast<unsigned long long>(timeout_call),
+      static_cast<unsigned long long>(ret0_non_timeout), wait_pct);
+
+  if (REXCVAR_GET(fm2_prod_guard_trace)) {
+    const uint64_t entries = d.entries.exchange(0, std::memory_order_relaxed);
+    const uint64_t lr_82217e28 = d.lr_82217e28.exchange(0, std::memory_order_relaxed);
+    const uint64_t lr_82266490 = d.lr_82266490.exchange(0, std::memory_order_relaxed);
+    const uint64_t lr_82289640 = d.lr_82289640.exchange(0, std::memory_order_relaxed);
+    const uint64_t lr_8245d048 = d.lr_8245d048.exchange(0, std::memory_order_relaxed);
+    const uint64_t lr_other = d.lr_other.exchange(0, std::memory_order_relaxed);
+    const uint64_t flag_blocked = d.flag_blocked.exchange(0, std::memory_order_relaxed);
+    const uint64_t cursor_eq = d.cursor_eq.exchange(0, std::memory_order_relaxed);
+    const uint64_t cursor_ne = d.cursor_ne.exchange(0, std::memory_order_relaxed);
+    const uint64_t wait_delta_lt64 = d.wait_delta_lt64.exchange(0, std::memory_order_relaxed);
+    const uint64_t wait_delta_64_255 = d.wait_delta_64_255.exchange(0, std::memory_order_relaxed);
+    const uint64_t wait_delta_256_1023 = d.wait_delta_256_1023.exchange(0, std::memory_order_relaxed);
+    const uint64_t wait_delta_1024_4095 =
+        d.wait_delta_1024_4095.exchange(0, std::memory_order_relaxed);
+    const uint64_t wait_delta_4096_4999 =
+        d.wait_delta_4096_4999.exchange(0, std::memory_order_relaxed);
+    const uint64_t timeout_delta_ge5000 =
+        d.timeout_delta_ge5000.exchange(0, std::memory_order_relaxed);
+    const uint64_t wait_delta_sum = d.wait_delta_sum.exchange(0, std::memory_order_relaxed);
+    const uint64_t timeout_delta_sum = d.timeout_delta_sum.exchange(0, std::memory_order_relaxed);
+    const uint64_t wait_delta_max = d.wait_delta_max.exchange(0, std::memory_order_relaxed);
+    const uint64_t timeout_delta_max = d.timeout_delta_max.exchange(0, std::memory_order_relaxed);
+    const uint32_t last_wait_delta = d.last_wait_delta.load(std::memory_order_relaxed);
+    const uint32_t last_timeout_delta = d.last_timeout_delta.load(std::memory_order_relaxed);
+    const uint32_t last_lr = d.last_lr.load(std::memory_order_relaxed);
+    const uint64_t sample_wait_logs = d.sample_wait_logs.exchange(0, std::memory_order_relaxed);
+    const uint64_t loop72_hits = d.loop72_hits.exchange(0, std::memory_order_relaxed);
+    const uint64_t loop72_guard_ret1 = d.loop72_guard_ret1.exchange(0, std::memory_order_relaxed);
+    const uint64_t loop72_guard_ret0 = d.loop72_guard_ret0.exchange(0, std::memory_order_relaxed);
+    const uint64_t loop72_obj_zero = d.loop72_obj_zero.exchange(0, std::memory_order_relaxed);
+    const uint64_t loop72_limit_zero = d.loop72_limit_zero.exchange(0, std::memory_order_relaxed);
+    const uint64_t loop72_cursor_zero = d.loop72_cursor_zero.exchange(0, std::memory_order_relaxed);
+    const uint64_t loop72_target_zero = d.loop72_target_zero.exchange(0, std::memory_order_relaxed);
+    const uint64_t loop72_need_lt_avail =
+        d.loop72_need_lt_avail.exchange(0, std::memory_order_relaxed);
+    const uint64_t loop72_need_ge_avail =
+        d.loop72_need_ge_avail.exchange(0, std::memory_order_relaxed);
+    const uint32_t loop72_last_obj = d.loop72_last_obj.load(std::memory_order_relaxed);
+    const uint32_t loop72_last_target = d.loop72_last_target.load(std::memory_order_relaxed);
+    const uint32_t loop72_last_limit = d.loop72_last_limit.load(std::memory_order_relaxed);
+    const uint32_t loop72_last_cursor = d.loop72_last_cursor.load(std::memory_order_relaxed);
+    const uint32_t loop72_last_need = d.loop72_last_need.load(std::memory_order_relaxed);
+    const uint32_t loop72_last_avail = d.loop72_last_avail.load(std::memory_order_relaxed);
+    const uint32_t loop72_last_flag12944 = d.loop72_last_flag12944.load(std::memory_order_relaxed);
+    const uint64_t loop72_small_gap_breaks =
+        d.loop72_small_gap_breaks.exchange(0, std::memory_order_relaxed);
+    const uint32_t loop72_last_gap = d.loop72_last_gap.load(std::memory_order_relaxed);
+    const uint32_t loop72_last_break_threshold =
+        d.loop72_last_break_threshold.load(std::memory_order_relaxed);
+    const uint64_t loop72_yields = d.loop72_yields.exchange(0, std::memory_order_relaxed);
+    const uint32_t loop72_last_yield_interval =
+        d.loop72_last_yield_interval.load(std::memory_order_relaxed);
+    const uint64_t call73078_pre = d.call73078_pre.exchange(0, std::memory_order_relaxed);
+    const uint64_t call73078_post = d.call73078_post.exchange(0, std::memory_order_relaxed);
+    const uint64_t call73078_changed = d.call73078_changed.exchange(0, std::memory_order_relaxed);
+    const uint32_t call73078_last_lim_before =
+        d.call73078_last_lim_before.load(std::memory_order_relaxed);
+    const uint32_t call73078_last_cur_before =
+        d.call73078_last_cur_before.load(std::memory_order_relaxed);
+    const uint32_t call73078_last_lim_after =
+        d.call73078_last_lim_after.load(std::memory_order_relaxed);
+    const uint32_t call73078_last_cur_after =
+        d.call73078_last_cur_after.load(std::memory_order_relaxed);
+    const uint64_t avg_wait_delta = wait_ret1 ? (wait_delta_sum / wait_ret1) : 0u;
+    const uint64_t avg_timeout_delta = timeout_call ? (timeout_delta_sum / timeout_call) : 0u;
+
+    LogLineProdGuard(
+        "FM2_PROD_GUARD_TRACE_PERSEC sec=%llu entries=%llu lr82217e28=%llu lr82266490=%llu "
+        "lr82289640=%llu lr8245d048=%llu lr_other=%llu flag_blocked=%llu cursor_eq=%llu "
+        "cursor_ne=%llu wait_d_lt64=%llu wait_d_64_255=%llu wait_d_256_1023=%llu "
+        "wait_d_1024_4095=%llu wait_d_4096_4999=%llu timeout_d_ge5000=%llu avg_wait_d=%llu "
+        "max_wait_d=%llu avg_timeout_d=%llu max_timeout_d=%llu last_wait_d=%u "
+        "last_timeout_d=%u last_lr=%08X sample_wait_logs=%llu",
+        static_cast<unsigned long long>(now_sec), static_cast<unsigned long long>(entries),
+        static_cast<unsigned long long>(lr_82217e28), static_cast<unsigned long long>(lr_82266490),
+        static_cast<unsigned long long>(lr_82289640), static_cast<unsigned long long>(lr_8245d048),
+        static_cast<unsigned long long>(lr_other), static_cast<unsigned long long>(flag_blocked),
+        static_cast<unsigned long long>(cursor_eq), static_cast<unsigned long long>(cursor_ne),
+        static_cast<unsigned long long>(wait_delta_lt64),
+        static_cast<unsigned long long>(wait_delta_64_255),
+        static_cast<unsigned long long>(wait_delta_256_1023),
+        static_cast<unsigned long long>(wait_delta_1024_4095),
+        static_cast<unsigned long long>(wait_delta_4096_4999),
+        static_cast<unsigned long long>(timeout_delta_ge5000),
+        static_cast<unsigned long long>(avg_wait_delta),
+        static_cast<unsigned long long>(wait_delta_max),
+        static_cast<unsigned long long>(avg_timeout_delta),
+        static_cast<unsigned long long>(timeout_delta_max), last_wait_delta, last_timeout_delta,
+        static_cast<unsigned int>(last_lr), static_cast<unsigned long long>(sample_wait_logs));
+
+    LogLineProdGuard(
+        "FM2_PROD_WAITLOOP_72A70 sec=%llu hits=%llu ret1=%llu ret0=%llu obj0=%llu lim0=%llu "
+        "cur0=%llu tgt0=%llu need_lt_avail=%llu need_ge_avail=%llu small_break=%llu yields=%llu "
+        "last(obj=%08X tgt=%u lim=%u cur=%u need=%u avail=%u gap=%u break_th=%u yield_int=%u f12944=%u) "
+        "call73078(pre=%llu post=%llu changed=%llu lim:%u->%u cur:%u->%u)",
+        static_cast<unsigned long long>(now_sec), static_cast<unsigned long long>(loop72_hits),
+        static_cast<unsigned long long>(loop72_guard_ret1),
+        static_cast<unsigned long long>(loop72_guard_ret0),
+        static_cast<unsigned long long>(loop72_obj_zero),
+        static_cast<unsigned long long>(loop72_limit_zero),
+        static_cast<unsigned long long>(loop72_cursor_zero),
+        static_cast<unsigned long long>(loop72_target_zero),
+        static_cast<unsigned long long>(loop72_need_lt_avail),
+        static_cast<unsigned long long>(loop72_need_ge_avail),
+        static_cast<unsigned long long>(loop72_small_gap_breaks),
+        static_cast<unsigned long long>(loop72_yields),
+        static_cast<unsigned int>(loop72_last_obj), loop72_last_target, loop72_last_limit,
+        loop72_last_cursor, loop72_last_need, loop72_last_avail, loop72_last_gap,
+        loop72_last_break_threshold, loop72_last_yield_interval, loop72_last_flag12944,
+        static_cast<unsigned long long>(call73078_pre),
+        static_cast<unsigned long long>(call73078_post),
+        static_cast<unsigned long long>(call73078_changed), call73078_last_lim_before,
+        call73078_last_lim_after, call73078_last_cur_before, call73078_last_cur_after);
+  }
+}
+
+void ProdGuardHitCaller(uint32_t lr) {
+  auto& d = ProdGuardDiag();
+  d.entries.fetch_add(1, std::memory_order_relaxed);
+  d.last_lr.store(lr, std::memory_order_relaxed);
+  switch (lr) {
+    case 0x82217E28u:
+      d.lr_82217e28.fetch_add(1, std::memory_order_relaxed);
+      break;
+    case 0x82266490u:
+      d.lr_82266490.fetch_add(1, std::memory_order_relaxed);
+      break;
+    case 0x82289640u:
+      d.lr_82289640.fetch_add(1, std::memory_order_relaxed);
+      break;
+    case 0x8245D048u:
+      d.lr_8245d048.fetch_add(1, std::memory_order_relaxed);
+      break;
+    default:
+      d.lr_other.fetch_add(1, std::memory_order_relaxed);
+      break;
+  }
+}
+
+void AtomicMaxU64(std::atomic<uint64_t>& slot, uint64_t value) {
+  uint64_t current = slot.load(std::memory_order_relaxed);
+  while (current < value &&
+         !slot.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
+  }
+}
+
+struct ApuMixDiagState {
+  std::atomic<uint64_t> calls{0};
+  std::atomic<uint64_t> exits_a{0};
+  std::atomic<uint64_t> exits_b{0};
+  std::atomic<uint64_t> total_ns{0};
+  std::atomic<uint64_t> max_ns{0};
+  std::atomic<uint64_t> unmatched_exit{0};
+  std::atomic<uint64_t> stack_overflow{0};
+  std::atomic<uint64_t> last_emit_sec{0};
+};
+
+ApuMixDiagState& ApuMixDiag() {
+  static ApuMixDiagState state;
+  return state;
+}
+
+constexpr uint32_t kApuMixMaxDepth = 64u;
+thread_local uint64_t g_apu_mix_enter_ns[kApuMixMaxDepth] = {};
+thread_local uint32_t g_apu_mix_depth = 0u;
+thread_local uint32_t g_apu_mix_dropped = 0u;
+
+void MaybeEmitApuMixPerSec() {
+  if (!REXCVAR_GET(fm2_apu_mix_stats)) {
+    return;
+  }
+  auto& d = ApuMixDiag();
+  const uint64_t now_sec = NowSec();
+  uint64_t last_sec = d.last_emit_sec.load(std::memory_order_relaxed);
+  if (last_sec == 0) {
+    d.last_emit_sec.store(now_sec, std::memory_order_relaxed);
+    return;
+  }
+  if (now_sec == last_sec) {
+    return;
+  }
+  if (!d.last_emit_sec.compare_exchange_strong(last_sec, now_sec, std::memory_order_relaxed)) {
+    return;
+  }
+
+  const uint64_t calls = d.calls.exchange(0, std::memory_order_relaxed);
+  const uint64_t exits_a = d.exits_a.exchange(0, std::memory_order_relaxed);
+  const uint64_t exits_b = d.exits_b.exchange(0, std::memory_order_relaxed);
+  const uint64_t exits = exits_a + exits_b;
+  const uint64_t total_ns = d.total_ns.exchange(0, std::memory_order_relaxed);
+  const uint64_t max_ns = d.max_ns.exchange(0, std::memory_order_relaxed);
+  const uint64_t unmatched_exit = d.unmatched_exit.exchange(0, std::memory_order_relaxed);
+  const uint64_t stack_overflow = d.stack_overflow.exchange(0, std::memory_order_relaxed);
+  const uint64_t total_us = total_ns / 1000u;
+  const uint64_t avg_us = exits ? (total_ns / exits) / 1000u : 0u;
+  const uint64_t max_us = max_ns / 1000u;
+  const long long inflight_delta =
+      static_cast<long long>(calls) - static_cast<long long>(exits);
+
+  LogLineProdGuard(
+      "FM2_APU_MIX_PERSEC sec=%llu calls=%llu exits=%llu exit_a=%llu exit_b=%llu "
+      "total_us=%llu avg_us=%llu max_us=%llu inflight_delta=%lld unmatched_exit=%llu "
+      "stack_ovf=%llu",
+      static_cast<unsigned long long>(now_sec), static_cast<unsigned long long>(calls),
+      static_cast<unsigned long long>(exits), static_cast<unsigned long long>(exits_a),
+      static_cast<unsigned long long>(exits_b), static_cast<unsigned long long>(total_us),
+      static_cast<unsigned long long>(avg_us), static_cast<unsigned long long>(max_us),
+      inflight_delta, static_cast<unsigned long long>(unmatched_exit),
+      static_cast<unsigned long long>(stack_overflow));
 }
 
 struct SigSiteDiagState {
@@ -1267,6 +1704,7 @@ void FM2HelperEntry637F8(PPCRegister& r3) {
   (void)r3;
   auto& d = SigDiag();
   HitSimple(d.h637f8_count);
+  MaybeBreakOnLoadPoint637F8();
 }
 
 void FM2HelperEntry53D718(PPCRegister& r3) {
@@ -1904,6 +2342,9 @@ void FM2FmodSchedEB9D0(PPCRegister& r3) {
 
 void FM2FmodIrqDispatch8236C380(PPCRegister& r3) {
   auto& d = SigDiag();
+  if (!d.enabled) {
+    return;
+  }
   d.fmod_irq_6c380_hits.fetch_add(1, std::memory_order_relaxed);
   d.fmod_irq_6c380_last_tid.store(static_cast<uint32_t>(GetCurrentThreadId()),
                                   std::memory_order_relaxed);
@@ -1933,6 +2374,9 @@ void FM2FmodIrqSchedule8236C4F0(PPCRegister& r3) {
     arg = 0x214u;
     r3.u32 = arg;
   }
+  if (!d.enabled) {
+    return;
+  }
   const uint32_t mode = (arg >> 8) & 0xFu;
   const uint32_t thr = arg & 0xFFu;
   const uint32_t thr_bucket = arg & 0xFu;
@@ -1947,18 +2391,27 @@ void FM2FmodIrqSchedule8236C4F0(PPCRegister& r3) {
 
 void FM2FmodIrqSchedOverThr8236C5AC() {
   auto& d = SigDiag();
+  if (!d.enabled) {
+    return;
+  }
   d.fmod_irq_sched_over_thr_hits.fetch_add(1, std::memory_order_relaxed);
   MaybeEmitSigPerSec();
 }
 
 void FM2FmodIrqSchedPathQueued8236C618() {
   auto& d = SigDiag();
+  if (!d.enabled) {
+    return;
+  }
   d.fmod_irq_sched_path_queued_hits.fetch_add(1, std::memory_order_relaxed);
   MaybeEmitSigPerSec();
 }
 
 void FM2FmodIrqSchedPathImmediate8236C640() {
   auto& d = SigDiag();
+  if (!d.enabled) {
+    return;
+  }
   d.fmod_irq_sched_path_immediate_hits.fetch_add(1, std::memory_order_relaxed);
   MaybeEmitSigPerSec();
 }
@@ -1967,6 +2420,9 @@ void FM2FmodIrqSubmit8236C688(PPCRegister& r4, PPCRegister& r12) {
   auto& d = SigDiag();
   if (d.force_submit_mode3) {
     r4.u32 = 0x200u;
+  }
+  if (!d.enabled) {
+    return;
   }
   const uint32_t a2 = r4.u32;
   const uint32_t lr = r12.u32;
@@ -1994,18 +2450,27 @@ void FM2FmodIrqSubmit8236C688(PPCRegister& r4, PPCRegister& r12) {
 
 void FM2FmodWrap8236C8C8() {
   auto& d = SigDiag();
+  if (!d.enabled) {
+    return;
+  }
   d.fmod_wrap_6c8c8_hits.fetch_add(1, std::memory_order_relaxed);
   MaybeEmitSigPerSec();
 }
 
 void FM2FmodWrap8236C948() {
   auto& d = SigDiag();
+  if (!d.enabled) {
+    return;
+  }
   d.fmod_wrap_6c948_hits.fetch_add(1, std::memory_order_relaxed);
   MaybeEmitSigPerSec();
 }
 
 void FM2FmodWrap8236CB20() {
   auto& d = SigDiag();
+  if (!d.enabled) {
+    return;
+  }
   d.fmod_wrap_6cb20_hits.fetch_add(1, std::memory_order_relaxed);
   MaybeEmitSigPerSec();
 }
@@ -2093,9 +2558,357 @@ void FM2Caller8235F3D8(PPCRegister& r3) {
   HitSimple(d.c8235f3d8_count);
 }
 
+void FM2ProducerProgressGuardWait823693F8() {
+  if (REXCVAR_GET(fm2_prod_guard_stats)) {
+    auto& d = ProdGuardDiag();
+    d.wait_ret1.fetch_add(1, std::memory_order_relaxed);
+    MaybeEmitProdGuardPerSec();
+  }
+
+  uint32_t pause_count = REXCVAR_GET(fm2_prod_guard_wait_pause_count);
+  if (pause_count > 64u) {
+    pause_count = 64u;
+  }
+  for (uint32_t i = 0; i < pause_count; ++i) {
+    rex::ppc::delay_execution();
+  }
+
+  const uint32_t yield_interval = REXCVAR_GET(fm2_prod_guard_wait_yield_interval);
+  if (yield_interval != 0u) {
+    thread_local uint32_t hit_counter = 0;
+    ++hit_counter;
+    if (hit_counter >= yield_interval) {
+      hit_counter = 0;
+      rex::thread::MaybeYield();
+    }
+  }
+}
+
+void FM2ProducerProgressGuardEntry82369340(PPCRegister& lr) {
+  if (!REXCVAR_GET(fm2_prod_guard_stats)) {
+    return;
+  }
+  ProdGuardHitCaller(lr.u32);
+}
+
+void FM2ProducerProgressGuardFlagBlocked82369390(PPCRegister& lr) {
+  if (!REXCVAR_GET(fm2_prod_guard_stats)) {
+    return;
+  }
+  auto& d = ProdGuardDiag();
+  ProdGuardHitCaller(lr.u32);
+  d.flag_blocked.fetch_add(1, std::memory_order_relaxed);
+  MaybeEmitProdGuardPerSec();
+}
+
+void FM2ProducerProgressGuardCursorCmp823693B8(PPCRegister& r9, PPCRegister& r10) {
+  if (!REXCVAR_GET(fm2_prod_guard_stats) || !REXCVAR_GET(fm2_prod_guard_trace)) {
+    return;
+  }
+  auto& d = ProdGuardDiag();
+  if (r9.u32 == r10.u32) {
+    d.cursor_eq.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    d.cursor_ne.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+void FM2ProducerProgressGuardWaitDetail823693F8(PPCRegister& lr, PPCRegister& delta,
+                                                PPCRegister& r30, PPCRegister& r31) {
+  if (!REXCVAR_GET(fm2_prod_guard_stats)) {
+    return;
+  }
+  auto& d = ProdGuardDiag();
+  ProdGuardHitCaller(lr.u32);
+  const uint32_t dlt = delta.u32;
+  d.wait_delta_sum.fetch_add(dlt, std::memory_order_relaxed);
+  d.last_wait_delta.store(dlt, std::memory_order_relaxed);
+  AtomicMaxU64(d.wait_delta_max, dlt);
+  if (dlt < 64u) {
+    d.wait_delta_lt64.fetch_add(1, std::memory_order_relaxed);
+  } else if (dlt < 256u) {
+    d.wait_delta_64_255.fetch_add(1, std::memory_order_relaxed);
+  } else if (dlt < 1024u) {
+    d.wait_delta_256_1023.fetch_add(1, std::memory_order_relaxed);
+  } else if (dlt < 4096u) {
+    d.wait_delta_1024_4095.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    d.wait_delta_4096_4999.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  if (REXCVAR_GET(fm2_prod_guard_trace)) {
+    const uint32_t sample_interval = REXCVAR_GET(fm2_prod_guard_trace_sample_interval);
+    if (sample_interval != 0u) {
+      const uint64_t prior = d.wait_ret1.load(std::memory_order_relaxed);
+      if ((prior % sample_interval) == 0u) {
+        uint32_t last_producer_tick = 0u;
+        uint32_t ticket = 0u;
+        uint8_t* base = GuestBase();
+        if (base && GuestReadableRange(base, r31.u32 + 8u, 8u)) {
+          last_producer_tick = REX_LOAD_U32(r31.u32 + 12u);
+          ticket = REX_LOAD_U32(r31.u32 + 8u);
+        }
+        LogLineProdGuard(
+            "FM2_PROD_GUARD_WAIT_SAMPLE lr=%08X delta=%u cur=%u last=%u ticket=%u state_ptr=%08X",
+            static_cast<unsigned int>(lr.u32), dlt, static_cast<unsigned int>(r30.u32),
+            static_cast<unsigned int>(last_producer_tick), static_cast<unsigned int>(ticket),
+            static_cast<unsigned int>(r31.u32));
+        d.sample_wait_logs.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+  }
+}
+
+void FM2ProducerWaitLoopSample82372A68(PPCRegister& obj, PPCRegister& target) {
+  if (!REXCVAR_GET(fm2_prod_guard_stats) || !REXCVAR_GET(fm2_prod_guard_trace)) {
+    return;
+  }
+  auto& d = ProdGuardDiag();
+  d.loop72_hits.fetch_add(1, std::memory_order_relaxed);
+  d.loop72_last_obj.store(obj.u32, std::memory_order_relaxed);
+  d.loop72_last_target.store(target.u32, std::memory_order_relaxed);
+  if (obj.u32 == 0u) {
+    d.loop72_obj_zero.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+
+  uint32_t limit = 0u;
+  uint32_t cursor = 0u;
+  uint32_t flag12944 = 0u;
+  uint8_t* base = GuestBase();
+  if (base && GuestReadableRange(base, obj.u32 + 10768u, 16u) &&
+      GuestReadableRange(base, obj.u32 + 12944u, 4u)) {
+    const uint32_t cursor_ptr = REX_LOAD_U32(obj.u32 + 10768u);
+    limit = REX_LOAD_U32(obj.u32 + 10780u);
+    flag12944 = REX_LOAD_U32(obj.u32 + 12944u);
+    if (cursor_ptr != 0u && GuestReadableRange(base, cursor_ptr, 4u)) {
+      cursor = REX_LOAD_U32(cursor_ptr);
+    }
+  }
+
+  const uint32_t need = limit - target.u32;
+  const uint32_t avail = limit - cursor;
+  const uint32_t gap = avail > need ? (avail - need) : 0u;
+  d.loop72_last_limit.store(limit, std::memory_order_relaxed);
+  d.loop72_last_cursor.store(cursor, std::memory_order_relaxed);
+  d.loop72_last_need.store(need, std::memory_order_relaxed);
+  d.loop72_last_avail.store(avail, std::memory_order_relaxed);
+  d.loop72_last_gap.store(gap, std::memory_order_relaxed);
+  d.loop72_last_flag12944.store(flag12944, std::memory_order_relaxed);
+
+  if (limit == 0u) {
+    d.loop72_limit_zero.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (cursor == 0u) {
+    d.loop72_cursor_zero.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (target.u32 == 0u) {
+    d.loop72_target_zero.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (need < avail) {
+    d.loop72_need_lt_avail.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    d.loop72_need_ge_avail.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+void FM2ProducerWaitLoopGuardResult82372A70(PPCRegister& result) {
+  if (!REXCVAR_GET(fm2_prod_guard_stats) || !REXCVAR_GET(fm2_prod_guard_trace)) {
+    return;
+  }
+  auto& d = ProdGuardDiag();
+  if (result.u32 == 0u) {
+    d.loop72_guard_ret0.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    d.loop72_guard_ret1.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+void FM2ProducerWaitLoopCall73078Before82372A38(PPCRegister& obj) {
+  if (!REXCVAR_GET(fm2_prod_guard_stats) || !REXCVAR_GET(fm2_prod_guard_trace)) {
+    return;
+  }
+  auto& d = ProdGuardDiag();
+  d.call73078_pre.fetch_add(1, std::memory_order_relaxed);
+  if (obj.u32 == 0u) {
+    return;
+  }
+  uint8_t* base = GuestBase();
+  if (!base || !GuestReadableRange(base, obj.u32 + 10768u, 16u)) {
+    return;
+  }
+  const uint32_t cursor_ptr = REX_LOAD_U32(obj.u32 + 10768u);
+  const uint32_t limit = REX_LOAD_U32(obj.u32 + 10780u);
+  uint32_t cursor = 0u;
+  if (cursor_ptr != 0u && GuestReadableRange(base, cursor_ptr, 4u)) {
+    cursor = REX_LOAD_U32(cursor_ptr);
+  }
+  d.call73078_last_lim_before.store(limit, std::memory_order_relaxed);
+  d.call73078_last_cur_before.store(cursor, std::memory_order_relaxed);
+}
+
+void FM2ProducerWaitLoopCall73078After82372A38(PPCRegister& obj) {
+  if (!REXCVAR_GET(fm2_prod_guard_stats) || !REXCVAR_GET(fm2_prod_guard_trace)) {
+    return;
+  }
+  auto& d = ProdGuardDiag();
+  d.call73078_post.fetch_add(1, std::memory_order_relaxed);
+  if (obj.u32 == 0u) {
+    return;
+  }
+  uint8_t* base = GuestBase();
+  if (!base || !GuestReadableRange(base, obj.u32 + 10768u, 16u)) {
+    return;
+  }
+  const uint32_t cursor_ptr = REX_LOAD_U32(obj.u32 + 10768u);
+  const uint32_t limit = REX_LOAD_U32(obj.u32 + 10780u);
+  uint32_t cursor = 0u;
+  if (cursor_ptr != 0u && GuestReadableRange(base, cursor_ptr, 4u)) {
+    cursor = REX_LOAD_U32(cursor_ptr);
+  }
+  d.call73078_last_lim_after.store(limit, std::memory_order_relaxed);
+  d.call73078_last_cur_after.store(cursor, std::memory_order_relaxed);
+  const uint32_t lim_before = d.call73078_last_lim_before.load(std::memory_order_relaxed);
+  const uint32_t cur_before = d.call73078_last_cur_before.load(std::memory_order_relaxed);
+  if (lim_before != limit || cur_before != cursor) {
+    d.call73078_changed.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+bool FM2ProducerWaitLoopShouldSpin82372A78(PPCRegister& need, PPCRegister& avail) {
+  if (need.u32 >= avail.u32) {
+    return false;
+  }
+  const uint32_t gap = avail.u32 - need.u32;
+  const uint32_t break_threshold = REXCVAR_GET(fm2_prod_waitloop_spin_min_gap);
+  if (break_threshold != 0u && gap <= break_threshold) {
+    if (REXCVAR_GET(fm2_prod_guard_stats) && REXCVAR_GET(fm2_prod_guard_trace)) {
+      auto& d = ProdGuardDiag();
+      d.loop72_small_gap_breaks.fetch_add(1, std::memory_order_relaxed);
+      d.loop72_last_gap.store(gap, std::memory_order_relaxed);
+      d.loop72_last_break_threshold.store(break_threshold, std::memory_order_relaxed);
+    }
+    return false;
+  }
+
+  const uint32_t yield_interval = REXCVAR_GET(fm2_prod_waitloop_yield_interval);
+  if (yield_interval != 0u) {
+    thread_local uint32_t spin_hits = 0u;
+    ++spin_hits;
+    if (spin_hits >= yield_interval) {
+      spin_hits = 0u;
+      rex::thread::MaybeYield();
+      if (REXCVAR_GET(fm2_prod_guard_stats) && REXCVAR_GET(fm2_prod_guard_trace)) {
+        auto& d = ProdGuardDiag();
+        d.loop72_yields.fetch_add(1, std::memory_order_relaxed);
+        d.loop72_last_yield_interval.store(yield_interval, std::memory_order_relaxed);
+      }
+    }
+  }
+  return true;
+}
+
+void FM2ProducerProgressGuardTimeout82369400() {
+  if (!REXCVAR_GET(fm2_prod_guard_stats)) {
+    return;
+  }
+  auto& d = ProdGuardDiag();
+  d.timeout_call.fetch_add(1, std::memory_order_relaxed);
+  MaybeEmitProdGuardPerSec();
+}
+
+void FM2ProducerProgressGuardTimeoutDetail82369400(PPCRegister& lr, PPCRegister& delta) {
+  if (!REXCVAR_GET(fm2_prod_guard_stats)) {
+    return;
+  }
+  auto& d = ProdGuardDiag();
+  ProdGuardHitCaller(lr.u32);
+  const uint32_t dlt = delta.u32;
+  d.timeout_delta_ge5000.fetch_add(1, std::memory_order_relaxed);
+  d.timeout_delta_sum.fetch_add(dlt, std::memory_order_relaxed);
+  d.last_timeout_delta.store(dlt, std::memory_order_relaxed);
+  AtomicMaxU64(d.timeout_delta_max, dlt);
+}
+
+void FM2ProducerProgressGuardReturnZero82369408() {
+  if (!REXCVAR_GET(fm2_prod_guard_stats)) {
+    return;
+  }
+  auto& d = ProdGuardDiag();
+  d.ret0.fetch_add(1, std::memory_order_relaxed);
+  MaybeEmitProdGuardPerSec();
+}
+
+void FM2ApuMixRenderEnter82697F08() {
+  if (!REXCVAR_GET(fm2_apu_mix_stats)) {
+    return;
+  }
+
+  auto& d = ApuMixDiag();
+  d.calls.fetch_add(1, std::memory_order_relaxed);
+  if (g_apu_mix_depth < kApuMixMaxDepth) {
+    g_apu_mix_enter_ns[g_apu_mix_depth++] = NowNs();
+  } else {
+    d.stack_overflow.fetch_add(1, std::memory_order_relaxed);
+    ++g_apu_mix_dropped;
+  }
+  MaybeEmitApuMixPerSec();
+}
+
+void FM2ApuMixRenderExitA826983A0() {
+  if (!REXCVAR_GET(fm2_apu_mix_stats)) {
+    return;
+  }
+
+  auto& d = ApuMixDiag();
+  d.exits_a.fetch_add(1, std::memory_order_relaxed);
+  if (g_apu_mix_depth == 0) {
+    if (g_apu_mix_dropped != 0u) {
+      --g_apu_mix_dropped;
+      MaybeEmitApuMixPerSec();
+      return;
+    }
+    d.unmatched_exit.fetch_add(1, std::memory_order_relaxed);
+    MaybeEmitApuMixPerSec();
+    return;
+  }
+
+  const uint64_t start_ns = g_apu_mix_enter_ns[--g_apu_mix_depth];
+  const uint64_t elapsed_ns = NowNs() - start_ns;
+  d.total_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
+  AtomicMaxU64(d.max_ns, elapsed_ns);
+  MaybeEmitApuMixPerSec();
+}
+
+void FM2ApuMixRenderExitB826983C0() {
+  if (!REXCVAR_GET(fm2_apu_mix_stats)) {
+    return;
+  }
+
+  auto& d = ApuMixDiag();
+  d.exits_b.fetch_add(1, std::memory_order_relaxed);
+  if (g_apu_mix_depth == 0) {
+    if (g_apu_mix_dropped != 0u) {
+      --g_apu_mix_dropped;
+      MaybeEmitApuMixPerSec();
+      return;
+    }
+    d.unmatched_exit.fetch_add(1, std::memory_order_relaxed);
+    MaybeEmitApuMixPerSec();
+    return;
+  }
+
+  const uint64_t start_ns = g_apu_mix_enter_ns[--g_apu_mix_depth];
+  const uint64_t elapsed_ns = NowNs() - start_ns;
+  d.total_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
+  AtomicMaxU64(d.max_ns, elapsed_ns);
+  MaybeEmitApuMixPerSec();
+}
+
 void FM2HelperEntry63768(PPCRegister& r12) {
   auto& d = SigDiag();
   HitSimple(d.h63768_count);
+  MaybeBreakOnLoadPointLR(r12.u32);
   switch (r12.u32) {
     case 0x821D0448u:
       HitSimple(d.lr821d0448_count);

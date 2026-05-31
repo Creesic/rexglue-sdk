@@ -31,6 +31,9 @@ Current diagnostic patch:
   (`wptr_dwords`, `max`), producer quiet time (`gap_us`, `max_gap_us`), and final ring state
   (`rptr`, `wptr`, `queued_dw`). These counters are atomic because the write pointer is updated
   by guest code while frame stats are emitted by the command processor thread.
+- Added `vsync_off_vblank_hz` cvar to tune guest vblank pacing when `--vsync=false`.
+  The old no-vsync path was hardcoded to 1000 Hz; now it is configurable for
+  title-specific framerate unlock and stability tuning.
 - Added a codegen/runtime experiment for Xenon `db16cyc`: generated code now emits
   `rex::ppc::delay_execution()`, implemented as `simde_mm_pause()`. Xenia Canary treats this
   instruction as a spin-loop delay (`pause` by default, optional `MaybeYield`), while ReXGlue had
@@ -126,3 +129,175 @@ Vulkan render target caches already skip zero-sized resolves.
 
 Ported the no-op behavior to `src/graphics/util/draw.cpp` so empty clipped resolves set
 `width_div_8 = 0`, `height_div_8 = 0`, and return success instead of logging an error.
+
+## May 31 Load-Time Pass
+
+- Reduced deferred overlapped completion latency by replacing the fixed
+  `kDeferredOverlappedDelayMillis = 100` sleep in `src/system/kernel_state.cpp`
+  with a cvar:
+  `--deferred_overlapped_delay_ms` (default `1`, `0` disables sleeping).
+- Rationale: content and enumerator async wrappers (`XamContentCreate*`,
+  `XamEnumerate`) use deferred overlapped completion and were paying a fixed
+  artificial delay per operation.
+- Added a sequential-read optimization in
+  `src/filesystem/devices/stfs_container_file.cpp`:
+  `StfsContainerFile::ReadSync` now caches the last block index/source offset
+  and starts future scans from that location when possible, avoiding repeated
+  block-list rescans from index 0 during streaming loads.
+
+## May 31 FMOD IRQ Profiling Hygiene
+
+- Gameplay CPU captures still showed large time in
+  `rex::memory::QueryProtect` / `VirtualQuery` from
+  `anonymous namespace::GuestReadableByte`, reached through
+  `FM2FmodIrqDispatch8236C380`.
+- Root cause: FM2 sig-site diagnostics were still probing guest memory on the
+  FMOD IRQ hot path, even when `REX_FM2_SIGSITE_DIAG=0`.
+- Mitigation in `FM2/src/fm2_hooks.cpp`: FMOD IRQ diag hooks now early-out when
+  diagnostics are disabled, preserving optional force overrides
+  (`REX_FM2_SCHED_MODE2`, `REX_FM2_SUBMIT_MODE3`) but removing expensive
+  per-call guest readability checks from normal profiling runs.
+
+## May 31 Producer Guard Outcome Counters
+
+- Added targeted counters for `0x82369340` (`FM2_ProducerProgressGuard_82369340`)
+  using hook points at:
+  - `0x823693F8` (`wait_ret1` path),
+  - `0x82369400` (timeout/recovery call site before `sub_82373E38`),
+  - `0x82369408` (`ret0` path).
+- New cvar:
+  - `--fm2_prod_guard_stats` (default off).
+- When enabled, `C:\temp\fm2-clean.log` emits:
+  - `FM2_PROD_GUARD_PERSEC sec=... total=... wait_ret1=... ret0=... timeout_call=... ret0_non_timeout=... wait_pct=...`
+- Purpose: quantify how much time this hotspot spends in keep-wait vs timeout/recovery behavior before attempting behavior changes.
+
+## May 31 Producer Guard Throttle A/B
+
+- Added cvar-gated throttling on the `0x823693F8` wait-return path of
+  `FM2_ProducerProgressGuard_82369340`:
+  - `--fm2_prod_guard_wait_pause_count N`
+    - Executes `N` calls to `rex::ppc::delay_execution()` per wait-hit (`0` disables, capped at `64`).
+  - `--fm2_prod_guard_wait_yield_interval N`
+    - Calls `rex::thread::MaybeYield()` every `N` wait-hits (`0` disables).
+- Defaults keep behavior unchanged (`0`, `0`), allowing safe A/B against baseline.
+
+### May 31 results
+
+- Baseline with stats enabled (no throttle) showed the guard as a pure busy-wait:
+  `wait_pct=100` and roughly `1.6M..1.9M` wait returns per second.
+- First tuned run:
+  - `--fm2_prod_guard_wait_pause_count 4`
+  - `--fm2_prod_guard_wait_yield_interval 16384`
+  - Observed major drop in guard hit rate (typically around `0.5M..0.8M`/sec with some lower windows),
+    while preserving `wait_pct=100` and improving subjective gameplay smoothness.
+- Follow-up A/B run:
+  - `--fm2_prod_guard_wait_pause_count 8` (same yield interval) for additional testing.
+- Follow-up A/B run:
+  - `--fm2_prod_guard_wait_pause_count 16` (same yield interval) for additional testing.
+
+## May 31 Producer Guard Deeper Trace
+
+- Added deeper decision telemetry for `0x82369340`
+  (`FM2_ProducerProgressGuard_82369340`) by instrumenting:
+  - function entry caller LR,
+  - early return when status flag bit is set,
+  - cursor compare (`r9` vs `*(*r29+10768)`),
+  - delta bucket at wait path (`delta < 5000`),
+  - delta on timeout path (`delta >= 5000`).
+- New cvars:
+  - `--fm2_prod_guard_trace` (default off)
+  - `--fm2_prod_guard_trace_sample_interval N` (default `0`, disabled)
+- When both `--fm2_prod_guard_stats=true` and `--fm2_prod_guard_trace=true` are enabled,
+  `C:\temp\fm2-clean.log` now also emits:
+  - `FM2_PROD_GUARD_TRACE_PERSEC ...`
+    - Includes caller LR histogram, early-flag blocks, cursor eq/ne counts, wait-delta buckets,
+      timeout-delta metrics, and last-seen values.
+  - Optional sampled lines when `--fm2_prod_guard_trace_sample_interval > 0`:
+    - `FM2_PROD_GUARD_WAIT_SAMPLE ...`
+    - One detailed wait-path state snapshot every `N` wait hits.
+
+- Added caller-loop telemetry for `sub_823729E0` (`LR 0x82372A70` site) so we can
+  inspect producer fields surrounding the wait loop:
+  - `FM2_PROD_WAITLOOP_72A70 sec=... hits=... ret1=... ret0=... obj0=... lim0=... cur0=... tgt0=... need_lt_avail=... need_ge_avail=... last(...)`
+  - Now also includes `small_break=...` and `call73078(...)` pre/post-change stats.
+
+- Added experimental small-gap break for `sub_823729E0` wait-loop:
+  - `--fm2_prod_waitloop_spin_min_gap N` (default `0` = off / original behavior)
+  - If `N > 0`, the loop only continues spinning when `(avail - need) > N`; otherwise
+    it exits the spin loop early.
+  - Intended for A/B testing when producer loop sits in persistent tiny-gap churn
+    (for example steady `gap` around `2`).
+
+- Added additional low-risk pacing control in the same wait-loop:
+  - `--fm2_prod_waitloop_yield_interval N` (default `0` = off)
+  - When enabled, calls `rex::thread::MaybeYield()` every `N` spin iterations
+    without changing functional readiness conditions.
+  - `FM2_PROD_WAITLOOP_72A70` now includes `yields=` and `yield_int=`.
+
+### May 31 2026 Wait-Loop Yield A/B/C (45s gameplay windows)
+
+- Captures:
+  - `C:\temp\fm2-clean-yield0-20260531-160500.log`
+  - `C:\temp\fm2-clean-yield256-20260531-160555.log`
+  - `C:\temp\fm2-clean-yield2048-20260531-160830.log`
+- Baseline run args:
+  - `--fm2_prod_guard_stats=true --fm2_prod_guard_trace=true --fm2_prod_guard_trace_sample_interval=0 --fm2_prod_waitloop_spin_min_gap=0`
+  - with `--fm2_prod_waitloop_yield_interval={0|256|2048}`
+- Aggregate comparison from those windows:
+  - `FM2_PROD_GUARD_PERSEC total` avg:
+    - `yield=0`: `411,914`
+    - `yield=256`: `346,356` (best)
+    - `yield=2048`: `373,446`
+  - `FM2_PROD_WAITLOOP_72A70 hits` avg:
+    - `yield=0`: `420,223`
+    - `yield=256`: `349,609` (best)
+    - `yield=2048`: `381,823`
+  - CP stats `frame_us` avg:
+    - `yield=0`: `206,176`
+    - `yield=256`: `189,069` (best)
+    - `yield=2048`: `231,161` (worst)
+  - CP stats `stall_us` avg:
+    - `yield=0`: `156,506`
+    - `yield=256`: `145,538` (best)
+    - `yield=2048`: `179,784` (worst)
+
+Current recommendation:
+- Keep `--fm2_prod_waitloop_yield_interval=256` for now.
+
+Note:
+- This is temporary experiment instrumentation in generated FM2 output plus
+  `FM2/src/fm2_hooks.cpp` for root-cause isolation, and should be moved to permanent
+  hook/codegen paths once conclusions are confirmed.
+
+## May 31 VSync Default
+
+- Changed `vsync` cvar default from enabled to disabled in
+  `src/graphics/command_processor.cpp`:
+  - `REXCVAR_DEFINE_BOOL(vsync, false, "GPU", "Enable vertical sync");`
+- Effect: FM2 now launches with VSYNC off unless explicitly overridden.
+
+## May 31 CP Stall-Loop Tuning Knobs
+
+- Added command-processor stall-loop cvars in
+  `src/graphics/command_processor.cpp` for profiling-driven pacing tests:
+  - `--gpu_cp_stall_spin_threshold` (default `500`)
+    - Poll count before switching from spin/yield to timed waits.
+  - `--gpu_cp_stall_wait_ms` (default `5`)
+    - Timed wait duration after threshold is exceeded (`0` disables timed waits).
+- Defaults preserve prior behavior; these are for A/B tuning based on Tracy
+  `CommandProcessor::Stall` and CP stats `stall_us` / `stall_waits`.
+
+## May 31 APU Mix Core Instrumentation
+
+- Added targeted instrumentation for `0x82697F08`
+  (`FM2_ApuMixRenderCore_82697F08`) using midasm hooks at:
+  - entry: `0x82697F08`
+  - exit path A: `0x826983A0`
+  - exit path B: `0x826983C0`
+- New cvar:
+  - `--fm2_apu_mix_stats` (default off).
+- When enabled, `C:\temp\fm2-clean.log` emits:
+  - `FM2_APU_MIX_PERSEC sec=... calls=... exits=... exit_a=... exit_b=... total_us=... avg_us=... max_us=... inflight_delta=... unmatched_exit=... stack_ovf=...`
+- Purpose: quantify how much real CPU time this hotspot consumes per second,
+  and verify whether it is a meaningful optimization target versus wait-heavy
+  scheduler/fence paths.

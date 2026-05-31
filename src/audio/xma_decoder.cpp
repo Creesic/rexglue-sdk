@@ -372,4 +372,83 @@ void XmaDecoder::Resume() {
   resume_fence_.Signal();
 }
 
+XmaDecoder::DebugSnapshot XmaDecoder::GetDebugSnapshot() {
+  DebugSnapshot snapshot{};
+  snapshot.paused = paused_.load(std::memory_order_acquire);
+
+  for (uint32_t i = 0; i < kContextCount; ++i) {
+    auto& out = snapshot.contexts[i];
+    auto& context = contexts_[i];
+
+    out.allocated = context.is_allocated();
+    out.enabled = context.is_enabled();
+    out.guest_ptr = context.guest_ptr();
+
+    if (!out.allocated || out.guest_ptr == 0) {
+      continue;
+    }
+
+    auto* context_ptr = memory()->TranslateVirtual(out.guest_ptr);
+    if (!context_ptr) {
+      continue;
+    }
+
+    XMA_CONTEXT_DATA data(context_ptr);
+    out.input0_valid = data.input_buffer_0_valid != 0;
+    out.input1_valid = data.input_buffer_1_valid != 0;
+    out.output_valid = data.output_buffer_valid != 0;
+    out.stop_when_done = data.stop_when_done != 0;
+    out.interrupt_when_done = data.interrupt_when_done != 0;
+    out.consume_only = data.IsConsumeOnlyContext();
+    out.stereo = data.is_stereo != 0;
+    out.muted = context.is_muted();
+    out.volume = context.volume();
+    out.peak_level = context.last_peak_level();
+    out.rms_level = context.last_rms_level();
+    out.current_buffer = static_cast<uint8_t>(data.current_buffer);
+    out.subframe_decode_count = static_cast<uint8_t>(data.subframe_decode_count);
+    out.output_buffer_block_count = static_cast<uint8_t>(data.output_buffer_block_count);
+    out.output_buffer_write_offset = static_cast<uint8_t>(data.output_buffer_write_offset);
+    out.output_buffer_read_offset = static_cast<uint8_t>(data.output_buffer_read_offset);
+    out.sample_rate_id = static_cast<uint8_t>(data.sample_rate);
+    out.loop_count = static_cast<uint8_t>(data.loop_count);
+    out.input_buffer_read_offset = data.input_buffer_read_offset;
+    out.input_buffer_0_ptr = data.input_buffer_0_ptr;
+    out.input_buffer_1_ptr = data.input_buffer_1_ptr;
+    out.output_buffer_ptr = data.output_buffer_ptr;
+  }
+
+  return snapshot;
+}
+
+void XmaDecoder::ToggleContextMute(uint32_t context_id) {
+  if (context_id >= kContextCount) {
+    return;
+  }
+  auto& context = contexts_[context_id];
+  if (!context.is_allocated()) {
+    return;
+  }
+  context.ToggleMuted();
+}
+
+void XmaDecoder::SetContextMuted(uint32_t context_id, bool muted) {
+  if (context_id >= kContextCount) {
+    return;
+  }
+  auto& context = contexts_[context_id];
+  context.SetMuted(muted);
+}
+
+void XmaDecoder::SetContextVolume(uint32_t context_id, float volume) {
+  if (context_id >= kContextCount) {
+    return;
+  }
+  auto& context = contexts_[context_id];
+  if (!context.is_allocated()) {
+    return;
+  }
+  context.SetVolume(volume);
+}
+
 }  // namespace rex::audio

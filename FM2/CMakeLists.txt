@@ -30,6 +30,7 @@ rexglue_setup_target(fm2)
 # building against an in-tree SDK via generated/rexglue.cmake.
 target_include_directories(fm2 PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/rexglue-sdk/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/imgui
 )
 
 # Enable Tracy profiling for guest functions (ZoneNamed per recompiled function)

@@ -12,11 +12,13 @@
 #include <rex/rex_app.h>
 
 #include <rex/cvar.h>
+#include <rex/perf/counter.h>
 #include <rex/ui/flags.h>
 #include <rex/kernel/crt/heap.h>
 #include <rex/filesystem.h>
 #include <rex/logging/sink.h>
 #include <rex/logging.h>
+#include <rex/ui/overlay/audio_voices_overlay.h>
 #include <rex/ui/overlay/console_overlay.h>
 #include <rex/ui/overlay/debug_overlay.h>
 #include <rex/ui/overlay/settings_overlay.h>
@@ -28,6 +30,7 @@
 #include <rex/graphics/d3d12/graphics_system.h>
 #endif
 #include <rex/audio/audio_system.h>
+#include <rex/audio/xma/decoder.h>
 #include <rex/audio/nop/nop_audio_system.h>
 #include <rex/audio/sdl/sdl_audio_system.h>
 #if REX_PLATFORM_WIN32
@@ -46,13 +49,204 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string_view>
+#include <vector>
 
 namespace rex {
 
 REXCVAR_DEFINE_STRING(audio_backend, "sdl", "Audio", "Audio backend: sdl, xaudio2, nop")
     .allowed({"sdl", "xaudio2", "nop"});
+REXCVAR_DEFINE_BOOL(show_fps_overlay, true, "UI", "Show compact FPS overlay on startup");
+
+namespace {
+
+std::string TrimCopy(const std::string& value) {
+  const auto first = value.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) {
+    return {};
+  }
+  const auto last = value.find_last_not_of(" \t\r\n");
+  return value.substr(first, last - first + 1);
+}
+
+std::string EscapeLayoutString(const std::string& value) {
+  std::string escaped;
+  escaped.reserve(value.size());
+  for (char c : value) {
+    if (c == '\\') {
+      escaped += "\\\\";
+    } else if (c == '\n') {
+      escaped += "\\n";
+    } else if (c == '\r') {
+      escaped += "\\r";
+    } else {
+      escaped.push_back(c);
+    }
+  }
+  return escaped;
+}
+
+std::string UnescapeLayoutString(const std::string& value) {
+  std::string unescaped;
+  unescaped.reserve(value.size());
+  for (size_t i = 0; i < value.size(); ++i) {
+    const char c = value[i];
+    if (c == '\\' && i + 1 < value.size()) {
+      const char next = value[++i];
+      if (next == 'n') {
+        unescaped.push_back('\n');
+      } else if (next == 'r') {
+        unescaped.push_back('\r');
+      } else {
+        unescaped.push_back(next);
+      }
+    } else {
+      unescaped.push_back(c);
+    }
+  }
+  return unescaped;
+}
+
+void ParseUintList(const std::string& value, std::unordered_set<uint32_t>& out_values) {
+  std::stringstream ss(value);
+  std::string token;
+  while (std::getline(ss, token, ',')) {
+    token = TrimCopy(token);
+    if (token.empty()) {
+      continue;
+    }
+    char* end = nullptr;
+    const unsigned long parsed = std::strtoul(token.c_str(), &end, 10);
+    if (!end || *end != '\0') {
+      continue;
+    }
+    out_values.insert(static_cast<uint32_t>(parsed));
+  }
+}
+
+std::string JoinUintList(const std::unordered_set<uint32_t>& values) {
+  std::vector<uint32_t> sorted(values.begin(), values.end());
+  std::sort(sorted.begin(), sorted.end());
+  std::string joined;
+  for (size_t i = 0; i < sorted.size(); ++i) {
+    if (i) {
+      joined.push_back(',');
+    }
+    joined += std::to_string(sorted[i]);
+  }
+  return joined;
+}
+
+std::filesystem::path GetAudioVoicesLayoutPath(const std::filesystem::path& user_data_root,
+                                               uint32_t title_id) {
+  return user_data_root / "overlays" / "audio_voices" / fmt::format("{:08X}.cfg", title_id);
+}
+
+std::optional<ui::AudioVoicesLayoutState> LoadAudioVoicesLayoutState(
+    const std::filesystem::path& user_data_root, uint32_t title_id) {
+  if (user_data_root.empty() || title_id == 0) {
+    return std::nullopt;
+  }
+  const auto path = GetAudioVoicesLayoutPath(user_data_root, title_id);
+  std::ifstream file(path, std::ios::in);
+  if (!file.is_open()) {
+    return std::nullopt;
+  }
+
+  ui::AudioVoicesLayoutState state;
+  std::string line;
+  while (std::getline(file, line)) {
+    line = TrimCopy(line);
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+    const size_t equals = line.find('=');
+    if (equals == std::string::npos) {
+      continue;
+    }
+    const std::string key = TrimCopy(line.substr(0, equals));
+    const std::string value = TrimCopy(line.substr(equals + 1));
+
+    if (key == "window_width") {
+      state.window_width = std::strtof(value.c_str(), nullptr);
+      state.has_window_size = true;
+    } else if (key == "window_height") {
+      state.window_height = std::strtof(value.c_str(), nullptr);
+      state.has_window_size = true;
+    } else if (key == "normalize_volume_panel") {
+      state.normalize_volume_panel = value == "1" || value == "true";
+    } else if (key == "muted_contexts") {
+      ParseUintList(value, state.muted_contexts);
+    } else if (key == "tracked_contexts") {
+      ParseUintList(value, state.tracked_volume_contexts);
+    } else if (key.rfind("name_", 0) == 0) {
+      const std::string index_text = key.substr(5);
+      char* end = nullptr;
+      const unsigned long parsed = std::strtoul(index_text.c_str(), &end, 10);
+      if (!end || *end != '\0') {
+        continue;
+      }
+      state.context_names[static_cast<uint32_t>(parsed)] = UnescapeLayoutString(value);
+    } else if (key.rfind("volume_", 0) == 0) {
+      const std::string index_text = key.substr(7);
+      char* end = nullptr;
+      const unsigned long parsed = std::strtoul(index_text.c_str(), &end, 10);
+      if (!end || *end != '\0') {
+        continue;
+      }
+      const float parsed_volume = std::strtof(value.c_str(), nullptr);
+      state.context_volumes[static_cast<uint32_t>(parsed)] = std::clamp(parsed_volume, 0.0f, 1.0f);
+    }
+  }
+
+  return state;
+}
+
+void SaveAudioVoicesLayoutState(const std::filesystem::path& user_data_root, uint32_t title_id,
+                                const ui::AudioVoicesLayoutState& state) {
+  if (user_data_root.empty() || title_id == 0) {
+    return;
+  }
+
+  const auto path = GetAudioVoicesLayoutPath(user_data_root, title_id);
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream file(path, std::ios::out | std::ios::trunc);
+  if (!file.is_open()) {
+    return;
+  }
+
+  file << "# ReXGlue Audio Voices Overlay State\n";
+  file << "window_width=" << state.window_width << "\n";
+  file << "window_height=" << state.window_height << "\n";
+  file << "normalize_volume_panel=" << (state.normalize_volume_panel ? "1" : "0") << "\n";
+  file << "muted_contexts=" << JoinUintList(state.muted_contexts) << "\n";
+  file << "tracked_contexts=" << JoinUintList(state.tracked_volume_contexts) << "\n";
+
+  std::vector<std::pair<uint32_t, std::string>> sorted_names(state.context_names.begin(),
+                                                             state.context_names.end());
+  std::sort(sorted_names.begin(), sorted_names.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+  for (const auto& [index, name] : sorted_names) {
+    if (name.empty()) {
+      continue;
+    }
+    file << "name_" << index << "=" << EscapeLayoutString(name) << "\n";
+  }
+
+  std::vector<std::pair<uint32_t, float>> sorted_volumes(state.context_volumes.begin(),
+                                                          state.context_volumes.end());
+  std::sort(sorted_volumes.begin(), sorted_volumes.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+  for (const auto& [index, volume] : sorted_volumes) {
+    file << "volume_" << index << "=" << std::clamp(volume, 0.0f, 1.0f) << "\n";
+  }
+}
+
+}  // namespace
 
 // --- ReXApp ---
 
@@ -214,7 +408,7 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     auto* input_sys = static_cast<rex::input::InputSystem*>(runtime_->input_system());
     if (input_sys) {
       input_sys->SetActiveCallback([this]() {
-        if (!debug_overlay_ && !console_overlay_ && !settings_overlay_)
+        if (!debug_overlay_ && !console_overlay_ && !audio_voices_overlay_ && !settings_overlay_)
           return true;
         return !imgui_drawer_->GetIO().WantCaptureMouse;
       });
@@ -340,6 +534,14 @@ bool ReXApp::SetupPresentation() {
                                                                       frame_stats_provider_);
           }
         });
+        rex::ui::RegisterBind("bind_fps_overlay", "F2", "Toggle FPS overlay", [this] {
+          if (fps_overlay_) {
+            fps_overlay_.reset();
+          } else {
+            fps_overlay_ = std::make_unique<ui::DebugOverlayDialog>(
+                imgui_drawer_.get(), frame_stats_provider_, true);
+          }
+        });
         rex::ui::RegisterBind("bind_console", "Backtick", "Toggle console overlay", [this] {
           if (console_overlay_) {
             console_overlay_.reset();
@@ -355,6 +557,91 @@ bool ReXApp::SetupPresentation() {
                 std::make_unique<ui::SettingsDialog>(imgui_drawer_.get(), config_path_);
           }
         });
+        rex::ui::RegisterBind("bind_audio_voices", "F5", "Toggle audio voices overlay", [this] {
+          if (audio_voices_overlay_) {
+            audio_voices_overlay_.reset();
+          } else {
+            audio_voices_overlay_ = std::make_unique<ui::AudioVoicesDialog>(
+                imgui_drawer_.get(), [this]() -> ui::AudioVoicesSnapshot {
+                  ui::AudioVoicesSnapshot out;
+                  if (runtime_ && runtime_->audio_system()) {
+                    auto* audio_system = dynamic_cast<audio::AudioSystem*>(runtime_->audio_system());
+                    if (audio_system) {
+                      auto snapshot = audio_system->GetDebugSnapshot();
+                      out.valid = true;
+                      out.paused = snapshot.paused;
+                      out.queued_frames = snapshot.queued_frames;
+                      for (size_t i = 0; i < audio::AudioSystem::kMaximumClientCount; ++i) {
+                        const auto& client = snapshot.clients[i];
+                        if (!client.in_use) {
+                          continue;
+                        }
+                        out.voices.push_back(ui::AudioVoiceInfo{
+                            static_cast<uint32_t>(i), client.driver_handle, client.callback,
+                            client.callback_arg, client.submitted_frames});
+                      }
+
+                      if (auto* xma_decoder = audio_system->xma_decoder()) {
+                        auto xma_snapshot = xma_decoder->GetDebugSnapshot();
+                        out.xma_paused = xma_snapshot.paused;
+                        out.xma_contexts.reserve(audio::XmaDecoder::kContextCount);
+                        for (size_t i = 0; i < audio::XmaDecoder::kContextCount; ++i) {
+                          const auto& in = xma_snapshot.contexts[i];
+                          out.xma_contexts.push_back(ui::AudioXmaContextInfo{
+                              static_cast<uint32_t>(i), in.allocated, in.enabled, in.input0_valid,
+                              in.input1_valid, in.output_valid, in.stop_when_done,
+                              in.interrupt_when_done, in.consume_only, in.stereo, in.muted, in.volume,
+                              in.peak_level, in.rms_level, in.current_buffer,
+                              in.subframe_decode_count, in.output_buffer_block_count,
+                              in.output_buffer_write_offset, in.output_buffer_read_offset,
+                              in.sample_rate_id, in.loop_count, in.guest_ptr,
+                              in.input_buffer_read_offset, in.input_buffer_0_ptr,
+                              in.input_buffer_1_ptr, in.output_buffer_ptr});
+                        }
+                      }
+                    }
+                  }
+                  return out;
+                },
+                [this](uint32_t context_id, bool muted) {
+                  if (!runtime_ || !runtime_->audio_system()) {
+                    return;
+                  }
+                  auto* audio_system = dynamic_cast<audio::AudioSystem*>(runtime_->audio_system());
+                  if (!audio_system || !audio_system->xma_decoder()) {
+                    return;
+                  }
+                  audio_system->xma_decoder()->SetContextMuted(context_id, muted);
+                },
+                [this](uint32_t context_id, float volume) {
+                  if (!runtime_ || !runtime_->audio_system()) {
+                    return;
+                  }
+                  auto* audio_system = dynamic_cast<audio::AudioSystem*>(runtime_->audio_system());
+                  if (!audio_system || !audio_system->xma_decoder()) {
+                    return;
+                  }
+                  audio_system->xma_decoder()->SetContextVolume(context_id, volume);
+                },
+                [this]() -> std::optional<ui::AudioVoicesLayoutState> {
+                  if (!runtime_ || !runtime_->kernel_state()) {
+                    return std::nullopt;
+                  }
+                  return LoadAudioVoicesLayoutState(user_data_root_, runtime_->kernel_state()->title_id());
+                },
+                [this](const ui::AudioVoicesLayoutState& state) {
+                  if (!runtime_ || !runtime_->kernel_state()) {
+                    return;
+                  }
+                  SaveAudioVoicesLayoutState(user_data_root_, runtime_->kernel_state()->title_id(),
+                                             state);
+                });
+          }
+        });
+        if (REXCVAR_GET(show_fps_overlay)) {
+          fps_overlay_ =
+              std::make_unique<ui::DebugOverlayDialog>(imgui_drawer_.get(), frame_stats_provider_, true);
+        }
 
         OnCreateDialogs(imgui_drawer_.get());
       }
@@ -432,12 +719,16 @@ void ReXApp::OnDestroy() {
 
   // Unregister overlay keybinds before destroying dialogs
   rex::ui::UnregisterBind("bind_debug_overlay");
+  rex::ui::UnregisterBind("bind_fps_overlay");
   rex::ui::UnregisterBind("bind_console");
   rex::ui::UnregisterBind("bind_settings");
+  rex::ui::UnregisterBind("bind_audio_voices");
 
   // ImGui cleanup (reverse of setup)
   settings_overlay_.reset();
+  audio_voices_overlay_.reset();
   console_overlay_.reset();
+  fps_overlay_.reset();
   debug_overlay_.reset();
   if (imgui_drawer_) {
     imgui_drawer_->SetPresenterAndImmediateDrawer(nullptr, nullptr);
@@ -470,6 +761,9 @@ void ReXApp::SetGuestFrameStats(ui::DebugOverlayDialog::FrameStatsProvider provi
   frame_stats_provider_ = provider;
   if (debug_overlay_) {
     debug_overlay_->SetStatsProvider(provider);
+  }
+  if (fps_overlay_) {
+    fps_overlay_->SetStatsProvider(provider);
   }
 }
 

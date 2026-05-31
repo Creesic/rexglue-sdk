@@ -25,6 +25,7 @@
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/imgui_drawer.h>
 #include <rex/ui/immediate_drawer.h>
+#include <rex/ui/overlay/audio_voices_overlay.h>
 #include <rex/ui/overlay/debug_overlay.h>
 #include <rex/ui/window.h>
 #include <rex/ui/window_listener.h>
@@ -218,8 +219,10 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
 
   // Built-in overlays
   std::shared_ptr<LogCaptureSink> log_sink_;
+  std::unique_ptr<ui::DebugOverlayDialog> fps_overlay_;
   std::unique_ptr<ui::DebugOverlayDialog> debug_overlay_;
   std::unique_ptr<ui::ConsoleDialog> console_overlay_;
+  std::unique_ptr<ui::AudioVoicesDialog> audio_voices_overlay_;
   std::unique_ptr<ui::SettingsDialog> settings_overlay_;
   ui::DebugOverlayDialog::FrameStatsProvider frame_stats_provider_;
   std::filesystem::path config_path_;

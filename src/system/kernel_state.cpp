@@ -14,6 +14,7 @@
 
 #include <fmt/format.h>
 
+#include <rex/cvar.h>
 #include <rex/assert.h>
 #include <rex/logging.h>
 #include <rex/math.h>
@@ -35,7 +36,9 @@
 
 namespace rex::system {
 
-constexpr uint32_t kDeferredOverlappedDelayMillis = 100;
+REXCVAR_DEFINE_UINT32(
+    deferred_overlapped_delay_ms, 1, "Kernel",
+    "Delay in milliseconds for deferred overlapped completions (0 disables sleep)");
 
 // This is a global object initialized with the XboxkrnlModule.
 // It references the current kernel state object that all kernel methods should
@@ -1068,9 +1071,11 @@ void KernelState::CompleteOverlappedDeferredEx(
         if (pre_callback) {
           pre_callback();
         }
-        REXSYS_DEBUG("Deferred overlapped {:08X}: sleeping {}ms", overlapped_ptr,
-                     kDeferredOverlappedDelayMillis);
-        rex::thread::Sleep(std::chrono::milliseconds(kDeferredOverlappedDelayMillis));
+        const uint32_t delay_ms = REXCVAR_GET(deferred_overlapped_delay_ms);
+        if (delay_ms > 0) {
+          REXSYS_DEBUG("Deferred overlapped {:08X}: sleeping {}ms", overlapped_ptr, delay_ms);
+          rex::thread::Sleep(std::chrono::milliseconds(delay_ms));
+        }
         uint32_t extended_error, length;
         REXSYS_DEBUG("Deferred overlapped {:08X}: running completion", overlapped_ptr);
         auto result = completion_callback(extended_error, length);

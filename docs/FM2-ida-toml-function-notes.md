@@ -90,6 +90,18 @@ cluster at `0x82375A40..0x82376A58`, the intrusive-list helpers at
 
 ---
 
+## May 30 Update: Missing Indirect Call Target Crash
+
+- Crash observed in `C:\temp\fm2-clean.log`:
+  - `[2026-05-30 23:25:13.002] [FATAL] Call to invalid or unregistered function at guest address 0x821D4658`
+- Added manifest override so codegen registers the target:
+  - `0x821D4658 = { name = "FM2_IndirectTarget_821D4658" }`
+- Follow-up crash in the same call cluster:
+  - `[2026-05-30 23:57:45.521] [FATAL] ... guest address 0x821D4668`
+  - Added `0x821D4668 = { name = "FM2_IndirectTarget_821D4668" }`
+- Current status:
+  - Treated as an indirect-call target pending IDA classification (true function start vs thunk/label).
+
 ## May 24 Update: Audio Signal Gate
 
 ### `0x8220A4E8` — `FM2_SignalGate` (TASK 6D root cause)
@@ -154,3 +166,30 @@ investigation if the signal gate behavior is to be modified.
 These are vtable/function pointer addresses that `sub_8220A4E8` is called through.
 IDA shows xrefs from data (not code), confirming indirect dispatch. The mixer
 stores a function pointer at one of these addresses and calls it each cycle.
+
+## May 31 Update: `0x82369340` Profiling Hotspot
+
+- Renamed in Ghidra: `Function_82369340` -> `FM2_ProducerProgressGuard_82369340`.
+- Behavior from decompilation:
+  - Calls a thread/context accessor (`FUN_824131ac`) and reads a producer object.
+  - Executes a short fixed spin/delay sequence (decompiler shows a tiny countdown loop; this matches prior `db16cyc` observations in the same helper).
+  - If producer flag bit `+0x2A3D & 4` is clear, samples current tick and producer progress fields.
+  - If elapsed since last-progress tick is under `5000`, returns `1` (keep waiting).
+  - Otherwise calls `Function_82373E38` (recovery/timeout path) and returns `0`.
+- Related callee `0x82373E38` sets producer state bits and rewinds a queue/index field before continuing, consistent with a progress-timeout recovery path.
+- Manifest mirror added:
+  - `0x82369340 = { name = "FM2_ProducerProgressGuard_82369340" }`
+
+## May 31 Update: `0x82697F08` APU Mix Core
+
+- Named in IDA as `FM2_ApuMixRenderCore_82697F08`.
+- Ghidra label/comments added at:
+  - entry `0x82697F08`
+  - exit path A `0x826983A0`
+  - exit path B `0x826983C0`
+  - callsites `0x826A7180` and `0x826A71D0`
+- Manifest mirror added:
+  - `0x82697F08 = { name = "FM2_ApuMixRenderCore_82697F08" }`
+- Runtime instrumentation hooks added for timing/call counts:
+  - entry `0x82697F08` -> `FM2ApuMixRenderEnter82697F08`
+  - exits `0x826983A0` / `0x826983C0` -> `FM2ApuMixRenderExitA/B...`

@@ -13,6 +13,7 @@
         'Invoke-ReXFormat'
         'Invoke-ReXLint'
         'Invoke-ReXSetup'
+        'Invoke-ReXLogCapture'
     )
     AliasesToExport   = @(
         'rex-configure'
@@ -22,6 +23,7 @@
         'rex-format'
         'rex-lint'
         'rex-setup'
+        'rex-capture-log'
     )
     CmdletsToExport   = @()
     VariablesToExport  = @()

@@ -419,3 +419,6 @@ FodyWeavers.xsd
 
 # CMake User Overrides
 CMakeUserPresets.json
+/FM2/assets
+/FM2/generated
+/FM2/generated

@@ -14122,7 +14122,7 @@ loc_82381898:
 	ctx.r3.s64 = ctx.r1.s64 + 80;
 	// bl 0x82369340
 	ctx.lr = 0x823818A0;
-	sub_82369340(ctx, base);
+	FM2_ProducerProgressGuard_82369340(ctx, base);
 	// cmpwi r3,0
 	ctx.cr0.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// beq 0x823818b8

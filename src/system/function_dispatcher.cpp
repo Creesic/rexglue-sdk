@@ -35,8 +35,10 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
 }  // namespace
 
 static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
-  REX_FATAL("Call to invalid or unregistered function at guest address 0x{:08X}",
-            ctx.last_indirect_target);
+  REX_FATAL(
+      "Call to invalid or unregistered function at guest address 0x{:08X} "
+      "(r1=0x{:08X}, r3=0x{:08X})",
+      ctx.last_indirect_target, static_cast<uint32_t>(ctx.r1.u64), static_cast<uint32_t>(ctx.r3.u64));
 }
 
 PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {

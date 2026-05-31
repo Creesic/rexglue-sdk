@@ -12,6 +12,7 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <queue>
 
 #include <rex/kernel.h>
@@ -35,6 +36,23 @@ class XmaDecoder;
 
 class AudioSystem : public system::IAudioSystem {
  public:
+  static constexpr size_t kMaximumClientCount = 8;
+
+  struct DebugClientInfo {
+    bool in_use = false;
+    uint32_t callback = 0;
+    uint32_t callback_arg = 0;
+    uint32_t wrapped_callback_arg = 0;
+    uint32_t driver_handle = 0;
+    uint64_t submitted_frames = 0;
+  };
+
+  struct DebugSnapshot {
+    bool paused = false;
+    uint32_t queued_frames = 0;
+    std::array<DebugClientInfo, kMaximumClientCount> clients = {};
+  };
+
   virtual ~AudioSystem();
 
   memory::Memory* memory() const { return memory_; }
@@ -54,6 +72,8 @@ class AudioSystem : public system::IAudioSystem {
   bool is_paused() const { return paused_; }
   void Pause();
   void Resume();
+
+  DebugSnapshot GetDebugSnapshot();
 
  protected:
   explicit AudioSystem(runtime::FunctionDispatcher* function_dispatcher);
@@ -77,7 +97,6 @@ class AudioSystem : public system::IAudioSystem {
   system::object_ref<system::XHostThread> worker_thread_;
 
   rex::thread::global_critical_region global_critical_region_;
-  static const size_t kMaximumClientCount = 8;
   struct {
     AudioDriver* driver;
     uint32_t callback;
@@ -85,6 +104,7 @@ class AudioSystem : public system::IAudioSystem {
     uint32_t wrapped_callback_arg;
     bool in_use;
   } clients_[kMaximumClientCount];
+  uint64_t submitted_frames_[kMaximumClientCount] = {};
 
   int FindFreeClient();
 

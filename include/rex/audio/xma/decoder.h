@@ -12,6 +12,7 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <mutex>
 #include <queue>
 
@@ -31,6 +32,41 @@ struct XMA_CONTEXT_DATA;
 
 class XmaDecoder {
  public:
+  static constexpr uint32_t kContextCount = 320;
+
+  struct DebugContextInfo {
+    bool allocated = false;
+    bool enabled = false;
+    bool input0_valid = false;
+    bool input1_valid = false;
+    bool output_valid = false;
+    bool stop_when_done = false;
+    bool interrupt_when_done = false;
+    bool consume_only = false;
+    bool stereo = false;
+    bool muted = false;
+    float volume = 1.0f;
+    float peak_level = 0.0f;
+    float rms_level = 0.0f;
+    uint8_t current_buffer = 0;
+    uint8_t subframe_decode_count = 0;
+    uint8_t output_buffer_block_count = 0;
+    uint8_t output_buffer_write_offset = 0;
+    uint8_t output_buffer_read_offset = 0;
+    uint8_t sample_rate_id = 0;
+    uint8_t loop_count = 0;
+    uint32_t guest_ptr = 0;
+    uint32_t input_buffer_read_offset = 0;
+    uint32_t input_buffer_0_ptr = 0;
+    uint32_t input_buffer_1_ptr = 0;
+    uint32_t output_buffer_ptr = 0;
+  };
+
+  struct DebugSnapshot {
+    bool paused = false;
+    std::array<DebugContextInfo, kContextCount> contexts = {};
+  };
+
   explicit XmaDecoder(runtime::FunctionDispatcher* function_dispatcher);
   ~XmaDecoder();
 
@@ -52,6 +88,11 @@ class XmaDecoder {
   bool is_paused() const { return paused_; }
   void Pause();
   void Resume();
+
+  DebugSnapshot GetDebugSnapshot();
+  void ToggleContextMute(uint32_t context_id);
+  void SetContextMuted(uint32_t context_id, bool muted);
+  void SetContextVolume(uint32_t context_id, float volume);
 
  protected:
   int GetContextId(uint32_t guest_ptr);
@@ -81,7 +122,6 @@ class XmaDecoder {
 
   XmaRegisterFile register_file_;
 
-  static const uint32_t kContextCount = 320;
   XmaContext contexts_[kContextCount];
   bit::BitMap context_bitmap_;
 

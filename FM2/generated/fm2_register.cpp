@@ -117,6 +117,8 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x821D45A0, sub_821D45A0);
   registrar->SetFunction(0x821D45B8, sub_821D45B8);
   registrar->SetFunction(0x821D4648, sub_821D4648);
+  registrar->SetFunction(0x821D4658, FM2_IndirectTarget_821D4658);
+  registrar->SetFunction(0x821D4668, FM2_IndirectTarget_821D4668);
   registrar->SetFunction(0x821D4678, sub_821D4678);
   registrar->SetFunction(0x821D46F8, sub_821D46F8);
   registrar->SetFunction(0x821D4700, sub_821D4700);
@@ -2824,6 +2826,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x822774C8, sub_822774C8);
   registrar->SetFunction(0x82277538, sub_82277538);
   registrar->SetFunction(0x82277548, FM2_VCallThunk58);
+  registrar->SetFunction(0x82277558, sub_82277558);
   registrar->SetFunction(0x82277568, sub_82277568);
   registrar->SetFunction(0x822775B0, sub_822775B0);
   registrar->SetFunction(0x822775C0, sub_822775C0);
@@ -8662,7 +8665,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82369280, sub_82369280);
   registrar->SetFunction(0x82369298, sub_82369298);
   registrar->SetFunction(0x823692F0, sub_823692F0);
-  registrar->SetFunction(0x82369340, sub_82369340);
+  registrar->SetFunction(0x82369340, FM2_ProducerProgressGuard_82369340);
   registrar->SetFunction(0x82369418, sub_82369418);
   registrar->SetFunction(0x82369470, sub_82369470);
   registrar->SetFunction(0x82369508, sub_82369508);
@@ -23330,7 +23333,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82697000, sub_82697000);
   registrar->SetFunction(0x82697068, sub_82697068);
   registrar->SetFunction(0x826974B8, sub_826974B8);
-  registrar->SetFunction(0x82697F08, sub_82697F08);
+  registrar->SetFunction(0x82697F08, FM2_ApuMixRenderCore_82697F08);
   registrar->SetFunction(0x826983D8, sub_826983D8);
   registrar->SetFunction(0x82698488, sub_82698488);
   registrar->SetFunction(0x826984C0, sub_826984C0);

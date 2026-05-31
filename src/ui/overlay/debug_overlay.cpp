@@ -11,20 +11,55 @@
  */
 #include <rex/ui/overlay/debug_overlay.h>
 #include <rex/version.h>
+#include <rex/perf/counter.h>
 #include <imgui.h>
 #ifdef REXGLUE_ENABLE_PERF_COUNTERS
-#include <rex/perf/counter.h>
 #include <cinttypes>
 #endif
 
 namespace rex::ui {
 
-DebugOverlayDialog::DebugOverlayDialog(ImGuiDrawer* imgui_drawer, FrameStatsProvider stats_provider)
-    : ImGuiDialog(imgui_drawer), stats_provider_(std::move(stats_provider)) {}
+DebugOverlayDialog::DebugOverlayDialog(ImGuiDrawer* imgui_drawer, FrameStatsProvider stats_provider,
+                                       bool compact_only)
+    : ImGuiDialog(imgui_drawer),
+      stats_provider_(std::move(stats_provider)),
+      compact_only_(compact_only) {}
 
 DebugOverlayDialog::~DebugOverlayDialog() {}
 
 void DebugOverlayDialog::OnDraw(ImGuiIO& io) {
+  FrameStats stats{};
+  bool has_stats = false;
+  if (stats_provider_) {
+    stats = stats_provider_();
+    has_stats = stats.frame_count > 0 || stats.frame_time_ms > 0.0 || stats.fps > 0.0;
+  }
+  if (!has_stats) {
+    const int64_t ft_us = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFrameTimeUs);
+    if (ft_us > 0) {
+      stats.frame_time_ms = static_cast<double>(ft_us) / 1000.0;
+      stats.fps = 1000000.0 / static_cast<double>(ft_us);
+      stats.frame_count = 1;
+      has_stats = true;
+    }
+  }
+
+  if (compact_only_) {
+    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.35f);
+    if (ImGui::Begin("FPS##overlay_compact", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings)) {
+      if (has_stats) {
+        ImGui::Text("FPS: %.1f (%.2f ms)", stats.fps, stats.frame_time_ms);
+      } else {
+        ImGui::TextUnformatted("FPS: n/a");
+      }
+    }
+    ImGui::End();
+    return;
+  }
+
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
 #ifdef REXGLUE_ENABLE_PERF_COUNTERS
   ImGui::SetNextWindowSize(ImVec2(280, 280), ImGuiCond_FirstUseEver);
@@ -33,11 +68,8 @@ void DebugOverlayDialog::OnDraw(ImGuiIO& io) {
 #endif
   ImGui::SetNextWindowBgAlpha(0.5f);
   if (ImGui::Begin("Debug##overlay", nullptr, ImGuiWindowFlags_NoCollapse)) {
-    if (stats_provider_) {
-      auto stats = stats_provider_();
-      if (stats.frame_count > 0) {
-        ImGui::Text("Guest: %.1f FPS (%.2f ms)", stats.fps, stats.frame_time_ms);
-      }
+    if (has_stats) {
+      ImGui::Text("Guest: %.1f FPS (%.2f ms)", stats.fps, stats.frame_time_ms);
     }
 #ifdef REXGLUE_ENABLE_PERF_COUNTERS
     ImGui::Separator();

@@ -10,6 +10,7 @@
 */
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include <rex/audio/xma/context.h>
@@ -39,6 +40,26 @@ extern "C" {
 namespace rex::audio {
 
 using stream::BitStream;
+
+namespace {
+
+void ApplyGainToBigEndianPcm16(const uint8_t* input, uint8_t* output, uint32_t byte_count, float gain) {
+  if (byte_count == 0) {
+    return;
+  }
+
+  const float clamped_gain = std::clamp(gain, 0.0f, 1.0f);
+  for (uint32_t i = 0; i + 1 < byte_count; i += 2) {
+    const int16_t sample =
+        static_cast<int16_t>((static_cast<uint16_t>(input[i]) << 8) | input[i + 1]);
+    const float scaled = std::clamp(static_cast<float>(sample) * clamped_gain, -32768.0f, 32767.0f);
+    const int16_t scaled_sample = static_cast<int16_t>(scaled);
+    output[i] = static_cast<uint8_t>((static_cast<uint16_t>(scaled_sample) >> 8) & 0xFF);
+    output[i + 1] = static_cast<uint8_t>(static_cast<uint16_t>(scaled_sample) & 0xFF);
+  }
+}
+
+}  // namespace
 
 const uint32_t XmaContext::kBitsPerPacketHeader;
 const uint32_t XmaContext::kOutputMaxSizeBytes;
@@ -189,6 +210,8 @@ void XmaContext::ClearLocked(XMA_CONTEXT_DATA* data) {
   current_frame_remaining_subframes_ = 0;
   loop_frame_output_limit_ = 0;
   loop_start_skip_pending_ = false;
+  last_peak_level_.store(0.0f, std::memory_order_release);
+  last_rms_level_.store(0.0f, std::memory_order_release);
 }
 
 void XmaContext::Disable() {
@@ -201,6 +224,10 @@ void XmaContext::Release() {
   assert_true(is_allocated());
 
   set_is_allocated(false);
+  is_muted_.store(false, std::memory_order_release);
+  volume_.store(1.0f, std::memory_order_release);
+  last_peak_level_.store(0.0f, std::memory_order_release);
+  last_rms_level_.store(0.0f, std::memory_order_release);
   auto context_ptr = memory()->TranslateVirtual(guest_ptr());
   std::memset(context_ptr, 0, sizeof(XMA_CONTEXT_DATA));
 }
@@ -436,8 +463,19 @@ void XmaContext::Consume(memory::RingBuffer* output_rb, const XMA_CONTEXT_DATA* 
       ((kBytesPerFrameChannel / kOutputBytesPerBlock) << data->is_stereo) -
       current_frame_remaining_subframes_;
 
-  output_rb->Write(raw_frame_.data() + (kOutputBytesPerBlock * raw_frame_read_offset),
-                   subframes_to_write * kOutputBytesPerBlock);
+  const uint32_t write_bytes = static_cast<uint32_t>(subframes_to_write) * kOutputBytesPerBlock;
+  const uint8_t* frame_source =
+      raw_frame_.data() + (kOutputBytesPerBlock * static_cast<uint32_t>(raw_frame_read_offset));
+  if (is_muted()) {
+    static const std::array<uint8_t, kBytesPerFrameChannel * 2> kSilence = {};
+    output_rb->Write(kSilence.data(), write_bytes);
+  } else if (volume() < 0.999f) {
+    static thread_local std::array<uint8_t, kBytesPerFrameChannel * 2> scaled_frame;
+    ApplyGainToBigEndianPcm16(frame_source, scaled_frame.data(), write_bytes, volume());
+    output_rb->Write(scaled_frame.data(), write_bytes);
+  } else {
+    output_rb->Write(frame_source, write_bytes);
+  }
 
   const int8_t headroom = (current_frame_remaining_subframes_ - subframes_to_write == 0)
                               ? data->output_buffer_padding
@@ -643,6 +681,27 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
   PrepareDecoder(data->sample_rate, bool(data->is_stereo));
   PreparePacket(packet_info.current_frame_size_, padding_start);
   if (DecodePacket(av_context_, av_packet_, av_frame_)) {
+    float peak_level = 0.0f;
+    float sum_squares = 0.0f;
+    uint32_t sample_count = 0;
+    for (uint32_t i = 0; i < kSamplesPerFrame; ++i) {
+      const float sample0 = reinterpret_cast<const float*>(av_frame_->data[0])[i];
+      const float sample0_clamped = std::clamp(sample0, -1.0f, 1.0f);
+      peak_level = std::max(peak_level, std::fabs(sample0_clamped));
+      sum_squares += sample0_clamped * sample0_clamped;
+      ++sample_count;
+      if (data->is_stereo) {
+        const float sample1 = reinterpret_cast<const float*>(av_frame_->data[1])[i];
+        const float sample1_clamped = std::clamp(sample1, -1.0f, 1.0f);
+        peak_level = std::max(peak_level, std::fabs(sample1_clamped));
+        sum_squares += sample1_clamped * sample1_clamped;
+        ++sample_count;
+      }
+    }
+    last_peak_level_.store(peak_level, std::memory_order_release);
+    const float rms_level = sample_count ? std::sqrt(sum_squares / float(sample_count)) : 0.0f;
+    last_rms_level_.store(rms_level, std::memory_order_release);
+
     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
                  raw_frame_.data());
     current_frame_remaining_subframes_ = 4 << data->is_stereo;
@@ -662,6 +721,9 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
       }
       loop_start_skip_pending_ = false;
     }
+  } else {
+    last_peak_level_.store(0.0f, std::memory_order_release);
+    last_rms_level_.store(0.0f, std::memory_order_release);
   }
 
   // Compute where to go next.

@@ -126,3 +126,59 @@ Vulkan render target caches already skip zero-sized resolves.
 
 Ported the no-op behavior to `src/graphics/util/draw.cpp` so empty clipped resolves set
 `width_div_8 = 0`, `height_div_8 = 0`, and return success instead of logging an error.
+
+## May 31 2026 Producer Wait-Loop A/B (Doc Vault Update)
+
+- Added deeper producer-loop telemetry around `sub_823729E0` / `0x82372A70` in FM2
+  experimental hooks:
+  - `FM2_PROD_GUARD_PERSEC ...`
+  - `FM2_PROD_GUARD_TRACE_PERSEC ...`
+  - `FM2_PROD_WAITLOOP_72A70 ...`
+- Captured A/B snapshots:
+  - `C:\temp\fm2-clean-gap0-20260531-153223.log`
+  - `C:\temp\fm2-clean-gap2-20260531-153316.log`
+- Diff summary from the same sampling window:
+  - `gap2` did trigger the experimental break path (`small_break > 0`),
+    but aggregate behavior trended worse in that run (`PROD_GUARD total`,
+    `WAITLOOP hits`, and CP `frame_us` / `stall_us` were higher versus `gap0`).
+- Current interpretation:
+  - The `0x82372A70` loop remains a dominant tiny-gap spin hotspot.
+  - The direct small-gap break (`spin_min_gap=2`) is not a clear win under
+    this capture and should remain experimental only.
+
+### Next experimental knob (low risk)
+
+- Added `--fm2_prod_waitloop_yield_interval N`:
+  - Calls `MaybeYield()` every `N` iterations in the same wait loop.
+  - Keeps readiness logic unchanged, unlike gap-break behavior.
+  - Intended to reduce busy-spin pressure before attempting deeper behavior changes.
+
+## May 31 2026 Wait-Loop Yield A/B/C (45s gameplay windows)
+
+- Captures:
+  - `C:\temp\fm2-clean-yield0-20260531-160500.log`
+  - `C:\temp\fm2-clean-yield256-20260531-160555.log`
+  - `C:\temp\fm2-clean-yield2048-20260531-160830.log`
+- Baseline run args:
+  - `--fm2_prod_guard_stats=true --fm2_prod_guard_trace=true --fm2_prod_guard_trace_sample_interval=0 --fm2_prod_waitloop_spin_min_gap=0`
+  - with `--fm2_prod_waitloop_yield_interval={0|256|2048}`
+- Aggregate comparison from those windows:
+  - `FM2_PROD_GUARD_PERSEC total` avg:
+    - `yield=0`: `411,914`
+    - `yield=256`: `346,356` (best)
+    - `yield=2048`: `373,446`
+  - `FM2_PROD_WAITLOOP_72A70 hits` avg:
+    - `yield=0`: `420,223`
+    - `yield=256`: `349,609` (best)
+    - `yield=2048`: `381,823`
+  - CP stats `frame_us` avg:
+    - `yield=0`: `206,176`
+    - `yield=256`: `189,069` (best)
+    - `yield=2048`: `231,161` (worst)
+  - CP stats `stall_us` avg:
+    - `yield=0`: `156,506`
+    - `yield=256`: `145,538` (best)
+    - `yield=2048`: `179,784` (worst)
+
+Current recommendation:
+- Keep `--fm2_prod_waitloop_yield_interval=256` for now.

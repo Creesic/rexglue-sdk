@@ -7,6 +7,7 @@ Use this page as a tag-style map for quick filtering in Obsidian.
 - [[docs/FM2-audio-decode-throughput]]
 - [[docs/FM2-audio-notes]]
 - [[docs/FM2-audio-pipeline-map]]
+- [[docs/FM2-xaudio2-conversion-guide]]
 - [[docs/FM2-audio-upstream-dispatch-chain-2026-05-30]]
 - [[docs/FM2-audio-ida-ghidra-cadence-chain-2026-05-30]]
 

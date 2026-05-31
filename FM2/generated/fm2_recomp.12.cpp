@@ -28591,7 +28591,33 @@ loc_82369324:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82369340) {
+extern void FM2ProducerProgressGuardWait823693F8();
+
+extern void FM2ProducerProgressGuardTimeout82369400();
+
+extern void FM2ProducerProgressGuardReturnZero82369408();
+
+extern void FM2ProducerProgressGuardEntry82369340(PPCRegister& lr);
+
+extern void FM2ProducerProgressGuardFlagBlocked82369390(PPCRegister& lr);
+
+extern void FM2ProducerProgressGuardCursorCmp823693B8(PPCRegister& r9, PPCRegister& r10);
+
+extern void FM2ProducerProgressGuardWaitDetail823693F8(PPCRegister& lr, PPCRegister& delta, PPCRegister& r30, PPCRegister& r31);
+
+extern void FM2ProducerProgressGuardTimeoutDetail82369400(PPCRegister& lr, PPCRegister& delta);
+
+extern void FM2ProducerWaitLoopSample82372A68(PPCRegister& obj, PPCRegister& target);
+
+extern void FM2ProducerWaitLoopGuardResult82372A70(PPCRegister& result);
+
+extern void FM2ProducerWaitLoopCall73078Before82372A38(PPCRegister& obj);
+
+extern void FM2ProducerWaitLoopCall73078After82372A38(PPCRegister& obj);
+
+extern bool FM2ProducerWaitLoopShouldSpin82372A78(PPCRegister& need, PPCRegister& avail);
+
+DEFINE_REX_FUNC(FM2_ProducerProgressGuard_82369340) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -28609,6 +28635,7 @@ DEFINE_REX_FUNC(sub_82369340) {
 	ctx.r11.s64 = 4;
 	// lwz r29,0(r31)
 	ctx.r29.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
+	FM2ProducerProgressGuardEntry82369340(ctx.r12);
 	// stw r11,80(r1)
 	REX_STORE_U32(ctx.r1.u32 + 80, ctx.r11.u32);
 loc_8236935C:
@@ -28646,6 +28673,7 @@ loc_8236935C:
 	ctx.r11.u64 = __builtin_rotateleft64(ctx.r11.u32 | (ctx.r11.u64 << 32), 0) & 0x4;
 	ctx.cr0.compare<int32_t>(ctx.r11.s32, 0, ctx.xer);
 	// bne 0x82369408
+	if (!ctx.cr0.eq) FM2ProducerProgressGuardFlagBlocked82369390(ctx.r12);
 	if (!ctx.cr0.eq) goto loc_82369408;
 	// lwz r10,256(r13)
 	ctx.r10.u64 = REX_LOAD_U32(ctx.r13.u32 + 256);
@@ -28657,6 +28685,7 @@ loc_8236935C:
 	ctx.r30.u64 = REX_LOAD_U32(ctx.r10.u32 + 88);
 	// lwz r10,0(r11)
 	ctx.r10.u64 = REX_LOAD_U32(ctx.r11.u32 + 0);
+	FM2ProducerProgressGuardCursorCmp823693B8(ctx.r9, ctx.r10);
 	// cmplw cr6,r9,r10
 	ctx.cr6.compare<uint32_t>(ctx.r9.u32, ctx.r10.u32, ctx.xer);
 	// beq cr6,0x823693c8
@@ -28695,17 +28724,22 @@ loc_823693E8:
 	// bge cr6,0x82369400
 	if (!ctx.cr6.lt) goto loc_82369400;
 	// li r3,1
+	FM2ProducerProgressGuardWaitDetail823693F8(ctx.r12, ctx.r11, ctx.r30, ctx.r31);
+	FM2ProducerProgressGuardWait823693F8();
 	ctx.r3.s64 = 1;
 	// b 0x8236940c
 	goto loc_8236940C;
 loc_82369400:
 	// mr r3,r29
+	FM2ProducerProgressGuardTimeoutDetail82369400(ctx.r12, ctx.r11);
+	FM2ProducerProgressGuardTimeout82369400();
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x82373e38
 	ctx.lr = 0x82369408;
 	sub_82373E38(ctx, base);
 loc_82369408:
 	// li r3,0
+	FM2ProducerProgressGuardReturnZero82369408();
 	ctx.r3.s64 = 0;
 loc_8236940C:
 	// addi r1,r1,128
@@ -37906,7 +37940,7 @@ loc_8236D064:
 	ctx.r3.s64 = ctx.r1.s64 + 160;
 	// bl 0x82369340
 	ctx.lr = 0x8236D06C;
-	sub_82369340(ctx, base);
+	FM2_ProducerProgressGuard_82369340(ctx, base);
 	// cmpwi r3,0
 	ctx.cr0.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// beq 0x8236d088
@@ -49477,7 +49511,7 @@ loc_82371DB0:
 	ctx.r3.s64 = ctx.r1.s64 + 80;
 	// bl 0x82369340
 	ctx.lr = 0x82371DB8;
-	sub_82369340(ctx, base);
+	FM2_ProducerProgressGuard_82369340(ctx, base);
 	// cmpwi r3,0
 	ctx.cr0.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// beq 0x82371de8
@@ -49578,7 +49612,7 @@ loc_82371E54:
 	ctx.r3.s64 = ctx.r1.s64 + 80;
 	// bl 0x82369340
 	ctx.lr = 0x82371E5C;
-	sub_82369340(ctx, base);
+	FM2_ProducerProgressGuard_82369340(ctx, base);
 	// cmpwi r3,0
 	ctx.cr0.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// beq 0x82371e90
@@ -51319,9 +51353,11 @@ DEFINE_REX_FUNC(sub_823729E0) {
 	ctx.cr6.compare<uint32_t>(ctx.r11.u32, 0, ctx.xer);
 	// bne cr6,0x82372a9c
 	if (!ctx.cr6.eq) goto loc_82372A9C;
+	FM2ProducerWaitLoopCall73078Before82372A38(ctx.r31);
 	// bl 0x82373078
 	ctx.lr = 0x82372A38;
 	sub_82373078(ctx, base);
+	FM2ProducerWaitLoopCall73078After82372A38(ctx.r31);
 loc_82372A38:
 	// lwz r10,10768(r31)
 	ctx.r10.u64 = REX_LOAD_U32(ctx.r31.u32 + 10768);
@@ -51351,9 +51387,11 @@ loc_82372A38:
 loc_82372A68:
 	// addi r3,r1,80
 	ctx.r3.s64 = ctx.r1.s64 + 80;
+	FM2ProducerWaitLoopSample82372A68(ctx.r31, ctx.r30);
 	// bl 0x82369340
 	ctx.lr = 0x82372A70;
-	sub_82369340(ctx, base);
+	FM2_ProducerProgressGuard_82369340(ctx, base);
+	FM2ProducerWaitLoopGuardResult82372A70(ctx.r3);
 	// cmpwi r3,0
 	ctx.cr0.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// beq 0x82372a94
@@ -51372,7 +51410,7 @@ loc_82372A78:
 	// cmplw cr6,r9,r11
 	ctx.cr6.compare<uint32_t>(ctx.r9.u32, ctx.r11.u32, ctx.xer);
 	// blt cr6,0x82372a68
-	if (ctx.cr6.lt) goto loc_82372A68;
+	if (FM2ProducerWaitLoopShouldSpin82372A78(ctx.r9, ctx.r11)) goto loc_82372A68;
 loc_82372A94:
 	// addi r3,r1,80
 	ctx.r3.s64 = ctx.r1.s64 + 80;
@@ -73297,4 +73335,3 @@ loc_8237BD14:
 	__restgprlr_26(ctx, base);
 	return;
 }
-

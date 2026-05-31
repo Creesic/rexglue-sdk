@@ -81,10 +81,13 @@ longjmp_address = 0x82418210
 0x82279010 = { name = "FM2_DeferredVFunc40_TwoU32Callback" }
 0x82573CA8 = { name = "FM2_VCallThunk18_FloatParam" }
 0x82462050 = {}
+0x82277558 = {}
 
 # Hook-containing functions we identified in IDA. Adding them here gives
 # regenerated code useful symbols instead of sub_XXXXXXXX in crash stacks.
 0x821D3F00 = { name = "FM2_QueueDeferredAudioManagerUpdate" }
+0x821D4658 = { name = "FM2_IndirectTarget_821D4658" }
+0x821D4668 = { name = "FM2_IndirectTarget_821D4668" }
 0x82276AA0 = { name = "FM2_QueueDeferredVFunc0C_ByteParam" }
 0x822786B0 = { name = "FM2_QueueDeferredVFuncD0_TwoU32Params" }
 0x82279028 = { name = "FM2_QueueDeferredVFunc40_TwoU32Params" }
@@ -128,6 +131,8 @@ longjmp_address = 0x82418210
 0x8236C8C8 = { name = "FM2_FmodWrap_8236C8C8" }
 0x8236C948 = { name = "FM2_FmodWrap_8236C948" }
 0x8236CB20 = { name = "FM2_FmodWrap_8236CB20" }
+0x82369340 = { name = "FM2_ProducerProgressGuard_82369340" }
+0x82697F08 = { name = "FM2_ApuMixRenderCore_82697F08" }
 0x82381D60 = { name = "FM2_FmodPumpThread_82381D60" }
 0x82693B18 = { name = "FM2_FmodDecodeThunk_82693B18" }
 0x82692CC8 = { name = "FM2_FmodFillControl_82692CC8" }
@@ -369,6 +374,42 @@ after_instruction = false
 address = 0x823EB9D0
 name = "FM2FmodSchedEB9D0"
 registers = ["r3"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x823693F8
+name = "FM2ProducerProgressGuardWait823693F8"
+registers = []
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82369400
+name = "FM2ProducerProgressGuardTimeout82369400"
+registers = []
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82369408
+name = "FM2ProducerProgressGuardReturnZero82369408"
+registers = []
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82697F08
+name = "FM2ApuMixRenderEnter82697F08"
+registers = []
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x826983A0
+name = "FM2ApuMixRenderExitA826983A0"
+registers = []
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x826983C0
+name = "FM2ApuMixRenderExitB826983C0"
+registers = []
 after_instruction = false
 
 [[entrypoint.midasm_hook]]

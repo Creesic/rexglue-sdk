@@ -21441,7 +21441,7 @@ loc_826A6C84:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82697f08
 	ctx.lr = 0x826A6CD4;
-	sub_82697F08(ctx, base);
+	FM2_ApuMixRenderCore_82697F08(ctx, base);
 	// mr r26,r3
 	ctx.r26.u64 = ctx.r3.u64;
 	// cmpwi cr6,r26,0
@@ -22104,7 +22104,7 @@ DEFINE_REX_FUNC(sub_826A7148) {
 	REX_STORE_U32(ctx.r1.u32 + 80, ctx.r11.u32);
 	// bl 0x82697f08
 	ctx.lr = 0x826A7184;
-	sub_82697F08(ctx, base);
+	FM2_ApuMixRenderCore_82697F08(ctx, base);
 	// cmpwi cr6,r3,0
 	ctx.cr6.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// bne cr6,0x826a71e0
@@ -22150,7 +22150,7 @@ loc_826A71CC:
 	ctx.r5.u64 = ctx.r28.u64;
 	// bl 0x82697f08
 	ctx.lr = 0x826A71D4;
-	sub_82697F08(ctx, base);
+	FM2_ApuMixRenderCore_82697F08(ctx, base);
 	// cmpwi cr6,r3,0
 	ctx.cr6.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// bne cr6,0x826a71e0

@@ -61458,11 +61458,18 @@ loc_82697EF4:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82697F08) {
+extern void FM2ApuMixRenderEnter82697F08();
+
+extern void FM2ApuMixRenderExitA826983A0();
+
+extern void FM2ApuMixRenderExitB826983C0();
+
+DEFINE_REX_FUNC(FM2_ApuMixRenderCore_82697F08) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
 	// mflr r12
+	FM2ApuMixRenderEnter82697F08();
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x82413170
 	ctx.lr = 0x82697F10;
@@ -62104,6 +62111,7 @@ loc_8269838C:
 	ctx.fpscr.disableFlushMode();
 	ctx.f30.u64 = REX_LOAD_U64(ctx.r1.u32 + -168);
 	// lfd f31,-160(r1)
+	FM2ApuMixRenderExitA826983A0();
 	ctx.f31.u64 = REX_LOAD_U64(ctx.r1.u32 + -160);
 	// b 0x824131c0
 	__restgprlr_14(ctx, base);
@@ -62123,6 +62131,7 @@ loc_826983A8:
 	REX_STORE_U32(ctx.r31.u32 + 232, ctx.r11.u32);
 loc_826983C0:
 	// mr r3,r15
+	FM2ApuMixRenderExitB826983C0();
 	ctx.r3.u64 = ctx.r15.u64;
 	// addi r1,r1,256
 	ctx.r1.s64 = ctx.r1.s64 + 256;
