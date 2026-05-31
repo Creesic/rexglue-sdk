@@ -13,6 +13,7 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
 #include <rex/audio/audio_system.h>
+#include <rex/chrono/clock.h>
 #include <rex/kernel/xboxkrnl/private.h>
 #include <rex/logging.h>
 #include <rex/hook.h>
@@ -52,8 +53,6 @@ u32 XAudioEnableDucker_entry(u32 unk) {
 }
 
 u32 XAudioRegisterRenderDriverClient_entry(mapped_u32 callback_ptr, mapped_u32 driver_ptr) {
-  REXKRNL_DEBUG("XAudioRegisterRenderDriverClient called! callback_ptr={:08X} driver_ptr={:08X}",
-                callback_ptr.guest_address(), driver_ptr.guest_address());
   if (!callback_ptr) {
     return X_E_INVALIDARG;
   }
@@ -64,6 +63,9 @@ u32 XAudioRegisterRenderDriverClient_entry(mapped_u32 callback_ptr, mapped_u32 d
     return X_E_INVALIDARG;
   }
   uint32_t callback_arg = callback_ptr[1];
+
+  REXKRNL_ERROR("XAudioRegisterRenderDriverClient: callback={:08X} arg={:08X}",
+                callback, callback_arg);
 
   auto* audio_system =
       static_cast<audio::AudioSystem*>(REX_KERNEL_STATE()->emulator()->audio_system());
@@ -134,7 +136,43 @@ REX_EXPORT_STUB(__imp__XAudioSuspendRenderDriverClients);
 REX_EXPORT_STUB(__imp__XAudioRegisterRenderDriverMECClient);
 REX_EXPORT_STUB(__imp__XAudioUnregisterRenderDriverMECClient);
 REX_EXPORT_STUB(__imp__XAudioCaptureRenderDriverFrame);
-REX_EXPORT_STUB(__imp__XAudioGetRenderDriverTic);
+// XAudioGetRenderDriverTic - Returns the current audio driver tick count.
+// On Xbox 360, this returns a 64-bit value based on the system timebase.
+// Used by XAudio2 for internal timing (buffer position tracking, etc.).
+// Previously stubbed (returned 0), which may cause audio timing issues.
+REX_HOOK_RAW(__imp__XAudioGetRenderDriverTic) {
+  // TEMP_DIAG: Log tic values for clock rate analysis
+  {
+    static uint32_t tic_call_count = 0;
+    static uint64_t tic_prev_value = 0;
+    static auto tic_prev_wall = std::chrono::steady_clock::now();
+    tic_call_count++;
+    uint64_t tic_value = rex::chrono::Clock::QueryGuestTickCount();
+    ctx.r3.u64 = tic_value;
+    bool should_log = (tic_call_count <= 200) || (tic_call_count % 500 == 0);
+    if (should_log) {
+      auto now = std::chrono::steady_clock::now();
+      double wall_delta = std::chrono::duration<double>(now - tic_prev_wall).count();
+      uint64_t tic_delta = (tic_value >= tic_prev_value) ? (tic_value - tic_prev_value) : 0;
+      double tic_rate = (wall_delta > 0.0001) ? (double)tic_delta / wall_delta : 0;
+      REXAPU_ERROR("TIC_DIAG[{}] tick={:016X} delta_tick={} wall_dt={:.6f}s "
+                   "rate={:.0f}/s tid={}",
+                   tic_call_count, tic_value, tic_delta, wall_delta, tic_rate,
+                   rex::thread::current_thread_id());
+      tic_prev_wall = now;
+      tic_prev_value = tic_value;
+    } else {
+      // Still update tracking even when not logging
+      auto now = std::chrono::steady_clock::now();
+      tic_prev_wall = now;
+      tic_prev_value = tic_value;
+    }
+  }
+  // END TEMP_DIAG
+}
+
+static rex::ppc::detail::PPCFuncRegistrar _ppc_reg___imp__XAudioGetRenderDriverTic(
+    "__imp__XAudioGetRenderDriverTic", &__imp__XAudioGetRenderDriverTic);
 REX_EXPORT_STUB(__imp__XAudioSetDuckerLevel);
 REX_EXPORT_STUB(__imp__XAudioIsDuckerEnabled);
 REX_EXPORT_STUB(__imp__XAudioGetDuckerLevel);

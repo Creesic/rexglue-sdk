@@ -350,6 +350,7 @@ class XThread : public XObject {
   int32_t priority() const { return priority_; }
   int32_t QueryPriority();
   void SetPriority(int32_t increment);
+  void BoostOnWake(int32_t increment);
 
   // Xbox thread IDs:
   // 0 - core 0, thread 0 - user
@@ -416,7 +417,8 @@ class XThread : public XObject {
   std::string thread_name_;
   std::unique_ptr<runtime::ThreadState> thread_state_;
 
-  int32_t priority_ = 0;
+  int32_t priority_ = 0;       // current effective priority
+  int32_t base_priority_ = 0;  // baseline priority set by guest
 
 #if REX_PLATFORM_LINUX
   std::mutex suspend_mutex_;

@@ -1,0 +1,229 @@
+{
+  "main": {
+    "id": "652bab3e27ab7975",
+    "type": "split",
+    "children": [
+      {
+        "id": "af96c84cc4e5e3ec",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "00488fe509424261",
+            "type": "leaf",
+            "state": {
+              "type": "empty",
+              "state": {},
+              "icon": "lucide-file",
+              "title": "New tab"
+            }
+          }
+        ]
+      },
+      {
+        "id": "fa21221cc5276f89",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "4f0f366f67f6cd6f",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "CONTRIBUTING.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "CONTRIBUTING"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "608447e84bb8907a",
+    "type": "split",
+    "children": [
+      {
+        "id": "20bb249a59917d84",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "6c99a11c26a46dc5",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "93fee867bc56d0a9",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "7abfe932fab62843",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "f022b7b924f9ccae",
+    "type": "split",
+    "children": [
+      {
+        "id": "dbbab32315a6e1b0",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "afa1148962c60e17",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "CONTRIBUTING.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for CONTRIBUTING"
+            }
+          },
+          {
+            "id": "11182ea8958f5213",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "CONTRIBUTING.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from CONTRIBUTING"
+            }
+          },
+          {
+            "id": "e6d69841ab97915e",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "711cb4cf6d221fde",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "793e4fe0227a6a83",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "CONTRIBUTING.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of CONTRIBUTING"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "4f0f366f67f6cd6f",
+  "lastOpenFiles": [
+    "README.md",
+    "CONTRIBUTING.md",
+    "AGENTS.md",
+    "00-Index.md",
+    "docs/FM2_intro_playback_pipeline.md",
+    "Welcome.md",
+    "FM2/PATCHES.md",
+    "FM2",
+    "docs/RELEASING.md",
+    "docs/portable-workspace.md",
+    "docs/FM2-xam-notes.md",
+    "docs/FM2-rendering-notes.md",
+    "docs/FM2-performance-notes.md",
+    "docs/FM2-ida-toml-function-notes.md",
+    "docs/FM2-audio-pipeline-map.md",
+    "docs/FM2-audio-notes.md",
+    "docs/FM2-audio-fmod-decode-cadence.md",
+    "docs/FM2-audio-decode-throughput.md",
+    "docs/ppc/core_instructions.pdf",
+    "docs/ppc/vmx128.txt",
+    "docs/ppc/altivec_instructions.pdf",
+    "docs/ppc",
+    "docs/audio_failures.md",
+    "docs"
+  ]
+}

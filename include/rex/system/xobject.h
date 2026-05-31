@@ -197,6 +197,12 @@ class XObject {
                                uint32_t wait_reason, uint32_t processor_mode, uint32_t alertable,
                                uint64_t* opt_timeout);
 
+  // Priority increment stored by the most recent signal operation
+  // (KeSetEvent, KeReleaseSemaphore, etc.). Read by the waiter on wake
+  // to apply a priority boost matching Xenon scheduler behavior.
+  uint32_t priority_increment() const { return priority_increment_; }
+  void set_priority_increment(uint32_t inc) { priority_increment_ = inc; }
+
   static object_ref<XObject> GetNativeObject(KernelState* kernel_state, void* native_ptr,
                                              int32_t as_type = -1);
   template <typename T>
@@ -229,6 +235,8 @@ class XObject {
   static uint32_t TimeoutTicksToMs(int64_t timeout_ticks);
 
   KernelState* kernel_state_;
+
+  uint32_t priority_increment_ = 0;
 
   // Host objects are persisted through resets/etc.
   bool host_object_ = false;

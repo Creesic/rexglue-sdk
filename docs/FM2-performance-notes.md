@@ -1,0 +1,128 @@
+# FM2 Performance Notes
+
+## Command Processor Telemetry
+
+FM2 reaches gameplay, but the press-start/menu path drops well below the intro-video frame rate.
+The old Tracy capture `FM2/out/build/win-amd64-relwithdebinfo/intro-to-pressstart.tracy` has CPU
+zones only; it does not contain real GPU timestamp contexts. Tracy zones named `gpu` in that capture
+are CPU-side ReXGlue command processor scopes, not proof that the hardware GPU is saturated.
+
+Current diagnostic patch:
+
+- Added `gpu_command_stats` cvar in `src/graphics/command_processor.cpp`.
+- Added `gpu_command_stats_min_us` and `gpu_command_stats_interval` cvars.
+- Added per-frame counters for primary buffers, indirect buffers, packet mix, top PM4 type-3
+  opcodes, draw packets, copy packets, `WAIT_REG_MEM` polls/sleeps/yields, D3D12 submissions, and
+  D3D12 fence waits.
+- Added `WAIT_REG_MEM` target aggregation (`wait_targets=[...]`) and command processor starvation
+  timing (`stall=... stall_us=...`) to distinguish guest-side waits from the CP thread idling while
+  waiting for new commands.
+- Temporary local experiment: `gpu_wait_reg_mem_yield_short_waits` defaults to enabled. It treats
+  `WAIT_REG_MEM` waits of exactly `0x100` as short spin waits instead of 1 ms sleeps, because FM2's
+  menu repeatedly waits on `mem:1BCA5006 == 0`, and Windows was stretching those nominal sleeps into
+  much larger delays.
+- Temporary local experiment: Windows `rex::thread::MaybeYield()` now uses `Sleep(0)` instead of
+  `SwitchToThread()`, matching Xenia Canary's intent to yield across processors rather than
+  potentially spinning on the current core. This is meant to reduce audio starvation while keeping
+  the short `WAIT_REG_MEM` wait improvement.
+- Added D3D12 backend hooks for `EndSubmission`, `IssueCopy`, and `CheckSubmissionFence`.
+- Added producer-side `CP_RB_WPTR` telemetry so slow frames now log how often the guest advances
+  the ring write pointer (`wptr_updates`), repeated writes (`same`), queued dword deltas
+  (`wptr_dwords`, `max`), producer quiet time (`gap_us`, `max_gap_us`), and final ring state
+  (`rptr`, `wptr`, `queued_dw`). These counters are atomic because the write pointer is updated
+  by guest code while frame stats are emitted by the command processor thread.
+- Added a codegen/runtime experiment for Xenon `db16cyc`: generated code now emits
+  `rex::ppc::delay_execution()`, implemented as `simde_mm_pause()`. Xenia Canary treats this
+  instruction as a spin-loop delay (`pause` by default, optional `MaybeYield`), while ReXGlue had
+  previously emitted nothing. FM2's hot producer wait helper `sub_82369340` contains eight
+  consecutive `db16cyc` instructions, so this is a candidate fix for menu CPU burn and audio
+  starvation.
+- May 22 result: the `db16cyc` pause patch is a real improvement, but not a full fix. In the
+  press-start/menu path, `max_gap_us` dropped from roughly `p50=29219/p90=42634` to
+  `p50=8476/p90=9854`, `stall_us` dropped from `p50=19945/p90=30460` to
+  `p50=4772/p90=10969`, and `queued_dw` rose from `p50=36` to `p50=61`. The remaining frame time
+  is dominated by `WAIT_REG_MEM` on `mem:1BCA5006 == 0`.
+- May 22 patch: the short `WAIT_REG_MEM wait=0x100` fast path now uses
+  `rex::ppc::delay_execution()` for most failed polls and only yields once every
+  `gpu_wait_reg_mem_short_wait_yield_interval` polls, defaulting to `256`. CP stats now include
+  `wait_pauses` globally and inside each `wait_targets=[...]` entry, so the next log can separate
+  pause spins from scheduler yields.
+- May 22 first result with the default interval `256`: the patch mechanically worked, but it was
+  not a clean perf win. In the fresh press-start/menu window, `wait_yields` dropped and
+  `wait_pauses` appeared as expected, while `WAIT_REG_MEM` wait time was roughly
+  `p50=11786/p90=17596`. However, producer starvation came back: `stall_us` rose to roughly
+  `p50=20295/p90=25134` and `max_gap_us` to roughly `p50=27865/p90=39728`, with menu frame time
+  around `p50=31734/p90=47597`.
+- Next test: keep the pause-spin path enabled, but force
+  `--gpu_wait_reg_mem_short_wait_yield_interval 16` in `FM2/.vs/launch.vs.json`. This should show
+  whether the `256` interval simply starves the guest producer/audio threads by spinning too long.
+- May 22 result with interval `16`: the cvar is active, with `wait_pauses / wait_yields` very close
+  to `15`, but it still is not a clean win. In the fresh press-start/menu window, frame time was
+  roughly `p50=31537/p90=47151`, `stall_us` stayed high at roughly `p50=20258/p90=27778`, and
+  `max_gap_us` was roughly `p50=28985/p90=29919`. `WAIT_REG_MEM` wait time improved a little
+  (`p50=7982/p90=17150`), but the producer/audio starvation did not recover. The next clean test is
+  interval `1`, which makes the new path behave like yield-every-poll and should confirm whether
+  pause-spinning is the wrong direction for FM2's menu.
+- Repeated interval `16` run around 11:34-11:35 reproduced the same pattern: menu frame time was
+  roughly `p50=31517/p90=47660`, `stall_us` was roughly `p50=20244/p90=28972`, and
+  `wait_pauses / wait_yields` stayed almost exactly `15`. Switched `FM2/.vs/launch.vs.json` to
+  `--gpu_wait_reg_mem_short_wait_yield_interval 1` for the next run.
+- May 22 result with interval `1`: the yield-every-poll path is active (`wait_pauses=0` and
+  `wait_yields` almost equals `wait_polls`), but it still does not restore the strong post-`db16cyc`
+  numbers. In the fresh press-start/menu window, frame time was roughly `p50=31567/p90=51174`,
+  `stall_us` stayed around `p50=20717/p90=30513`, `max_gap_us` around `p50=27905/p90=41443`, and
+  `WAIT_REG_MEM` wait time around `p50=9950/p90=17042`. This suggests the remaining menu problem is
+  not primarily the short `WAIT_REG_MEM` delay policy; the CP is often waiting for the guest producer
+  to submit more work.
+- Temporary local diagnostic setting: `gpu_command_stats` defaults to enabled and logs through the
+  GPU error logger so the stats appear in the current error-only `C:\temp\fm2-clean.log` sink.
+- Enabled the diagnostics in `FM2/.vs/launch.vs.json` with:
+
+```text
+--gpu_command_stats --gpu_command_stats_min_us 20000
+```
+
+May 22 writer-trace diagnostic:
+
+- Added a GPU packet memory-write watch in `src/graphics/command_processor.cpp` through
+  `gpu_mem_write_trace_addr` and `gpu_mem_write_trace_size`.
+- Enabled that watch in `FM2/.vs/launch.vs.json` for decimal address `466243584`
+  (`0x1BCA5000`) and size `16`, covering the hot wait target `mem:1BCA5006`.
+- Added a temporary generated-header CPU store watch in `FM2/generated/fm2_init.h` for the same
+  `0x1BCA5000..0x1BCA500F` window. This is intentionally test-only and will be overwritten if FM2
+  is regenerated; if it proves useful, move it into an SDK/codegen-controlled diagnostic.
+- New log lines to compare against `CP stats`:
+
+```text
+gpu_mem_write_watch source=...
+guest_store_watch addr=...
+```
+
+Expected log line prefix:
+
+```text
+CP stats frame=...
+```
+
+The next comparison should be between CP stats lines from normal intro-video frames and slow
+press-start/menu frames. The most important fields are `ib`, `draws`, `copies`, `wait_reg_mem`,
+`d3d12_submit`, `fence_waits`, `fence_us`, `stall_us`, `wptr_updates`, `wptr_dwords`,
+`max_gap_us`, `queued_dw`, and `top_type3`.
+
+## Empty Resolve No-Op
+
+The slow press-start/menu log in `C:\temp\fm2-clean.log` had no CP stats because the current log
+sink was error-only, but it did show `19859` repeated pairs of:
+
+```text
+Resolve region is empty
+PM4_DRAW_INDX_2(3, 8, 2): Failed in backend (... edram_mode=6)
+```
+
+That path is an EDRAM copy-mode draw. ReXGlue was treating an empty or inverted resolve rectangle
+as a backend failure in `draw_util::GetResolveInfo`, so the menu could spam synchronous GPU errors.
+Xenia Canary treats the same case as a legal no-op and returns a zero-sized resolve; the D3D12 and
+Vulkan render target caches already skip zero-sized resolves.
+
+Ported the no-op behavior to `src/graphics/util/draw.cpp` so empty clipped resolves set
+`width_div_8 = 0`, `height_div_8 = 0`, and return success instead of logging an error.

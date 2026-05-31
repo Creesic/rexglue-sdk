@@ -14,6 +14,7 @@ static_assert(REX_PLATFORM_WIN32, "This file is Windows-only");
 #include "platform_win.h"
 
 #include <spdlog/spdlog.h>
+#include <winternl.h>
 
 #include <rex/assert.h>
 #include <rex/chrono/chrono_steady_cast.h>
@@ -22,6 +23,49 @@ static_assert(REX_PLATFORM_WIN32, "This file is Windows-only");
   { spdlog::error("Win32 Error 0x{:08X} in {}(...)", GetLastError(), __FUNCTION__); }
 
 typedef HANDLE (*SetThreadDescriptionFn)(HANDLE hThread, PCWSTR lpThreadDescription);
+using NtDelayExecutionFn = NTSTATUS(NTAPI*)(BOOLEAN, PLARGE_INTEGER);
+
+namespace {
+
+NtDelayExecutionFn GetNtDelayExecutionFn() {
+  static NtDelayExecutionFn fn = nullptr;
+  static bool initialized = false;
+  if (!initialized) {
+    initialized = true;
+    if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll")) {
+      fn = reinterpret_cast<NtDelayExecutionFn>(GetProcAddress(ntdll, "NtDelayExecution"));
+    }
+  }
+  return fn;
+}
+
+rex::thread::SleepResult NtDelaySleep(std::chrono::microseconds duration, bool alertable) {
+  auto fn = GetNtDelayExecutionFn();
+  if (!fn) {
+    if (alertable) {
+      return SleepEx(static_cast<DWORD>(duration.count() / 1000), TRUE) == WAIT_IO_COMPLETION
+                 ? rex::thread::SleepResult::kAlerted
+                 : rex::thread::SleepResult::kSuccess;
+    }
+    ::Sleep(static_cast<DWORD>(duration.count() / 1000));
+    return rex::thread::SleepResult::kSuccess;
+  }
+
+  int64_t ticks_100ns = duration.count() * 10;
+  if (ticks_100ns <= 0) {
+    ticks_100ns = 1;
+  }
+  LARGE_INTEGER li{};
+  li.QuadPart = -ticks_100ns;
+  NTSTATUS status = fn(alertable ? TRUE : FALSE, &li);
+  if (status == static_cast<NTSTATUS>(0x000000C0) ||  // STATUS_USER_APC
+      status == static_cast<NTSTATUS>(0x00000101)) {  // STATUS_ALERTED
+    return rex::thread::SleepResult::kAlerted;
+  }
+  return rex::thread::SleepResult::kSuccess;
+}
+
+}  // namespace
 
 namespace rex::thread {
 
@@ -85,7 +129,7 @@ void set_current_thread_name(const std::string_view name) {
 }
 
 void MaybeYield() {
-  SwitchToThread();
+  ::Sleep(0);
   MemoryBarrier();
 }
 
@@ -97,15 +141,12 @@ void Sleep(std::chrono::microseconds duration) {
   if (duration.count() < 100) {
     MaybeYield();
   } else {
-    ::Sleep(static_cast<DWORD>(duration.count() / 1000));
+    (void)NtDelaySleep(duration, false);
   }
 }
 
 SleepResult AlertableSleep(std::chrono::microseconds duration) {
-  if (SleepEx(static_cast<DWORD>(duration.count() / 1000), TRUE) == WAIT_IO_COMPLETION) {
-    return SleepResult::kAlerted;
-  }
-  return SleepResult::kSuccess;
+  return NtDelaySleep(duration, true);
 }
 
 TlsHandle AllocateTlsHandle() {

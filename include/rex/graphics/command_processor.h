@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <functional>
@@ -246,6 +247,11 @@ class CommandProcessor {
   // Shared memexport readback enable state with backend legacy-flag override support.
   bool IsReadbackMemexportEnabled(bool legacy_backend_flag) const;
 
+  void RecordCommandStatsDraw(uint32_t index_count, bool indexed);
+  void RecordCommandStatsCopy();
+  void RecordCommandStatsD3D12Submission(bool is_swap);
+  void RecordCommandStatsD3D12FenceWait(uint64_t wait_us);
+
   memory::Memory* memory_ = nullptr;
   system::KernelState* kernel_state_ = nullptr;
   GraphicsSystem* graphics_system_ = nullptr;
@@ -304,6 +310,98 @@ class CommandProcessor {
   const char* legacy_readback_memexport_cvar_name_ = nullptr;
 
  private:
+  struct CommandStatsFrame {
+    struct WaitRegMemTarget {
+      uint32_t wait_info = 0;
+      uint32_t poll_reg_addr = 0;
+      uint32_t ref = 0;
+      uint32_t mask = 0;
+      uint32_t wait = 0;
+      uint32_t last_value = 0;
+      bool is_memory = false;
+      uint64_t count = 0;
+      uint64_t polls = 0;
+      uint64_t sleeps = 0;
+      uint64_t yields = 0;
+      uint64_t pauses = 0;
+      uint64_t us = 0;
+    };
+
+    uint64_t stalls = 0;
+    uint64_t stall_polls = 0;
+    uint64_t stall_waits = 0;
+    uint64_t stall_us = 0;
+    uint64_t primary_buffers = 0;
+    uint64_t primary_dwords = 0;
+    uint64_t primary_us = 0;
+    uint64_t indirect_buffers = 0;
+    uint64_t indirect_dwords = 0;
+    uint64_t indirect_us = 0;
+    uint32_t indirect_max_dwords = 0;
+    uint32_t indirect_max_depth = 0;
+    uint64_t packets = 0;
+    uint64_t packet_dwords = 0;
+    uint64_t packet_type0 = 0;
+    uint64_t packet_type1 = 0;
+    uint64_t packet_type2 = 0;
+    uint64_t packet_type3 = 0;
+    uint64_t packet_null = 0;
+    std::array<uint64_t, 128> type3_opcodes = {};
+    uint64_t draw_packets = 0;
+    uint64_t indexed_draw_packets = 0;
+    uint64_t draw_indices = 0;
+    uint64_t copy_packets = 0;
+    uint64_t wait_reg_mem_polls = 0;
+    uint64_t wait_reg_mem_sleeps = 0;
+    uint64_t wait_reg_mem_yields = 0;
+    uint64_t wait_reg_mem_pauses = 0;
+    uint64_t wait_reg_mem_us = 0;
+    std::array<WaitRegMemTarget, 16> wait_reg_mem_targets = {};
+    uint64_t d3d12_submissions = 0;
+    uint64_t d3d12_swap_submissions = 0;
+    uint64_t d3d12_fence_waits = 0;
+    uint64_t d3d12_fence_wait_us = 0;
+  };
+
+  bool CommandStatsEnabled() const;
+  uint64_t QueryCommandStatsTick() const;
+  uint64_t CommandStatsTicksToUs(uint64_t ticks) const;
+  uint32_t GetPrimaryBufferDwordCount(uint32_t read_index, uint32_t write_index) const;
+  void EnsureCommandStatsFrameStarted(uint64_t now_tick);
+  uint64_t BeginCommandStatsPrimary(uint32_t read_index, uint32_t write_index);
+  void EndCommandStatsPrimary(uint64_t start_tick);
+  uint64_t BeginCommandStatsIndirect(uint32_t dword_count);
+  void EndCommandStatsIndirect(uint64_t start_tick);
+  void RecordCommandStatsNullPacket();
+  void RecordCommandStatsType0Packet(uint32_t dword_count);
+  void RecordCommandStatsType1Packet();
+  void RecordCommandStatsType2Packet();
+  void RecordCommandStatsType3Packet(uint32_t opcode, uint32_t dword_count);
+  void RecordCommandStatsWritePointer(uint32_t value);
+  uint64_t BeginCommandStatsStall();
+  void EndCommandStatsStall(uint64_t start_tick, uint64_t polls, uint64_t waits);
+  uint64_t BeginCommandStatsWaitRegMem();
+  void EndCommandStatsWaitRegMem(uint64_t start_tick, bool is_memory, uint32_t wait_info,
+                                 uint32_t poll_reg_addr, uint32_t ref, uint32_t mask,
+                                 uint32_t wait, uint32_t last_value, uint64_t polls,
+                                 uint64_t sleeps, uint64_t yields, uint64_t pauses);
+  std::string FormatCommandStatsWaitRegMemTargets() const;
+  void FinishCommandStatsFrame(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                               uint32_t frontbuffer_height);
+
+  CommandStatsFrame command_stats_;
+  uint64_t command_stats_frame_start_tick_ = 0;
+  uint32_t command_stats_indirect_depth_ = 0;
+
+  std::atomic<uint32_t> command_stats_last_write_ptr_ = 0xBAADF00D;
+  std::atomic<uint64_t> command_stats_last_write_ptr_tick_ = 0;
+  std::atomic<uint64_t> command_stats_wptr_updates_ = 0;
+  std::atomic<uint64_t> command_stats_wptr_same_ = 0;
+  std::atomic<uint64_t> command_stats_wptr_dwords_ = 0;
+  std::atomic<uint32_t> command_stats_wptr_max_dwords_ = 0;
+  std::atomic<uint64_t> command_stats_wptr_gap_us_ = 0;
+  std::atomic<uint64_t> command_stats_wptr_max_gap_us_ = 0;
+
   reg::DC_LUT_30_COLOR gamma_ramp_256_entry_table_[256] = {};
   reg::DC_LUT_PWL_DATA gamma_ramp_pwl_rgb_[128][3] = {};
   uint32_t gamma_ramp_rw_component_ = 0;

@@ -35,6 +35,15 @@ REXCVAR_DEFINE_STRING(cache_root, "", "Runtime", "Override shader cache path");
 
 namespace rex {
 
+namespace runtime {
+
+void TraceGuestStore(uint32_t address, uint32_t size, uint64_t value, const char* function_name) {
+  REXSYS_ERROR("guest_store_watch addr={:08X} size={} value={:016X} fn={}", address, size, value,
+               function_name ? function_name : "?");
+}
+
+}  // namespace runtime
+
 // Static instance for global access
 Runtime* Runtime::instance_ = nullptr;
 

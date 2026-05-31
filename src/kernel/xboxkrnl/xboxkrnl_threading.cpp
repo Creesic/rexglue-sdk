@@ -38,6 +38,10 @@
 #include <rex/thread/atomic.h>
 #include <rex/thread/mutex.h>
 
+// TEMP_DIAG: XMA gap diagnostics
+#include "xma_gap_diag.h"
+// END TEMP_DIAG
+
 namespace rex::kernel::xboxkrnl {
 using namespace rex::system;
 using rex::runtime::current_ppc_context;
@@ -373,17 +377,27 @@ u32 KeQueryPerformanceFrequency_entry() {
 }
 
 u32 KeDelayExecutionThread_entry(u32 processor_mode, u32 alertable, mapped_u64 interval_ptr) {
+  // TEMP_DIAG: XMA gap - delay
+  double delay_enter_ms = xma_gap_diag::LogDelayEnter("KeDelayExecutionThread", (uint64_t)*interval_ptr);
+  // END TEMP_DIAG
+
   XThread* thread = XThread::GetCurrentThread();
 
   if (alertable) {
     thread->DeliverAPCs();
   }
 
-  X_STATUS result = thread->Delay(processor_mode, alertable, *interval_ptr);
+  uint64_t interval_ticks_u64 = *interval_ptr;
+
+  X_STATUS result = thread->Delay(processor_mode, alertable, interval_ticks_u64);
 
   if (alertable && result == X_STATUS_USER_APC) {
     thread->DeliverAPCs();
   }
+
+  // TEMP_DIAG: XMA gap - delay exit
+  xma_gap_diag::LogDelayExit("KeDelayExecutionThread", result, delay_enter_ms);
+  // END TEMP_DIAG
 
   return result;
 }
@@ -395,6 +409,9 @@ u32 NtYieldExecution_entry() {
 
 void KeQuerySystemTime_entry(mapped_u64 time_ptr) {
   uint64_t time = chrono::Clock::QueryGuestSystemTime();
+  // TEMP_DIAG: log timer reads from FMOD thread during gap
+  xma_gap_diag::LogTimerRead("KeQuerySystemTime", time);
+  // END TEMP_DIAG
   if (time_ptr) {
     *time_ptr = time;
   }
@@ -472,10 +489,16 @@ uint32_t xeKeSetEvent(X_KEVENT* event_ptr, uint32_t increment, uint32_t wait) {
 }
 
 u32 KeSetEvent_entry(ppc_ptr_t<X_KEVENT> event_ptr, u32 increment, u32 wait) {
+  // TEMP_DIAG: XMA gap - signal tracking (with guest address)
+  xma_gap_diag::LogSignal("KeSetEvent", event_ptr.guest_address());
+  // END TEMP_DIAG
   return xeKeSetEvent(event_ptr, increment, wait);
 }
 
 u32 KePulseEvent_entry(ppc_ptr_t<X_KEVENT> event_ptr, u32 increment, u32 wait) {
+  // TEMP_DIAG: XMA gap - pulse tracking
+  xma_gap_diag::LogSignal("KePulseEvent", event_ptr.guest_address());
+  // END TEMP_DIAG
   auto ev = XObject::GetNativeObject<XEvent>(REX_KERNEL_STATE(), event_ptr);
   if (!ev) {
     assert_always();
@@ -543,6 +566,15 @@ uint32_t xeNtSetEvent(uint32_t handle, rex::be<uint32_t>* previous_state_ptr) {
 }
 
 u32 NtSetEvent_entry(u32 handle, mapped_u32 previous_state_ptr) {
+  // TEMP_DIAG: TASK 3 — queue-work decision tracing
+  xma_gap_diag::LogQueueWorkSignal(handle, xma_gap_diag::GetGuestLR(), xma_gap_diag::GetGuestTID());
+  // END TEMP_DIAG
+  // TEMP_DIAG V2: per-second stream signal counter
+  // Count dynamic FMOD/XMA stream event handles discovered by wait tracing.
+  if (xma_gap_diag::IsStreamEventHandle(handle) || handle == 0xF800004C) {
+    xma_gap_diag_v2::IncStreamSignal();
+  }
+  // END TEMP_DIAG V2
   return xeNtSetEvent(handle, previous_state_ptr);
 }
 
@@ -612,6 +644,9 @@ uint32_t xeKeReleaseSemaphore(X_KSEMAPHORE* semaphore_ptr, uint32_t increment, u
 
 u32 KeReleaseSemaphore_entry(ppc_ptr_t<X_KSEMAPHORE> semaphore_ptr, u32 increment, u32 adjustment,
                              u32 wait) {
+  // TEMP_DIAG: XMA gap - signal tracking (with guest address)
+  xma_gap_diag::LogSignal("KeReleaseSemaphore", semaphore_ptr.guest_address(), adjustment);
+  // END TEMP_DIAG
   return xeKeReleaseSemaphore(semaphore_ptr, increment, adjustment, wait);
 }
 
@@ -837,20 +872,33 @@ uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason, uint32_
 
 u32 KeWaitForSingleObject_entry(mapped_void object_ptr, u32 wait_reason, u32 processor_mode,
                                 u32 alertable, mapped_u64 timeout_ptr) {
+  // TEMP_DIAG: XMA gap - wait tracking (with guest address)
   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
-  // REXKRNL_IMPORT_TRACE("KeWaitForSingleObject", "obj={:#x} reason={} mode={} alertable={}
-  // timeout={}",
-  // object_ptr.guest_address(), (uint32_t)wait_reason,
-  //(uint32_t)processor_mode, (uint32_t)alertable,
-  // timeout_ptr ? (int64_t)timeout : -1);
+  double wait_enter_ms = xma_gap_diag::LogWaitEnter("KeWaitForSingle", object_ptr.guest_address(),
+                                                      alertable, !timeout_ptr, (int64_t)timeout);
+  // END TEMP_DIAG
+
+  // TEMP_DIAG: XMA gap - wait exit
   auto result = xeKeWaitForSingleObject(object_ptr, wait_reason, processor_mode, alertable,
                                         timeout_ptr ? &timeout : nullptr);
-  // REXKRNL_IMPORT_RESULT("KeWaitForSingleObject", "{:#x}", result);
+  xma_gap_diag::LogWaitExit("KeWaitForSingle", object_ptr.guest_address(), result, wait_enter_ms);
+  // END TEMP_DIAG
   return result;
 }
 
 u32 NtWaitForSingleObjectEx_entry(u32 object_handle, u32 wait_mode, u32 alertable,
                                   mapped_u64 timeout_ptr) {
+  // TEMP_DIAG: TASK 2 — FMOD stream event wait instrumentation
+  bool is_xma_thread = xma_gap_diag::IsXmaThread();
+  double wait_enter_ms = 0.0;
+  int64_t timeout_ticks = 0;
+  if (is_xma_thread) {
+    timeout_ticks = timeout_ptr ? static_cast<int64_t>(*timeout_ptr) : 0;
+    xma_gap_diag::LogStreamWaitEnter(object_handle, wait_mode, alertable, timeout_ticks);
+    wait_enter_ms = xma_gap_diag::WallMs();
+  }
+  // END TEMP_DIAG
+
   X_STATUS result = X_STATUS_SUCCESS;
 
   auto object = REX_KERNEL_OBJECTS()->LookupObject<XObject>(object_handle);
@@ -864,6 +912,20 @@ u32 NtWaitForSingleObjectEx_entry(u32 object_handle, u32 wait_mode, u32 alertabl
     result = X_STATUS_INVALID_HANDLE;
   }
 
+  // TEMP_DIAG: TASK 2 — wait exit with result classification
+  if (is_xma_thread) {
+    double elapsed = xma_gap_diag::WallMs() - wait_enter_ms;
+    xma_gap_diag::LogStreamWaitExit(object_handle, result, elapsed);
+    // TEMP_DIAG V2: per-second stream wakeup counter
+    if ((xma_gap_diag::IsStreamEventHandle(object_handle) ||
+         object_handle == 0xF800004C) &&
+        result == X_STATUS_SUCCESS) {
+      xma_gap_diag_v2::IncStreamWakeup();
+    }
+    // END TEMP_DIAG V2
+  }
+  // END TEMP_DIAG
+
   return result;
 }
 
@@ -871,6 +933,16 @@ u32 KeWaitForMultipleObjects_entry(u32 count, mapped_u32 objects_ptr, u32 wait_t
                                    u32 wait_reason, u32 processor_mode, u32 alertable,
                                    mapped_u64 timeout_ptr, mapped_void wait_block_array_ptr) {
   assert_true(wait_type <= 1);
+
+  // TEMP_DIAG: XMA gap - multi-wait tracking
+  uint32_t obj_addrs[4] = {};
+  for (uint32_t n = 0; n < count && n < 4; n++) {
+    obj_addrs[n] = objects_ptr[n];
+  }
+  bool mwait_infinite = !timeout_ptr;
+  double mwait_enter_ms = xma_gap_diag::LogMultiWaitEnter("KeWaitMultiple", count, obj_addrs,
+                                                            alertable, mwait_infinite);
+  // END TEMP_DIAG
 
   std::vector<object_ref<XObject>> objects;
   for (uint32_t n = 0; n < count; n++) {
@@ -887,6 +959,11 @@ u32 KeWaitForMultipleObjects_entry(u32 count, mapped_u32 objects_ptr, u32 wait_t
   X_STATUS result = XObject::WaitMultiple(
       uint32_t(objects.size()), reinterpret_cast<XObject**>(objects.data()), wait_type, wait_reason,
       processor_mode, alertable, timeout_ptr ? &timeout : nullptr);
+
+  // TEMP_DIAG: XMA gap - multi-wait exit
+  xma_gap_diag::LogMultiWaitExit("KeWaitMultiple", count, obj_addrs, result, mwait_enter_ms);
+  // END TEMP_DIAG
+
   if (alertable && result == X_STATUS_USER_APC) {
     XThread::GetCurrentThread()->DeliverAPCs();
   }
@@ -965,9 +1042,24 @@ static void xeKfLowerIrql(PPCContext* ctx, unsigned char new_irql) {
 // PPCContext* provides r13 (PCR address) without needing XThread::GetCurrentThread().
 uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock, bool change_irql) {
   uint32_t old_irql = change_irql ? xeKfRaiseIrql(ctx, IRQL_DISPATCH) : 0;
+  auto* mem = rex::system::kernel_state()->memory();
   uint32_t pcr_addr = static_cast<uint32_t>(ctx->r13.u64);
   assert_true(lock->prcb_of_owner != rex::byte_swap(pcr_addr));  // deadlock detection
+
+  auto* our_kpcr = mem->TranslateVirtual<X_KPCR*>(pcr_addr);
+  uint8_t our_cpu = our_kpcr->prcb_data.current_cpu;
   while (!rex::thread::atomic_cas(0u, rex::byte_swap(pcr_addr), &lock->prcb_of_owner.value)) {
+    // Match Xenia behavior: if spinner and owner are on the same guest CPU,
+    // force a host context switch so the owner can make progress and release.
+    uint32_t owner_pcr_be = lock->prcb_of_owner.value;
+    if (owner_pcr_be) {
+      uint32_t owner_pcr = rex::byte_swap(owner_pcr_be);
+      auto* owner_kpcr = mem->TranslateVirtual<X_KPCR*>(owner_pcr);
+      if (owner_kpcr && owner_kpcr->prcb_data.current_cpu == our_cpu) {
+        rex::thread::Sleep(std::chrono::milliseconds(0));
+        continue;
+      }
+    }
     rex::thread::MaybeYield();
   }
   return old_irql;

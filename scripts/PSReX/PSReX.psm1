@@ -26,8 +26,11 @@ New-Alias -Name 'rex-install'   -Value 'Invoke-ReXInstall'
 New-Alias -Name 'rex-format'    -Value 'Invoke-ReXFormat'
 New-Alias -Name 'rex-lint'      -Value 'Invoke-ReXLint'
 New-Alias -Name 'rex-setup'     -Value 'Invoke-ReXSetup'
+New-Alias -Name 'rex-relocate'   -Value 'Invoke-ReXRelocate'
+New-Alias -Name 'rex-repair'     -Value 'Invoke-ReXRepairWorkspace'
+New-Alias -Name 'rex-cmake'      -Value 'Invoke-ReXCMakePreset'
 
 Export-ModuleMember -Function $Public.BaseName -Alias @(
     'rex-configure', 'rex-build', 'rex-test', 'rex-install',
-    'rex-format', 'rex-lint', 'rex-setup'
+    'rex-format', 'rex-lint', 'rex-setup', 'rex-relocate', 'rex-repair', 'rex-cmake'
 )

@@ -1,0 +1,7 @@
+{
+  "format_version": 1,
+  "clone_development_branch": false,
+  "init_app_name": "FH1",
+  "init_app_root": "./FH1",
+  "init_game_iso_path": "D:\\Emulation\\Games_Xbox_360\\ForzaHorizon\\ForzaHorizon.iso"
+}

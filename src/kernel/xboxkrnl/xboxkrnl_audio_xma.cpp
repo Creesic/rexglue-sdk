@@ -12,6 +12,7 @@
 // Disable warnings about unused parameters for kernel functions
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
+#include <chrono>
 #include <cstring>
 
 #include <rex/assert.h>
@@ -25,10 +26,82 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xtypes.h>
 
+// TEMP_DIAG: XMA thread tracking for FMOD wait/signal diagnostics.
+#include "xma_gap_diag.h"
+
 namespace rex::kernel::xboxkrnl {
 using namespace rex::system;
 
 using rex::audio::XMA_CONTEXT_DATA;
+
+namespace {
+
+struct XmaExportDiagWindow {
+  uint64_t start_ms = 0;
+  uint64_t enable_calls = 0;
+  uint64_t disable_calls = 0;
+  uint64_t get_roff_calls = 0;
+  uint64_t get_woff_calls = 0;
+  uint64_t is_valid_calls = 0;
+  uint32_t last_ctx = 0;
+  uint32_t last_roff = 0;
+  uint32_t last_woff = 0;
+  uint32_t last_valid = 0;
+  uint32_t last_ib0_valid = 0;
+  uint32_t last_ib1_valid = 0;
+};
+
+void LogXmaExportDiag(char tag, uint32_t context_ptr, const XMA_CONTEXT_DATA& context) {
+  static XmaExportDiagWindow w;
+  const uint64_t now_ms = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+  if (!w.start_ms) {
+    w.start_ms = now_ms;
+  }
+
+  switch (tag) {
+    case 'E':
+      ++w.enable_calls;
+      break;
+    case 'D':
+      ++w.disable_calls;
+      break;
+    case 'R':
+      ++w.get_roff_calls;
+      break;
+    case 'W':
+      ++w.get_woff_calls;
+      break;
+    case 'V':
+      ++w.is_valid_calls;
+      break;
+    default:
+      break;
+  }
+
+  w.last_ctx = context_ptr;
+  w.last_roff = context.output_buffer_read_offset;
+  w.last_woff = context.output_buffer_write_offset;
+  w.last_valid = context.output_buffer_valid;
+  w.last_ib0_valid = context.input_buffer_0_valid;
+  w.last_ib1_valid = context.input_buffer_1_valid;
+
+  const uint64_t elapsed_ms = now_ms - w.start_ms;
+  if (elapsed_ms >= 1000) {
+    REXKRNL_ERROR(
+        "REX_XMA_EXPORT_PERSEC ms={} enable={} disable={} groff={} gwoff={} "
+        "oval={} last_ctx={:08X} roff={} woff={} valid={} ib0={} ib1={}",
+        elapsed_ms, w.enable_calls, w.disable_calls, w.get_roff_calls,
+        w.get_woff_calls, w.is_valid_calls, w.last_ctx, w.last_roff, w.last_woff,
+        w.last_valid, w.last_ib0_valid, w.last_ib1_valid);
+    w = {};
+    w.start_ms = now_ms;
+  }
+}
+
+}  // namespace
 
 // See audio_system.cc for implementation details.
 //
@@ -287,11 +360,14 @@ u32 XMASetInputBuffer1Valid_entry(mapped_void context_ptr) {
 }
 
 u32 XMAIsOutputBufferValid_entry(mapped_void context_ptr) {
+  xma_gap_diag::TrackXmaThread();
   XMA_CONTEXT_DATA context(context_ptr);
+  LogXmaExportDiag('V', context_ptr.guest_address(), context);
   return context.output_buffer_valid;
 }
 
 u32 XMASetOutputBufferValid_entry(mapped_void context_ptr) {
+  xma_gap_diag::TrackXmaThread();
   XMA_CONTEXT_DATA context(context_ptr);
   context.output_buffer_valid = 1;
   context.Store(context_ptr);
@@ -300,11 +376,14 @@ u32 XMASetOutputBufferValid_entry(mapped_void context_ptr) {
 }
 
 u32 XMAGetOutputBufferReadOffset_entry(mapped_void context_ptr) {
+  xma_gap_diag::TrackXmaThread();
   XMA_CONTEXT_DATA context(context_ptr);
+  LogXmaExportDiag('R', context_ptr.guest_address(), context);
   return context.output_buffer_read_offset;
 }
 
 u32 XMASetOutputBufferReadOffset_entry(mapped_void context_ptr, u32 value) {
+  xma_gap_diag::TrackXmaThread();
   XMA_CONTEXT_DATA context(context_ptr);
   context.output_buffer_read_offset = value;
   context.Store(context_ptr);
@@ -313,7 +392,9 @@ u32 XMASetOutputBufferReadOffset_entry(mapped_void context_ptr, u32 value) {
 }
 
 u32 XMAGetOutputBufferWriteOffset_entry(mapped_void context_ptr) {
+  xma_gap_diag::TrackXmaThread();
   XMA_CONTEXT_DATA context(context_ptr);
+  LogXmaExportDiag('W', context_ptr.guest_address(), context);
   return context.output_buffer_write_offset;
 }
 
@@ -323,11 +404,19 @@ u32 XMAGetPacketMetadata_entry(mapped_void context_ptr) {
 }
 
 u32 XMAEnableContext_entry(mapped_void context_ptr) {
+  xma_gap_diag::TrackXmaThread();
+  XMA_CONTEXT_DATA context(context_ptr);
+  LogXmaExportDiag('E', context_ptr.guest_address(), context);
   StoreXmaContextIndexedRegister(REX_KERNEL_STATE(), 0x1940, context_ptr.guest_address());
   return 0;
 }
 
 u32 XMADisableContext_entry(mapped_void context_ptr, u32 wait) {
+  xma_gap_diag::TrackXmaThread();
+  XMA_CONTEXT_DATA context(context_ptr);
+  LogXmaExportDiag('D', context_ptr.guest_address(), context);
+  // TEMP_DIAG V2: count decode service calls at the XMA disable boundary.
+  xma_gap_diag_v2::IncXmaDecode();
   X_HRESULT result = X_E_SUCCESS;
   StoreXmaContextIndexedRegister(REX_KERNEL_STATE(), 0x1A40, context_ptr.guest_address());
   if (!static_cast<audio::AudioSystem*>(REX_KERNEL_STATE()->emulator()->audio_system())
@@ -353,6 +442,12 @@ u32 XMABlockWhileInUse_entry(mapped_void context_ptr) {
 }
 
 }  // namespace rex::kernel::xboxkrnl
+
+extern "C" {
+bool xma_gap_diag_gap_active() { return false; }
+uint32_t xma_gap_diag_get_native_tid() { return 0; }
+void xma_gap_diag_log_timebase(uint64_t value) { (void)value; }
+}
 
 REX_EXPORT(__imp__XMACreateContext, rex::kernel::xboxkrnl::XMACreateContext_entry)
 REX_EXPORT(__imp__XMAReleaseContext, rex::kernel::xboxkrnl::XMAReleaseContext_entry)

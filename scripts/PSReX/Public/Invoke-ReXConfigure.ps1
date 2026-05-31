@@ -9,10 +9,20 @@
 #>
 function Invoke-ReXConfigure {
     [CmdletBinding()]
-    param()
+    param(
+        [switch]$NoRepair
+    )
 
     $preset = Get-ReXPreset
+    $root = Get-ReXRoot
     Write-Host "=== Configuring with preset: $preset ==="
-    cmake --preset $preset
-    if ($LASTEXITCODE -ne 0) { throw "cmake configure failed (exit $LASTEXITCODE)" }
+
+    $cmd = { cmake --preset $using:preset }
+    if ($NoRepair -or -not (Test-ReXAutoRepairEnabled)) {
+        & $cmd
+        if ($LASTEXITCODE -ne 0) { throw "cmake configure failed (exit $LASTEXITCODE)" }
+        return
+    }
+
+    Invoke-ReXCmakeWithRepair -CmakeCommand $cmd -SdkRoot $root -FailureLabel 'cmake configure'
 }

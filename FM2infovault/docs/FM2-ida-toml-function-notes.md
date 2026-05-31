@@ -1,0 +1,156 @@
+# FM2 IDA TOML Function Notes
+
+May 22 first-pass IDA naming pass for the functions and hook sites listed in
+`FM2/fm2_manifest.toml` / `FM2/fm2_config.toml`.
+
+The TOML contains a mix of true function starts, one-instruction branch thunks,
+adjustor labels, and C++ EH cleanup landing pads. True function starts were
+renamed in IDA with an `FM2_` prefix. Label-only entries were left as labels and
+given IDA comments.
+
+The same names are now burned into `FM2/fm2_manifest.toml` using the ReXGlue
+manual function override form:
+
+```toml
+0x82000000 = { name = "MyFunction" }
+```
+
+`FM2/generated/rexglue.cmake` invokes codegen with `fm2_manifest.toml`, so this
+is the config that matters for regenerated FM2 output.
+
+## Renamed Functions
+
+| Address | IDA name | Notes |
+| --- | --- | --- |
+| `0x824E5A48` | `FM2_Noop` | No-op indirect-call placeholder. |
+| `0x8227BD08` | `FM2_StartQueuedTask_VTable8200F160` | Queues deferred task with params vtable `0x8200F160`. |
+| `0x822792A0` | `FM2_StartQueuedTask_VTable8200ECF4` | Queues deferred task with params vtable `0x8200ECF4`. |
+| `0x8243C058` | `FM2_GetStreamBytesRead` | Simple accessor returning field at `+0x18`. |
+| `0x8243C140` | `FM2_BufferedFileReadAsyncAware` | Buffered read path with page-protection and async completion handling. |
+| `0x8243C8D0` | `FM2_BufferedFileRead` | Sequential buffered read/refill path. |
+| `0x82603BE0` | `FM2_ReleaseOwnedChildObjects` | Releases owned child slots; matches `FM2SkipBadChildSlot` hook context. |
+| `0x8242A3C8` | `FM2_CallNestedObjectIfEnabled` | Calls nested vfunc `+0x2C` only when byte `+0x30` is set. |
+| `0x8234D348` | `FM2_UpdateListEntriesAndNotifyManager` | Walks intrusive list and performs per-entry notifications. |
+| `0x8234D4F8` | `FM2_ClearListEntryBlendWeights` | Walks intrusive list and clears entry float at `+0xB4`. |
+| `0x8234D5A8` | `FM2_TriggerMatchingListEntryActions` | Updates state and triggers active matching entries. |
+| `0x82375A40` | `FM2_D3D_BeginCommandBufferBatch` | Begins/setup D3D command batch, dirty masks, regions, draw-list state. |
+| `0x82375ED0` | `FM2_D3D_EmitDirtyStateAndDrawList` | Emits dirty D3D state and draw-list packets. |
+| `0x82376A58` | `FM2_D3D_FinalizeCommandBufferBatch` | Patches packet lengths, flushes/finalizes command buffer status. |
+| `0x82540160` | `FM2_SpliceResultObjectsIntoList` | Ref-counted handle/object manipulation and intrusive-list splice. |
+| `0x821D3F00` | `FM2_QueueDeferredAudioManagerUpdate` | Queue helper for `CAudioManagerDeferred::CParams2IAudioManagerUpdate`. |
+| `0x82276AA0` | `FM2_QueueDeferredVFunc0C_ByteParam` | Queue helper for callback thunk at `0x82276A88`. |
+| `0x822786B0` | `FM2_QueueDeferredVFuncD0_TwoU32Params` | Queue helper for callback thunk at `0x82278698`. |
+| `0x82279028` | `FM2_QueueDeferredVFunc40_TwoU32Params` | Queue helper for callback thunk at `0x82279010`. |
+| `0x8227D0B8` | `FM2_QueueDeferredVFuncD4_ThreeQwordParams` | Queue helper for callback thunk at `0x8227D098`. |
+| `0x82551D08` | `FM2_FindAndReplaceDelimitedTextRange` | Nearby helper for TOML branch thunk `0x82551CF8`. |
+| `0x823E9BF0` | `FM2_ReleaseObjectMinus8` | Adjusts object pointer by `-8`, then calls vfunc `+0x14`. |
+| `0x8260E718` | `FM2_InvokeChildStateReset` | Calls `sub_825FA868(*(this+0x0C), 0)`. |
+| `0x82610218` | `FM2_LookupNestedObjectByKey` | Calls `sub_8260FD50(*(a2+4), a1)`. |
+| `0x82768510` | `FM2_STL_ConstructArray4` | Repeated construction helper for 4-byte elements. |
+| `0x827685EC` | `FM2_STL_CleanupArray4` | EH cleanup helper for 4-byte elements. |
+| `0x8276C930` | `FM2_STL_ConstructArray40_A` | Repeated construction helper for 40-byte elements. |
+| `0x8276CEC0` | `FM2_STL_CopyConstructRange40_A` | Range copy-construction helper for 40-byte elements. |
+| `0x8276CA0C` | `FM2_STL_CleanupArray40_A` | EH cleanup helper for 40-byte elements. |
+| `0x8276CFA4` | `FM2_STL_CleanupArray40_B` | EH cleanup helper for 40-byte elements. |
+| `0x827A1BF0` | `FM2_STL_CopyConstructRange40_B` | Range copy-construction helper for 40-byte elements. |
+| `0x827A1CD4` | `FM2_STL_CleanupArray40_C` | EH cleanup helper for 40-byte elements. |
+| `0x827A1A04` | `FM2_STL_CleanupArray40_D` | EH cleanup helper for 40-byte elements. |
+| `0x827A7AB8` | `FM2_STL_ConstructArray4176` | Repeated construction helper for 4176-byte elements. |
+| `0x827A7E70` | `FM2_STL_CopyConstructRange4176` | Range copy-construction helper for 4176-byte elements. |
+| `0x827A7B94` | `FM2_STL_CleanupArray4176_A` | EH cleanup helper for 4176-byte elements. |
+| `0x827A7F54` | `FM2_STL_CleanupArray4176_B` | EH cleanup helper for 4176-byte elements. |
+| `0x827AE678` | `FM2_STL_CopyConstructRange8` | Range copy-construction helper for 8-byte elements. |
+| `0x827AE75C` | `FM2_STL_CleanupArray8` | EH cleanup helper for 8-byte elements. |
+| `0x827F9D20` | `FM2_InitListNodeBundle_F9D20` | Initializes list/node bundle around `sub_827FA918`. |
+| `0x827FD400` | `FM2_InitListNodeBundle_FD400` | Initializes list/node bundle around `sub_827FCF60`. |
+| `0x827A0468` | `FM2_InitListNodeBundle_A0468` | Initializes list/node bundle around `sub_8277F5E0`. |
+| `0x82785F88` | `FM2_InitListNodeBundle_85F88` | Initializes list/node bundle around `sub_82786180`. |
+| `0x827A0F50` | `FM2_InitListNodeBundle_A0F50` | Initializes list/node bundle around `sub_827A1108`. |
+
+## Commented Label-Only TOML Entries
+
+These are in the TOML but IDA currently treats them as labels, thunks, or EH
+landing pads rather than standalone function starts:
+
+`0x821D3EE8`, `0x82276A88`, `0x82278698`, `0x82279010`, `0x8227D098`,
+`0x823E9C30`, `0x823F70A0`, `0x823F79F4`, `0x823F7A48`, `0x823F8A24`,
+`0x8243F898`, `0x82551CF8`, `0x82573CA8`, `0x82575598`, `0x825B31A0`,
+`0x825B3288`, `0x825DCAD8`, `0x825DCAE0`, `0x825E58F0`, `0x8266A7BC`,
+`0x8266A7CC`, `0x8266D6F8`, `0x82680D58`, `0x826A8600`, `0x82768AD4`,
+`0x8276C388`, `0x8277EBF0`, `0x827860E8`, `0x8279FF14`, `0x827A05C8`,
+`0x827A10AC`, `0x827A7034`, `0x827C3D1C`, `0x827CBAB0`, `0x827F9E80`,
+`0x827FD560`.
+
+Most of the `0x827x` labels are compiler-generated STL/EH cleanup helpers. The
+important game-specific discoveries from this pass are the D3D command-buffer
+cluster at `0x82375A40..0x82376A58`, the intrusive-list helpers at
+`0x8234D348..0x8234D5A8`, the buffered-read functions at `0x8243C140` and
+`0x8243C8D0`, and the deferred callback thunks around `0x821D3EE8` /
+`0x82276A88` / `0x82278698` / `0x82279010` / `0x8227D098`.
+
+---
+
+## May 24 Update: Audio Signal Gate
+
+### `0x8220A4E8` — `FM2_SignalGate` (TASK 6D root cause)
+
+**What it does:** This is the function that signals the FMOD stream event at
+~30 Hz. It is called by the mixer at ~64 Hz (every mixer cycle) but implements
+a 2-call divider: it only calls NtSetEvent when an internal counter exceeds 1,
+then resets the counter to 0.
+
+**Pseudocode:**
+```c
+int FM2_SignalGate(int a1) {
+    ++dword_829C24C8;                    // increment call counter
+    int obj = sub_82218258(a1);          // get FMOD stream object
+    bool v2;
+    if (*(uint8_t*)(obj + 1054)) {       // field_41E: fast path check
+        v2 = (dword_829C24C8 > 1);      // signal only when counter > 1
+    } else {
+        int obj2 = sub_82218258(obj);    // slow path: double deref
+        if (!*(uint8_t*)(obj2 + 1053) || byte_829C24C7 || dword_829C24C8 > 1)
+            v2 = 1;                      // signal always
+    }
+    if (v2) {
+        NtSetEvent((void*)dword_829C24C0);  // signal stream event (F800004C)
+        dword_829C24C8 = 0;              // reset counter
+    }
+    dword_829C24CC = mftb();             // timestamp
+}
+```
+
+**Key globals:**
+| Address | Name | Purpose |
+|---------|------|---------|
+| `0x829C24C0` | `dword_829C24C0` | Stream event handle (F800004C) |
+| `0x829C24C8` | `dword_829C24C8` | Call counter (increments, resets to 0 on signal) |
+| `0x829C24CC` | `dword_829C24CC` | Last signal timestamp (timebase) |
+| `0x829C24C7` | `byte_829C24C7` | Force-signal flag (slow path only) |
+
+**Why 30 Hz:** Counter starts at 0. Call 1: counter=1, check `1>1`=false, no signal.
+Call 2: counter=2, check `2>1`=true, NtSetEvent, reset to 0. Repeat → ~32 Hz.
+Observed: exactly 30/sec in log.
+
+**Generated code:** `FM2/generated/fm2_recomp.2.cpp` line 3348.
+
+**TASK6D caller evidence:** `caller=8220A578` = return address after the `bl NtSetEvent`
+instruction inside `sub_8220A4E8`. The `bl` instruction at `0x8220A56C` calls
+`Nt_SetEvent` (which wraps to `sub_8240C4F8`), and the return address is `0x8220A578`.
+
+**Manifest entry (for stable naming):**
+```toml
+0x8220A4E8 = { name = "FM2_SignalGate" }
+```
+
+### `0x82218258` — Called by SignalGate
+
+Called twice by `sub_8220A4E8` (once for initial obj fetch, once for slow path
+double-deref). Likely returns the FMOD System or Channel object. Needs
+investigation if the signal gate behavior is to be modified.
+
+### `0x82177B60`, `0x822868E8` — SignalGate Callers
+
+These are vtable/function pointer addresses that `sub_8220A4E8` is called through.
+IDA shows xrefs from data (not code), confirming indirect dispatch. The mixer
+stores a function pointer at one of these addresses and calls it each cycle.

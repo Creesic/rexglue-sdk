@@ -49,8 +49,8 @@ bool build_eieio(BuilderContext& ctx) {
 }
 
 bool build_db16cyc(BuilderContext& ctx) {
-  // Xenon-specific 16-cycle delay hint, no effect in recompiled code
-  (void)ctx;
+  // Xenon-specific delay hint used heavily in spin loops.
+  ctx.println("\trex::ppc::delay_execution();");
   return true;
 }
 

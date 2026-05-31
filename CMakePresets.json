@@ -12,16 +12,18 @@
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
-                "CMAKE_C_COMPILER": "clang",
-                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_C_COMPILER": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
+                "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
                 "CMAKE_C_FLAGS": "-march=x86-64-v3",
                 "CMAKE_CXX_FLAGS": "-march=x86-64-v3",
                 "CMAKE_CXX_STANDARD": "23",
                 "CMAKE_CONFIGURATION_TYPES": "Debug;Release;RelWithDebInfo",
                 "CMAKE_CROSS_CONFIGS": "all",
-                "CMAKE_DEFAULT_BUILD_TYPE": "Debug",
+                "CMAKE_DEFAULT_BUILD_TYPE": "RelWithDebInfo",
                 "CMAKE_DEFAULT_CONFIGS": "all",
-                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}"
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+                "CMAKE_EXE_LINKER_FLAGS": "/LIBPATH:\"C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.51.36231/lib/x64\"",
+                "CMAKE_SHARED_LINKER_FLAGS": "/LIBPATH:\"C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.51.36231/lib/x64\""
             },
             "condition": {
                 "type": "equals",

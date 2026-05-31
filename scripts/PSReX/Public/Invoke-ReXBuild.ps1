@@ -20,6 +20,13 @@ function Invoke-ReXBuild {
     $buildDir = Join-Path $root "out/build/$preset"
 
     Write-Host "=== Building $Config ==="
-    cmake --build $buildDir --config $Config
-    if ($LASTEXITCODE -ne 0) { throw "cmake build failed (exit $LASTEXITCODE)" }
+
+    $cmd = { cmake --build $using:buildDir --config $using:Config }
+    if (-not (Test-ReXAutoRepairEnabled)) {
+        & $cmd
+        if ($LASTEXITCODE -ne 0) { throw "cmake build failed (exit $LASTEXITCODE)" }
+        return
+    }
+
+    Invoke-ReXCmakeWithRepair -CmakeCommand $cmd -SdkRoot $root -FailureLabel 'cmake build'
 }

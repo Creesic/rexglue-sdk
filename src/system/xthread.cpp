@@ -37,7 +37,7 @@
 #include <rex/thread.h>
 #include <rex/vec128.h>
 
-REXCVAR_DEFINE_BOOL(ignore_thread_priorities, true, "Kernel",
+REXCVAR_DEFINE_BOOL(ignore_thread_priorities, false, "Kernel",
                     "Ignores game-specified thread priorities");
 
 REXCVAR_DEFINE_BOOL(ignore_thread_affinities, true, "Kernel",
@@ -178,13 +178,14 @@ static uint8_t next_cpu = 0;
 static uint8_t GetFakeCpuNumber(uint8_t proc_mask) {
   // NOTE: proc_mask is logical processors, not physical processors or cores.
   if (!proc_mask) {
+    // Match Xbox/Xenia default scheduling semantics:
+    // no explicit assignment inherits the parent's hardware thread.
+    XThread* parent = current_xthread_tls_;
+    if (parent) {
+      return parent->active_cpu();
+    }
     next_cpu = (next_cpu + 1) % 6;
-    return next_cpu;  // is this reasonable?
-    // TODO(Triang3l): Does the following apply here?
-    // https://docs.microsoft.com/en-us/windows/win32/dxtecharts/coding-for-multiple-cores
-    // "On Xbox 360, you must explicitly assign software threads to a particular
-    //  hardware thread by using XSetThreadProcessor. Otherwise, all child
-    //  threads will stay on the same hardware thread as the parent."
+    return next_cpu;
   }
   assert_false(proc_mask & 0xC0);
 
@@ -242,6 +243,13 @@ void XThread::InitializeGuestObject() {
     auto target_process = memory()->TranslateVirtual<X_KPROCESS*>(process_ptr);
     guest_thread->process_type = target_process->process_type;
     guest_thread->process_type_dup = target_process->process_type;
+    guest_thread->priority = target_process->unk_19;
+    guest_thread->quantum = target_process->quantum;
+    guest_thread->unk_B8 = target_process->unk_18;
+    guest_thread->unk_B9 = target_process->unk_19;
+    guest_thread->unk_BA = target_process->unk_1A;
+    priority_ = target_process->unk_19;
+    base_priority_ = target_process->unk_19;
 
     auto old_irql =
         kernel::xboxkrnl::xeKeKfAcquireSpinLock(ctx, &target_process->thread_list_spinlock);
@@ -817,28 +825,53 @@ int32_t XThread::QueryPriority() {
   return thread_->priority();
 }
 
+// Map Xenon's 0-31 priority range across host priority levels.
+static int32_t GuestPriorityToHost(int32_t guest_priority) {
+  if (guest_priority >= 24) {
+    return rex::thread::ThreadPriority::kHighest;
+  } else if (guest_priority >= 17) {
+    return rex::thread::ThreadPriority::kAboveNormal;
+  } else if (guest_priority >= 10) {
+    return rex::thread::ThreadPriority::kNormal;
+  } else if (guest_priority >= 5) {
+    return rex::thread::ThreadPriority::kBelowNormal;
+  } else {
+    return rex::thread::ThreadPriority::kLowest;
+  }
+}
+
 void XThread::SetPriority(int32_t increment) {
-  priority_ = increment;
+  int32_t clamped = std::max(increment, 0);
+  priority_ = clamped;
+  base_priority_ = clamped;
 
   // Write priority to guest X_KTHREAD struct.
   auto kthread = guest_object<X_KTHREAD>();
-  kthread->priority = static_cast<uint8_t>(std::clamp(increment, 0, 31));
+  kthread->priority = static_cast<uint8_t>(std::clamp(clamped, 0, 31));
 
-  int32_t target_priority = 0;
-  if (increment > 0x22) {
-    target_priority = rex::thread::ThreadPriority::kHighest;
-  } else if (increment > 0x11) {
-    target_priority = rex::thread::ThreadPriority::kAboveNormal;
-  } else if (increment < -0x22) {
-    target_priority = rex::thread::ThreadPriority::kLowest;
-  } else if (increment < -0x11) {
-    target_priority = rex::thread::ThreadPriority::kBelowNormal;
-  } else {
-    target_priority = rex::thread::ThreadPriority::kNormal;
-  }
   if (!REXCVAR_GET(ignore_thread_priorities)) {
-    thread_->set_priority(target_priority);
+    thread_->set_priority(GuestPriorityToHost(clamped));
   }
+}
+
+void XThread::BoostOnWake(int32_t increment) {
+  if (REXCVAR_GET(ignore_thread_priorities)) return;
+  if (increment <= 0) return;
+
+  int32_t max_cap = 17;  // Dynamic cap below real-time.
+  int32_t boosted = base_priority_ + increment;
+  if (boosted > max_cap) {
+    boosted = max_cap;
+  }
+  if (boosted <= priority_) {
+    return;
+  }
+
+  priority_ = boosted;
+  if (is_guest_thread()) {
+    guest_object<X_KTHREAD>()->priority = static_cast<uint8_t>(std::clamp(boosted, 0, 31));
+  }
+  thread_->set_priority(GuestPriorityToHost(boosted));
 }
 
 void XThread::SetAffinity(uint32_t affinity) {

@@ -1,0 +1,16 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "win-amd64",
+      "inherits": "win-amd64",
+      "displayName": "Windows AMD64 (local toolchain overrides)",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
+        "CMAKE_EXE_LINKER_FLAGS": "/LIBPATH:\"C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64\"",
+        "CMAKE_SHARED_LINKER_FLAGS": "/LIBPATH:\"C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64\""
+      }
+    }
+  ]
+}

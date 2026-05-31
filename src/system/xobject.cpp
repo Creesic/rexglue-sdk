@@ -209,17 +209,23 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
   }
 
   auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
-                                      TimeoutTicksToMs(*opt_timeout)))
-                                : std::chrono::milliseconds::max();
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
 
   auto result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
   switch (result) {
     case rex::thread::WaitResult::kSuccess:
-      WaitCallback();
-      return X_STATUS_SUCCESS;
-    case rex::thread::WaitResult::kUserCallback:
-      // Or X_STATUS_ALERTED?
+    case rex::thread::WaitResult::kUserCallback: {
+      auto current_thread = XThread::GetCurrentThread();
+      if (current_thread) {
+        current_thread->BoostOnWake(priority_increment());
+      }
+      if (result == rex::thread::WaitResult::kSuccess) {
+        WaitCallback();
+        return X_STATUS_SUCCESS;
+      }
       return X_STATUS_USER_APC;
+    }
     case rex::thread::WaitResult::kTimeout:
       rex::thread::MaybeYield();
       return X_STATUS_TIMEOUT;
@@ -234,19 +240,25 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, ui
                                 uint32_t processor_mode, uint32_t alertable,
                                 uint64_t* opt_timeout) {
   auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
-                                      TimeoutTicksToMs(*opt_timeout)))
-                                : std::chrono::milliseconds::max();
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
 
   auto result =
       rex::thread::SignalAndWait(signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
-                                 alertable ? true : false, timeout_ms);
+                                  alertable ? true : false, timeout_ms);
   switch (result) {
     case rex::thread::WaitResult::kSuccess:
-      wait_object->WaitCallback();
-      return X_STATUS_SUCCESS;
-    case rex::thread::WaitResult::kUserCallback:
-      // Or X_STATUS_ALERTED?
+    case rex::thread::WaitResult::kUserCallback: {
+      auto current_thread = XThread::GetCurrentThread();
+      if (current_thread) {
+        current_thread->BoostOnWake(wait_object->priority_increment());
+      }
+      if (result == rex::thread::WaitResult::kSuccess) {
+        wait_object->WaitCallback();
+        return X_STATUS_SUCCESS;
+      }
       return X_STATUS_USER_APC;
+    }
     case rex::thread::WaitResult::kTimeout:
       rex::thread::MaybeYield();
       return X_STATUS_TIMEOUT;
@@ -267,8 +279,11 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
   }
 
   auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
-                                      TimeoutTicksToMs(*opt_timeout)))
-                                : std::chrono::milliseconds::max();
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
+
+  X_STATUS status = X_STATUS_UNSUCCESSFUL;
+  uint32_t boost_increment = 0;
 
   if (wait_type) {
     auto result =
@@ -276,19 +291,23 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
     switch (result.first) {
       case rex::thread::WaitResult::kSuccess:
         objects[result.second]->WaitCallback();
-
-        return X_STATUS(result.second);
+        boost_increment = objects[result.second]->priority_increment();
+        status = X_STATUS(result.second);
+        break;
       case rex::thread::WaitResult::kUserCallback:
-        // Or X_STATUS_ALERTED?
-        return X_STATUS_USER_APC;
+        status = X_STATUS_USER_APC;
+        break;
       case rex::thread::WaitResult::kTimeout:
         rex::thread::MaybeYield();
-        return X_STATUS_TIMEOUT;
-      default:
+        status = X_STATUS_TIMEOUT;
+        break;
       case rex::thread::WaitResult::kAbandoned:
-        return X_STATUS(X_STATUS_ABANDONED_WAIT_0 + result.second);
+        status = X_STATUS(X_STATUS_ABANDONED_WAIT_0 + result.second);
+        break;
+      default:
       case rex::thread::WaitResult::kFailed:
-        return X_STATUS_UNSUCCESSFUL;
+        status = X_STATUS_UNSUCCESSFUL;
+        break;
     }
   } else {
     auto result =
@@ -297,21 +316,35 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
       case rex::thread::WaitResult::kSuccess:
         for (uint32_t i = 0; i < count; i++) {
           objects[i]->WaitCallback();
+          if (objects[i]->priority_increment() > boost_increment) {
+            boost_increment = objects[i]->priority_increment();
+          }
         }
-
-        return X_STATUS_SUCCESS;
+        status = X_STATUS_SUCCESS;
+        break;
       case rex::thread::WaitResult::kUserCallback:
-        // Or X_STATUS_ALERTED?
-        return X_STATUS_USER_APC;
+        status = X_STATUS_USER_APC;
+        break;
       case rex::thread::WaitResult::kTimeout:
         rex::thread::MaybeYield();
-        return X_STATUS_TIMEOUT;
+        status = X_STATUS_TIMEOUT;
+        break;
       default:
       case rex::thread::WaitResult::kAbandoned:
       case rex::thread::WaitResult::kFailed:
-        return X_STATUS_ABANDONED_WAIT_0;
+        status = X_STATUS_ABANDONED_WAIT_0;
+        break;
     }
   }
+
+  if (status != X_STATUS_TIMEOUT && status != X_STATUS_UNSUCCESSFUL &&
+      status != X_STATUS_ABANDONED_WAIT_0) {
+    auto current_thread = XThread::GetCurrentThread();
+    if (current_thread) {
+      current_thread->BoostOnWake(boost_increment);
+    }
+  }
+  return status;
 }
 
 uint8_t* XObject::CreateNative(uint32_t size) {
