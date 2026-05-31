@@ -1,0 +1,6 @@
+{
+  "cmake.useCMakePresets": "always",
+  "cmake.configurePreset": "win-amd64-relwithdebinfo",
+  "cmake.buildPreset": "win-amd64-relwithdebinfo",
+  "cmake.sourceDirectory": "${workspaceFolder}/FH1"
+}
