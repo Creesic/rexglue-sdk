@@ -1,0 +1,9 @@
+# XMediaFacade_default.xex — module-specific overrides
+#
+# 0x88055B80 / 0x882435D8 are XexGetProcedureAddress export targets that
+# gap-fill missed (branch thunks into real bodies at +0x10). stub=true made
+# intro BIK playback silent/green.
+
+[functions]
+0x88055B80 = { parent = 0x88055B90, size = 16 }
+0x882435D8 = { parent = 0x882435E8, size = 16 }

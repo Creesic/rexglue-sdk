@@ -59,6 +59,14 @@ function(rexglue_configure_target target_name)
     target_sources(${target_name} PRIVATE
         ${REXGLUE_SHARE_DIR}/rex_app.cpp)
 
+    if(TARGET imgui::imgui)
+        target_link_libraries(${target_name} PRIVATE imgui::imgui)
+    endif()
+
+    if(REXGLUE_GENERATED_INCLUDE_DIR)
+        target_include_directories(${target_name} PRIVATE ${REXGLUE_GENERATED_INCLUDE_DIR})
+    endif()
+
     target_compile_definitions(${target_name} PRIVATE
         REXGLUE_BUILD_CONFIG="$<CONFIG>")
 
@@ -71,6 +79,13 @@ function(rexglue_configure_target target_name)
 
     rexglue_apply_target_settings(${target_name})
 
+    if(WIN32 AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        target_compile_options(${target_name} PRIVATE
+            "$<$<CONFIG:RelWithDebInfo>:/Zi>")
+        target_link_options(${target_name} PRIVATE
+            "$<$<CONFIG:RelWithDebInfo>:/DEBUG:FULL>")
+    endif()
+
     if(WIN32)
         # Stage runtime DLLs (rexruntime, TracyClient, etc.) next to the host
         # binary on every link. copy_if_different is a no-op when up to date.
@@ -79,6 +94,16 @@ function(rexglue_configure_target target_name)
             COMMAND_EXPAND_LISTS
             VERBATIM
         )
+        foreach(_rexglue_sym_target rexruntime TracyClient)
+            if(TARGET ${_rexglue_sym_target})
+                add_custom_command(TARGET ${target_name} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "$<TARGET_PDB_FILE:${_rexglue_sym_target}>"
+                        "$<TARGET_FILE_DIR:${target_name}>"
+                    VERBATIM
+                )
+            endif()
+        endforeach()
         # FidelityFX is linked PRIVATE by rexui (to avoid propagating DLL
         # requirements to tool-mode targets), so copy its DLLs explicitly.
         foreach(_fx amd_fidelityfx_vk amd_fidelityfx_dx12)

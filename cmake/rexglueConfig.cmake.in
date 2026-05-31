@@ -25,11 +25,22 @@ endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/rexglueTargets.cmake")
 
-if(TARGET rex::runtime AND NOT TARGET rex::system)
-    add_library(rex::system ALIAS rex::runtime)
-endif()
-if(TARGET rex::runtime AND NOT TARGET rex::kernel)
-    add_library(rex::kernel ALIAS rex::runtime)
+if(TARGET rex::runtime)
+    foreach(_rexglue_runtime_alias
+        core
+        filesystem
+        ui
+        input
+        audio
+        graphics
+        system
+        kernel
+    )
+        if(NOT TARGET rex::${_rexglue_runtime_alias})
+            add_library(rex::${_rexglue_runtime_alias} ALIAS rex::runtime)
+        endif()
+    endforeach()
+    unset(_rexglue_runtime_alias)
 endif()
 
 if(NOT rexglue_FIND_QUIETLY)

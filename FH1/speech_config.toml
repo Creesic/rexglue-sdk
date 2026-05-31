@@ -1,0 +1,4 @@
+# SpeechFacade_default.xex — module-specific overrides
+
+[functions]
+0x890E2FA0 = { stub = true }  # unresolved branch target from 0x890E2FBC

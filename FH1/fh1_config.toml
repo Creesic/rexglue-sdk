@@ -1,0 +1,52 @@
+setjmp_address = 0x82A81E80
+longjmp_address = 0x82A81950
+
+[functions]
+# sub_82C0BC88: real dispatch via fh1_workqueue_dispatch.cpp (ring/fiber/job commit + SEH)
+0x82b3b8b0 = {}  # rexglue UnresolvedCall
+0x82b3b8b8 = {}  # rexglue UnresolvedCall
+0x82b3b8c0 = {}  # rexglue UnresolvedCall
+0x82b3b8c8 = {}  # rexglue UnresolvedCall
+0x82b1abd0 = {}  # rexglue UnresolvedCall
+0x82b1abe8 = {}  # rexglue UnresolvedCall
+0x82b1abf0 = {}  # rexglue UnresolvedCall
+0x82b1abf8 = {}  # rexglue UnresolvedCall
+0x82b1ac00 = {}  # rexglue UnresolvedCall
+0x82b1ac08 = {}  # rexglue UnresolvedCall
+0x82cf87f8 = {}  # rexglue UnresolvedCall
+0x82f1ed30 = {}  # rexglue UnresolvedCall
+0x82f5ccdc = {}  # rexglue UnresolvedCall
+0x82f761f4 = {}  # rexglue UnresolvedCall
+0x82f7630c = {}  # rexglue UnresolvedCall
+0x824813fc = {}
+0x830ED910 = { fiber_swap_host_boundary = true }
+0x830EBE90 = {}
+0x830b52f0 = {}
+0x824813c8 = {}
+0x82a7d410 = {}
+0x82f502c0 = {}
+0x830b6570 = {}
+0x830b6c50 = {}
+0x830fec90 = {}
+0x8249c648 = {}
+0x830b0058 = {}
+0x8249cc50 = {}
+0x8249be98 = {}
+0x8257ee88 = {}
+0x8247a5b8 = {}
+0x8247a5e0 = {}
+0x82f56798 = {}
+0x8249c460 = {}
+0x824705e0 = {}
+0x82467B18 = {}
+0x8310C340 = { stub = true }  # null game object deref
+0x82C14580 = { stub = true }  # vtable dispatch on null object
+0x8247C720 = { stub = true, stub_return = 0 }  # vtable dispatch on corrupted object at *(this+600)
+0x8249D410 = {}  # callback dispatch target
+0x8249CA20 = {}  # callback dispatch target
+0x8247A5C8 = {}  # callback dispatch target
+0x8249D660 = {}  # callback dispatch target (ctr from sub_82450160)
+0x824516D0 = {}  # callback dispatch target (ctr from sub_82450160)
+0x831411E8 = {}  # callback dispatch target (ctr from sub_83144ED8)
+0x8257D340 = {}  # vtable entry (indirect call target, inside sub_8257D2C0 gap)
+0x8257D4B0 = {}  # vtable dispatch stub (indirect call target)

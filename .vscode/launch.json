@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "FH1 (RelWithDebInfo)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/FH1/out/build/win-amd64-relwithdebinfo/fh1.exe",
+      "cwd": "${workspaceFolder}/FH1/out/build/win-amd64-relwithdebinfo",
+      "args": [
+        "--game_data_root=D:\\Emulation\\Games_Xbox_360\\ForzaHorizon\\ForzaHorizon"
+      ]
+    }
+  ]
+}

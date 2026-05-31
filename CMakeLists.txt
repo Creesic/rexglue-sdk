@@ -86,9 +86,24 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_DEBUG_POSTFIX d)
 set(CMAKE_RELWITHDEBINFO_POSTFIX rd)
 
+# Normalize architecture detection once so SDK and vendored dependencies agree.
+set(REXGLUE_SYSTEM_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
+if(NOT REXGLUE_SYSTEM_PROCESSOR)
+    set(REXGLUE_SYSTEM_PROCESSOR "${CMAKE_HOST_SYSTEM_PROCESSOR}")
+endif()
+if(NOT REXGLUE_SYSTEM_PROCESSOR AND DEFINED ENV{PROCESSOR_ARCHITECTURE})
+    set(REXGLUE_SYSTEM_PROCESSOR "$ENV{PROCESSOR_ARCHITECTURE}")
+endif()
+if(NOT REXGLUE_SYSTEM_PROCESSOR AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(REXGLUE_SYSTEM_PROCESSOR "AMD64")
+endif()
+if(NOT CMAKE_SYSTEM_PROCESSOR AND REXGLUE_SYSTEM_PROCESSOR)
+    set(CMAKE_SYSTEM_PROCESSOR "${REXGLUE_SYSTEM_PROCESSOR}")
+endif()
+
 if(NOT WIN32)
     # Use appropriate code model based on architecture
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+    if(REXGLUE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
         # Large code model on x86_64 for linking with very large recompiled executables (35MB+)
         add_compile_options(-mcmodel=large)
     else()
@@ -102,31 +117,48 @@ endif()
 # Global compile options
 add_compile_options(
     -fno-strict-aliasing
-    -ffp-model=strict
     $<$<CONFIG:DEBUG>:-g>
     $<$<CONFIG:DEBUG>:-O0>
     $<$<CONFIG:RELEASE>:-O3>
     $<$<CONFIG:RELEASE>:-DNDEBUG>
-    -fno-char8_t
 )
+
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    add_compile_options(
+        /fp:strict
+        $<$<COMPILE_LANGUAGE:CXX>:/EHsc>
+        $<$<COMPILE_LANGUAGE:CXX>:/Zc:char8_t->
+    )
+    # clang-cl RelWithDebInfo defaults omit /Zi; link /DEBUG alone yields incomplete PDBs.
+    set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} /Zi")
+    set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} /Zi")
+    set(CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO "${CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO} /DEBUG:FULL")
+    set(CMAKE_SHARED_LINKER_FLAGS_RELWITHDEBINFO "${CMAKE_SHARED_LINKER_FLAGS_RELWITHDEBINFO} /DEBUG:FULL")
+    set(CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO "${CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO} /DEBUG:FULL")
+else()
+    add_compile_options(
+        -ffp-model=strict
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-char8_t>
+    )
+endif()
 
 # Platform detection (supports AMD64 and ARM64)
 if(WIN32)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+    if(REXGLUE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
         set(REX_PLATFORM "win-amd64")
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+    elseif(REXGLUE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
         set(REX_PLATFORM "win-arm64")
     else()
-        message(FATAL_ERROR "Unsupported Windows architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+        message(FATAL_ERROR "Unsupported Windows architecture: ${REXGLUE_SYSTEM_PROCESSOR}")
     endif()
     add_compile_definitions(REX_PLATFORM_WINDOWS=1)
 elseif(UNIX AND NOT APPLE)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+    if(REXGLUE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
         set(REX_PLATFORM "linux-amd64")
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+    elseif(REXGLUE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
         set(REX_PLATFORM "linux-arm64")
     else()
-        set(REX_PLATFORM "linux-${CMAKE_SYSTEM_PROCESSOR}")
+        set(REX_PLATFORM "linux-${REXGLUE_SYSTEM_PROCESSOR}")
     endif()
     add_compile_definitions(REX_PLATFORM_LINUX=1)
 else()
@@ -159,6 +191,9 @@ else()
     set(REXGLUE_DERIVED_TWEAK "0")
 endif()
 
+set(REXGLUE_FLOOR_VERSION
+    "${REXGLUE_DERIVED_MAJOR}.${REXGLUE_DERIVED_MINOR}.${REXGLUE_DERIVED_PATCH}")
+
 # Generate version header -- must run after REX_PLATFORM is set
 # Timestamp is set at configure time -- intentionally not updated on every rebuild
 string(TIMESTAMP REXGLUE_BUILD_TIMESTAMP "%Y%m%d_%H%M")
@@ -190,10 +225,14 @@ endif()
 add_subdirectory(thirdparty)
 
 # Enable warnings after thirdparty
-add_compile_options(
-    -Wall
-    -Wextra
-)
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    add_compile_options(/W4)
+else()
+    add_compile_options(
+        -Wall
+        -Wextra
+    )
+endif()
 
 include_directories(${REXGLUE_ROOT}/include)
 
@@ -238,5 +277,7 @@ else()
     # This sets REXGLUE_SHARE_DIR and makes rexglue_configure_target() available.
     set(REXGLUE_SHARE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/ui" PARENT_SCOPE)
     set(REXGLUE_SHARE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/ui")
+    set(REXGLUE_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include" PARENT_SCOPE)
+    set(REXGLUE_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rexglue_helpers.cmake)
 endif()
