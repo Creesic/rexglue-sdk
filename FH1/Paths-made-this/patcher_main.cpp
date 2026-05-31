@@ -17,14 +17,9 @@
 
 #include <fmt/format.h>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
-
 #include "patcher.h"
 
 int main(int argc, char** argv) {
-    rex::cvar::Init(argc, argv);
-    rex::InitLoggingEarly();
     if (argc < 2) {
         fmt::print(stderr, "usage: fh1-patcher <codegen-out-dir>\n");
         return 2;

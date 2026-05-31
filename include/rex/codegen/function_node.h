@@ -56,6 +56,9 @@ class FunctionNode {
   // Special type checks
   bool isImport() const { return authority_ == FunctionAuthority::IMPORT; }
   bool isHelper() const { return authority_ == FunctionAuthority::HELPER; }
+  bool isStub() const { return isStub_; }
+  const std::optional<uint64_t>& stubReturn() const { return stubReturn_; }
+  bool fiberSwapHostBoundary() const { return fiberSwapHostBoundary_; }
 
   //=========================================================================
   // State Machine - New 3-state model
@@ -73,6 +76,9 @@ class FunctionNode {
 
   /// Transition kRegistered -> kDiscovered for import functions (no blocks)
   void discoverAsImport();
+
+  /// Transition kRegistered -> kDiscovered for manifest stub functions (no blocks)
+  void discoverAsStub();
 
   /// Can transition from kDiscovered to kSealed?
   /// Returns true if:
@@ -140,6 +146,8 @@ class FunctionNode {
   bool hasExceptionInfo() const { return exceptionInfo_.has_value() && exceptionInfo_->hasInfo(); }
 
   void setName(std::string name) { name_ = std::move(name); }
+  void setStub(bool stub, std::optional<uint64_t> stubReturn = std::nullopt);
+  void setFiberSwapHostBoundary(bool enabled) { fiberSwapHostBoundary_ = enabled; }
 
  private:
   //=========================================================================
@@ -182,6 +190,9 @@ class FunctionNode {
   FunctionAuthority authority_;
   FunctionState state_ = FunctionState::kRegistered;
   bool hasExceptionHandler_ = false;
+  bool isStub_ = false;
+  std::optional<uint64_t> stubReturn_;
+  bool fiberSwapHostBoundary_ = false;
 
   // Populated at discover()
   std::vector<Block> blocks_;

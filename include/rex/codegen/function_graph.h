@@ -107,6 +107,10 @@ class FunctionGraph {
   // Set function name
   void setFunctionName(uint32_t entry, std::string name);
 
+  // Mark a function as a manifest stub (early return, optional r3 value)
+  void setFunctionStub(uint32_t entry, bool stub, std::optional<uint64_t> stubReturn = std::nullopt);
+  void setFunctionFiberSwapHostBoundary(uint32_t entry, bool enabled);
+
   // Set exception handler flag
   void setFunctionHasExceptionHandler(uint32_t entry, bool val);
 

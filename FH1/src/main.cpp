@@ -1,4 +1,7 @@
+
 // fh1 - ReXGlue Recompiled Project
+//
+// This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 
 #include "generated/fh1_init.h"
 

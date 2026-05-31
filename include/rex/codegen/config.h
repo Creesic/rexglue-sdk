@@ -47,6 +47,10 @@ struct FunctionConfig {
   uint32_t end = 0;     // End address, exclusive (mutually exclusive with size)
   std::string name;     // Custom symbol name (empty = auto-generate sub_XXXXXXXX)
   uint32_t parent = 0;  // Parent function address (0 = standalone, non-zero = chunk)
+  bool stub = false;    // Emit early-return stub instead of recompiling body
+  std::optional<uint64_t> stubReturn;  // When set, assign to ctx.r3 before return
+  /// Wrap generated body with BeginFiberSwapHostBoundary / GuestPcFiberResume (KeSet fiber swaps).
+  bool fiber_swap_host_boundary = false;
 
   // Get effective size (prefers size over end)
   uint32_t getSize(uint32_t address) const {
@@ -75,12 +79,10 @@ struct RecompilerConfig {
   // === Required user-provided fields ===
   std::string projectName = "rex";  ///< Project name for output files
   std::string filePath;             ///< Path to XEX/ELF file
+  std::string patchFilePath;        ///< Optional XEX patch file (ignored if XexPatcher unavailable)
+  std::string patchedFilePath;      ///< Optional patched XEX used instead of filePath
   std::string outDirectoryPath;     ///< Output directory for generated code
   std::string templateDir;          ///< Optional custom template directory for overrides
-
-  // Patch file paths (TODO: implement patching workflow)
-  std::string patchFilePath;
-  std::string patchedFilePath;
 
   // === Code generation options (optional) ===
   bool skipLr = false;

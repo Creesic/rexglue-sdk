@@ -126,8 +126,12 @@ bool XThread::IsInThread(XThread* other) {
   return GetBoundCurrentXThread() == other;
 }
 
+XThread* XThread::TryGetCurrentThread() {
+  return GetBoundCurrentXThread();
+}
+
 XThread* XThread::GetCurrentThread() {
-  XThread* thread = GetBoundCurrentXThread();
+  XThread* thread = TryGetCurrentThread();
   if (!thread) {
     assert_always("Attempting to use kernel stuff from a non-kernel thread");
   }
@@ -160,6 +164,11 @@ uint32_t XThread::last_error() {
 
 void XThread::set_last_error(uint32_t error_code) {
   guest_object<X_KTHREAD>()->last_error = error_code;
+}
+
+void XThread::SetGuestStackSpan(uint32_t limit, uint32_t base) {
+  stack_limit_ = limit;
+  stack_base_ = base;
 }
 
 void XThread::set_name(const std::string_view name) {

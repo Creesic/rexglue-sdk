@@ -369,11 +369,11 @@ constexpr Patch g_patches[] = {
     .function = "sub_823E3218",
     .marker   = "fh1_cgame_update_r28_null_",
     .match =
-        "\tsub_82DE7330(ctx, base);\n"
+        "\tTReference_IAudioCueBasic_ReferencePolicy_IAudioCueBasic__NonThreadSafeReferencePolicy____TReference_IAudioCueBasic_ReferencePolicy_IAudioCueBasic__NonThreadSafeReferencePolicy__82DE7330(ctx, base);\n"
         "\t// lwz r11,4(r28)\n"
         "\tctx.r11.u64 = REX_LOAD_U32(ctx.r28.u32 + 4);",
     .with =
-        "\tsub_82DE7330(ctx, base);\n"
+        "\tTReference_IAudioCueBasic_ReferencePolicy_IAudioCueBasic__NonThreadSafeReferencePolicy____TReference_IAudioCueBasic_ReferencePolicy_IAudioCueBasic__NonThreadSafeReferencePolicy__82DE7330(ctx, base);\n"
         "\t// FH1 LAYER B 0015+0017: r28 corruption guard before audio-cue loop.\n"
         "\tif (ctx.r28.u32 < 0x10000u) {\n"
         "\t\tstatic std::atomic<uint32_t> fh1_cgame_update_r28_null_{0};\n"
@@ -401,7 +401,7 @@ constexpr Patch g_patches[] = {
         "\tctx.r3.u64 = ctx.r31.u64;\n"
         "\t// bl 0x82c1fce8\n"
         "\tctx.lr = 0x82C20504;\n"
-        "\tsub_82C1FCE8(ctx, base);",
+        "\tTransfer__CTransferManager__ProcessSends_82C1FCE8(ctx, base);",
     .with =
         "loc_82C204FC:\n"
         "\t// FH1 LAYER B 0018: r30 refresh at loop top (callee-saved-register corruption).\n"
@@ -417,7 +417,7 @@ constexpr Patch g_patches[] = {
         "\tctx.r3.u64 = ctx.r31.u64;\n"
         "\t// bl 0x82c1fce8\n"
         "\tctx.lr = 0x82C20504;\n"
-        "\tsub_82C1FCE8(ctx, base);",
+        "\tTransfer__CTransferManager__ProcessSends_82C1FCE8(ctx, base);",
 },
 
 // =========================================================================
@@ -478,7 +478,7 @@ constexpr Patch g_patches[] = {
         "\tctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);\n"
         "\t// bl 0x82465eb8\n"
         "\tctx.lr = 0x82D4DDEC;\n"
-        "\tsub_82465EB8(ctx, base);",
+        "\tWaitForSingleObject_82465EB8(ctx, base);",
     .with =
         "\t// FH1 LAYER B 0023: cap SimulateIslands worker-wait at 500ms instead of INFINITE.\n"
         "\t// Healthy frames: worker SetEvent's in <1ms; timeout is irrelevant. Broken\n"
@@ -495,7 +495,7 @@ constexpr Patch g_patches[] = {
         "\tctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);\n"
         "\t// bl 0x82465eb8\n"
         "\tctx.lr = 0x82D4DDEC;\n"
-        "\tsub_82465EB8(ctx, base);",
+        "\tWaitForSingleObject_82465EB8(ctx, base);",
 },
 
 // =========================================================================
@@ -623,7 +623,7 @@ constexpr Patch g_patches[] = {
 //
 // Capture: 2026-05-13 01:53 UTC, live-hang snapshot on XThreadABFFF6C0
 // (gameplay) stuck in pthread_cond_wait inside
-// __imp__sub_823E91C0, called from
+// __imp__Threads__CSemaphore__WaitFor_823E91C0, called from
 // __imp__CPhysicsWorld__UpdateHF_82D4DE30 (frame 10) — NOT from
 // SimulateIslands. Stack: UpdateHF → CSemaphore::WaitFor → WaitForSingleObjectEx
 // → NtWaitForSingleObjectEx → pthread_cond_wait. Patch 0023 (SimulateIslands
@@ -665,7 +665,7 @@ constexpr Patch g_patches[] = {
         "\tctx.r3.u64 = ctx.r30.u64;\n"
         "\t// bl 0x823e91c0\n"
         "\tctx.lr = 0x82D4E068;\n"
-        "\tsub_823E91C0(ctx, base);",
+        "\tThreads__CSemaphore__WaitFor_823E91C0(ctx, base);",
     .with =
         "\t// FH1 LAYER B 0025: cap UpdateHF car-dynamics wait at 50ms when INFINITE,\n"
         "\t// then spoof r3=1 on timeout so the caller exits the retry loop.\n"
@@ -674,7 +674,7 @@ constexpr Patch g_patches[] = {
         "\t\tctx.r4.s64 = 50;\n"
         "\t\tctx.r3.u64 = ctx.r30.u64;\n"
         "\t\tctx.lr = 0x82D4E068;\n"
-        "\t\tsub_823E91C0(ctx, base);\n"
+        "\t\tThreads__CSemaphore__WaitFor_823E91C0(ctx, base);\n"
         "\t\tif ((ctx.r3.u32 & 0xFFu) == 0u) {\n"
         "\t\t\tconst auto _n = fh1_updatehf_wait_timeout_.fetch_add(1, std::memory_order_relaxed);\n"
         "\t\t\tif (_n < 16 || (_n & 0xFFFF) == 0) {\n"
@@ -689,7 +689,7 @@ constexpr Patch g_patches[] = {
         "\t\tctx.r3.u64 = ctx.r30.u64;\n"
         "\t\t// bl 0x823e91c0\n"
         "\t\tctx.lr = 0x82D4E068;\n"
-        "\t\tsub_823E91C0(ctx, base);\n"
+        "\t\tThreads__CSemaphore__WaitFor_823E91C0(ctx, base);\n"
         "\t}",
 },
 

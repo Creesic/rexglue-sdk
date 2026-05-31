@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <shared_mutex>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -67,7 +68,7 @@ class FunctionDispatcher : public IModuleRegistrar {
                             size_t arg_count);
 
   // Shared thunk region size per module.
-  static constexpr uint32_t kThunkReserveSize = 0x10000;  // 64KB
+  static constexpr uint32_t kThunkReserveSize = 0x80000;  // 512KB
 
   // rexglue function table management (per-module table at IMAGE_BASE + IMAGE_SIZE)
   // Set is_entrypoint=true exactly once for the host-loaded entrypoint so
@@ -123,7 +124,8 @@ class FunctionDispatcher : public IModuleRegistrar {
 
   rex::thread::global_critical_region global_critical_region_;
 
-  // Host-side function lookup.
+  // Host-side function lookup (shared_mutex: many concurrent GetFunction readers).
+  mutable std::shared_mutex function_table_mutex_;
   std::unordered_map<uint32_t, ::PPCFunc*> function_table_;
 
   // Per-module function table metadata.
@@ -140,6 +142,9 @@ class FunctionDispatcher : public IModuleRegistrar {
     uint32_t code_base;
     std::vector<uint32_t> addresses;
   };
+
+  // Per-module thunk dedup: (code_base << 32 | func*) -> allocated thunk guest address.
+  std::unordered_map<uint64_t, uint32_t> thunk_cache_;
 
   // Recorded state per module, keyed by module_id.
   std::unordered_map<std::string, ModuleRegistration> module_addresses_;

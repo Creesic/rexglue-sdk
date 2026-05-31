@@ -395,6 +395,18 @@ uint32_t Memory::GetPhysicalAddress(uint32_t address) const {
   return static_cast<const PhysicalHeap*>(heap)->GetPhysicalAddress(address);
 }
 
+bool Memory::IsGuestVirtualCommitted(uint32_t guest_address) const {
+  const BaseHeap* heap = LookupHeap(guest_address);
+  if (!heap) {
+    return false;
+  }
+  HeapAllocationInfo info{};
+  if (!const_cast<BaseHeap*>(heap)->QueryRegionInfo(guest_address, &info)) {
+    return false;
+  }
+  return (info.state & memory::kMemoryAllocationCommit) != 0;
+}
+
 void Memory::Zero(uint32_t address, uint32_t size) {
   std::memset(TranslateVirtual(address), 0, size);
 }
@@ -1082,12 +1094,16 @@ bool BaseHeap::AllocFixed(uint32_t base_address, uint32_t size, uint32_t alignme
   //   committed.
   for (uint32_t page_number = start_page_number; page_number <= end_page_number; ++page_number) {
     uint32_t state = page_table_[page_number].state;
-    if ((allocation_type == memory::kMemoryAllocationReserve) && state) {
-      // Already reserved.
-      REXSYS_ERROR(
-          "BaseHeap::AllocFixed attempting to reserve an already reserved "
-          "range");
-      return false;
+    if ((allocation_type & memory::kMemoryAllocationReserve) && state) {
+      // Commit-only on an existing reservation is allowed; reserve (alone or
+      // with commit) must not overlap pages already owned by another mapping.
+      if (!(allocation_type == memory::kMemoryAllocationCommit &&
+            (state & memory::kMemoryAllocationReserve))) {
+        REXSYS_ERROR(
+            "BaseHeap::AllocFixed attempting to reserve an already reserved "
+            "range");
+        return false;
+      }
     }
     if ((allocation_type == memory::kMemoryAllocationCommit) &&
         !(state & memory::kMemoryAllocationReserve)) {

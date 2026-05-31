@@ -751,17 +751,11 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
 }
 
 void KernelState::UnloadUserModule(const object_ref<UserModule>& module, bool call_entry) {
-  // Run guest DllMain DETACH outside the global lock to avoid deadlock with
-  // subsystem mutexes acquired from inside the guest callback.
+  // FH1 workaround: DETACH teardown is not implemented correctly and leaves
+  // guest mutexes inconsistent. Leak the module instead of tearing it down.
   if (module->is_dll_module() && module->entry_point() && call_entry) {
-    if (!XThread::IsInThread()) {
-      REXSYS_WARN("DllMain(DLL_PROCESS_DETACH) skipped for '{}': not on a guest thread",
-                  module->name());
-    } else {
-      auto* thread = XThread::GetCurrentThread();
-      uint64_t args[] = {module->hmodule_ptr(), 0 /* DLL_PROCESS_DETACH */, 0};
-      function_dispatcher_->Execute(thread->thread_state(), module->entry_point(), args, 3);
-    }
+    REXSYS_WARN("[fh1-patch] leaking DLL '{}'", module->path());
+    return;
   }
 
   bool found_module = false;

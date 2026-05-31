@@ -552,6 +552,12 @@ VoidResult registerEntryPoints(CodegenContext& ctx) {
     std::string name = cfg.name.empty() ? fmt::format("sub_{:08X}", address) : cfg.name;
     graph.addFunction(address, size, FunctionAuthority::CONFIG, true);
     graph.setFunctionName(address, name);
+    if (cfg.stub) {
+      graph.setFunctionStub(address, true, cfg.stubReturn);
+    }
+    if (cfg.fiber_swap_host_boundary) {
+      graph.setFunctionFiberSwapHostBoundary(address, true);
+    }
     configFuncs++;
 
     if (cfg.isChunk()) {

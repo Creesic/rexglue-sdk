@@ -246,11 +246,15 @@ bool FunctionDispatcher::SetFunction(uint32_t guest_address, ::PPCFunc* func) {
     return false;
   }
 
-  function_table_[guest_address] = func;
+  {
+    std::unique_lock table_lock(function_table_mutex_);
+    function_table_[guest_address] = func;
+  }
 
   if (!memory_->SetFunction(guest_address, func)) {
     REXLOG_ERROR("SetFunction: dispatcher / Memory module-table state out of sync at {:08X}",
                  guest_address);
+    std::unique_lock table_lock(function_table_mutex_);
     function_table_.erase(guest_address);
     return false;
   }
@@ -262,7 +266,7 @@ bool FunctionDispatcher::SetFunction(uint32_t guest_address, ::PPCFunc* func) {
 }
 
 ::PPCFunc* FunctionDispatcher::GetFunction(uint32_t guest_address) {
-  std::lock_guard<std::recursive_mutex> lock(dispatch_mutex_);
+  std::shared_lock table_lock(function_table_mutex_);
   auto it = function_table_.find(guest_address);
   if (it != function_table_.end()) {
     return it->second;
@@ -291,6 +295,13 @@ uint32_t FunctionDispatcher::AllocateThunk(::PPCFunc* func, uint32_t caller_addr
     }
   }
 
+  const uint64_t cache_key =
+      (static_cast<uint64_t>(mod->code_base) << 32) |
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(func));
+  if (auto cached = thunk_cache_.find(cache_key); cached != thunk_cache_.end()) {
+    return cached->second;
+  }
+
   if (mod->next_thunk_address >= mod->thunk_limit) {
     REXLOG_ERROR("Thunk address space exhausted for module at {:08X}", mod->code_base);
     return 0;
@@ -301,6 +312,7 @@ uint32_t FunctionDispatcher::AllocateThunk(::PPCFunc* func, uint32_t caller_addr
     mod->next_thunk_address -= 4;
     return 0;
   }
+  thunk_cache_.emplace(cache_key, addr);
   return addr;
 }
 
@@ -359,7 +371,10 @@ std::optional<std::pair<uint32_t, uint32_t>> FunctionDispatcher::UnregisterModul
                                });
 
   for (uint32_t addr : it->second.addresses) {
-    function_table_.erase(addr);
+    {
+      std::unique_lock table_lock(function_table_mutex_);
+      function_table_.erase(addr);
+    }
     memory_->SetFunction(addr, nullptr);
   }
 
@@ -368,13 +383,23 @@ std::optional<std::pair<uint32_t, uint32_t>> FunctionDispatcher::UnregisterModul
     uint32_t pool_start = table_it->code_base + table_it->code_size;
     uint32_t pool_end = table_it->next_thunk_address;
     for (uint32_t addr = pool_start; addr < pool_end; addr += 4) {
-      function_table_.erase(addr);
+      {
+        std::unique_lock table_lock(function_table_mutex_);
+        function_table_.erase(addr);
+      }
       memory_->SetFunction(addr, nullptr);
     }
     cleared_range = std::make_pair(pool_start, pool_end);
 
     if (table_it->code_base == entrypoint_code_base_) {
       entrypoint_code_base_ = 0;
+    }
+    for (auto cache_it = thunk_cache_.begin(); cache_it != thunk_cache_.end();) {
+      if (cache_it->first >> 32 == table_it->code_base) {
+        cache_it = thunk_cache_.erase(cache_it);
+      } else {
+        ++cache_it;
+      }
     }
     memory_->DestroyFunctionTable(table_it->code_base);
     module_tables_.erase(table_it);

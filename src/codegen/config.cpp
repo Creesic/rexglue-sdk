@@ -203,6 +203,18 @@ void ApplyToml(const toml::table& toml, RecompilerConfig& cfg, const std::string
       fcfg.end = (*table)["end"].value_or(0u);
       fcfg.name = (*table)["name"].value_or(std::string{});
       fcfg.parent = (*table)["parent"].value_or(0u);
+      fcfg.stub = (*table)["stub"].value_or(false);
+      if (auto stubRet = (*table)["stub_return"].value<int64_t>()) {
+        fcfg.stubReturn = static_cast<uint64_t>(*stubRet);
+      }
+      fcfg.fiber_swap_host_boundary = (*table)["fiber_swap_host_boundary"].value_or(false);
+
+      if (fcfg.stub && fcfg.isChunk()) {
+        REXCODEGEN_WARN("Function 0x{:08X}: stub=true ignored for chunk entries (parent=0x{:08X})",
+                        address, fcfg.parent);
+        fcfg.stub = false;
+        fcfg.stubReturn.reset();
+      }
 
       if (fcfg.size && fcfg.end) {
         REXCODEGEN_ERROR("Function 0x{:08X}: cannot specify both 'size' and 'end'", address);

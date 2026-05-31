@@ -30,6 +30,8 @@
 //=============================================================================
 
 #include <rex/ppc.h>
+#include <rex/ppc/static_recomp_fiber.h>
+#include <rex/ppc/guest_pc_fiber.h>
 #include <rex/image_info.h>
 #include <rex/logging.h>
 #include <rex/chrono/clock.h>

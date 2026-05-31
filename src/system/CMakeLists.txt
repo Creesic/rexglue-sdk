@@ -40,6 +40,8 @@ set(REXSYSTEM_SOURCES
     map_parser.cpp
     module.cpp
     function_dispatcher.cpp
+    static_recomp_fiber.cpp
+    guest_pc_fiber.cpp
     thread.cpp
     thread_state.cpp
     xex_module.cpp
@@ -85,6 +87,7 @@ endif()
 
 if(WIN32)
     target_link_libraries(rexruntime PRIVATE ws2_32)
+    target_compile_definitions(rexruntime PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
 if(REXGLUE_USE_D3D12)

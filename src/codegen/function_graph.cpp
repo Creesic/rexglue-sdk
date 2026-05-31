@@ -117,11 +117,24 @@ void FunctionNode::discoverAsImport() {
   REXCODEGEN_DEBUG("FunctionNode 0x{:08X} ({}): DISCOVERED as import", base_, name_);
 }
 
+void FunctionNode::setStub(bool stub, std::optional<uint64_t> stubReturn) {
+  isStub_ = stub;
+  stubReturn_ = stub ? std::move(stubReturn) : std::nullopt;
+}
+
+void FunctionNode::discoverAsStub() {
+  assert(canDiscover() && "Invalid state transition: must be kRegistered");
+  assert(isStub() && "Only manifest stub functions can use discoverAsStub()");
+
+  state_ = FunctionState::kDiscovered;
+  REXCODEGEN_DEBUG("FunctionNode 0x{:08X} ({}): DISCOVERED as manifest stub", base_, name_);
+}
+
 bool FunctionNode::canSeal() const {
   if (state_ != FunctionState::kDiscovered)
     return false;
-  if (isImport())
-    return true;  // Imports can seal without blocks
+  if (isImport() || isStub())
+    return true;  // Imports and manifest stubs can seal without blocks
   if (blocks_.empty())
     return false;  // Non-imports must have blocks
   if (!unresolvedJumps_.empty())
@@ -353,10 +366,7 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
 
   std::string out;
 
-  // --- Empty stub for functions with no blocks ---
-  if (blocks().empty()) {
-    REXCODEGEN_WARN("Function 0x{:08X} has no blocks - generating stub", base());
-
+  auto emitStubFunction = [&](std::string_view reason) {
     std::string name;
     if (base() == ctx.entryPoint) {
       name = "xstart";
@@ -366,10 +376,26 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
       name = fmt::format("sub_{:08X}", base());
     }
 
-    emit_println(out, "// STUB: Function at 0x{:08X} has no discovered code blocks", base());
+    emit_println(out, "// STUB: {} at 0x{:08X}", reason, base());
     emit_println(out, "DEFINE_REX_FUNC({}) {{", name);
     emit_println(out, "\tREX_FUNC_PROLOGUE();");
+    if (stubReturn_.has_value()) {
+      emit_println(out, "\tctx.r3.u64 = {};", *stubReturn_);
+    }
+    emit_println(out, "\treturn;");
     emit_println(out, "}}\n");
+  };
+
+  // --- Manifest-requested stub (skips recompilation even when XEX has code) ---
+  if (isStub()) {
+    emitStubFunction("manifest stub");
+    return out;
+  }
+
+  // --- Empty stub for functions with no blocks ---
+  if (blocks().empty()) {
+    REXCODEGEN_WARN("Function 0x{:08X} has no blocks - generating stub", base());
+    emitStubFunction("function has no discovered code blocks");
     return out;
   }
 
@@ -481,6 +507,24 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
   // Function signature with weak/alias pattern
   emit_println(out, "DEFINE_REX_FUNC({}) {{", name);
   emit_println(out, "\tREX_FUNC_PROLOGUE();");
+
+  const bool fiber_host_boundary = fiberSwapHostBoundary();
+  if (fiber_host_boundary) {
+    emit_println(out, "#if defined(_MSC_VER)");
+    emit_println(out, "\tconst int _rex_fiber_host_jmp = rex::ppc::BeginFiberSwapHostBoundary();");
+    emit_println(out, "\tif (_rex_fiber_host_jmp == 1) {{");
+    emit_println(out,
+                 "\t\trex::ppc::GuestPcFiberResume(ctx, base, static_cast<uint32_t>(ctx.lr));");
+    emit_println(out, "\t\trex::ppc::CompleteFiberSwapWithoutReentry();");
+    emit_println(out, "\t\treturn;");
+    emit_println(out, "\t}}");
+    emit_println(out, "\tif (_rex_fiber_host_jmp == 2) {{");
+    emit_println(out, "\t\trex::ppc::NotifyGuestPcFiberHostBoundarySwapBack();");
+    emit_println(out, "\t\trex::ppc::CompleteFiberSwapWithoutReentry();");
+    emit_println(out, "\t\treturn;");
+    emit_println(out, "\t}}");
+    emit_println(out, "#endif");
+  }
 
   // --- Second pass: emit instruction code ---
   const JumpTable* activeJt = nullptr;
@@ -632,6 +676,11 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
     emit_println(body, "\t\t}} SEH_END");
     emit_println(body, "\t}}\n");
   } else {
+    if (fiber_host_boundary) {
+      emit_println(body, "#if defined(_MSC_VER)");
+      emit_println(body, "\trex::ppc::CompleteFiberSwapWithoutReentry();");
+      emit_println(body, "#endif");
+    }
     emit_println(body, "}}\n");
   }
 
@@ -881,6 +930,18 @@ size_t FunctionGraph::sealedCount() const {
 void FunctionGraph::setFunctionName(uint32_t entry, std::string name) {
   if (auto* node = getFunction(entry)) {
     node->setName(std::move(name));
+  }
+}
+
+void FunctionGraph::setFunctionStub(uint32_t entry, bool stub, std::optional<uint64_t> stubReturn) {
+  if (auto* node = getFunction(entry)) {
+    node->setStub(stub, std::move(stubReturn));
+  }
+}
+
+void FunctionGraph::setFunctionFiberSwapHostBoundary(uint32_t entry, bool enabled) {
+  if (auto* node = getFunction(entry)) {
+    node->setFiberSwapHostBoundary(enabled);
   }
 }
 

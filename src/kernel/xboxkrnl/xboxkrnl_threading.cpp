@@ -23,6 +23,7 @@
 #include <rex/kernel/xboxkrnl/threading.h>
 #include <rex/logging.h>
 #include <rex/hook.h>
+#include <rex/ppc/static_recomp_fiber.h>
 #include <rex/types.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/function_dispatcher.h>
@@ -274,8 +275,29 @@ void KeSetCurrentStackPointers_entry(mapped_void stack_ptr, ppc_ptr_t<X_KTHREAD>
   auto pcr =
       REX_KERNEL_MEMORY()->TranslateVirtual<X_KPCR*>(static_cast<uint32_t>(context->r13.u64));
 
-  UpdateGuestStackPointers(thread, pcr, context, stack_ptr.guest_address(),
-                           stack_alloc_base.value(), stack_base.value(), stack_limit.value());
+  // FH1 work-queue fiber swap passes TLS thread-local state in r4, not KTHREAD
+  // (see sub_830ED910: lwz r4,0x100(r13); ... b KeSetCurrentStackPointers).
+  auto* kthread = current_thread->guest_object<X_KTHREAD>();
+  const uint32_t sp = stack_ptr.guest_address();
+  const uint32_t alloc = stack_alloc_base.value();
+  const uint32_t base = stack_base.value();
+  const uint32_t limit = stack_limit.value();
+
+  UpdateGuestStackPointers(kthread, pcr, context, sp, alloc, base, limit);
+
+  // Mirror every KeSet stack span to XThread so host guards (82A7D410, BDC8,
+  // GuestStackFrameValid) stay aligned after fiber swap-back.
+  current_thread->SetGuestStackSpan(limit, base);
+
+  rex::ppc::NotifyFiberStackPointerSwitch(limit);
+
+  static std::atomic<uint32_t> log_count{0};
+  if (log_count.fetch_add(1, std::memory_order_relaxed) < 4) {
+    REXKRNL_WARN(
+        "KeSetCurrentStackPointers: sp=0x{:08X} alloc=0x{:08X} base=0x{:08X} limit=0x{:08X} "
+        "param_r4=0x{:08X} guest_kthread=0x{:08X}",
+        sp, alloc, base, limit, thread.guest_address(), current_thread->guest_object());
+  }
 }
 
 u32 KeSetAffinityThread_entry(mapped_void thread_ptr, u32 affinity,
@@ -379,7 +401,9 @@ u32 KeDelayExecutionThread_entry(u32 processor_mode, u32 alertable, mapped_u64 i
     thread->DeliverAPCs();
   }
 
-  X_STATUS result = thread->Delay(processor_mode, alertable, *interval_ptr);
+  uint64_t interval_ticks_u64 = *interval_ptr;
+
+  X_STATUS result = thread->Delay(processor_mode, alertable, interval_ticks_u64);
 
   if (alertable && result == X_STATUS_USER_APC) {
     thread->DeliverAPCs();
@@ -838,15 +862,8 @@ uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason, uint32_
 u32 KeWaitForSingleObject_entry(mapped_void object_ptr, u32 wait_reason, u32 processor_mode,
                                 u32 alertable, mapped_u64 timeout_ptr) {
   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
-  // REXKRNL_IMPORT_TRACE("KeWaitForSingleObject", "obj={:#x} reason={} mode={} alertable={}
-  // timeout={}",
-  // object_ptr.guest_address(), (uint32_t)wait_reason,
-  //(uint32_t)processor_mode, (uint32_t)alertable,
-  // timeout_ptr ? (int64_t)timeout : -1);
-  auto result = xeKeWaitForSingleObject(object_ptr, wait_reason, processor_mode, alertable,
-                                        timeout_ptr ? &timeout : nullptr);
-  // REXKRNL_IMPORT_RESULT("KeWaitForSingleObject", "{:#x}", result);
-  return result;
+  return xeKeWaitForSingleObject(object_ptr, wait_reason, processor_mode, alertable,
+                                 timeout_ptr ? &timeout : nullptr);
 }
 
 u32 NtWaitForSingleObjectEx_entry(u32 object_handle, u32 wait_mode, u32 alertable,
@@ -887,6 +904,7 @@ u32 KeWaitForMultipleObjects_entry(u32 count, mapped_u32 objects_ptr, u32 wait_t
   X_STATUS result = XObject::WaitMultiple(
       uint32_t(objects.size()), reinterpret_cast<XObject**>(objects.data()), wait_type, wait_reason,
       processor_mode, alertable, timeout_ptr ? &timeout : nullptr);
+
   if (alertable && result == X_STATUS_USER_APC) {
     XThread::GetCurrentThread()->DeliverAPCs();
   }
@@ -965,9 +983,24 @@ static void xeKfLowerIrql(PPCContext* ctx, unsigned char new_irql) {
 // PPCContext* provides r13 (PCR address) without needing XThread::GetCurrentThread().
 uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock, bool change_irql) {
   uint32_t old_irql = change_irql ? xeKfRaiseIrql(ctx, IRQL_DISPATCH) : 0;
+  auto* mem = rex::system::kernel_state()->memory();
   uint32_t pcr_addr = static_cast<uint32_t>(ctx->r13.u64);
   assert_true(lock->prcb_of_owner != rex::byte_swap(pcr_addr));  // deadlock detection
+
+  auto* our_kpcr = mem->TranslateVirtual<X_KPCR*>(pcr_addr);
+  uint8_t our_cpu = our_kpcr->prcb_data.current_cpu;
   while (!rex::thread::atomic_cas(0u, rex::byte_swap(pcr_addr), &lock->prcb_of_owner.value)) {
+    // Match Xenia behavior: if spinner and owner are on the same guest CPU,
+    // force a host context switch so the owner can make progress and release.
+    uint32_t owner_pcr_be = lock->prcb_of_owner.value;
+    if (owner_pcr_be) {
+      uint32_t owner_pcr = rex::byte_swap(owner_pcr_be);
+      auto* owner_kpcr = mem->TranslateVirtual<X_KPCR*>(owner_pcr);
+      if (owner_kpcr && owner_kpcr->prcb_data.current_cpu == our_cpu) {
+        rex::thread::Sleep(std::chrono::milliseconds(0));
+        continue;
+      }
+    }
     rex::thread::MaybeYield();
   }
   return old_irql;

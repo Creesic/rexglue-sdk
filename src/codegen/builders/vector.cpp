@@ -93,21 +93,19 @@ bool build_vmulfp128(BuilderContext& ctx) {
 bool build_vmaddfp(BuilderContext& ctx) {
   ctx.emit_set_flush_mode(true);
   ctx.println(
-      "\tsimde_mm_store_ps({}.f32, simde_mm_add_ps(simde_mm_mul_ps(simde_mm_load_ps({}.f32), "
-      "simde_mm_load_ps({}.f32)), simde_mm_load_ps({}.f32)));",
+      "\tsimde_mm_store_ps({}.f32, simde_mm_fmadd_ps(simde_mm_load_ps({}.f32), "
+      "simde_mm_load_ps({}.f32), simde_mm_load_ps({}.f32)));",
       ctx.v(ctx.insn.operands[0]), ctx.v(ctx.insn.operands[1]), ctx.v(ctx.insn.operands[2]),
       ctx.v(ctx.insn.operands[3]));
   return true;
 }
 
 bool build_vnmsubfp(BuilderContext& ctx) {
-  // vnmsubfp: vD = -(vA * vB - vC) - negation done by XOR with sign bit (0x80000000)
+  // vnmsubfp: vD = -(vA * vB - vC) — single-rounding FMA negated multiply-sub
   ctx.emit_set_flush_mode(true);
   ctx.println(
-      "\tsimde_mm_store_ps({}.f32, "
-      "simde_mm_xor_ps(simde_mm_sub_ps(simde_mm_mul_ps(simde_mm_load_ps({}.f32), "
-      "simde_mm_load_ps({}.f32)), simde_mm_load_ps({}.f32)), "
-      "simde_mm_castsi128_ps(simde_mm_set1_epi32(int(0x80000000)))));",
+      "\tsimde_mm_store_ps({}.f32, simde_mm_fnmadd_ps(simde_mm_load_ps({}.f32), "
+      "simde_mm_load_ps({}.f32), simde_mm_load_ps({}.f32)));",
       ctx.v(ctx.insn.operands[0]), ctx.v(ctx.insn.operands[1]), ctx.v(ctx.insn.operands[2]),
       ctx.v(ctx.insn.operands[3]));
   return true;
@@ -275,10 +273,12 @@ bool build_vaddsws(BuilderContext& ctx) {
   ctx.println(
       "\t\tsimde__m128i sat_val = simde_mm_xor_si128(simde_mm_srai_epi32(a, 31), "
       "simde_mm_set1_epi32(0x7FFFFFFF));");
-  // Blend: select sat_val where overflow MSB is set, else sum
+  // Blend per 32-bit lane (vblendvps). blendv_epi8 would sample bits 7/15/23/31
+  // per byte and corrupt ~50% of non-overflowing lanes.
   ctx.println(
-      "\t\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_blendv_epi8(sum, sat_val, "
-      "overflow));",
+      "\t\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_castps_si128("
+      "simde_mm_blendv_ps(simde_mm_castsi128_ps(sum), simde_mm_castsi128_ps(sat_val), "
+      "simde_mm_castsi128_ps(overflow))));",
       vD);
   ctx.println("\t}}");
   return true;
@@ -1343,6 +1343,17 @@ bool build_vpkd3d128(BuilderContext& ctx) {
         return true;
       }
 
+      auto vSrc = ctx.v(ctx.insn.operands[1]);
+      auto vDst = ctx.v(ctx.insn.operands[0]);
+
+      // Snapshot source lanes before clearing dst — in-place vD,vD,5,*,* aliasing
+      // would otherwise zero the lanes the pack loop is about to read.
+      ctx.println("\t{{");
+      ctx.println("\t\tuint32_t _vpks0 = {}.u32[0];", vSrc);
+      ctx.println("\t\tuint32_t _vpks1 = {}.u32[1];", vSrc);
+      ctx.println("\t\tuint32_t _vpks2 = {}.u32[2];", vSrc);
+      ctx.println("\t\tuint32_t _vpks3 = {}.u32[3];", vSrc);
+
       // mask=2: before writing, clear the half that will NOT be written.
       // Shift is guaranteed to be 0 or 2 at this point due to the guard above.
       if (mask == 2) {
@@ -1350,7 +1361,7 @@ bool build_vpkd3d128(BuilderContext& ctx) {
         // shift=0 → clears upper half u64[1]
         // shift=2 → clears lower half u64[0]
         size_t clearU64Start = (shift == 0) ? 1 : 0;
-        ctx.println("\t{}.u64[{}] = 0;", ctx.v(ctx.insn.operands[0]), clearU64Start);
+        ctx.println("\t\t{}.u64[{}] = 0;", vDst, clearU64Start);
       }
 
       // Invariant: dstIdx must stay under 8 (valid u16 lanes are 0..7).
@@ -1361,22 +1372,21 @@ bool build_vpkd3d128(BuilderContext& ctx) {
         size_t srcIdx = 3 - i;
         size_t dstIdx = (3 - i) + (2 * shift);
 
-        ctx.println("\t{}.u32 = ({}.u32[{}]&0x7FFFFFFF);", ctx.temp(), ctx.v(ctx.insn.operands[1]),
-                    srcIdx);
+        ctx.println("\t\t{}.u32 = (_vpks{}&0x7FFFFFFF);", ctx.temp(), srcIdx);
         ctx.println(
-            "\t{0}.u8[0] = ({1}.f32 != {1}.f32) || ({1}.f32 > 65504.0f) ? 0xFF : "
-            "(({2}.u32[{3}]&0x7f800000)>>23);",
-            ctx.v_temp(), ctx.temp(), ctx.v(ctx.insn.operands[1]), srcIdx);
-        ctx.println("\t{}.u16 = {}.u8[0] != 0xFF ? (({}.u32[{}]&0x7FE000)>>13) : 0x0;", ctx.temp(),
-                    ctx.v_temp(), ctx.v(ctx.insn.operands[1]), srcIdx);
+            "\t\t{0}.u8[0] = ({1}.f32 != {1}.f32) || ({1}.f32 > 65504.0f) ? 0xFF : "
+            "((_vpks{2}&0x7f800000)>>23);",
+            ctx.v_temp(), ctx.temp(), srcIdx);
+        ctx.println("\t\t{}.u16 = {}.u8[0] != 0xFF ? ((_vpks{}&0x7FE000)>>13) : 0x0;",
+                    ctx.temp(), ctx.v_temp(), srcIdx);
         ctx.println(
-            "\t{0}.u16[{1}] = {2}.u8[0] != 0xFF ? ({2}.u8[0] > 0x70 ? "
+            "\t\t{0}.u16[{1}] = {2}.u8[0] != 0xFF ? ({2}.u8[0] > 0x70 ? "
             "((({2}.u8[0]-0x70)<<10)+{3}.u16) : (0x71-{2}.u8[0] > 31 ? 0x0 : "
             "((0x400+{3}.u16)>>(0x71-{2}.u8[0])))) : 0x7FFF;",
-            ctx.v(ctx.insn.operands[0]), dstIdx, ctx.v_temp(), ctx.temp());
-        ctx.println("\t{}.u16[{}] |= (({}.u32[{}]&0x80000000)>>16);", ctx.v(ctx.insn.operands[0]),
-                    dstIdx, ctx.v(ctx.insn.operands[1]), srcIdx);
+            vDst, dstIdx, ctx.v_temp(), ctx.temp());
+        ctx.println("\t\t{}.u16[{}] |= ((_vpks{}&0x80000000)>>16);", vDst, dstIdx, srcIdx);
       }
+      ctx.println("\t}}");
       break;
     }
 

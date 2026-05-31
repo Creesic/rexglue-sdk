@@ -373,6 +373,9 @@ class Memory {
   // UINT32_MAX if it can't be obtained.
   uint32_t GetPhysicalAddress(uint32_t address) const;
 
+  // True when guest virtual address lies in a heap page table entry marked committed.
+  bool IsGuestVirtualCommitted(uint32_t guest_address) const;
+
   // Zeros out a range of memory at the given guest address.
   void Zero(uint32_t address, uint32_t size);
 
