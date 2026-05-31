@@ -10,9 +10,22 @@
 
 #include <array>
 #include <algorithm>
+#include <filesystem>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <cstdarg>
+#include <cerrno>
+#include <cstring>
 #include <utility>
+
+#if defined(__APPLE__)
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
+#include <unistd.h>
+
+#include <rex/ui/metal/capture_diag.h>
+#endif
 
 #include "shaders/blit_metallib.h"
 
@@ -20,6 +33,199 @@ REXCVAR_DEFINE_BOOL(metal_hud, true, "GPU", "Enable Metal performance HUD overla
 REXCVAR_DEFINE_BOOL(metal_frame_timing, true, "GPU", "Log GPU frame timing info");
 REXCVAR_DEFINE_BOOL(metal_present_debug_probes, false, "GPU",
                     "Enable extra Metal present-path debug probes/logs");
+REXCVAR_DEFINE_BOOL(metal_present_capture_scope, true, "GPU",
+                    "Emit per-present Metal capture scope boundaries for Xcode GPU capture");
+REXCVAR_DEFINE_BOOL(metal_capture_to_file, false, "GPU",
+                    "Capture one short Metal trace to a .gputrace file and stop");
+REXCVAR_DEFINE_BOOL(
+    metal_capture_diag_shim, true, "GPU",
+    "Use Objective-C++ diagnostic shim for Metal capture start/stop logging");
+REXCVAR_DEFINE_BOOL(
+    metal_capture_to_developer_tools, true, "GPU",
+    "Route programmatic capture directly to Xcode developer tools instead of .gputrace file");
+REXCVAR_DEFINE_INT32(metal_capture_to_file_frames, 1, "GPU",
+                     "How many present frames to record when metal_capture_to_file is enabled");
+REXCVAR_DEFINE_INT32(
+    metal_capture_to_file_min_frames, 1, "GPU",
+    "Minimum present frames for programmatic capture (helps avoid fragile one-frame traces)");
+REXCVAR_DEFINE_BOOL(
+    metal_capture_to_file_use_queue, true, "GPU",
+    "Use command-queue capture object for programmatic .gputrace capture");
+REXCVAR_DEFINE_BOOL(
+    metal_capture_to_file_use_scope, false, "GPU",
+    "Use presenter capture scope object first for programmatic .gputrace capture");
+REXCVAR_DEFINE_INT32(
+    metal_capture_to_file_max_mb, 1024, "GPU",
+    "Hard cap for programmatic .gputrace bundle size in MB (force-stop when exceeded)");
+REXCVAR_DEFINE_INT32(
+    metal_capture_to_file_max_ms, 2500, "GPU",
+    "Hard cap for programmatic capture duration in milliseconds (force-stop)");
+REXCVAR_DEFINE_STRING(metal_capture_to_file_path,
+                      "/Users/tera/Documents/GitHub/rexglue-sdk/MTL/rex-present-capture.gputrace",
+                      "GPU", "Output path for programmatic Metal .gputrace capture");
+REXCVAR_DEFINE_BOOL(
+    metal_capture_tiny_sanity, false, "GPU",
+    "When capture is triggered, record a tiny standalone command-buffer trace and stop immediately");
+REXCVAR_DEFINE_STRING(
+    metal_capture_tiny_path,
+    "/Users/tera/Documents/GitHub/rexglue-sdk/MTL/rex-tiny-sanity.gputrace", "GPU",
+    "Base output path for tiny sanity .gputrace capture");
+// Legacy aliases kept so FM2 profiles that still set copy-scope capture toggles
+// can drive the newer presenter file-capture path without extra scheme edits.
+REXCVAR_DEFINE_BOOL(metal_capture_copy_scope_once, false, "GPU",
+                    "Legacy alias: trigger one-shot presenter .gputrace capture");
+REXCVAR_DEFINE_BOOL(metal_capture_copy_scope_to_file, false, "GPU",
+                    "Legacy alias: enable presenter .gputrace file output");
+REXCVAR_DEFINE_BOOL(metal_capture_trigger_file_enabled, true, "GPU",
+                    "Enable file-based runtime trigger for Metal capture");
+REXCVAR_DEFINE_STRING(metal_capture_trigger_file_path,
+                      "/Users/tera/Documents/GitHub/rexglue-sdk/MTL/rex-capture-now",
+                      "GPU", "Touch this file to trigger one-shot Metal capture");
+
+#if defined(__APPLE__)
+namespace {
+__attribute__((used)) static const char kRexMetalCapturePatchId[] =
+    "rex-metal-capture-patch-2026-05-31-a";
+
+__attribute__((constructor)) static void RexMetalCapturePatchLoaded() {
+  char exe_path[4096] = {};
+  uint32_t exe_path_size = sizeof(exe_path);
+  _NSGetExecutablePath(exe_path, &exe_path_size);
+
+  Dl_info image_info = {};
+  dladdr(reinterpret_cast<const void*>(&RexMetalCapturePatchLoaded), &image_info);
+
+  std::fprintf(stderr, "[rex-build] %s pid=%d exe=%s image=%s source=%s\n",
+               kRexMetalCapturePatchId, getpid(), exe_path,
+               image_info.dli_fname ? image_info.dli_fname : "?", __FILE__);
+  std::fflush(stderr);
+
+  // Fallback proof when Xcode swallows stderr: append a marker on disk.
+  if (FILE* marker = std::fopen(
+          "/Users/tera/Documents/GitHub/rexglue-sdk/MTL/rex-build-marker.txt",
+          "a")) {
+    std::fprintf(marker, "[rex-build] %s pid=%d exe=%s image=%s source=%s\n",
+                 kRexMetalCapturePatchId, getpid(), exe_path,
+                 image_info.dli_fname ? image_info.dli_fname : "?", __FILE__);
+    std::fclose(marker);
+  }
+}
+
+void AppendCaptureEvent(const char* fmt, ...) {
+  if (!fmt) {
+    return;
+  }
+  if (FILE* marker = std::fopen(
+          "/Users/tera/Documents/GitHub/rexglue-sdk/MTL/rex-capture-events.txt",
+          "a")) {
+    va_list args;
+    va_start(args, fmt);
+    std::vfprintf(marker, fmt, args);
+    va_end(args);
+    std::fputc('\n', marker);
+    std::fclose(marker);
+  }
+}
+
+bool EnvTruthy(const char* value) {
+  if (!value || !value[0]) {
+    return false;
+  }
+  return std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
+         std::strcmp(value, "TRUE") == 0 || std::strcmp(value, "yes") == 0 ||
+         std::strcmp(value, "YES") == 0 || std::strcmp(value, "on") == 0 ||
+         std::strcmp(value, "ON") == 0;
+}
+
+void ApplyCaptureEnvOverridesOnce() {
+  static bool applied = false;
+  if (applied) {
+    return;
+  }
+  applied = true;
+
+  const char* mtl_capture_enabled = std::getenv("MTL_CAPTURE_ENABLED");
+  if (EnvTruthy(mtl_capture_enabled)) {
+    rex::cvar::SetFlagByName("metal_capture_to_file", "true");
+    AppendCaptureEvent(
+        "[metal-capture] env override MTL_CAPTURE_ENABLED=%s -> metal_capture_to_file=true",
+        mtl_capture_enabled);
+  }
+
+  struct EnvMap {
+    const char* env_name;
+    const char* cvar_name;
+  };
+  static const EnvMap kEnvMaps[] = {
+      {"REX_METAL_CAPTURE_TO_FILE", "metal_capture_to_file"},
+      {"REX_METAL_CAPTURE_TO_FILE_PATH", "metal_capture_to_file_path"},
+      {"REX_METAL_CAPTURE_TO_FILE_FRAMES", "metal_capture_to_file_frames"},
+      {"REX_METAL_CAPTURE_TO_FILE_MIN_FRAMES",
+       "metal_capture_to_file_min_frames"},
+      {"REX_METAL_CAPTURE_TO_FILE_MAX_MB", "metal_capture_to_file_max_mb"},
+      {"REX_METAL_CAPTURE_TO_FILE_MAX_MS", "metal_capture_to_file_max_ms"},
+      {"REX_METAL_CAPTURE_TO_DEVELOPER_TOOLS",
+       "metal_capture_to_developer_tools"},
+      {"REX_METAL_CAPTURE_TO_FILE_USE_SCOPE",
+       "metal_capture_to_file_use_scope"},
+      {"REX_METAL_CAPTURE_TO_FILE_USE_QUEUE",
+       "metal_capture_to_file_use_queue"},
+      {"REX_METAL_CAPTURE_TINY_SANITY", "metal_capture_tiny_sanity"},
+      {"REX_METAL_CAPTURE_TINY_PATH", "metal_capture_tiny_path"},
+  };
+  for (const EnvMap& map : kEnvMaps) {
+    const char* value = std::getenv(map.env_name);
+    if (!value || !value[0]) {
+      continue;
+    }
+    rex::cvar::SetFlagByName(map.cvar_name, value);
+    AppendCaptureEvent(
+        "[metal-capture] env override %s=%s -> %s", map.env_name, value,
+        map.cvar_name);
+  }
+}
+
+uint64_t ComputePathBytes(const std::filesystem::path& path) {
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec) || ec) {
+    return 0;
+  }
+  if (std::filesystem::is_regular_file(path, ec) && !ec) {
+    return static_cast<uint64_t>(std::filesystem::file_size(path, ec));
+  }
+  uint64_t total = 0;
+  for (std::filesystem::recursive_directory_iterator it(path, ec), end; !ec && it != end;
+       it.increment(ec)) {
+    if (it->is_regular_file(ec) && !ec) {
+      total += static_cast<uint64_t>(it->file_size(ec));
+    }
+  }
+  return total;
+}
+
+std::string MakeUniqueCapturePath(const std::string& configured_path,
+                                  uint64_t sequence) {
+  std::filesystem::path base_path(configured_path);
+  std::filesystem::path parent = base_path.parent_path();
+  std::string stem = base_path.stem().string();
+  std::string ext = base_path.extension().string();
+  if (stem.empty()) {
+    stem = "rex-present-capture";
+  }
+  if (ext.empty()) {
+    ext = ".gputrace";
+  }
+  char suffix[96] = {};
+  std::snprintf(suffix, sizeof(suffix), "-pid%d-seq%llu", getpid(),
+                static_cast<unsigned long long>(sequence));
+  std::string filename = stem + suffix + ext;
+  if (parent.empty()) {
+    return filename;
+  }
+  return (parent / filename).string();
+}
+}  // namespace
+#endif
 
 namespace rex {
 namespace ui {
@@ -52,6 +258,52 @@ bool MetalPresenter::Initialize() {
   if (!mtl4_) {
     REXLOG_ERROR("MetalPresenter: No Metal4Context");
     return false;
+  }
+
+  ApplyCaptureEnvOverridesOnce();
+
+  static bool logged_capture_config_once = false;
+  if (!logged_capture_config_once) {
+    const int capture_to_file = REXCVAR_GET(metal_capture_to_file) ? 1 : 0;
+    const int capture_frames = std::max(REXCVAR_GET(metal_capture_to_file_frames), 0);
+    const std::string capture_path = REXCVAR_GET(metal_capture_to_file_path);
+    const int copy_scope_once = REXCVAR_GET(metal_capture_copy_scope_once) ? 1 : 0;
+    const int copy_scope_to_file =
+        REXCVAR_GET(metal_capture_copy_scope_to_file) ? 1 : 0;
+    std::fprintf(
+        stderr,
+        "[metal-capture] config to_file=%d frames=%d path=%s copy_scope_once=%d "
+        "copy_scope_to_file=%d\n",
+        capture_to_file, capture_frames, capture_path.c_str(),
+        copy_scope_once, copy_scope_to_file);
+    std::fflush(stderr);
+    if (FILE* marker = std::fopen(
+            "/Users/tera/Documents/GitHub/rexglue-sdk/MTL/rex-capture-config-marker.txt",
+            "a")) {
+      std::fprintf(
+          marker,
+          "[metal-capture] config to_file=%d frames=%d path=%s copy_scope_once=%d "
+          "copy_scope_to_file=%d\n",
+          capture_to_file, capture_frames, capture_path.c_str(),
+          copy_scope_once, copy_scope_to_file);
+      std::fclose(marker);
+    }
+    logged_capture_config_once = true;
+  }
+
+  if (REXCVAR_GET(metal_present_capture_scope) && mtl4_->queue()) {
+    MTL::CaptureManager* capture_manager =
+        MTL::CaptureManager::sharedCaptureManager();
+    if (capture_manager) {
+      presenter_capture_scope_ = capture_manager->newCaptureScope(mtl4_->queue());
+      if (presenter_capture_scope_) {
+        presenter_capture_scope_->setLabel(
+            NS::String::string("rex.present.scope", NS::UTF8StringEncoding));
+        capture_manager->setDefaultCaptureScope(presenter_capture_scope_);
+      } else {
+        REXLOG_WARN("MetalPresenter: Failed to create capture scope for MTL4 queue");
+      }
+    }
   }
 
   guest_output_shared_event_ = device_->newSharedEvent();
@@ -117,6 +369,14 @@ void MetalPresenter::Shutdown() {
   for (auto& tex : guest_output_textures_) {
     if (tex) tex->release();
     tex = nullptr;
+  }
+  if (presenter_capture_scope_active_ && presenter_capture_scope_) {
+    presenter_capture_scope_->endScope();
+    presenter_capture_scope_active_ = false;
+  }
+  if (presenter_capture_scope_) {
+    presenter_capture_scope_->release();
+    presenter_capture_scope_ = nullptr;
   }
   metal_layer_ = nullptr;
   mtl4_ = nullptr;
@@ -510,6 +770,306 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
   MTL::Texture* dst = drawable->texture();
   const uint64_t paint_sequence =
       present_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+  file_capture_last_seq_ = paint_sequence;
+  if (file_capture_active_ && file_capture_stop_pending_) {
+#if defined(__APPLE__)
+    if (REXCVAR_GET(metal_capture_diag_shim)) {
+      RexMetalCaptureDiagMark("before-stop-deferred");
+      RexMetalCaptureDiagStop(file_capture_path_.c_str());
+      RexMetalCaptureDiagMark("after-stop-deferred");
+    } else
+#endif
+    {
+      MTL::CaptureManager* capture_manager =
+          MTL::CaptureManager::sharedCaptureManager();
+      if (capture_manager && capture_manager->isCapturing()) {
+        capture_manager->stopCapture();
+      }
+    }
+    std::error_code ec;
+    const bool output_exists = std::filesystem::exists(file_capture_path_, ec);
+    const auto captured_size =
+        output_exists ? ComputePathBytes(std::filesystem::path(file_capture_path_))
+                      : uintmax_t(0);
+    AppendCaptureEvent(
+        "[metal-capture] stopped(deferred) path=%s seq=%llu exists=%d size=%llu ec=%d",
+        file_capture_path_.c_str(),
+        static_cast<unsigned long long>(paint_sequence),
+        output_exists ? 1 : 0,
+        static_cast<unsigned long long>(captured_size), ec ? ec.value() : 0);
+    file_capture_active_ = false;
+    file_capture_stop_pending_ = false;
+    file_capture_frames_remaining_ = 0;
+    file_capture_max_bytes_ = 0;
+    file_capture_start_us_ = 0;
+    file_capture_path_.clear();
+    REXCVAR_SET(metal_capture_to_file, false);
+    REXCVAR_SET(metal_capture_copy_scope_once, false);
+  }
+  if (!file_capture_active_ && REXCVAR_GET(metal_capture_trigger_file_enabled)) {
+    const std::string trigger_path = REXCVAR_GET(metal_capture_trigger_file_path);
+    if (!trigger_path.empty()) {
+      std::error_code ec;
+      if (std::filesystem::exists(trigger_path, ec) && !ec) {
+        std::filesystem::remove(trigger_path, ec);
+        REXCVAR_SET(metal_capture_to_file, true);
+        if (REXCVAR_GET(metal_capture_to_file_frames) < 1) {
+          REXCVAR_SET(metal_capture_to_file_frames, 1);
+        }
+        AppendCaptureEvent(
+            "[metal-capture] trigger-file detected path=%s seq=%llu remove_ec=%d",
+            trigger_path.c_str(),
+            static_cast<unsigned long long>(paint_sequence),
+            ec ? ec.value() : 0);
+      }
+    }
+  }
+  const bool legacy_capture_once = REXCVAR_GET(metal_capture_copy_scope_once);
+  const bool legacy_capture_to_file = REXCVAR_GET(metal_capture_copy_scope_to_file);
+  if (!file_capture_active_ && (legacy_capture_once || legacy_capture_to_file)) {
+    REXCVAR_SET(metal_capture_to_file, true);
+    if (REXCVAR_GET(metal_capture_to_file_frames) < 1) {
+      REXCVAR_SET(metal_capture_to_file_frames, 1);
+    }
+  }
+  if (legacy_capture_once || legacy_capture_to_file) {
+    static bool logged_legacy_alias_once = false;
+    if (!logged_legacy_alias_once) {
+      fprintf(stderr,
+              "[metal-capture] legacy capture alias active once=%d to_file=%d\n",
+              legacy_capture_once ? 1 : 0, legacy_capture_to_file ? 1 : 0);
+      fflush(stderr);
+      logged_legacy_alias_once = true;
+    }
+  }
+  if (!file_capture_active_ && REXCVAR_GET(metal_capture_to_file) && mtl4_) {
+    MTL::CaptureManager* capture_manager = MTL::CaptureManager::sharedCaptureManager();
+    if (capture_manager && !capture_manager->isCapturing()) {
+      const bool tiny_sanity_capture = REXCVAR_GET(metal_capture_tiny_sanity);
+      std::string configured_capture_path = REXCVAR_GET(metal_capture_to_file_path);
+      if (configured_capture_path.empty()) {
+        configured_capture_path =
+            "/Users/tera/Documents/GitHub/rexglue-sdk/MTL/rex-present-capture.gputrace";
+      }
+      if (tiny_sanity_capture) {
+        configured_capture_path = REXCVAR_GET(metal_capture_tiny_path);
+        if (configured_capture_path.empty()) {
+          configured_capture_path =
+              "/Users/tera/Documents/GitHub/rexglue-sdk/MTL/rex-tiny-sanity.gputrace";
+        }
+      }
+      const std::string capture_path =
+          MakeUniqueCapturePath(configured_capture_path, paint_sequence);
+      std::error_code ec;
+      std::filesystem::path capture_fs_path = capture_path;
+      const std::filesystem::path capture_parent = capture_fs_path.parent_path();
+      if (!capture_parent.empty()) {
+        std::filesystem::create_directories(capture_parent, ec);
+        if (ec) {
+          AppendCaptureEvent(
+              "[metal-capture] mkdir failed path=%s ec=%d msg=%s",
+              capture_parent.string().c_str(), ec.value(),
+              ec.message().c_str());
+        }
+      }
+      if (std::filesystem::exists(capture_fs_path, ec)) {
+        const uintmax_t removed_count =
+            std::filesystem::remove_all(capture_fs_path, ec);
+        if (ec) {
+          AppendCaptureEvent(
+              "[metal-capture] pre-remove failed path=%s ec=%d msg=%s",
+              capture_path.c_str(), ec.value(), ec.message().c_str());
+        } else {
+          AppendCaptureEvent(
+              "[metal-capture] pre-remove ok path=%s removed=%llu",
+              capture_path.c_str(),
+              static_cast<unsigned long long>(removed_count));
+        }
+      }
+
+      const bool want_devtools = REXCVAR_GET(metal_capture_to_developer_tools);
+      const bool supports_devtools =
+          capture_manager->supportsDestination(
+              MTL::CaptureDestinationDeveloperTools);
+      const bool supports_gpu_trace_doc =
+          capture_manager->supportsDestination(
+              MTL::CaptureDestinationGPUTraceDocument);
+      const bool use_devtools = want_devtools ? supports_devtools : false;
+      const bool use_gpu_trace = use_devtools ? false : supports_gpu_trace_doc;
+      AppendCaptureEvent(
+          "[metal-capture] start-request seq=%llu path=%s requested=%s tiny=%d "
+          "supports_doc=%d supports_tools=%d is_capturing=%d scope=%d queue=%d dst=%s",
+          static_cast<unsigned long long>(paint_sequence),
+          capture_path.c_str(), configured_capture_path.c_str(),
+          tiny_sanity_capture ? 1 : 0,
+          supports_gpu_trace_doc ? 1 : 0,
+          supports_devtools ? 1 : 0,
+          capture_manager->isCapturing() ? 1 : 0,
+          REXCVAR_GET(metal_capture_to_file_use_scope) ? 1 : 0,
+          REXCVAR_GET(metal_capture_to_file_use_queue) ? 1 : 0,
+          use_devtools ? "tools" : (use_gpu_trace ? "gputrace" : "unsupported"));
+
+      // Scope-object capture can crash on some Xcode/macOS builds when writing
+      // GPUTraceDocument output, so only use it when not file-output capturing.
+      const bool use_scope_capture =
+          false && REXCVAR_GET(metal_capture_to_file_use_scope) &&
+          presenter_capture_scope_;
+      const bool use_queue_capture =
+          !use_scope_capture && REXCVAR_GET(metal_capture_to_file_use_queue) &&
+          mtl4_->queue();
+      void* capture_object = use_scope_capture
+                                 ? reinterpret_cast<void*>(presenter_capture_scope_)
+                                 : (use_queue_capture
+                                        ? reinterpret_cast<void*>(mtl4_->queue())
+                                        : reinterpret_cast<void*>(device_));
+
+#if defined(__APPLE__)
+      RexMetalCaptureDiagMark("before-start");
+#endif
+      bool capture_started = false;
+#if defined(__APPLE__)
+      if (REXCVAR_GET(metal_capture_diag_shim) && !use_devtools) {
+        capture_started =
+            RexMetalCaptureDiagStart(capture_object, capture_path.c_str());
+      } else
+#endif
+      {
+        NS::String* capture_path_ns =
+            NS::String::string(capture_path.c_str(), NS::UTF8StringEncoding);
+        NS::URL* capture_url = NS::URL::fileURLWithPath(capture_path_ns);
+        MTL::CaptureDescriptor* descriptor = MTL::CaptureDescriptor::alloc()->init();
+        descriptor->setCaptureObject(reinterpret_cast<NS::Object*>(capture_object));
+        if (use_devtools) {
+          descriptor->setDestination(MTL::CaptureDestinationDeveloperTools);
+        } else {
+          descriptor->setDestination(MTL::CaptureDestinationGPUTraceDocument);
+          descriptor->setOutputURL(capture_url);
+        }
+        NS::Error* capture_err = nullptr;
+        capture_started = capture_manager->startCapture(descriptor, &capture_err);
+        if (!capture_started) {
+          AppendCaptureEvent(
+              "[metal-capture] start-failed path=%s err=%s object=%s dst=%s",
+              capture_path.c_str(),
+              capture_err ? capture_err->localizedDescription()->utf8String()
+                          : "unknown",
+              use_scope_capture ? "scope"
+                                : (use_queue_capture ? "queue" : "device"),
+              use_devtools ? "tools" : "gputrace");
+        }
+        descriptor->release();
+      }
+#if defined(__APPLE__)
+      RexMetalCaptureDiagMark(capture_started ? "after-start-ok"
+                                              : "after-start-failed");
+#endif
+      if (capture_started) {
+        if (tiny_sanity_capture) {
+          bool tiny_cmd_committed = false;
+#if defined(__APPLE__)
+          if (REXCVAR_GET(metal_capture_diag_shim)) {
+            RexMetalCaptureDiagMark("before-tiny-cmd-create");
+          }
+#endif
+          MTL4::CommandBuffer* tiny_cmd = mtl4_->BeginStandaloneCommandBuffer();
+#if defined(__APPLE__)
+          if (REXCVAR_GET(metal_capture_diag_shim)) {
+            RexMetalCaptureDiagMark("after-tiny-cmd-create");
+          }
+#endif
+          if (tiny_cmd) {
+#if defined(__APPLE__)
+            if (REXCVAR_GET(metal_capture_diag_shim)) {
+              RexMetalCaptureDiagMark("before-tiny-cmd-commit");
+            }
+#endif
+            mtl4_->CommitStandaloneAndWait(tiny_cmd);
+            tiny_cmd_committed = true;
+#if defined(__APPLE__)
+            if (REXCVAR_GET(metal_capture_diag_shim)) {
+              RexMetalCaptureDiagMark("after-tiny-cmd-commit");
+            }
+#endif
+          }
+#if defined(__APPLE__)
+          if (REXCVAR_GET(metal_capture_diag_shim)) {
+            RexMetalCaptureDiagMark("before-stop-tiny");
+            RexMetalCaptureDiagStop(capture_path.c_str());
+            RexMetalCaptureDiagMark("after-stop-tiny");
+          } else
+#endif
+          {
+            if (capture_manager->isCapturing()) {
+              capture_manager->stopCapture();
+            }
+          }
+          std::error_code ec;
+          const bool output_exists = std::filesystem::exists(capture_path, ec);
+          const auto stopped_size =
+              output_exists ? ComputePathBytes(std::filesystem::path(capture_path))
+                            : uintmax_t(0);
+          AppendCaptureEvent(
+              "[metal-capture] stopped(tiny) path=%s seq=%llu tiny_cmd=%d exists=%d final_size=%llu ec=%d",
+              capture_path.c_str(),
+              static_cast<unsigned long long>(paint_sequence),
+              tiny_cmd_committed ? 1 : 0, output_exists ? 1 : 0,
+              static_cast<unsigned long long>(stopped_size),
+              ec ? ec.value() : 0);
+          fprintf(stderr,
+                  "[metal-capture] tiny sanity capture done path=%s seq=%llu cmd=%d size=%llu\n",
+                  capture_path.c_str(),
+                  static_cast<unsigned long long>(paint_sequence),
+                  tiny_cmd_committed ? 1 : 0,
+                  static_cast<unsigned long long>(stopped_size));
+          REXCVAR_SET(metal_capture_tiny_sanity, false);
+          REXCVAR_SET(metal_capture_to_file, false);
+          REXCVAR_SET(metal_capture_copy_scope_once, false);
+          REXCVAR_SET(metal_capture_copy_scope_to_file, false);
+        } else {
+        const int32_t requested_frames =
+            std::max(1, REXCVAR_GET(metal_capture_to_file_frames));
+        const int32_t minimum_frames =
+            std::max(1, REXCVAR_GET(metal_capture_to_file_min_frames));
+        file_capture_active_ = true;
+        file_capture_stop_pending_ = false;
+        file_capture_frames_remaining_ = std::max(requested_frames, minimum_frames);
+        file_capture_max_bytes_ =
+            static_cast<uint64_t>(
+                std::max(1, REXCVAR_GET(metal_capture_to_file_max_mb))) *
+            1024ull * 1024ull;
+        file_capture_start_us_ = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+        file_capture_path_ = capture_path;
+        fprintf(stderr,
+                "[metal-capture] started file capture path=%s frames=%d seq=%llu\n",
+                file_capture_path_.c_str(), file_capture_frames_remaining_,
+                static_cast<unsigned long long>(paint_sequence));
+        AppendCaptureEvent(
+            "[metal-capture] started path=%s frames=%d seq=%llu object=%s dst=%s max_mb=%d max_ms=%d",
+            file_capture_path_.c_str(), file_capture_frames_remaining_,
+            static_cast<unsigned long long>(paint_sequence),
+            use_scope_capture ? "scope"
+                              : (use_queue_capture ? "queue" : "device"),
+            use_devtools ? "tools" : "gputrace",
+            std::max(1, REXCVAR_GET(metal_capture_to_file_max_mb)),
+            std::max(1, REXCVAR_GET(metal_capture_to_file_max_ms)));
+        // Consume one-shot triggers immediately so failed/fallback state changes
+        // don't auto-rearm capture and create runaway large traces.
+        REXCVAR_SET(metal_capture_to_file, false);
+        REXCVAR_SET(metal_capture_copy_scope_once, false);
+        REXCVAR_SET(metal_capture_copy_scope_to_file, false);
+        }
+      } else {
+        fprintf(stderr, "[metal-capture] start failed path=%s\n",
+                capture_path.c_str());
+        REXCVAR_SET(metal_capture_to_file, false);
+        REXCVAR_SET(metal_capture_copy_scope_once, false);
+        REXCVAR_SET(metal_capture_tiny_sanity, false);
+      }
+    }
+  }
   constexpr size_t kProbePointCount = 5;
   auto make_probe_points = [](uint32_t w, uint32_t h)
       -> std::array<std::pair<uint32_t, uint32_t>, kProbePointCount> {
@@ -634,8 +1194,38 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
     }
   }
 
-  MTL4::CommandBuffer* cmd = mtl4_->BeginCommandBuffer();
-  if (!cmd) { pool->drain(); return PaintResult::kNotPresented; }
+  const bool capture_to_file_requested =
+      file_capture_active_ || REXCVAR_GET(metal_capture_to_file);
+  const bool capture_with_scope_object =
+      capture_to_file_requested &&
+      REXCVAR_GET(metal_capture_to_file_use_scope) && presenter_capture_scope_;
+  const bool use_capture_scope =
+      REXCVAR_GET(metal_present_capture_scope) && presenter_capture_scope_ &&
+      (!capture_to_file_requested || capture_with_scope_object);
+  if (use_capture_scope && !presenter_capture_scope_active_) {
+    presenter_capture_scope_->beginScope();
+    presenter_capture_scope_active_ = true;
+  }
+
+#if defined(__APPLE__)
+  if (REXCVAR_GET(metal_capture_diag_shim) && file_capture_active_) {
+    RexMetalCaptureDiagMark("before-command-buffer-create");
+  }
+#endif
+  MTL4::CommandBuffer* cmd = mtl4_->BeginPresenterCommandBuffer();
+#if defined(__APPLE__)
+  if (REXCVAR_GET(metal_capture_diag_shim) && file_capture_active_) {
+    RexMetalCaptureDiagMark("after-command-buffer-create");
+  }
+#endif
+  if (!cmd) {
+    if (presenter_capture_scope_active_) {
+      presenter_capture_scope_->endScope();
+      presenter_capture_scope_active_ = false;
+    }
+    pool->drain();
+    return PaintResult::kNotPresented;
+  }
   MTL4::ArgumentTable* paint_vertex_arg_table = nullptr;
   MTL4::ArgumentTable* paint_fragment_arg_table = nullptr;
   auto release_paint_tables = [&]() {
@@ -825,14 +1415,121 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(
         });
   }
   mtl4_->WaitDrawable(drawable);
+#if defined(__APPLE__)
+  if (REXCVAR_GET(metal_capture_diag_shim) && file_capture_active_) {
+    RexMetalCaptureDiagMark("before-command-buffer-commit");
+  }
+#endif
   if (paint_commit_options) {
     mtl4_->Commit(cmd, paint_commit_options);
     paint_commit_options->release();
   } else {
     mtl4_->Commit(cmd);
   }
+#if defined(__APPLE__)
+  if (REXCVAR_GET(metal_capture_diag_shim) && file_capture_active_) {
+    RexMetalCaptureDiagMark("after-command-buffer-commit");
+  }
+#endif
   mtl4_->SignalDrawable(drawable);
   drawable->present();
+  if (file_capture_active_) {
+    const uint64_t now_us = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    const uint64_t elapsed_us =
+        file_capture_start_us_ ? (now_us - file_capture_start_us_) : 0;
+    const uint64_t elapsed_ms = elapsed_us / 1000ull;
+    const uint64_t capture_bytes =
+        file_capture_path_.empty()
+            ? 0
+            : ComputePathBytes(std::filesystem::path(file_capture_path_));
+    const uint64_t max_ms =
+        static_cast<uint64_t>(std::max(1, REXCVAR_GET(metal_capture_to_file_max_ms)));
+    bool did_stop_watchdog = false;
+    if (!file_capture_stop_pending_ &&
+        ((file_capture_max_bytes_ && capture_bytes >= file_capture_max_bytes_) ||
+         elapsed_ms >= max_ms)) {
+#if defined(__APPLE__)
+      if (REXCVAR_GET(metal_capture_diag_shim)) {
+        RexMetalCaptureDiagMark("before-stop-watchdog");
+        RexMetalCaptureDiagStop(file_capture_path_.c_str());
+        RexMetalCaptureDiagMark("after-stop-watchdog");
+      } else
+#endif
+      {
+        MTL::CaptureManager* capture_manager =
+            MTL::CaptureManager::sharedCaptureManager();
+        if (capture_manager && capture_manager->isCapturing()) {
+          capture_manager->stopCapture();
+        }
+      }
+      std::error_code ec;
+      const bool output_exists = std::filesystem::exists(file_capture_path_, ec);
+      const auto stopped_size =
+          output_exists ? ComputePathBytes(std::filesystem::path(file_capture_path_))
+                        : uintmax_t(0);
+      AppendCaptureEvent(
+          "[metal-capture] stopped(watchdog) path=%s seq=%llu bytes=%llu "
+          "limit=%llu elapsed_ms=%llu max_ms=%llu exists=%d final_size=%llu ec=%d",
+          file_capture_path_.c_str(),
+          static_cast<unsigned long long>(paint_sequence),
+          static_cast<unsigned long long>(capture_bytes),
+          static_cast<unsigned long long>(file_capture_max_bytes_),
+          static_cast<unsigned long long>(elapsed_ms),
+          static_cast<unsigned long long>(max_ms),
+          output_exists ? 1 : 0,
+          static_cast<unsigned long long>(stopped_size),
+          ec ? ec.value() : 0);
+      file_capture_active_ = false;
+      file_capture_stop_pending_ = false;
+      file_capture_frames_remaining_ = 0;
+      file_capture_max_bytes_ = 0;
+      file_capture_start_us_ = 0;
+      file_capture_path_.clear();
+      did_stop_watchdog = true;
+    }
+    if (!did_stop_watchdog && !file_capture_stop_pending_ &&
+        --file_capture_frames_remaining_ <= 0) {
+#if defined(__APPLE__)
+      if (REXCVAR_GET(metal_capture_diag_shim)) {
+        RexMetalCaptureDiagMark("before-stop-frame-limit");
+        RexMetalCaptureDiagStop(file_capture_path_.c_str());
+        RexMetalCaptureDiagMark("after-stop-frame-limit");
+      } else
+#endif
+      {
+        MTL::CaptureManager* capture_manager =
+            MTL::CaptureManager::sharedCaptureManager();
+        if (capture_manager && capture_manager->isCapturing()) {
+          capture_manager->stopCapture();
+        }
+      }
+      std::error_code ec;
+      const bool output_exists = std::filesystem::exists(file_capture_path_, ec);
+      const auto stopped_size =
+          output_exists ? ComputePathBytes(std::filesystem::path(file_capture_path_))
+                        : uintmax_t(0);
+      AppendCaptureEvent(
+          "[metal-capture] stopped(frame-limit) path=%s seq=%llu exists=%d "
+          "final_size=%llu ec=%d",
+          file_capture_path_.c_str(),
+          static_cast<unsigned long long>(paint_sequence),
+          output_exists ? 1 : 0,
+          static_cast<unsigned long long>(stopped_size), ec ? ec.value() : 0);
+      file_capture_active_ = false;
+      file_capture_stop_pending_ = false;
+      file_capture_frames_remaining_ = 0;
+      file_capture_max_bytes_ = 0;
+      file_capture_start_us_ = 0;
+      file_capture_path_.clear();
+    }
+  }
+  if (presenter_capture_scope_active_) {
+    presenter_capture_scope_->endScope();
+    presenter_capture_scope_active_ = false;
+  }
   if (drawable_probe_buffer) {
     drawable_probe_buffer->release();
     drawable_probe_buffer = nullptr;

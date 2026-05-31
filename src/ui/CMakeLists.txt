@@ -61,6 +61,16 @@ if(REXGLUE_USE_METAL)
         metal/provider.cpp
         metal/presenter.cpp
     )
+    if(APPLE)
+        list(APPEND REXUI_METAL_SOURCES
+            metal/capture_diag.mm
+        )
+        set_source_files_properties(
+            metal/capture_diag.mm
+            PROPERTIES
+                COMPILE_OPTIONS "-fobjc-arc"
+        )
+    endif()
 endif()
 
 # Platform-specific sources
@@ -192,5 +202,4 @@ if(REXGLUE_USE_D3D12)
         dxc-headers
     )
 endif()
-
 

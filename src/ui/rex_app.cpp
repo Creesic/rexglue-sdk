@@ -51,6 +51,13 @@
 
 namespace rex {
 
+REXCVAR_DEFINE_BOOL(
+    metal_capture_hotkey_enabled, true, "GPU",
+    "Press 1 to trigger one-shot Metal capture-to-file at runtime");
+REXCVAR_DEFINE_BOOL(
+    metal_capture_hotkey_require_ctrl, false, "GPU",
+    "Require Ctrl+1 (instead of just 1) to trigger Metal capture hotkey");
+
 // --- ReXApp ---
 
 ReXApp::~ReXApp() = default;
@@ -399,6 +406,45 @@ std::function<void(PathConfig)> ReXApp::MakeResumeCallback() {
 
 void ReXApp::OnKeyDown(ui::KeyEvent& e) {
   rex::ui::ProcessKeyEvent(e);
+  if (e.is_handled()) {
+    return;
+  }
+#if REX_HAS_METAL
+  const bool ctrl_required = REXCVAR_GET(metal_capture_hotkey_require_ctrl);
+  const bool trigger_hotkey =
+      REXCVAR_GET(metal_capture_hotkey_enabled) &&
+      e.virtual_key() == ui::VirtualKey::k1 && !e.prev_state() &&
+      (!ctrl_required || e.is_ctrl_pressed());
+  if (trigger_hotkey) {
+    const bool set_to_file = rex::cvar::SetFlagByName("metal_capture_to_file", "true");
+    // Force deterministic minimal capture settings at trigger time so the run
+    // doesn't depend on whichever fm2.toml Xcode happened to load.
+    rex::cvar::SetFlagByName("metal_capture_to_developer_tools", "false");
+    rex::cvar::SetFlagByName("metal_capture_to_file_use_scope", "false");
+    rex::cvar::SetFlagByName("metal_capture_to_file_use_queue", "false");
+    rex::cvar::SetFlagByName("metal_capture_to_file_min_frames", "1");
+    rex::cvar::SetFlagByName("metal_capture_to_file_max_mb", "128");
+    rex::cvar::SetFlagByName("metal_capture_to_file_max_ms", "200");
+    rex::cvar::SetFlagByName(
+        "metal_capture_to_file_path",
+        "/Users/tera/Documents/GitHub/rexglue-sdk/MTL/rex-present-capture.gputrace");
+    // Keep hotkey capture to a single present for minimal trace size.
+    rex::cvar::SetFlagByName("metal_capture_to_file_frames", "1");
+    std::string capture_path = rex::cvar::GetFlagByName("metal_capture_to_file_path");
+    if (capture_path.empty()) {
+      capture_path =
+          "/Users/tera/Documents/GitHub/rexglue-sdk/MTL/rex-present-capture.gputrace";
+    }
+    std::fprintf(stderr,
+                 "[metal-capture] hotkey trigger key=1 ctrl=%d ok_to_file=%d "
+                 "path=%s\n",
+                 e.is_ctrl_pressed() ? 1 : 0, set_to_file ? 1 : 0,
+                 capture_path.c_str());
+    std::fflush(stderr);
+    e.set_handled(true);
+    return;
+  }
+#endif
 }
 
 void ReXApp::OnClosing(ui::UIEvent& e) {
