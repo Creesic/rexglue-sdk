@@ -3629,6 +3629,12 @@ MetalCommandProcessor::CreateStandaloneTransferCommandBuffer(
   return mtl4_->BeginStandaloneCommandBuffer();
 }
 
+void MetalCommandProcessor::DiscardStandaloneTransferCommandBuffer(
+    MTL4::CommandBuffer* cmd) {
+  if (!cmd || !mtl4_) return;
+  mtl4_->DiscardStandaloneCommandBuffer(cmd);
+}
+
 void MetalCommandProcessor::CommitStandaloneAsync(MTL4::CommandBuffer* cmd) {
   if (!cmd || !mtl4_) return;
   mtl4_->CommitStandaloneAsync(cmd);

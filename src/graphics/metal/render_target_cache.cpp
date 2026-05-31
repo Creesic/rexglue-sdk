@@ -733,7 +733,7 @@ bool MetalRenderTargetCache::Initialize() {
         blit->endEncoding();
         command_processor_.CommitStandaloneAsync(cmd);
       } else {
-        cmd->release();
+        command_processor_.DiscardStandaloneTransferCommandBuffer(cmd);
       }
     }
   }
@@ -1973,7 +1973,7 @@ void MetalRenderTargetCache::RestoreEdramSnapshot(const void* snapshot) {
 
   MTL4::ComputeCommandEncoder* blit = cmd->computeCommandEncoder();
   if (!blit) {
-    cmd->release();
+    command_processor_.DiscardStandaloneTransferCommandBuffer(cmd);
     staging->release();
     return;
   }
@@ -2777,7 +2777,7 @@ void MetalRenderTargetCache::DumpRenderTargets(
   if (!encoder) {
     REXLOG_ERROR("MetalRenderTargetCache::DumpRenderTargets: no compute encoder");
     if (standalone) {
-      cmd->release();
+      command_processor_.DiscardStandaloneTransferCommandBuffer(cmd);
     }
     return;
   }
@@ -2887,7 +2887,8 @@ void MetalRenderTargetCache::DumpRenderTargets(
               fflush(stderr);
               ++dump_source_probe_log_count;
             } else {
-              probe_cmd->release();
+              command_processor_.GetMetal4Context()->DiscardStandaloneCommandBuffer(
+                  probe_cmd);
             }
           }
           probe_buffer->release();
@@ -3467,7 +3468,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
             fflush(stderr);
             ++edram_probe_log_count;
           } else {
-            probe_cmd->release();
+            debug_mtl4->DiscardStandaloneCommandBuffer(probe_cmd);
           }
         }
         probe_buffer->release();
@@ -3698,7 +3699,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                   "MetalRenderTargetCache::Resolve: failed to get compute "
                   "encoder for GPU path");
               if (standalone) {
-                cmd->release();
+                command_processor_.DiscardStandaloneTransferCommandBuffer(cmd);
               }
             } else {
               encoder->setComputePipelineState(pipeline);
@@ -3852,9 +3853,11 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
   }
 
   MTL4::CommandBuffer* cmd = command_buffer;
+  bool standalone_cmd = false;
   if (!cmd) {
     cmd = command_processor_.CreateStandaloneTransferCommandBuffer(
         "XeniaCB reason=rt-transfer");
+    standalone_cmd = (cmd != nullptr);
   } else {
     command_processor_.EndRenderEncoder();
   }
@@ -5802,6 +5805,13 @@ void MetalRenderTargetCache::PerformTransfersAndResolveClears(
     if (transfer_encoder) {
       transfer_encoder->endEncoding();
     }
+  }
+
+  if (standalone_cmd && cmd) {
+    // Always close standalone transfer command buffers in this path; leaving
+    // one open keeps the standalone allocator busy and causes the next
+    // BeginStandaloneCommandBuffer to assert in Xcode's GPU Commands thread.
+    command_processor_.CommitStandaloneAndWait(cmd);
   }
 }
 

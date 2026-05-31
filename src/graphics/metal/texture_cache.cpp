@@ -521,7 +521,15 @@ void MetalTextureCache::EndUploadCommandBufferBatch() {
     return;
   }
   if (!has_work) {
-    cmd->release();
+    // Even an "empty" standalone command buffer must be closed through the
+    // MTL4 commit path; releasing it directly can leave the standalone
+    // allocator appearing busy and trigger BeginCommandBuffer validation
+    // asserts on the next standalone begin.
+    if (command_processor_) {
+      command_processor_->CommitStandaloneAsync(cmd);
+    } else {
+      cmd->release();
+    }
     return;
   }
   if (command_processor_) {
@@ -540,7 +548,13 @@ void MetalTextureCache::AbortUploadCommandBufferBatch(bool commit_if_has_work) {
     return;
   }
   if (!has_work || !commit_if_has_work) {
-    cmd->release();
+    // Close standalone command buffers via commit path to avoid allocator-open
+    // assertions in subsequent standalone submissions.
+    if (command_processor_) {
+      command_processor_->CommitStandaloneAsync(cmd);
+    } else {
+      cmd->release();
+    }
     return;
   }
   if (command_processor_) {
@@ -1132,7 +1146,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       AbortUploadCommandBufferBatch();
     }
     if (standalone_cmd) {
-      cmd->release();
+      command_processor_->DiscardStandaloneTransferCommandBuffer(cmd);
     }
   };
 
@@ -1505,7 +1519,8 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
                     (pb[0] | pb[1] | pb[2] | pb[3]) != 0;
               }
             } else {
-              probe_cmd->release();
+              command_processor_->DiscardStandaloneTransferCommandBuffer(
+                  probe_cmd);
             }
           }
           probe_buffer->release();
@@ -2932,7 +2947,7 @@ MTL::Texture* MetalTextureCache::RequestSwapTexture(
               }
               return view;
             }
-            raw_cmd->release();
+            command_processor_->DiscardStandaloneTransferCommandBuffer(raw_cmd);
           }
           raw_buffer->release();
         }
@@ -3517,7 +3532,7 @@ bool MetalTextureCache::EnsureScaledResolveBufferRange(uint64_t start_scaled,
     MTL4::ComputeCommandEncoder* blit = cmd->computeCommandEncoder();
     if (!blit) {
       if (standalone) {
-        cmd->release();
+        command_processor_->DiscardStandaloneTransferCommandBuffer(cmd);
       }
       new_buffer->release();
       return false;

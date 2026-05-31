@@ -184,6 +184,12 @@ MTL4::CommandBuffer* Metal4Context::BeginStandaloneCommandBuffer() {
   return cmd;
 }
 
+void Metal4Context::DiscardStandaloneCommandBuffer(MTL4::CommandBuffer* cmd) {
+  if (!cmd) return;
+  cmd->endCommandBuffer();
+  cmd->release();
+}
+
 void Metal4Context::CommitStandaloneAsync(MTL4::CommandBuffer* cmd) {
   if (!cmd) return;
   cmd->endCommandBuffer();
