@@ -382,7 +382,7 @@ void RepairTrackLoaderR31(PPCContext& ctx) {
     RepairTrackLoaderR31(ctx);            \
   }
 
-extern "C" REX_FUNC(sub_8247D7A8) {
+extern "C" REX_FUNC(FH1_workqueue_slot_teardown) {
   REX_FUNC_PROLOGUE();
   fh1_load_gate_dispatch_wait(0x8247D7A8u);
 
@@ -450,7 +450,7 @@ extern "C" REX_FUNC(sub_8247D7A8) {
 
 #if defined(_MSC_VER)
   __try {
-    __imp__sub_8247D7A8(ctx, base);
+    __imp__FH1_workqueue_slot_teardown(ctx, base);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     static std::atomic<uint32_t> av_log{0};
     if (av_log.fetch_add(1, std::memory_order_relaxed) < 8) {
@@ -462,7 +462,7 @@ extern "C" REX_FUNC(sub_8247D7A8) {
     StoreGuestU32(memory, obj + 16, 0);
   }
 #else
-  __imp__sub_8247D7A8(ctx, base);
+  __imp__FH1_workqueue_slot_teardown(ctx, base);
 #endif
 
   RepairTrackLoaderR31(ctx);
@@ -499,7 +499,7 @@ FH1_IMP_WRAPPER(sub_825D0640, 0x825D0640u)
 FH1_IMP_WRAPPER(sub_82553BC0, 0x82553BC0u)
 FH1_IMP_WRAPPER(sub_82570C98, 0x82570C98u)
 
-extern "C" REX_FUNC(sub_8255AE10) {
+extern "C" REX_FUNC(FH1_streaming_thread_entry) {
   REX_FUNC_PROLOGUE();
   uint32_t ea{};
 
@@ -543,7 +543,7 @@ extern "C" REX_FUNC(sub_8255AE10) {
       // Native stw r3,-4060(r31) then bl 824843E8 with the object in r3.
       ctx.r3.u64 = allocated;
       ctx.lr = 0x8255AE48;
-      sub_824843E8(ctx, base);
+      FH1_streaming_obj_init(ctx, base);
     }
   }
 
@@ -563,7 +563,7 @@ extern "C" REX_FUNC(sub_8255AE10) {
   ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + -4060);
   g_track_loader_worker_ok = false;
   RestoreTrackLoaderRegs(ctx, ctx.r3.u32);
-  sub_823ED888(ctx, base);
+  FH1_streaming_loop(ctx, base);
 
   if (!g_track_loader_worker_ok) {
     static std::atomic<bool> logged{false};
@@ -589,7 +589,7 @@ extern "C" REX_FUNC(sub_8255AE10) {
   FinishSub8255AE10(ctx, entry_r1, entry_lr, entry_r31);
 }
 
-extern "C" REX_FUNC(sub_823ED888) {
+extern "C" REX_FUNC(FH1_streaming_loop) {
   REX_FUNC_PROLOGUE();
   fh1_load_gate_dispatch_wait(0x823ED888u);
 
@@ -637,7 +637,7 @@ extern "C" REX_FUNC(sub_823ED888) {
     return;
   }
 
-  __imp__sub_823ED888(ctx, base);
+  __imp__FH1_streaming_loop(ctx, base);
 
   RepairTrackLoaderR31(ctx);
   g_track_loader_worker_ok = true;

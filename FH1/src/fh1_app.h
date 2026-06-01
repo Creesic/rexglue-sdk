@@ -8,6 +8,7 @@
 
 #include <rex/cvar.h>
 #include <rex/graphics/flags.h>
+#include <rex/input/flags.h>
 #include <rex/rex_app.h>
 
 class Fh1App : public rex::ReXApp {
@@ -24,6 +25,8 @@ class Fh1App : public rex::ReXApp {
     (void)config;
     // FH1 vertex shaders reference unbound vfetch slot 90; allow draws through.
     REXCVAR_SET(gpu_allow_invalid_fetch_constants, true);
+    // Keyboard/mouse -> Xbox 360 controller (WASD, Space, mouse look, etc.).
+    REXCVAR_SET(mnk_mode, true);
   }
 
   void OnConfigurePaths(rex::PathConfig& paths) override {

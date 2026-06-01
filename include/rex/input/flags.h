@@ -13,6 +13,7 @@
 #include <rex/cvar.h>
 
 // Input/HID configuration flags
+REXCVAR_DECLARE(bool, mnk_mode);
 REXCVAR_DECLARE(bool, guide_button);
 REXCVAR_DECLARE(std::string, hid_mappings_file);
 REXCVAR_DECLARE(std::string, input_backend);

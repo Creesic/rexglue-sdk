@@ -492,7 +492,7 @@ void DispatchWorkQueueOrRetry(PPCContext& ctx, uint8_t* base) {
 
   // No __try/__except: sub_830ED910 KeSet longjmp reenters inside this call
   // tree; MSVC reports SEH code=0 or 0xC0000028 if an outer __try wraps it.
-  __imp__sub_82C0BC88(ctx, base);
+  __imp__FH1_workqueue_dispatch(ctx, base);
 }
 
 void PollWorkQueueOrRetry(PPCContext& ctx, uint8_t* base) {
@@ -521,7 +521,7 @@ void PollWorkQueueOrRetry(PPCContext& ctx, uint8_t* base) {
   }
 
   // No __try/__except: fiber KeSet longjmp must not cross SEH frames (0xC0000028).
-  __imp__sub_82C0BDC8(ctx, base);
+  __imp__FH1_workqueue_dispatch_wait(ctx, base);
 }
 
 uint32_t ActiveWorkQueueSnapshot() {
@@ -546,20 +546,20 @@ void StashWorkQueue(uint32_t queue) {
 
 }  // namespace fh1::workqueue
 
-extern "C" REX_FUNC(sub_82C0BC88) {
+extern "C" REX_FUNC(FH1_workqueue_dispatch) {
   REX_FUNC_PROLOGUE();
   fh1_load_gate_dispatch_wait(0x82C0BC88u);
   DispatchWorkQueueOrRetry(ctx, base);
 }
 
-extern "C" REX_FUNC(sub_82C0BDC8) {
+extern "C" REX_FUNC(FH1_workqueue_dispatch_wait) {
   REX_FUNC_PROLOGUE();
   fh1_load_gate_dispatch_wait(0x82C0BDC8u);
   fh1::fiber::ReconcileFiberFrameStack(ctx);
   PollWorkQueueOrRetry(ctx, base);
 }
 
-extern "C" REX_FUNC(sub_82C0BEC8) {
+extern "C" REX_FUNC(FH1_workqueue_worker_main) {
   REX_FUNC_PROLOGUE();
   fh1_load_gate_dispatch_wait(0x82C0BEC8u);
 
@@ -577,7 +577,7 @@ extern "C" REX_FUNC(sub_82C0BEC8) {
   }
   ctx.r3.u32 = queue;
 
-  __imp__sub_82C0BEC8(ctx, base);
+  __imp__FH1_workqueue_worker_main(ctx, base);
 }
 
 extern "C" REX_FUNC(sub_82C013E0) {

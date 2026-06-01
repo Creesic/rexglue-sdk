@@ -65,6 +65,17 @@ struct ManifestConfig {
    * failure.
    */
   static bool WriteSdkVersionStamp(const std::filesystem::path& path, std::string_view version);
+
+  /**
+   * Expand wiki-style stub directives (REX_STUB, REX_STUB_RETURN, PPC_* aliases)
+   * into valid TOML [functions] entries before parsing.
+   */
+  static std::string PreprocessTomlDirectives(std::string_view content);
+
+  /**
+   * Parse a TOML file after PreprocessTomlDirectives. Returns nullopt on I/O or parse failure.
+   */
+  static std::optional<toml::table> ParseTomlFilePreprocessed(const std::filesystem::path& path);
 };
 
 }  // namespace rex::codegen

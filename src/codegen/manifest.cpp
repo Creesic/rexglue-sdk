@@ -15,11 +15,14 @@
 #include <cctype>
 #include <fstream>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <toml++/toml.hpp>
 
+#include <fmt/format.h>
 #include <rex/logging.h>
 #include <rex/system/guest_path.h>
 
@@ -68,16 +71,169 @@ bool LoadBinaryConfig(const toml::table& tbl, const std::filesystem::path& base_
   return true;
 }
 
-}  // namespace
-
-std::optional<ManifestConfig> ManifestConfig::Load(const std::filesystem::path& path) {
-  toml::table tbl;
-  try {
-    tbl = toml::parse_file(path.string());
-  } catch (const toml::parse_error& err) {
-    REXLOG_ERROR("Failed to parse manifest {}: {}", path.string(), err.what());
+std::optional<uint32_t> ParseStubSymbolAddress(std::string_view symbol) {
+  if (!symbol.starts_with("sub_")) {
     return std::nullopt;
   }
+  symbol.remove_prefix(4);
+  if (symbol.starts_with("0x") || symbol.starts_with("0X")) {
+    symbol.remove_prefix(2);
+  }
+  if (symbol.empty()) {
+    return std::nullopt;
+  }
+  try {
+    return static_cast<uint32_t>(std::stoul(std::string(symbol), nullptr, 16));
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+std::string_view TrimLine(std::string_view line) {
+  while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
+    line.remove_prefix(1);
+  }
+  while (!line.empty() && (line.back() == ' ' || line.back() == '\t' || line.back() == '\r')) {
+    line.remove_suffix(1);
+  }
+  return line;
+}
+
+bool StartsWithDirective(std::string_view line, std::string_view directive) {
+  return line.size() >= directive.size() && line.substr(0, directive.size()) == directive;
+}
+
+std::optional<std::string> ExpandStubDirectiveLine(std::string_view line) {
+  const auto hash = line.find('#');
+  const std::string_view code = TrimLine(line.substr(0, hash));
+  const std::string_view comment = hash == std::string_view::npos ? std::string_view{} : line.substr(hash);
+
+  auto emit = [&](uint32_t address, std::optional<int64_t> stub_return) -> std::string {
+    std::string out;
+    if (stub_return.has_value()) {
+      out = fmt::format("0x{:08X} = {{ stub = true, stub_return = {} }}", address, *stub_return);
+    } else {
+      out = fmt::format("0x{:08X} = {{ stub = true }}", address);
+    }
+    if (!comment.empty()) {
+      if (!comment.empty() && comment.front() != ' ') {
+        out += ' ';
+      }
+      out += comment;
+    }
+    return out;
+  };
+
+  auto parse_call = [&](std::string_view prefix, bool with_return) -> std::optional<std::string> {
+    if (!StartsWithDirective(code, prefix) || code.back() != ')') {
+      return std::nullopt;
+    }
+    std::string_view args = code.substr(prefix.size(), code.size() - prefix.size() - 1);
+    args = TrimLine(args);
+    if (!with_return) {
+      if (auto addr = ParseStubSymbolAddress(args)) {
+        return emit(*addr, std::nullopt);
+      }
+      return std::nullopt;
+    }
+    const auto comma = args.find(',');
+    if (comma == std::string_view::npos) {
+      return std::nullopt;
+    }
+    const auto symbol = TrimLine(args.substr(0, comma));
+    const auto value_text = TrimLine(args.substr(comma + 1));
+    if (value_text.empty()) {
+      return std::nullopt;
+    }
+    int64_t value = 0;
+    try {
+      if (value_text.starts_with("0x") || value_text.starts_with("0X")) {
+        value = static_cast<int64_t>(std::stoll(std::string(value_text.substr(2)), nullptr, 16));
+      } else {
+        value = std::stoll(std::string(value_text), nullptr, 0);
+      }
+    } catch (...) {
+      return std::nullopt;
+    }
+    if (auto addr = ParseStubSymbolAddress(symbol)) {
+      return emit(*addr, value);
+    }
+    return std::nullopt;
+  };
+
+  if (auto expanded = parse_call("REX_STUB_RETURN(", true)) {
+    return expanded;
+  }
+  if (auto expanded = parse_call("PPC_STUB_RETURN(", true)) {
+    return expanded;
+  }
+  if (auto expanded = parse_call("REX_STUB(", false)) {
+    return expanded;
+  }
+  if (auto expanded = parse_call("PPC_STUB(", false)) {
+    return expanded;
+  }
+  return std::nullopt;
+}
+
+std::string PreprocessTomlContent(std::string_view content) {
+  std::ostringstream out;
+  size_t start = 0;
+  bool first = true;
+  while (start <= content.size()) {
+    const size_t end = content.find('\n', start);
+    const size_t line_end = end == std::string_view::npos ? content.size() : end;
+    const std::string_view line = content.substr(start, line_end - start);
+    if (!first) {
+      out << '\n';
+    }
+    first = false;
+    if (auto expanded = ExpandStubDirectiveLine(line)) {
+      out << *expanded;
+    } else {
+      out << line;
+    }
+    if (end == std::string_view::npos) {
+      break;
+    }
+    start = end + 1;
+  }
+  if (!content.empty() && content.back() == '\n') {
+    out << '\n';
+  }
+  return out.str();
+}
+
+}  // namespace
+
+std::string ManifestConfig::PreprocessTomlDirectives(std::string_view content) {
+  return PreprocessTomlContent(content);
+}
+
+std::optional<toml::table> ManifestConfig::ParseTomlFilePreprocessed(
+    const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    REXLOG_ERROR("Failed to open TOML file: {}", path.string());
+    return std::nullopt;
+  }
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const std::string processed = PreprocessTomlDirectives(ss.str());
+  try {
+    return toml::parse(processed, path.string());
+  } catch (const toml::parse_error& err) {
+    REXLOG_ERROR("Failed to parse {}: {}", path.string(), err.what());
+    return std::nullopt;
+  }
+}
+
+std::optional<ManifestConfig> ManifestConfig::Load(const std::filesystem::path& path) {
+  auto parsed = ParseTomlFilePreprocessed(path);
+  if (!parsed) {
+    return std::nullopt;
+  }
+  const toml::table& tbl = *parsed;
 
   ManifestConfig manifest;
   manifest.manifestDir = path.parent_path();
@@ -116,6 +272,14 @@ std::optional<ManifestConfig> ManifestConfig::Load(const std::filesystem::path& 
     return std::nullopt;
   }
 
+  if (auto* functions = tbl["functions"].as_table(); functions && !functions->empty()) {
+    toml::table overlay;
+    overlay.insert("functions", *functions);
+    if (!manifest.entrypoint.recompiler.LoadFromTable(overlay, manifest.manifestDir)) {
+      return std::nullopt;
+    }
+  }
+
   if (auto modules = tbl["modules"].as_array()) {
     size_t index = 0;
     for (const auto& mod : *modules) {
@@ -150,12 +314,8 @@ std::optional<ManifestConfig> ManifestConfig::Load(const std::filesystem::path& 
 }
 
 bool ManifestConfig::IsManifest(const std::filesystem::path& path) {
-  try {
-    auto tbl = toml::parse_file(path.string());
-    return tbl.contains("project");
-  } catch (const toml::parse_error&) {
-    return false;
-  }
+  auto tbl = ParseTomlFilePreprocessed(path);
+  return tbl.has_value() && tbl->contains("project");
 }
 
 namespace {

@@ -17,8 +17,8 @@ namespace {
 
 constexpr uint32_t kEd910PostKeSetResumeLr = 0x830ED900u;
 constexpr uint32_t kFiberPollJobEntry = 0x82C0BEC8u;
-constexpr uint32_t kWorldLoadWorkerEntry = 0x823ED888u;
-constexpr uint32_t kTrackLoaderObjectSlot = 0x830DF024u;
+// streaming_loop on the 256KB Game Thread (8255AE10); not a BC88 fiber callback.
+constexpr uint32_t kStreamingLoopEntry = 0x823ED888u;
 constexpr uint32_t kTrackLoaderObjectBytes = 712u;
 constexpr uint32_t kGuestHeapLo = 0x40000000u;
 constexpr uint32_t kGuestHeapHi = 0x50000000u;
@@ -67,34 +67,12 @@ bool IsReadableTrackLoaderObject(rex::memory::Memory* memory, uint32_t object) {
   return object != 0 && GuestRangeReadable(memory, object, kTrackLoaderObjectBytes);
 }
 
-uint32_t LoadGlobalTrackLoaderObject(rex::memory::Memory* memory) {
-  if (!GuestRangeReadable(memory, kTrackLoaderObjectSlot, 4)) {
-    return 0;
-  }
-  return LoadGuestU32(memory, kTrackLoaderObjectSlot);
-}
-
-uint32_t ResolveTrackLoaderWorkerObject(rex::memory::Memory* memory, uint32_t hint) {
-  if (IsReadableTrackLoaderObject(memory, hint)) {
-    return hint;
-  }
-  if (IsReadableTrackLoaderObject(memory, g_pending_fiber_job_object)) {
-    return g_pending_fiber_job_object;
-  }
-  const uint32_t global = LoadGlobalTrackLoaderObject(memory);
-  if (IsReadableTrackLoaderObject(memory, global)) {
-    return global;
-  }
-  return 0;
-}
-
 uint32_t InferJobFnFromFiberContext288(rex::memory::Memory* memory, uint32_t ctx288) {
   if (IsPlausibleGuestCodePointer(ctx288)) {
     return ctx288;
   }
   // job_ctx+288 may hold a saved r31 track-loader object, not a code pointer.
-  // Do not map heap objects to sub_823ED888 — 8255AE10 runs that worker after
-  // 824843E8 publish; premature fiber dispatch AVs in sub_82492C90 (object+4).
+  // streaming_loop (823ED888) runs on the Game Thread only — never infer it here.
   if (ctx288 >= kGuestHeapLo && ctx288 < kGuestHeapHi &&
       IsReadableTrackLoaderObject(memory, ctx288)) {
     g_pending_fiber_job_object = ctx288;
@@ -162,13 +140,23 @@ void RegisterFh1GuestPcFiberConfig() {
         if (pc != kEd910PostKeSetResumeLr) {
           return rex::ppc::GuestPcRunResult::UnknownPc;
         }
-        if (!IsPlausibleGuestCodePointer(static_cast<uint32_t>(ctx.r31.u64))) {
+        const uint32_t job_fn = static_cast<uint32_t>(ctx.r31.u64);
+        if (job_fn == kStreamingLoopEntry) {
+          static std::atomic<uint32_t> defer_log{0};
+          if (defer_log.fetch_add(1, std::memory_order_relaxed) < 12) {
+            REXSYS_WARN(
+                "FH1 guest-PC fiber: defer streaming_loop (0x823ED888) on fiber "
+                "stack sp=0x{:08X}; runs on Game Thread only",
+                static_cast<uint32_t>(ctx.r1.u64));
+          }
+          return rex::ppc::GuestPcRunResult::Complete;
+        }
+        if (!IsPlausibleGuestCodePointer(job_fn)) {
           static std::atomic<uint32_t> bad_log{0};
           if (bad_log.fetch_add(1, std::memory_order_relaxed) < 12) {
             REXSYS_WARN(
                 "FH1 guest-PC fiber: skip EBEA0 (invalid r31=0x{:08X}) sp=0x{:08X}",
-                static_cast<uint32_t>(ctx.r31.u64),
-                static_cast<uint32_t>(ctx.r1.u64));
+                job_fn, static_cast<uint32_t>(ctx.r1.u64));
           }
           return rex::ppc::GuestPcRunResult::Complete;
         }
@@ -181,7 +169,7 @@ void RegisterFh1GuestPcFiberConfig() {
         }
 
         ctx.r3.u64 = ctx.r31.u64;
-        __imp__sub_830EBEA0(ctx, base);
+        __imp__FH1_fiber_job_dispatch(ctx, base);
         return rex::ppc::GuestPcRunResult::Complete;
       };
 
@@ -258,17 +246,8 @@ void RegisterFh1GuestPcFiberConfig() {
       }
     }
 
-    if (job_fn == kWorldLoadWorkerEntry) {
-      const uint32_t object = ResolveTrackLoaderWorkerObject(memory, from_ctx);
-      if (object != 0) {
-        return object;
-      }
-      if (ctx_block != 0 && GuestRangeReadable(memory, ctx_block + 288, 4)) {
-        const uint32_t from288 = LoadGuestU32(memory, ctx_block + 288);
-        if (IsReadableTrackLoaderObject(memory, from288)) {
-          return from288;
-        }
-      }
+    if (job_fn == kStreamingLoopEntry) {
+      return 0;
     }
 
     return from_ctx;

@@ -1,5 +1,5 @@
 [project]
-sdk_version = "0.8.1.5"
+sdk_version = "0.8.1.7"
 name = "fh1"
 game_root = "D:/Emulation/Games_Xbox_360/ForzaHorizon/ForzaHorizon"
 
@@ -67,15 +67,6 @@ includes = [
 0x824705e0 = {}
 0x82467B18 = {}
 0x823e66a8 = {}
-
-
-# === STUBS (codegen emits return stub automatically) ===
-0x8310C340 = { stub = true }  # null game object deref
-0x82C14580 = { stub = true }  # vtable dispatch on null object
-0x8247C720 = { stub = true, stub_return = 0 }  # vtable dispatch on corrupted object at *(this+600)
-# sub_82C0BC88: guarded in FH1/src/fh1_workqueue_dispatch.cpp (do NOT stub_return=1)
-
-# === Missing callback dispatch targets (discovered at runtime) ===
 0x8249D410 = {}  # callback dispatch target
 0x8249CA20 = {}  # callback dispatch target
 0x8247A5C8 = {}  # callback dispatch target
@@ -84,3 +75,24 @@ includes = [
 0x831411E8 = {}  # callback dispatch target (ctr from sub_83144ED8)
 0x8257D340 = {}  # vtable entry (indirect call target, inside sub_8257D2C0 gap)
 0x8257D4B0 = {}  # vtable dispatch stub (indirect call target)
+
+# Streaming / loading (IDA 2026-05-31)
+0x8255AE80 = { name = "FH1_streaming_thread_create" }
+0x8255AE10 = { name = "FH1_streaming_thread_entry" }
+0x824843E8 = { name = "FH1_streaming_obj_init" }
+0x823ED888 = { name = "FH1_streaming_loop" }
+0x8240AC00 = { name = "FH1_heap_alloc" }
+
+# Work-queue / fiber (C++ overrides in FH1/src/*)
+0x82C0BC88 = { name = "FH1_workqueue_dispatch" }
+0x82C0BDC8 = { name = "FH1_workqueue_dispatch_wait" }
+0x82C0BEC8 = { name = "FH1_workqueue_worker_main" }
+0x82C0C578 = { name = "FH1_workqueue_worker_create" }
+0x8247D7A8 = { name = "FH1_workqueue_slot_teardown" }
+0x830EBEA0 = { name = "FH1_fiber_job_dispatch" }
+
+# === STUBS (codegen emits return stub automatically) ===
+REX_STUB(sub_0x8310C340)
+REX_STUB(sub_0x82C14580)
+REX_STUB_RETURN(sub_0x8247C720, 0)
+

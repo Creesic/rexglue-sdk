@@ -197,6 +197,42 @@ TEST_CASE("CanonicalizeModuleGuestPath: device prefix", "[codegen][manifest][can
   CHECK(CanonicalizeModuleGuestPath("d:\\bin\\foo.dll") == "bin/foo.dll");
 }
 
+TEST_CASE("Manifest: preprocess REX_STUB directives", "[codegen][manifest]") {
+  using rex::codegen::ManifestConfig;
+  const std::string raw = R"(
+[functions]
+REX_STUB(sub_0x8310C340)
+REX_STUB_RETURN(sub_0x8247C720, 0)
+REX_STUB(sub_82C0BC88) # do NOT stub_return=1
+)";
+  const std::string processed = ManifestConfig::PreprocessTomlDirectives(raw);
+  CHECK(processed.find("0x8310C340 = { stub = true }") != std::string::npos);
+  CHECK(processed.find("0x8247C720 = { stub = true, stub_return = 0 }") != std::string::npos);
+  CHECK(processed.find("0x82C0BC88 = { stub = true }") != std::string::npos);
+  CHECK(processed.find("# do NOT stub_return=1") != std::string::npos);
+}
+
+TEST_CASE("Manifest: parse manifest with REX_STUB directives", "[codegen][manifest]") {
+  TempDir tmp;
+  tmp.writeFile("manifest.toml", R"(
+[project]
+name = "fh1"
+
+[entrypoint]
+file_path = "assets/default.xex"
+out_directory_path = "generated"
+includes = []
+
+[functions]
+REX_STUB(sub_8310C340)
+)");
+  auto result = rex::codegen::ManifestConfig::Load(tmp.path / "manifest.toml");
+  REQUIRE(result.has_value());
+  const auto it = result->entrypoint.recompiler.functions.find(0x8310C340u);
+  REQUIRE(it != result->entrypoint.recompiler.functions.end());
+  CHECK(it->second.stub);
+}
+
 TEST_CASE("CanonicalizeModuleGuestPath: case + slashes", "[codegen][canonicalize]") {
   using rex::codegen::CanonicalizeModuleGuestPath;
   CHECK(CanonicalizeModuleGuestPath("BIN\\Foo.DLL") == "bin/foo.dll");

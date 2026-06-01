@@ -93,6 +93,8 @@
         "CMAKE_CXX_FLAGS": "-mssse3 --target=x86_64-pc-windows-msvc -march=x86-64-v3",
         "CMAKE_C_FLAGS": "-mssse3 --target=x86_64-pc-windows-msvc -march=x86-64-v3",
         "CMAKE_PREFIX_PATH": "${sourceDir}/../out/install/win-amd64",
+        "CMAKE_EXE_LINKER_FLAGS": "/LIBPATH:\"C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.51.36231/lib/x64\"",
+        "CMAKE_SHARED_LINKER_FLAGS": "/LIBPATH:\"C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.51.36231/lib/x64\"",
         "REXSDK_DIR": "${sourceDir}/.."
       },
       "hidden": true,

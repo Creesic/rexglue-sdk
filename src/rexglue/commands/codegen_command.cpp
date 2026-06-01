@@ -288,11 +288,11 @@ Result<void> CodegenFromConfig(const std::string& config_path, const CliContext&
   REXLOG_TRACE("Generating code with config: {}", config_path);
 
   toml::table parsed_tbl;
-  try {
-    parsed_tbl = toml::parse_file(config_path);
-  } catch (const toml::parse_error& err) {
+  if (auto parsed = rex::codegen::ManifestConfig::ParseTomlFilePreprocessed(config_path)) {
+    parsed_tbl = std::move(*parsed);
+  } else {
     return Err<void>(rex::ErrorCategory::Config,
-                     fmt::format("Failed to parse {}: {}", config_path, err.what()));
+                     fmt::format("Failed to parse {}", config_path));
   }
 
   std::vector<OverwriteEntry> pre_plan;

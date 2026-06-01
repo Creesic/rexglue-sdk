@@ -37,7 +37,7 @@ bool GuestRangeReadable(rex::memory::Memory* memory, uint32_t guest_address,
 
 uint32_t CallGuestAlloc(PPCContext& ctx, uint8_t* base, uint32_t size) {
   ctx.r3.u64 = size;
-  sub_8240AC00(ctx, base);
+  FH1_heap_alloc(ctx, base);
   return ctx.r3.u32;
 }
 
