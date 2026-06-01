@@ -74,7 +74,7 @@ struct AudioVoicesLayoutState {
   float window_height = 0.0f;
   bool normalize_volume_panel = false;
   std::unordered_set<uint32_t> muted_contexts;
-  std::unordered_set<uint32_t> tracked_volume_contexts;
+  std::vector<uint32_t> tracked_volume_contexts;
   std::unordered_map<uint32_t, std::string> context_names;
   std::unordered_map<uint32_t, float> context_volumes;
 };
@@ -131,7 +131,8 @@ class AudioVoicesDialog : public ImGuiDialog {
   std::unordered_map<uint32_t, float> meter_last_volume_levels_;
   std::unordered_map<uint32_t, std::string> context_names_;
   std::unordered_map<uint32_t, float> persisted_context_volumes_;
-  std::unordered_set<uint32_t> tracked_volume_contexts_;
+  std::vector<uint32_t> tracked_volume_contexts_;
+  std::unordered_set<uint32_t> known_contexts_;
   std::unordered_set<uint32_t> drag_mute_applied_contexts_;
   std::unordered_set<uint32_t> persisted_muted_contexts_;
   bool drag_mute_active_ = false;

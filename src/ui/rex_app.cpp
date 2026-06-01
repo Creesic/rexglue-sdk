@@ -128,6 +128,26 @@ void ParseUintList(const std::string& value, std::unordered_set<uint32_t>& out_v
   }
 }
 
+void ParseUintList(const std::string& value, std::vector<uint32_t>& out_values) {
+  std::stringstream ss(value);
+  std::string token;
+  while (std::getline(ss, token, ',')) {
+    token = TrimCopy(token);
+    if (token.empty()) {
+      continue;
+    }
+    char* end = nullptr;
+    const unsigned long parsed = std::strtoul(token.c_str(), &end, 10);
+    if (!end || *end != '\0') {
+      continue;
+    }
+    const uint32_t parsed_value = static_cast<uint32_t>(parsed);
+    if (std::find(out_values.begin(), out_values.end(), parsed_value) == out_values.end()) {
+      out_values.push_back(parsed_value);
+    }
+  }
+}
+
 std::string JoinUintList(const std::unordered_set<uint32_t>& values) {
   std::vector<uint32_t> sorted(values.begin(), values.end());
   std::sort(sorted.begin(), sorted.end());
@@ -137,6 +157,19 @@ std::string JoinUintList(const std::unordered_set<uint32_t>& values) {
       joined.push_back(',');
     }
     joined += std::to_string(sorted[i]);
+  }
+  return joined;
+}
+
+std::string JoinUintList(const std::vector<uint32_t>& values) {
+  std::string joined;
+  bool first = true;
+  for (uint32_t value : values) {
+    if (!first) {
+      joined.push_back(',');
+    }
+    first = false;
+    joined += std::to_string(value);
   }
   return joined;
 }

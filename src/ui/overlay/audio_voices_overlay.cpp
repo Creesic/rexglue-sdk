@@ -35,6 +35,14 @@ float DbfsToNormalized(float dbfs) {
   return std::clamp((dbfs - kMeterFloorDbfs) / -kMeterFloorDbfs, 0.0f, 1.0f);
 }
 
+bool ContainsContext(const std::vector<uint32_t>& contexts, uint32_t context_id) {
+  return std::find(contexts.begin(), contexts.end(), context_id) != contexts.end();
+}
+
+void EraseContext(std::vector<uint32_t>& contexts, uint32_t context_id) {
+  contexts.erase(std::remove(contexts.begin(), contexts.end(), context_id), contexts.end());
+}
+
 }  // namespace
 
 AudioVoicesDialog::AudioVoicesDialog(ImGuiDrawer* imgui_drawer, SnapshotProvider snapshot_provider,
@@ -82,6 +90,18 @@ void AudioVoicesDialog::LoadLayoutStateOnce() {
   tracked_volume_contexts_ = std::move(loaded->tracked_volume_contexts);
   context_names_ = std::move(loaded->context_names);
   persisted_context_volumes_ = std::move(loaded->context_volumes);
+  for (uint32_t context_id : tracked_volume_contexts_) {
+    known_contexts_.insert(context_id);
+  }
+  for (const auto& [context_id, _] : context_names_) {
+    known_contexts_.insert(context_id);
+  }
+  for (const auto& [context_id, _] : persisted_context_volumes_) {
+    known_contexts_.insert(context_id);
+  }
+  for (uint32_t context_id : persisted_muted_contexts_) {
+    known_contexts_.insert(context_id);
+  }
   pending_apply_mute_layout_ = true;
   layout_dirty_ = false;
 }
@@ -199,18 +219,25 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
   visible_contexts.reserve(snapshot.xma_contexts.size());
   for (const auto& ctx : snapshot.xma_contexts) {
     if (ctx.allocated) {
+      known_contexts_.insert(ctx.index);
+    }
+    if (ctx.allocated || known_contexts_.find(ctx.index) != known_contexts_.end()) {
       visible_contexts.push_back(&ctx);
     }
   }
-  for (auto it = tracked_volume_contexts_.begin(); it != tracked_volume_contexts_.end();) {
-    if (*it >= snapshot.xma_contexts.size()) {
-      meter_db_levels_.erase(*it);
-      meter_max_db_levels_.erase(*it);
-      it = tracked_volume_contexts_.erase(it);
-    } else {
-      ++it;
-    }
-  }
+  tracked_volume_contexts_.erase(
+      std::remove_if(tracked_volume_contexts_.begin(), tracked_volume_contexts_.end(),
+                     [&](uint32_t context_index) {
+                       if (context_index >= snapshot.xma_contexts.size()) {
+                         meter_db_levels_.erase(context_index);
+                         meter_max_db_levels_.erase(context_index);
+                         meter_last_volume_levels_.erase(context_index);
+                         persisted_context_volumes_.erase(context_index);
+                         return true;
+                       }
+                       return false;
+                     }),
+      tracked_volume_contexts_.end());
 
   const float row_height = ImGui::GetTextLineHeightWithSpacing();
   const float grid_width = std::min(
@@ -384,8 +411,7 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
       std::string& context_name = context_names_[detail->index];
       char name_buf[64] = {};
       std::snprintf(name_buf, sizeof(name_buf), "%s", context_name.c_str());
-      const bool tracked_in_volume = tracked_volume_contexts_.find(detail->index) !=
-                                     tracked_volume_contexts_.end();
+      const bool tracked_in_volume = ContainsContext(tracked_volume_contexts_, detail->index);
       const ImGuiStyle& ui_style = ImGui::GetStyle();
       const float arrow_button_width = ImGui::GetFrameHeight();
       ImGui::PushItemWidth(-arrow_button_width - ui_style.ItemInnerSpacing.x);
@@ -397,11 +423,11 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
       ImGui::SameLine(0.0f, ui_style.ItemInnerSpacing.x);
       if (!tracked_in_volume) {
         if (ImGui::Button("->", ImVec2(arrow_button_width, 0.0f))) {
-          tracked_volume_contexts_.insert(detail->index);
+          tracked_volume_contexts_.push_back(detail->index);
           layout_dirty_ = true;
         }
       } else if (ImGui::Button("x", ImVec2(arrow_button_width, 0.0f))) {
-        tracked_volume_contexts_.erase(detail->index);
+        EraseContext(tracked_volume_contexts_, detail->index);
         layout_dirty_ = true;
       }
       ImGui::EndTable();
@@ -439,9 +465,6 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
         continue;
       }
       const auto& ctx = snapshot.xma_contexts[context_index];
-      if (!ctx.allocated) {
-        continue;
-      }
       const auto name_it = context_names_.find(ctx.index);
       VolumeRow row;
       row.index = ctx.index;
@@ -450,6 +473,9 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
         row.label = name_it->second + " (0x" + fmt::format("{:03X}", ctx.index) + ")";
       } else {
         row.label = "0x" + fmt::format("{:03X}", ctx.index);
+      }
+      if (!ctx.allocated) {
+        row.label += " [inactive]";
       }
       auto persisted_volume_it = persisted_context_volumes_.find(ctx.index);
       if (persisted_volume_it == persisted_context_volumes_.end()) {
@@ -478,8 +504,8 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
       if (persisted_volume_it != persisted_context_volumes_.end()) {
         voice_volume = std::clamp(persisted_volume_it->second, kVoiceVolumeMin, kVoiceVolumeMax);
       }
-      const float effective_rms = std::clamp(ctx.rms_level * voice_volume, 0.0f, 1.0f);
-      const float current_db = std::max(kMeterFloorDbfs, LinearToDbfs(effective_rms));
+      const float raw_rms = std::clamp(ctx.rms_level, 0.0f, 1.0f);
+      const float current_db = std::max(kMeterFloorDbfs, LinearToDbfs(raw_rms));
       const auto prev_it = meter_db_levels_.find(ctx.index);
       float shown_db = current_db;
       const float prev_volume = meter_last_volume_levels_[ctx.index];
@@ -517,13 +543,13 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
             bar_min, ImVec2(fill_end_x, bar_max.y), ImGui::GetColorU32(ImGuiCol_PlotHistogram),
             ui_style.FrameRounding);
       }
+      const float filled_width = std::max(0.0f, fill_end_x - bar_min.x);
+      const float limited_end_x = std::clamp(bar_min.x + filled_width * voice_volume, bar_min.x, bar_max.x);
+      ImGui::GetWindowDrawList()->AddLine(
+          ImVec2(limited_end_x, bar_min.y + 1.0f), ImVec2(limited_end_x, bar_max.y - 1.0f),
+          ImGui::GetColorU32(ImVec4(1.0f, 0.92f, 0.35f, 0.95f)), 2.0f);
       const float slider_x = bar_min.x + (bar_max.x - bar_min.x) * voice_volume;
       const float slider_x_clamped = std::clamp(slider_x, bar_min.x, bar_max.x);
-      if (voice_volume < 0.999f) {
-        ImGui::GetWindowDrawList()->AddRectFilled(
-            ImVec2(slider_x_clamped, bar_min.y), bar_max, ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.28f)),
-            ui_style.FrameRounding);
-      }
       ImGui::GetWindowDrawList()->AddLine(
           ImVec2(slider_x_clamped, bar_min.y), ImVec2(slider_x_clamped, bar_max.y),
           ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.85f)), 1.8f);
