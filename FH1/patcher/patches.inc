@@ -693,6 +693,166 @@ constexpr Patch g_patches[] = {
         "\t}",
 },
 
+// =========================================================================
+// XMem fallback: stw r27,6(r0) uses absolute EA 6 (null-page probe), not
+// host base+6. XMedia physical alloc failure path (sub_830ED008 returned 0).
+// =========================================================================
+{
+    .id       = "xmem-abs6",
+    .file     = "fh1_recomp.73.cpp",
+    .function = "sub_82CC1B10",
+    .marker   = "fh1_xmem_stw_abs6_guard_",
+    .match =
+        "\t// stw r27,6(0)\n"
+        "\tREX_STORE_U32(6, ctx.r27.u32);",
+    .with =
+        "\t// stw r27,6(0) — absolute guest EA 6; skip (REX_STORE would use base+6).\n"
+        "\t{\n"
+        "\t\tstatic std::atomic<uint32_t> fh1_xmem_stw_abs6_guard_{0};\n"
+        "\t\tconst auto _n = fh1_xmem_stw_abs6_guard_.fetch_add(1, std::memory_order_relaxed);\n"
+        "\t\tif (_n < 12) {\n"
+        "\t\t\tREXLOG_WARN(\"[fh1-patch] sub_82CC1B10: XPhysicalAlloc fallback null; skip stw to guest addr 6 (size=0x{:08X}). count={}\", ctx.r27.u32, _n + 1);\n"
+        "\t\t}\n"
+        "\t}",
+},
+
+// =========================================================================
+// GameManager_Init: lwz r3,dword_834B36A8@l(r28) after sub_82C84E78
+// r28 (lis dword_834B36A8@ha) clobbered by callees on work-queue fiber path.
+// =========================================================================
+{
+    .id       = "gamemgr-r28-profile-end",
+    .file     = "fh1_recomp.11.cpp",
+    .function = "sub_8251E560",
+    .marker   = "fh1_gamemgr_r28_profile_end_",
+    .match =
+        "\t// bl 0x82c84e78\n"
+        "\tctx.lr = 0x8251E730;\n"
+        "\tsub_82C84E78(ctx, base);\n"
+        "\t// mr r4,r29\n"
+        "\tctx.r4.u64 = ctx.r29.u64;\n"
+        "\t// lwz r3,13992(r28)\n"
+        "\tctx.r3.u64 = REX_LOAD_U32(ctx.r28.u32 + 13992);",
+    .with =
+        "\t// bl 0x82c84e78\n"
+        "\tctx.lr = 0x8251E730;\n"
+        "\tsub_82C84E78(ctx, base);\n"
+        "\t// mr r4,r29\n"
+        "\tctx.r4.u64 = ctx.r29.u64;\n"
+        "\t// lwz r3,dword_834B36A8@l(r28) — absolute global; r28 NV clobbered.\n"
+        "\tctx.r3.u64 = REX_LOAD_U32(0x834B36A8u);",
+},
+
+{
+    .id       = "gamemgr-r28-profile-fpu1",
+    .file     = "fh1_recomp.11.cpp",
+    .function = "sub_8251E560",
+    .marker   = "fh1_gamemgr_r28_profile_fpu1_",
+    .match =
+        "\tctx.lr = 0x8251E830;\n"
+        "\tsub_82C0C668(ctx, base);\n"
+        "\t// lis r11,-32256\n"
+        "\tctx.r11.s64 = -2113929216;\n"
+        "\t// lwz r3,13992(r28)\n"
+        "\tctx.r3.u64 = REX_LOAD_U32(ctx.r28.u32 + 13992);",
+    .with =
+        "\tctx.lr = 0x8251E830;\n"
+        "\tsub_82C0C668(ctx, base);\n"
+        "\t// lis r11,-32256\n"
+        "\tctx.r11.s64 = -2113929216;\n"
+        "\t// lwz r3,dword_834B36A8@l(r28) — absolute global; r28 NV clobbered.\n"
+        "\tctx.r3.u64 = REX_LOAD_U32(0x834B36A8u);",
+},
+
+{
+    .id       = "gamemgr-r28-profile-fpu2",
+    .file     = "fh1_recomp.11.cpp",
+    .function = "sub_8251E560",
+    .marker   = "fh1_gamemgr_r28_profile_fpu2_",
+    .match =
+        "\tctx.lr = 0x8251E86C;\n"
+        "\tsub_82C0C668(ctx, base);\n"
+        "\t// lwz r3,13992(r28)\n"
+        "\tctx.r3.u64 = REX_LOAD_U32(ctx.r28.u32 + 13992);",
+    .with =
+        "\tctx.lr = 0x8251E86C;\n"
+        "\tsub_82C0C668(ctx, base);\n"
+        "\t// lwz r3,dword_834B36A8@l(r28) — absolute global; r28 NV clobbered.\n"
+        "\tctx.r3.u64 = REX_LOAD_U32(0x834B36A8u);",
+},
+
+// =========================================================================
+// sub_82482718: lwz r4,24872(r11) then lwz r11,0(r4) — global @83446128 null.
+// Streaming obj init path; skip vtable dispatch when manager pointer unset.
+// =========================================================================
+{
+    .id       = "streaming-null-mgr-83446128",
+    .file     = "fh1_recomp.6.cpp",
+    .function = "sub_82482718",
+    .marker   = "fh1_streaming_null_mgr_83446128_",
+    .match =
+        "\t// addi r5,r1,112\n"
+        "\tctx.r5.s64 = ctx.r1.s64 + 112;\n"
+        "\t// lwz r4,24872(r11)\n"
+        "\tctx.r4.u64 = REX_LOAD_U32(ctx.r11.u32 + 24872);\n"
+        "\t// addi r3,r1,80\n"
+        "\tctx.r3.s64 = ctx.r1.s64 + 80;\n"
+        "\t// lwz r11,0(r4)\n"
+        "\tctx.r11.u64 = REX_LOAD_U32(ctx.r4.u32 + 0);",
+    .with =
+        "\t// addi r5,r1,112\n"
+        "\tctx.r5.s64 = ctx.r1.s64 + 112;\n"
+        "\t// fh1_streaming_null_mgr_83446128_\n"
+        "\t// lwz r4,dword_83446128@l(r11)\n"
+        "\tctx.r4.u64 = REX_LOAD_U32(0x83446128u);\n"
+        "\t// addi r3,r1,80\n"
+        "\tctx.r3.s64 = ctx.r1.s64 + 80;\n"
+        "\t// cmplwi cr6,r4,0\n"
+        "\tctx.cr6.compare<uint32_t>(ctx.r4.u32, 0, ctx.xer);\n"
+        "\t// beq cr6,0x82482860\n"
+        "\tif (ctx.cr6.eq) goto loc_82482860;\n"
+        "\t// lwz r11,0(r4)\n"
+        "\tctx.r11.u64 = REX_LOAD_U32(ctx.r4.u32 + 0);",
+},
+
+// =========================================================================
+// sub_825109E8: null r3 (→ r20) from FH1_streaming_obj_init lwz r3,0(r3).
+// r31 byte 0 path (loc_82510B40) does lwz r11,0(r20) → guest addr 0 AV.
+// =========================================================================
+{
+    .id       = "streaming-null-r20-825109e8",
+    .file     = "fh1_recomp.11.cpp",
+    .function = "sub_825109E8",
+    .marker   = "fh1_sub_825109e8_null_r20_",
+    .match =
+        "\t// stwu r1,-624(r1)\n"
+        "\tea = -624 + ctx.r1.u32;\n"
+        "\tREX_STORE_U32(ea, ctx.r1.u32);\n"
+        "\tctx.r1.u32 = ea;\n"
+        "\t// mr r20,r3\n"
+        "\tctx.r20.u64 = ctx.r3.u64;\n"
+        "\t// mr r31,r4\n"
+        "\tctx.r31.u64 = ctx.r4.u64;\n"
+        "\t// addi r4,r1,80\n"
+        "\tctx.r4.s64 = ctx.r1.s64 + 80;",
+    .with =
+        "\t// stwu r1,-624(r1)\n"
+        "\tea = -624 + ctx.r1.u32;\n"
+        "\tREX_STORE_U32(ea, ctx.r1.u32);\n"
+        "\tctx.r1.u32 = ea;\n"
+        "\t// fh1_sub_825109e8_null_r20_\n"
+        "\t// mr r20,r3\n"
+        "\tctx.r20.u64 = ctx.r3.u64;\n"
+        "\t// mr r31,r4\n"
+        "\tctx.r31.u64 = ctx.r4.u64;\n"
+        "\t// cmplwi cr6,r20,0\n"
+        "\tctx.cr6.compare<uint32_t>(ctx.r20.u32, 0, ctx.xer);\n"
+        "\t// beq cr6,0x82510ddc\n"
+        "\tif (ctx.cr6.eq) goto loc_82510DDC;\n"
+        "\t// addi r4,r1,80\n"
+        "\tctx.r4.s64 = ctx.r1.s64 + 80;",
+},
+
 };  // g_patches
 
 }  // namespace

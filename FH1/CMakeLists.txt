@@ -44,6 +44,7 @@ set(FH1_SOURCES
     src/fh1_track_loader_alloc.cpp
     src/fh1_workqueue_dispatch.cpp
     src/fh1_world_load_guards.cpp
+    src/fh1_smart_ptr_release.cpp
     src/fh1_thread_start_guard.cpp
 )
 

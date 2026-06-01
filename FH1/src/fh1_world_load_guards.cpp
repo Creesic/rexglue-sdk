@@ -491,6 +491,26 @@ extern "C" REX_FUNC(sub_82A83480) {
 #endif
 }
 
+extern "C" REX_FUNC(sub_82518390) {
+  REX_FUNC_PROLOGUE();
+  fh1_load_gate_dispatch_wait(0x82518390u);
+
+  if (ctx.r3.u32 == 0) {
+    static std::atomic<uint32_t> skip_log{0};
+    if (skip_log.fetch_add(1, std::memory_order_relaxed) < 8) {
+      REXSYS_WARN(
+          "FH1 sub_82518390: null parent (8319D124 slot empty); skipping "
+          "TReference assign");
+    }
+    ctx.r3.u64 = 0;
+    RepairTrackLoaderR31(ctx);
+    return;
+  }
+
+  __imp__sub_82518390(ctx, base);
+  RepairTrackLoaderR31(ctx);
+}
+
 }  // namespace
 
 FH1_IMP_WRAPPER(sub_82C0C668, 0x82C0C668u)

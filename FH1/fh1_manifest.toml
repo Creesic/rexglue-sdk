@@ -1,5 +1,5 @@
 [project]
-sdk_version = "0.8.1.7"
+sdk_version = "0.8.1.8"
 name = "fh1"
 game_root = "D:/Emulation/Games_Xbox_360/ForzaHorizon/ForzaHorizon"
 
@@ -75,6 +75,7 @@ includes = [
 0x831411E8 = {}  # callback dispatch target (ctr from sub_83144ED8)
 0x8257D340 = {}  # vtable entry (indirect call target, inside sub_8257D2C0 gap)
 0x8257D4B0 = {}  # vtable dispatch stub (indirect call target)
+0x823fcca8 = {}
 
 # Streaming / loading (IDA 2026-05-31)
 0x8255AE80 = { name = "FH1_streaming_thread_create" }

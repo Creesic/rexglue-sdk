@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <fmt/format.h>
 #include <inja/inja.hpp>
@@ -149,21 +150,6 @@ bool CodegenWriter::write(bool force) {
   std::filesystem::path outputPath = ctx_.configDir() / config().outDirectoryPath;
   REXCODEGEN_TRACE("Output path: {}", outputPath.string());
   std::filesystem::create_directories(outputPath);
-
-  // --- Clean old generated files (from recompile.cpp) ---
-  std::string prefix = config().projectName + "_";
-  for (const auto& entry : std::filesystem::directory_iterator(outputPath)) {
-    auto ext = entry.path().extension();
-    if (ext == ".cpp" || ext == ".h" || ext == ".cmake") {
-      std::string filename = entry.path().filename().string();
-      if (filename == "sources.cmake" || filename.starts_with(prefix) ||
-          filename.starts_with("ppc_recomp") || filename.starts_with("ppc_func_mapping") ||
-          filename.starts_with("function_table_init") || filename.starts_with("ppc_config")) {
-        deletedFiles_.push_back(filename);
-        std::filesystem::remove(entry.path());
-      }
-    }
-  }
 
   // --- Everything below from recompiler.cpp recompile() ---
   REXCODEGEN_TRACE("Recompile: starting");
@@ -323,6 +309,27 @@ void CodegenWriter::FlushPendingWrites() {
     }
 
     writtenFiles_.push_back(filename);
+  }
+
+  // Remove stale generated files only after a successful write pass.
+  std::string prefix = config().projectName + "_";
+  std::unordered_set<std::string> kept(writtenFiles_.begin(), writtenFiles_.end());
+  for (const auto& entry : std::filesystem::directory_iterator(outputPath)) {
+    auto ext = entry.path().extension();
+    if (ext != ".cpp" && ext != ".h" && ext != ".cmake") {
+      continue;
+    }
+    std::string filename = entry.path().filename().string();
+    if (filename != "sources.cmake" && !filename.starts_with(prefix) &&
+        !filename.starts_with("ppc_recomp") && !filename.starts_with("ppc_func_mapping") &&
+        !filename.starts_with("function_table_init") && !filename.starts_with("ppc_config")) {
+      continue;
+    }
+    if (kept.contains(filename)) {
+      continue;
+    }
+    deletedFiles_.push_back(filename);
+    std::filesystem::remove(entry.path());
   }
 
   pendingWrites.clear();
