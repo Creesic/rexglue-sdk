@@ -18,6 +18,7 @@
 #include <rex/assert.h>
 #include <rex/audio/audio_system.h>
 #include <rex/audio/xma/decoder.h>
+#include <rex/cvar.h>
 #include <rex/kernel/xboxkrnl/private.h>
 #include <rex/logging.h>
 #include <rex/hook.h>
@@ -36,6 +37,9 @@ using rex::audio::XMA_CONTEXT_DATA;
 
 namespace {
 
+REXCVAR_DEFINE_BOOL(audio_xma_context_trace, false, "Audio",
+                    "Trace XMA context routing events with caller LR and buffer signature");
+
 struct XmaExportDiagWindow {
   uint64_t start_ms = 0;
   uint64_t enable_calls = 0;
@@ -50,6 +54,48 @@ struct XmaExportDiagWindow {
   uint32_t last_ib0_valid = 0;
   uint32_t last_ib1_valid = 0;
 };
+
+uint32_t GetXmaCallerAddress() {
+  uint32_t caller = 0;
+  auto* thread = rex::system::XThread::GetCurrentThread();
+  if (thread && thread->thread_state() && thread->thread_state()->context()) {
+    caller = static_cast<uint32_t>(thread->thread_state()->context()->lr);
+  }
+  return caller;
+}
+
+uint64_t HashCombine64(uint64_t hash, uint64_t value) {
+  hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+  return hash;
+}
+
+uint64_t BuildXmaContextSignature(const XMA_CONTEXT_DATA& context) {
+  uint64_t hash = 0xcbf29ce484222325ULL;
+  hash = HashCombine64(hash, static_cast<uint64_t>(context.output_buffer_ptr));
+  hash = HashCombine64(hash, static_cast<uint64_t>(context.input_buffer_0_ptr));
+  hash = HashCombine64(hash, static_cast<uint64_t>(context.input_buffer_1_ptr));
+  hash = HashCombine64(hash, static_cast<uint64_t>(context.sample_rate));
+  hash = HashCombine64(hash, static_cast<uint64_t>(context.is_stereo));
+  return hash;
+}
+
+void TraceXmaContextEvent(const char* event_tag, uint32_t context_ptr,
+                          const XMA_CONTEXT_DATA& context) {
+  if (!REXCVAR_GET(audio_xma_context_trace)) {
+    return;
+  }
+  const uint64_t signature = BuildXmaContextSignature(context);
+  const uint32_t caller = GetXmaCallerAddress();
+  REXKRNL_ERROR(
+      "XMA_CTX_TRACE ev={} lr={:08X} ctx={:08X} sig={:016X} out={:08X} in0={:08X} in1={:08X} "
+      "sr={} stereo={} ib0v={} ib1v={} ov={} roff={} woff={} loop={}",
+      event_tag, caller, context_ptr, signature, context.output_buffer_ptr, context.input_buffer_0_ptr,
+      context.input_buffer_1_ptr, static_cast<uint32_t>(context.sample_rate),
+      static_cast<uint32_t>(context.is_stereo), static_cast<uint32_t>(context.input_buffer_0_valid),
+      static_cast<uint32_t>(context.input_buffer_1_valid), static_cast<uint32_t>(context.output_buffer_valid),
+      static_cast<uint32_t>(context.output_buffer_read_offset),
+      static_cast<uint32_t>(context.output_buffer_write_offset), static_cast<uint32_t>(context.loop_count));
+}
 
 void LogXmaExportDiag(char tag, uint32_t context_ptr, const XMA_CONTEXT_DATA& context) {
   static XmaExportDiagWindow w;
@@ -258,6 +304,7 @@ u32 XMAInitializeContext_entry(mapped_void context_ptr, ppc_ptr_t<XMA_CONTEXT_IN
   context.loop_subframe_skip = context_init->loop_data.loop_subframe_skip;
 
   context.Store(context_ptr);
+  TraceXmaContextEvent("INIT", context_ptr.guest_address(), context);
 
   StoreXmaContextIndexedRegister(REX_KERNEL_STATE(), 0x1A80, context_ptr.guest_address());
 
@@ -308,6 +355,7 @@ u32 XMASetInputBuffer0_entry(mapped_void context_ptr, mapped_void buffer, u32 pa
   context.input_buffer_0_packet_count = packet_count;
 
   context.Store(context_ptr);
+  TraceXmaContextEvent("IN0", context_ptr.guest_address(), context);
 
   return 0;
 }
@@ -342,6 +390,7 @@ u32 XMASetInputBuffer1_entry(mapped_void context_ptr, mapped_void buffer, u32 pa
   context.input_buffer_1_packet_count = packet_count;
 
   context.Store(context_ptr);
+  TraceXmaContextEvent("IN1", context_ptr.guest_address(), context);
 
   return 0;
 }
@@ -407,6 +456,7 @@ u32 XMAEnableContext_entry(mapped_void context_ptr) {
   xma_gap_diag::TrackXmaThread();
   XMA_CONTEXT_DATA context(context_ptr);
   LogXmaExportDiag('E', context_ptr.guest_address(), context);
+  TraceXmaContextEvent("ENA", context_ptr.guest_address(), context);
   StoreXmaContextIndexedRegister(REX_KERNEL_STATE(), 0x1940, context_ptr.guest_address());
   return 0;
 }
@@ -415,6 +465,7 @@ u32 XMADisableContext_entry(mapped_void context_ptr, u32 wait) {
   xma_gap_diag::TrackXmaThread();
   XMA_CONTEXT_DATA context(context_ptr);
   LogXmaExportDiag('D', context_ptr.guest_address(), context);
+  TraceXmaContextEvent("DIS", context_ptr.guest_address(), context);
   // TEMP_DIAG V2: count decode service calls at the XMA disable boundary.
   xma_gap_diag_v2::IncXmaDecode();
   X_HRESULT result = X_E_SUCCESS;

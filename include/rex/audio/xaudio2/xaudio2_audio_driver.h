@@ -78,6 +78,7 @@ class XAudio2AudioDriver : public AudioDriver {
 
   uint32_t frame_frequency_ = 48000;
   uint32_t frame_channels_ = 6;
+  uint32_t output_channels_ = 6;
   uint32_t channel_samples_ = 256;
   uint32_t frame_size_ = sizeof(float) * 6 * 256;
   bool need_format_conversion_ = true;

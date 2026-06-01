@@ -148,6 +148,26 @@ void ParseUintList(const std::string& value, std::vector<uint32_t>& out_values) 
   }
 }
 
+void ParseUint64HexList(const std::string& value, std::unordered_set<uint64_t>& out_values) {
+  std::stringstream ss(value);
+  std::string token;
+  while (std::getline(ss, token, ',')) {
+    token = TrimCopy(token);
+    if (token.empty()) {
+      continue;
+    }
+    if (token.rfind("0x", 0) == 0 || token.rfind("0X", 0) == 0) {
+      token = token.substr(2);
+    }
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(token.c_str(), &end, 16);
+    if (!end || *end != '\0') {
+      continue;
+    }
+    out_values.insert(static_cast<uint64_t>(parsed));
+  }
+}
+
 std::string JoinUintList(const std::unordered_set<uint32_t>& values) {
   std::vector<uint32_t> sorted(values.begin(), values.end());
   std::sort(sorted.begin(), sorted.end());
@@ -157,6 +177,19 @@ std::string JoinUintList(const std::unordered_set<uint32_t>& values) {
       joined.push_back(',');
     }
     joined += std::to_string(sorted[i]);
+  }
+  return joined;
+}
+
+std::string JoinUint64HexList(const std::unordered_set<uint64_t>& values) {
+  std::vector<uint64_t> sorted(values.begin(), values.end());
+  std::sort(sorted.begin(), sorted.end());
+  std::string joined;
+  for (size_t i = 0; i < sorted.size(); ++i) {
+    if (i) {
+      joined.push_back(',');
+    }
+    joined += fmt::format("{:016X}", sorted[i]);
   }
   return joined;
 }
@@ -212,8 +245,14 @@ std::optional<ui::AudioVoicesLayoutState> LoadAudioVoicesLayoutState(
       state.has_window_size = true;
     } else if (key == "normalize_volume_panel") {
       state.normalize_volume_panel = value == "1" || value == "true";
+    } else if (key == "ignore_persisted_controls") {
+      state.ignore_persisted_controls = value == "1" || value == "true";
+    } else if (key == "show_playing_contexts_only") {
+      state.show_playing_contexts_only = value == "1" || value == "true";
     } else if (key == "muted_contexts") {
       ParseUintList(value, state.muted_contexts);
+    } else if (key == "muted_signatures") {
+      ParseUint64HexList(value, state.muted_signatures);
     } else if (key == "tracked_contexts") {
       ParseUintList(value, state.tracked_volume_contexts);
     } else if (key.rfind("name_", 0) == 0) {
@@ -256,7 +295,10 @@ void SaveAudioVoicesLayoutState(const std::filesystem::path& user_data_root, uin
   file << "window_width=" << state.window_width << "\n";
   file << "window_height=" << state.window_height << "\n";
   file << "normalize_volume_panel=" << (state.normalize_volume_panel ? "1" : "0") << "\n";
+  file << "ignore_persisted_controls=" << (state.ignore_persisted_controls ? "1" : "0") << "\n";
+  file << "show_playing_contexts_only=" << (state.show_playing_contexts_only ? "1" : "0") << "\n";
   file << "muted_contexts=" << JoinUintList(state.muted_contexts) << "\n";
+  file << "muted_signatures=" << JoinUint64HexList(state.muted_signatures) << "\n";
   file << "tracked_contexts=" << JoinUintList(state.tracked_volume_contexts) << "\n";
 
   std::vector<std::pair<uint32_t, std::string>> sorted_names(state.context_names.begin(),

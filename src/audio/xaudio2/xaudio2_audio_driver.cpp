@@ -10,6 +10,9 @@
  */
 
 #include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -18,6 +21,7 @@
 #include <rex/audio/flags.h>
 #include <rex/audio/xaudio2/xaudio2_audio_driver.h>
 #include <rex/chrono/clock.h>
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #if REX_PLATFORM_WIN32
@@ -27,6 +31,37 @@
 #endif
 
 namespace rex::audio::xaudio2 {
+
+REXCVAR_DEFINE_BOOL(audio_force_stereo_mix, true, "Audio",
+                    "Force XAudio2 output to stereo by downmixing 6-channel guest frames");
+REXCVAR_DEFINE_BOOL(audio_stereo_downmix_diag, false, "Audio",
+                    "Log pre-downmix 5.1 channel levels once per second when forcing stereo mix");
+REXCVAR_DEFINE_DOUBLE(audio_stereo_downmix_fl, 1.0, "Audio",
+                      "Stereo downmix coefficient for front-left channel");
+REXCVAR_DEFINE_DOUBLE(audio_stereo_downmix_fr, 1.0, "Audio",
+                      "Stereo downmix coefficient for front-right channel");
+REXCVAR_DEFINE_DOUBLE(audio_stereo_downmix_fc, 0.5, "Audio",
+                      "Stereo downmix coefficient for center channel (applied to L and R)");
+REXCVAR_DEFINE_DOUBLE(audio_stereo_downmix_bl, 1.0, "Audio",
+                      "Stereo downmix coefficient for back-left channel");
+REXCVAR_DEFINE_DOUBLE(audio_stereo_downmix_br, 1.0, "Audio",
+                      "Stereo downmix coefficient for back-right channel");
+REXCVAR_DEFINE_DOUBLE(audio_stereo_downmix_lfe, 0.0, "Audio",
+                      "Stereo downmix coefficient for LFE channel (applied to L and R)");
+REXCVAR_DEFINE_DOUBLE(audio_stereo_downmix_norm, 2.5, "Audio",
+                      "Stereo downmix normalization divisor (set <= 0 to disable normalization)");
+
+namespace {
+
+inline float LoadBigEndianFloat(const float* input, size_t index) {
+  const uint32_t raw_be = reinterpret_cast<const uint32_t*>(input)[index];
+  const uint32_t raw_le = rex::byte_swap(raw_be);
+  float value = 0.0f;
+  std::memcpy(&value, &raw_le, sizeof(value));
+  return value;
+}
+
+}  // namespace
 
 #if REX_PLATFORM_WIN32
 class XAudio2AudioDriver::VoiceCallback final : public IXAudio2VoiceCallback {
@@ -60,6 +95,11 @@ XAudio2AudioDriver::XAudio2AudioDriver(rex::memory::Memory* memory,
       frame_channels_(channels),
       need_format_conversion_(need_format_conversion) {
 #if REX_PLATFORM_WIN32
+  output_channels_ = frame_channels_;
+  if (need_format_conversion_ && frame_channels_ == 6 && REXCVAR_GET(audio_force_stereo_mix)) {
+    output_channels_ = 2;
+  }
+
   switch (frame_channels_) {
     case 6:
       channel_samples_ = 256;
@@ -71,8 +111,9 @@ XAudio2AudioDriver::XAudio2AudioDriver(rex::memory::Memory* memory,
       assert_unhandled_case(frame_channels_);
       break;
   }
-  frame_size_ = sizeof(float) * frame_channels_ * channel_samples_;
+  frame_size_ = sizeof(float) * output_channels_ * channel_samples_;
   assert_true(frame_channels_ == 2 || frame_channels_ == 6);
+  assert_true(output_channels_ == 2 || output_channels_ == 6);
   assert_true(frame_size_ <= sizeof(frames_[0]));
   assert_true(!need_format_conversion_ || frame_channels_ == 6);
 #endif
@@ -84,8 +125,8 @@ bool XAudio2AudioDriver::Initialize() {
 #if !REX_PLATFORM_WIN32
   return false;
 #else
-  REXAPU_INFO("XAudio2AudioDriver init: {} Hz, {} channels, frame_size={} bytes",
-              frame_frequency_, frame_channels_, frame_size_);
+  REXAPU_INFO("XAudio2AudioDriver init: {} Hz, in_ch={}, out_ch={}, frame_size={} bytes",
+              frame_frequency_, frame_channels_, output_channels_, frame_size_);
   voice_callback_ = new VoiceCallback(semaphore_);
 
   xaudio2_module_ = LoadLibraryW(L"XAudio2_9.dll");
@@ -136,6 +177,14 @@ void XAudio2AudioDriver::SubmitFrame(uint32_t frame_ptr) {
   (void)frame_ptr;
   return;
 #else
+  struct OutputDiagState {
+    std::array<double, 6> sum_abs{};
+    std::array<float, 6> peak_abs{};
+    uint64_t sample_frames = 0;
+    std::chrono::steady_clock::time_point window_start = std::chrono::steady_clock::now();
+  };
+  static OutputDiagState output_diag;
+
   if (!pcm_voice_) {
     return;
   }
@@ -150,9 +199,127 @@ void XAudio2AudioDriver::SubmitFrame(uint32_t frame_ptr) {
   const auto input_frame = memory_->TranslateVirtual<float*>(frame_ptr);
 
   if (need_format_conversion_) {
-    conversion::sequential_6_BE_to_interleaved_6_LE(output_frame, input_frame, channel_samples_);
+    if (output_channels_ == 2) {
+      struct DownmixInputDiagState {
+        std::array<double, 6> sum_abs{};
+        std::array<float, 6> peak_abs{};
+        uint64_t sample_frames = 0;
+        std::chrono::steady_clock::time_point window_start = std::chrono::steady_clock::now();
+      };
+      static DownmixInputDiagState downmix_input_diag;
+
+      const float w_fl = static_cast<float>(REXCVAR_GET(audio_stereo_downmix_fl));
+      const float w_fr = static_cast<float>(REXCVAR_GET(audio_stereo_downmix_fr));
+      const float w_fc = static_cast<float>(REXCVAR_GET(audio_stereo_downmix_fc));
+      const float w_bl = static_cast<float>(REXCVAR_GET(audio_stereo_downmix_bl));
+      const float w_br = static_cast<float>(REXCVAR_GET(audio_stereo_downmix_br));
+      const float w_lfe = static_cast<float>(REXCVAR_GET(audio_stereo_downmix_lfe));
+      const float norm = static_cast<float>(REXCVAR_GET(audio_stereo_downmix_norm));
+      const float inv_norm = norm > 0.0001f ? (1.0f / norm) : 1.0f;
+      const bool diag = REXCVAR_GET(audio_stereo_downmix_diag);
+
+      for (uint32_t s = 0; s < channel_samples_; ++s) {
+        const float fl = LoadBigEndianFloat(input_frame, 0 * channel_samples_ + s);
+        const float fr = LoadBigEndianFloat(input_frame, 1 * channel_samples_ + s);
+        const float fc = LoadBigEndianFloat(input_frame, 2 * channel_samples_ + s);
+        const float lfe = LoadBigEndianFloat(input_frame, 3 * channel_samples_ + s);
+        const float bl = LoadBigEndianFloat(input_frame, 4 * channel_samples_ + s);
+        const float br = LoadBigEndianFloat(input_frame, 5 * channel_samples_ + s);
+
+        if (diag) {
+          const float abs_fl = std::fabs(fl);
+          const float abs_fr = std::fabs(fr);
+          const float abs_fc = std::fabs(fc);
+          const float abs_lfe = std::fabs(lfe);
+          const float abs_bl = std::fabs(bl);
+          const float abs_br = std::fabs(br);
+          downmix_input_diag.sum_abs[0] += abs_fl;
+          downmix_input_diag.sum_abs[1] += abs_fr;
+          downmix_input_diag.sum_abs[2] += abs_fc;
+          downmix_input_diag.sum_abs[3] += abs_lfe;
+          downmix_input_diag.sum_abs[4] += abs_bl;
+          downmix_input_diag.sum_abs[5] += abs_br;
+          downmix_input_diag.peak_abs[0] = std::max(downmix_input_diag.peak_abs[0], abs_fl);
+          downmix_input_diag.peak_abs[1] = std::max(downmix_input_diag.peak_abs[1], abs_fr);
+          downmix_input_diag.peak_abs[2] = std::max(downmix_input_diag.peak_abs[2], abs_fc);
+          downmix_input_diag.peak_abs[3] = std::max(downmix_input_diag.peak_abs[3], abs_lfe);
+          downmix_input_diag.peak_abs[4] = std::max(downmix_input_diag.peak_abs[4], abs_bl);
+          downmix_input_diag.peak_abs[5] = std::max(downmix_input_diag.peak_abs[5], abs_br);
+        }
+
+        const float left_raw = (fl * w_fl) + (fc * w_fc) + (bl * w_bl) + (lfe * w_lfe);
+        const float right_raw = (fr * w_fr) + (fc * w_fc) + (br * w_br) + (lfe * w_lfe);
+        output_frame[s * 2 + 0] = left_raw * inv_norm;
+        output_frame[s * 2 + 1] = right_raw * inv_norm;
+      }
+
+      if (diag) {
+        downmix_input_diag.sample_frames += channel_samples_;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - downmix_input_diag.window_start >= std::chrono::seconds(1)) {
+          const double denom =
+              std::max<double>(1.0, static_cast<double>(downmix_input_diag.sample_frames));
+          REXAPU_ERROR(
+              "XAUDIO_DOWNMIX_IN_PERSEC avg_abs[FL={:.4f} FR={:.4f} FC={:.4f} LFE={:.4f} "
+              "BL={:.4f} BR={:.4f}] peak[FL={:.4f} FR={:.4f} FC={:.4f} LFE={:.4f} BL={:.4f} "
+              "BR={:.4f}] matrix[fl={:.3f} fr={:.3f} fc={:.3f} lfe={:.3f} bl={:.3f} br={:.3f}] "
+              "norm={:.3f} frames={}",
+              downmix_input_diag.sum_abs[0] / denom, downmix_input_diag.sum_abs[1] / denom,
+              downmix_input_diag.sum_abs[2] / denom, downmix_input_diag.sum_abs[3] / denom,
+              downmix_input_diag.sum_abs[4] / denom, downmix_input_diag.sum_abs[5] / denom,
+              downmix_input_diag.peak_abs[0], downmix_input_diag.peak_abs[1],
+              downmix_input_diag.peak_abs[2], downmix_input_diag.peak_abs[3],
+              downmix_input_diag.peak_abs[4], downmix_input_diag.peak_abs[5], w_fl, w_fr, w_fc,
+              w_lfe, w_bl, w_br, norm, downmix_input_diag.sample_frames);
+          downmix_input_diag.sum_abs.fill(0.0);
+          downmix_input_diag.peak_abs.fill(0.0f);
+          downmix_input_diag.sample_frames = 0;
+          downmix_input_diag.window_start = now;
+        }
+      }
+    } else {
+      conversion::sequential_6_BE_to_interleaved_6_LE(output_frame, input_frame, channel_samples_);
+    }
   } else {
     std::memcpy(output_frame, input_frame, frame_size_);
+  }
+
+  const uint32_t channels = std::min<uint32_t>(output_channels_, 6);
+  if (channels > 0) {
+    for (uint32_t s = 0; s < channel_samples_; ++s) {
+      for (uint32_t c = 0; c < channels; ++c) {
+        const float v = output_frame[s * channels + c];
+        const float abs_v = std::fabs(v);
+        output_diag.sum_abs[c] += abs_v;
+        output_diag.peak_abs[c] = std::max(output_diag.peak_abs[c], abs_v);
+      }
+    }
+    output_diag.sample_frames += channel_samples_;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - output_diag.window_start >= std::chrono::seconds(1)) {
+      const double denom = std::max<double>(1.0, static_cast<double>(output_diag.sample_frames));
+      if (channels == 2) {
+        REXAPU_ERROR(
+            "XAUDIO_OUT_PERSEC ch=2 avg_abs[L={:.4f} R={:.4f}] peak[L={:.4f} R={:.4f}] "
+            "frames={}",
+            output_diag.sum_abs[0] / denom, output_diag.sum_abs[1] / denom, output_diag.peak_abs[0],
+            output_diag.peak_abs[1], output_diag.sample_frames);
+      } else if (channels == 6) {
+        REXAPU_ERROR(
+            "XAUDIO_OUT_PERSEC ch=6 avg_abs[FL={:.4f} FR={:.4f} FC={:.4f} LFE={:.4f} BL={:.4f} "
+            "BR={:.4f}] peak[FL={:.4f} FR={:.4f} FC={:.4f} LFE={:.4f} BL={:.4f} BR={:.4f}] "
+            "frames={}",
+            output_diag.sum_abs[0] / denom, output_diag.sum_abs[1] / denom,
+            output_diag.sum_abs[2] / denom, output_diag.sum_abs[3] / denom,
+            output_diag.sum_abs[4] / denom, output_diag.sum_abs[5] / denom, output_diag.peak_abs[0],
+            output_diag.peak_abs[1], output_diag.peak_abs[2], output_diag.peak_abs[3],
+            output_diag.peak_abs[4], output_diag.peak_abs[5], output_diag.sample_frames);
+      }
+      output_diag.sum_abs.fill(0.0);
+      output_diag.peak_abs.fill(0.0f);
+      output_diag.sample_frames = 0;
+      output_diag.window_start = now;
+    }
   }
 
   XAUDIO2_BUFFER buffer = {};
@@ -258,7 +425,7 @@ bool XAudio2AudioDriver::InitializeObjects() {
 
   WAVEFORMATEXTENSIBLE waveformat = {};
   waveformat.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-  waveformat.Format.nChannels = static_cast<WORD>(frame_channels_);
+  waveformat.Format.nChannels = static_cast<WORD>(output_channels_);
   waveformat.Format.nSamplesPerSec = frame_frequency_;
   waveformat.Format.wBitsPerSample = 32;
   waveformat.Format.nBlockAlign =
@@ -300,8 +467,8 @@ bool XAudio2AudioDriver::InitializeObjects() {
     pcm_voice_->SetVolume(0.0f);
   }
 
-  REXAPU_INFO("XAudio2 source voice ready: {} Hz, {} channels, samples_per_frame={}",
-              frame_frequency_, frame_channels_, channel_samples_);
+  REXAPU_INFO("XAudio2 source voice ready: {} Hz, in_ch={}, out_ch={}, samples_per_frame={}",
+              frame_frequency_, frame_channels_, output_channels_, channel_samples_);
   return true;
 #endif
 }

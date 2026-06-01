@@ -12,6 +12,11 @@
 // Disable warnings about unused parameters for kernel functions
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
+
 #include <rex/audio/audio_system.h>
 #include <rex/chrono/clock.h>
 #include <rex/kernel/xboxkrnl/private.h>
@@ -22,11 +27,56 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xtypes.h>
 
+namespace {
+
+constexpr uint32_t kDefaultSpeakerConfig = 0x00010001;
+constexpr uint32_t kMaxTrackedVoiceCategories = 32;
+
+std::array<float, kMaxTrackedVoiceCategories> g_voice_category_volumes = []() {
+  std::array<float, kMaxTrackedVoiceCategories> values{};
+  values.fill(1.0f);
+  return values;
+}();
+uint32_t g_voice_category_change_mask = 0;
+
+uint32_t g_speaker_config = kDefaultSpeakerConfig;
+bool g_speaker_config_overridden = false;
+uint32_t g_override_speaker_config = kDefaultSpeakerConfig;
+
+uint32_t GetAudioCallerAddress() {
+  uint32_t caller = 0;
+  auto* thread = rex::system::XThread::GetCurrentThread();
+  if (thread && thread->thread_state() && thread->thread_state()->context()) {
+    caller = static_cast<uint32_t>(thread->thread_state()->context()->lr);
+  }
+  return caller;
+}
+
+float DecodeGuestFloat(uint32_t bits) {
+  float value = 0.0f;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+}  // namespace
+
 namespace rex::kernel::xboxkrnl {
 using namespace rex::system;
 
 u32 XAudioGetSpeakerConfig_entry(mapped_u32 config_ptr) {
-  *config_ptr = 0x00010001;
+  const uint32_t effective_config =
+      g_speaker_config_overridden ? g_override_speaker_config : g_speaker_config;
+  *config_ptr = effective_config;
+
+  static uint32_t get_speaker_log_count = 0;
+  if (get_speaker_log_count < 80 || (get_speaker_log_count % 200) == 0) {
+    REXKRNL_ERROR(
+        "XAUDIO_DIAG GetSpeakerConfig caller={:08X} config={:08X} base={:08X} override={} "
+        "override_cfg={:08X}",
+        GetAudioCallerAddress(), effective_config, g_speaker_config, g_speaker_config_overridden ? 1 : 0,
+        g_override_speaker_config);
+  }
+  ++get_speaker_log_count;
   return X_ERROR_SUCCESS;
 }
 
@@ -37,18 +87,44 @@ u32 XAudioGetVoiceCategoryVolumeChangeMask_entry(mapped_void driver_ptr, mapped_
 
   // Checking these bits to see if any voice volume changed.
   // I think.
-  *out_ptr = 0;
+  const uint32_t mask_value = g_voice_category_change_mask;
+  *out_ptr = mask_value;
+  g_voice_category_change_mask = 0;
+
+  static uint32_t get_mask_log_count = 0;
+  if (mask_value != 0 || get_mask_log_count < 80 || (get_mask_log_count % 200) == 0) {
+    REXKRNL_ERROR("XAUDIO_DIAG GetVoiceCategoryVolumeChangeMask caller={:08x} driver={:08x} "
+                  "mask={:08x}",
+                  GetAudioCallerAddress(), driver_ptr.guest_address(), mask_value);
+  }
+  ++get_mask_log_count;
   return X_ERROR_SUCCESS;
 }
 
-u32 XAudioGetVoiceCategoryVolume_entry(u32 unk, mapped_f32 out_ptr) {
+u32 XAudioGetVoiceCategoryVolume_entry(u32 category, mapped_f32 out_ptr) {
   // Expects a floating point single. Volume %?
-  *out_ptr = 1.0f;
+  const float value =
+      category < g_voice_category_volumes.size() ? g_voice_category_volumes[category] : 1.0f;
+  *out_ptr = value;
+
+  static uint32_t get_vol_log_count = 0;
+  if (get_vol_log_count < 120 || std::fabs(value - 1.0f) > 0.001f ||
+      (get_vol_log_count % 200) == 0) {
+    REXKRNL_ERROR("XAUDIO_DIAG GetVoiceCategoryVolume caller={:08X} category={} value={:.4f}",
+                  GetAudioCallerAddress(), category, value);
+  }
+  ++get_vol_log_count;
 
   return X_ERROR_SUCCESS;
 }
 
 u32 XAudioEnableDucker_entry(u32 unk) {
+  static uint32_t enable_ducker_log_count = 0;
+  if (enable_ducker_log_count < 40 || (enable_ducker_log_count % 200) == 0) {
+    REXKRNL_ERROR("XAUDIO_DIAG EnableDucker caller={:08X} arg={:08X}", GetAudioCallerAddress(),
+                  unk);
+  }
+  ++enable_ducker_log_count;
   return X_ERROR_SUCCESS;
 }
 
@@ -124,14 +200,11 @@ REX_EXPORT(__imp__XAudioSubmitRenderDriverFrame,
 
 REX_EXPORT_STUB(__imp__XAudioRenderDriverInitialize);
 REX_EXPORT_STUB(__imp__XAudioRenderDriverLock);
-REX_EXPORT_STUB(__imp__XAudioSetVoiceCategoryVolume);
 REX_EXPORT_STUB(__imp__XAudioBeginDigitalBypassMode);
 REX_EXPORT_STUB(__imp__XAudioEndDigitalBypassMode);
 REX_EXPORT_STUB(__imp__XAudioSubmitDigitalPacket);
 REX_EXPORT_STUB(__imp__XAudioQueryDriverPerformance);
 REX_EXPORT_STUB(__imp__XAudioGetRenderDriverThread);
-REX_EXPORT_STUB(__imp__XAudioSetSpeakerConfig);
-REX_EXPORT_STUB(__imp__XAudioOverrideSpeakerConfig);
 REX_EXPORT_STUB(__imp__XAudioSuspendRenderDriverClients);
 REX_EXPORT_STUB(__imp__XAudioRegisterRenderDriverMECClient);
 REX_EXPORT_STUB(__imp__XAudioUnregisterRenderDriverMECClient);
@@ -173,6 +246,94 @@ REX_HOOK_RAW(__imp__XAudioGetRenderDriverTic) {
 
 static rex::ppc::detail::PPCFuncRegistrar _ppc_reg___imp__XAudioGetRenderDriverTic(
     "__imp__XAudioGetRenderDriverTic", &__imp__XAudioGetRenderDriverTic);
+
+REX_HOOK_RAW(__imp__XAudioSetVoiceCategoryVolume) {
+  const uint32_t category = ctx.r3.u32;
+  const uint32_t volume_bits = ctx.r4.u32;
+  float volume = DecodeGuestFloat(volume_bits);
+  if (!std::isfinite(volume)) {
+    volume = 1.0f;
+  }
+  const float clamped_volume = std::clamp(volume, 0.0f, 8.0f);
+
+  float old_volume = 1.0f;
+  if (category < g_voice_category_volumes.size()) {
+    old_volume = g_voice_category_volumes[category];
+    g_voice_category_volumes[category] = clamped_volume;
+    if (category < 32 && std::fabs(old_volume - clamped_volume) > 0.0001f) {
+      g_voice_category_change_mask |= (1u << category);
+    }
+  }
+
+  static uint32_t set_vol_log_count = 0;
+  if (set_vol_log_count < 180 || std::fabs(old_volume - clamped_volume) > 0.0001f ||
+      (set_vol_log_count % 200) == 0) {
+    REXKRNL_ERROR("XAUDIO_DIAG SetVoiceCategoryVolume caller={:08X} category={} value={:.4f} "
+                  "old={:.4f} raw={:08X} changed_mask={:08X}",
+                  static_cast<uint32_t>(ctx.lr), category, clamped_volume, old_volume, volume_bits,
+                  g_voice_category_change_mask);
+  }
+  ++set_vol_log_count;
+
+  ctx.r3.u64 = 0;
+}
+
+static rex::ppc::detail::PPCFuncRegistrar _ppc_reg___imp__XAudioSetVoiceCategoryVolume(
+    "__imp__XAudioSetVoiceCategoryVolume", &__imp__XAudioSetVoiceCategoryVolume);
+
+REX_HOOK_RAW(__imp__XAudioSetSpeakerConfig) {
+  const uint32_t new_config = ctx.r3.u32;
+  const uint32_t old_config = g_speaker_config;
+  g_speaker_config = new_config;
+
+  static uint32_t set_speaker_log_count = 0;
+  if (set_speaker_log_count < 100 || old_config != new_config || (set_speaker_log_count % 200) == 0) {
+    REXKRNL_ERROR(
+        "XAUDIO_DIAG SetSpeakerConfig caller={:08X} config={:08X} old={:08X} override={} "
+        "override_cfg={:08X}",
+        static_cast<uint32_t>(ctx.lr), new_config, old_config, g_speaker_config_overridden ? 1 : 0,
+        g_override_speaker_config);
+  }
+  ++set_speaker_log_count;
+
+  ctx.r3.u64 = 0;
+}
+
+static rex::ppc::detail::PPCFuncRegistrar _ppc_reg___imp__XAudioSetSpeakerConfig(
+    "__imp__XAudioSetSpeakerConfig", &__imp__XAudioSetSpeakerConfig);
+
+REX_HOOK_RAW(__imp__XAudioOverrideSpeakerConfig) {
+  const uint32_t arg0 = ctx.r3.u32;
+  const uint32_t arg1 = ctx.r4.u32;
+  const uint32_t old_override_cfg = g_override_speaker_config;
+  const bool old_override_enabled = g_speaker_config_overridden;
+
+  if (arg0 == 0 && arg1 == 0) {
+    g_speaker_config_overridden = false;
+  } else {
+    g_speaker_config_overridden = true;
+    g_override_speaker_config = arg1 ? arg1 : arg0;
+  }
+
+  static uint32_t override_speaker_log_count = 0;
+  if (override_speaker_log_count < 100 ||
+      old_override_cfg != g_override_speaker_config ||
+      old_override_enabled != g_speaker_config_overridden ||
+      (override_speaker_log_count % 200) == 0) {
+    REXKRNL_ERROR(
+        "XAUDIO_DIAG OverrideSpeakerConfig caller={:08X} arg0={:08X} arg1={:08X} "
+        "enabled={} cfg={:08X} old_enabled={} old_cfg={:08X}",
+        static_cast<uint32_t>(ctx.lr), arg0, arg1, g_speaker_config_overridden ? 1 : 0,
+        g_override_speaker_config, old_override_enabled ? 1 : 0, old_override_cfg);
+  }
+  ++override_speaker_log_count;
+
+  ctx.r3.u64 = 0;
+}
+
+static rex::ppc::detail::PPCFuncRegistrar _ppc_reg___imp__XAudioOverrideSpeakerConfig(
+    "__imp__XAudioOverrideSpeakerConfig", &__imp__XAudioOverrideSpeakerConfig);
+
 REX_EXPORT_STUB(__imp__XAudioSetDuckerLevel);
 REX_EXPORT_STUB(__imp__XAudioIsDuckerEnabled);
 REX_EXPORT_STUB(__imp__XAudioGetDuckerLevel);

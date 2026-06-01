@@ -11,6 +11,8 @@
 
 #include <rex/audio/xma/context.h>
 #include <rex/audio/xma/decoder.h>
+#include <algorithm>
+#include <chrono>
 #include <rex/cvar.h>
 #include <rex/dbg.h>
 #include <rex/logging.h>
@@ -21,12 +23,19 @@
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/thread_state.h>
 #include <rex/system/xthread.h>
+#include <vector>
 
 extern "C" {
 #include "libavutil/log.h"
 }  // extern "C"
 
 REXCVAR_DEFINE_BOOL(ffmpeg_verbose, false, "Audio", "Verbose FFmpeg output (debug and above)");
+REXCVAR_DEFINE_BOOL(audio_xma_mix_diag, false, "Audio",
+                    "Log top active XMA contexts by RMS level once per interval");
+REXCVAR_DEFINE_INT32(audio_xma_mix_diag_top, 8, "Audio",
+                     "Number of XMA contexts to include in each mix diagnostics sample");
+REXCVAR_DEFINE_INT32(audio_xma_mix_diag_interval_ms, 1000, "Audio",
+                     "Interval in milliseconds for XMA mix diagnostics logging");
 
 // As with normal Microsoft, there are like twelve different ways to access
 // the audio APIs. Early games use XMA*() methods almost exclusively to touch
@@ -138,6 +147,7 @@ X_STATUS XmaDecoder::Setup(system::KernelState* kernel_state) {
 }
 
 void XmaDecoder::WorkerThreadMain() {
+  auto next_mix_diag_time = std::chrono::steady_clock::now();
   while (worker_running_) {
     // Okay, let's loop through XMA contexts to find ones we need to decode!
     bool did_work = false;
@@ -157,6 +167,86 @@ void XmaDecoder::WorkerThreadMain() {
     }
 
     if (did_work) {
+      if (REXCVAR_GET(audio_xma_mix_diag)) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_mix_diag_time) {
+          struct MixDiagContext {
+            uint32_t index = 0;
+            float rms = 0.0f;
+            float peak = 0.0f;
+            float volume = 1.0f;
+            bool muted = false;
+            bool enabled = false;
+            bool input0_valid = false;
+            bool input1_valid = false;
+            bool output_valid = false;
+            bool stereo = false;
+            uint8_t sample_rate_id = 0;
+            uint32_t input_buffer_0_ptr = 0;
+            uint32_t input_buffer_1_ptr = 0;
+            uint32_t output_buffer_ptr = 0;
+          };
+
+          std::vector<MixDiagContext> rows;
+          rows.reserve(kContextCount);
+          for (uint32_t i = 0; i < kContextCount; ++i) {
+            auto& context = contexts_[i];
+            if (!context.is_allocated() || context.guest_ptr() == 0) {
+              continue;
+            }
+            auto* context_ptr = memory()->TranslateVirtual(context.guest_ptr());
+            if (!context_ptr) {
+              continue;
+            }
+            XMA_CONTEXT_DATA data(context_ptr);
+            MixDiagContext row;
+            row.index = i;
+            row.rms = context.last_rms_level();
+            row.peak = context.last_peak_level();
+            row.volume = context.volume();
+            row.muted = context.is_muted();
+            row.enabled = context.is_enabled();
+            row.input0_valid = data.input_buffer_0_valid != 0;
+            row.input1_valid = data.input_buffer_1_valid != 0;
+            row.output_valid = data.output_buffer_valid != 0;
+            row.stereo = data.is_stereo != 0;
+            row.sample_rate_id = static_cast<uint8_t>(data.sample_rate);
+            row.input_buffer_0_ptr = data.input_buffer_0_ptr;
+            row.input_buffer_1_ptr = data.input_buffer_1_ptr;
+            row.output_buffer_ptr = data.output_buffer_ptr;
+            if (row.rms > 0.0005f || row.peak > 0.001f || row.enabled || row.output_valid) {
+              rows.push_back(row);
+            }
+          }
+
+          std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+            if (a.rms == b.rms) {
+              return a.peak > b.peak;
+            }
+            return a.rms > b.rms;
+          });
+
+          const int32_t top_count = std::max<int32_t>(1, std::min<int32_t>(REXCVAR_GET(audio_xma_mix_diag_top), 24));
+          REXAPU_ERROR("XMA_MIX_DIAG active={} top={}", rows.size(), top_count);
+          const int32_t limit = std::min<int32_t>(top_count, static_cast<int32_t>(rows.size()));
+          for (int32_t row_index = 0; row_index < limit; ++row_index) {
+            const auto& row = rows[static_cast<size_t>(row_index)];
+            REXAPU_ERROR(
+                "XMA_MIX_DIAG #{:02d} ctx={:03X} rms={:.4f} peak={:.4f} vol={:.3f} muted={} "
+                "en={} in0={} in1={} out={} st={} sr={} out_ptr={:08X} in0_ptr={:08X} "
+                "in1_ptr={:08X}",
+                row_index, row.index, row.rms, row.peak, row.volume, row.muted ? 1 : 0,
+                row.enabled ? 1 : 0, row.input0_valid ? 1 : 0, row.input1_valid ? 1 : 0,
+                row.output_valid ? 1 : 0, row.stereo ? 1 : 0, static_cast<uint32_t>(row.sample_rate_id),
+                row.output_buffer_ptr, row.input_buffer_0_ptr, row.input_buffer_1_ptr);
+          }
+
+          int32_t interval_ms = std::max<int32_t>(100, REXCVAR_GET(audio_xma_mix_diag_interval_ms));
+          next_mix_diag_time = now + std::chrono::milliseconds(interval_ms);
+        }
+      } else {
+        next_mix_diag_time = std::chrono::steady_clock::now();
+      }
       continue;
     }
     // No work done this iteration, block until signaled.
