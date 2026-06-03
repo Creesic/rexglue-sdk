@@ -7,6 +7,28 @@ project(ReXGlue
     LANGUAGES C CXX
     DESCRIPTION "Xbox 360 Recompilation SDK"
 )
+if(APPLE)
+    if(NOT DEFINED CMAKE_OBJC_COMPILER OR NOT IS_ABSOLUTE "${CMAKE_OBJC_COMPILER}")
+        find_program(REXGLUE_APPLE_OBJC_COMPILER
+            NAMES clang
+            HINTS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin)
+        if(REXGLUE_APPLE_OBJC_COMPILER)
+            set(CMAKE_OBJC_COMPILER "${REXGLUE_APPLE_OBJC_COMPILER}" CACHE FILEPATH
+                "Objective-C compiler" FORCE)
+        endif()
+    endif()
+    if(NOT DEFINED CMAKE_OBJCXX_COMPILER OR NOT IS_ABSOLUTE "${CMAKE_OBJCXX_COMPILER}")
+        find_program(REXGLUE_APPLE_OBJCXX_COMPILER
+            NAMES clang++
+            HINTS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin)
+        if(REXGLUE_APPLE_OBJCXX_COMPILER)
+            set(CMAKE_OBJCXX_COMPILER "${REXGLUE_APPLE_OBJCXX_COMPILER}" CACHE FILEPATH
+                "Objective-C++ compiler" FORCE)
+        endif()
+    endif()
+    enable_language(OBJC)
+    enable_language(OBJCXX)
+endif()
 # Floor only: bump MAJOR.MINOR for API changes. Patch is derived from git tags
 # in cmake/rex_version.cmake. See docs/RELEASING.md.
 
@@ -29,16 +51,23 @@ endif()
 # Graphics backend selection
 # D3D12: Windows only, ON by default.
 # Vulkan: Cross-platform, ON by default on Linux, OFF by default on Windows.
+# Metal: macOS only, ON by default on macOS once the backend sources are imported.
 if(WIN32)
     option(REXGLUE_USE_D3D12  "Enable D3D12 graphics backend" ON)
     option(REXGLUE_USE_VULKAN "Enable Vulkan graphics backend" OFF)
+    set(REXGLUE_USE_METAL OFF)
+elseif(APPLE)
+    set(REXGLUE_USE_D3D12 OFF)
+    option(REXGLUE_USE_VULKAN "Enable Vulkan graphics backend" OFF)
+    option(REXGLUE_USE_METAL  "Enable Metal graphics backend" ON)
 else()
     set(REXGLUE_USE_D3D12 OFF)
     option(REXGLUE_USE_VULKAN "Enable Vulkan graphics backend" ON)
+    set(REXGLUE_USE_METAL OFF)
 endif()
 
-if(NOT REXGLUE_USE_D3D12 AND NOT REXGLUE_USE_VULKAN)
-    message(FATAL_ERROR "At least one graphics backend must be enabled (REXGLUE_USE_D3D12 or REXGLUE_USE_VULKAN)")
+if(NOT REXGLUE_USE_D3D12 AND NOT REXGLUE_USE_VULKAN AND NOT REXGLUE_USE_METAL)
+    message(FATAL_ERROR "At least one graphics backend must be enabled (REXGLUE_USE_D3D12, REXGLUE_USE_VULKAN, or REXGLUE_USE_METAL)")
 endif()
 
 if (REXGLUE_ENABLE_FIDELITYFX AND
@@ -49,6 +78,7 @@ endif()
 
 # Root of the SDK source tree
 set(REXGLUE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+set(REXGLUE_BINARY_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
 
 # SDK install support
 include(GNUInstallDirs)
@@ -61,6 +91,12 @@ if(UNIX AND NOT APPLE)
     list(APPEND CMAKE_INSTALL_RPATH
         "$ORIGIN"
         "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
+    )
+    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
+elseif(APPLE)
+    list(APPEND CMAKE_INSTALL_RPATH
+        "@loader_path"
+        "@loader_path/../${CMAKE_INSTALL_LIBDIR}"
     )
     set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
 endif()
@@ -86,10 +122,33 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_DEBUG_POSTFIX d)
 set(CMAKE_RELWITHDEBINFO_POSTFIX rd)
 
+# Normalize architecture detection once so SDK and vendored dependencies agree.
+# On Apple, prefer the configured target arch over the host arch; CMake may run
+# under one processor string while `CMAKE_OSX_ARCHITECTURES` requests another.
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+    list(GET CMAKE_OSX_ARCHITECTURES 0 REXGLUE_SYSTEM_PROCESSOR)
+else()
+    set(REXGLUE_SYSTEM_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+if(NOT REXGLUE_SYSTEM_PROCESSOR)
+    set(REXGLUE_SYSTEM_PROCESSOR "${CMAKE_HOST_SYSTEM_PROCESSOR}")
+endif()
+if(NOT REXGLUE_SYSTEM_PROCESSOR AND DEFINED ENV{PROCESSOR_ARCHITECTURE})
+    set(REXGLUE_SYSTEM_PROCESSOR "$ENV{PROCESSOR_ARCHITECTURE}")
+endif()
+if(NOT REXGLUE_SYSTEM_PROCESSOR AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(REXGLUE_SYSTEM_PROCESSOR "AMD64")
+endif()
+if(NOT CMAKE_SYSTEM_PROCESSOR AND REXGLUE_SYSTEM_PROCESSOR)
+    set(CMAKE_SYSTEM_PROCESSOR "${REXGLUE_SYSTEM_PROCESSOR}")
+endif()
+
 if(NOT WIN32)
     # Use appropriate code model based on architecture
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
-        # Large code model on x86_64 for linking with very large recompiled executables (35MB+)
+    if(REXGLUE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64" AND NOT APPLE)
+        # Large code model on Linux x86_64 for linking with very large
+        # recompiled executables (35MB+). macOS uses small because ld64 rejects
+        # the large-model relocations this tree produces.
         add_compile_options(-mcmodel=large)
     else()
         # Small code model for other architectures (ARM64, etc.)
@@ -102,35 +161,55 @@ endif()
 # Global compile options
 add_compile_options(
     -fno-strict-aliasing
-    -ffp-model=strict
     $<$<CONFIG:DEBUG>:-g>
     $<$<CONFIG:DEBUG>:-O0>
     $<$<CONFIG:RELEASE>:-O3>
     $<$<CONFIG:RELEASE>:-DNDEBUG>
-    -fno-char8_t
 )
+
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    add_compile_options(
+        /fp:strict
+        $<$<COMPILE_LANGUAGE:CXX>:/EHsc>
+        $<$<COMPILE_LANGUAGE:CXX>:/Zc:char8_t->
+    )
+else()
+    add_compile_options(
+        -ffp-model=strict
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-char8_t>
+    )
+endif()
 
 # Platform detection (supports AMD64 and ARM64)
 if(WIN32)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+    if(REXGLUE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
         set(REX_PLATFORM "win-amd64")
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+    elseif(REXGLUE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64|arm64")
         set(REX_PLATFORM "win-arm64")
     else()
-        message(FATAL_ERROR "Unsupported Windows architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+        message(FATAL_ERROR "Unsupported Windows architecture: ${REXGLUE_SYSTEM_PROCESSOR}")
     endif()
     add_compile_definitions(REX_PLATFORM_WINDOWS=1)
 elseif(UNIX AND NOT APPLE)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+    if(REXGLUE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
         set(REX_PLATFORM "linux-amd64")
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+    elseif(REXGLUE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64|arm64")
         set(REX_PLATFORM "linux-arm64")
     else()
-        set(REX_PLATFORM "linux-${CMAKE_SYSTEM_PROCESSOR}")
+        set(REX_PLATFORM "linux-${REXGLUE_SYSTEM_PROCESSOR}")
     endif()
     add_compile_definitions(REX_PLATFORM_LINUX=1)
+elseif(APPLE)
+    if(REXGLUE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+        set(REX_PLATFORM "mac-amd64")
+    elseif(REXGLUE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64|arm64")
+        set(REX_PLATFORM "mac-arm64")
+    else()
+        set(REX_PLATFORM "mac-${REXGLUE_SYSTEM_PROCESSOR}")
+    endif()
+    add_compile_definitions(REX_PLATFORM_MAC=1)
 else()
-    message(FATAL_ERROR "Unsupported platform. ReXGlue supports Windows and Linux only.")
+    message(FATAL_ERROR "Unsupported platform. ReXGlue supports Windows, Linux, and macOS only.")
 endif()
 
 # Build config as compile definition (multi-config generators don't know config at configure time)
@@ -193,12 +272,19 @@ endif()
 add_subdirectory(thirdparty)
 
 # Enable warnings after thirdparty
-add_compile_options(
-    -Wall
-    -Wextra
-)
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    add_compile_options(/W4)
+else()
+    add_compile_options(
+        -Wall
+        -Wextra
+    )
+endif()
 
-include_directories(${REXGLUE_ROOT}/include)
+include_directories(
+    ${REXGLUE_ROOT}/include
+    ${REXGLUE_BINARY_INCLUDE_DIR}
+)
 
 add_subdirectory(src/core)
 add_subdirectory(src/filesystem)
@@ -226,7 +312,7 @@ message(STATUS "  Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSIO
 message(STATUS "  Configurations: ${CMAKE_CONFIGURATION_TYPES}")
 message(STATUS "  Output Dir: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 message(STATUS "  C++ Standard: C++${CMAKE_CXX_STANDARD}")
-message(STATUS "  Graphics: D3D12=${REXGLUE_USE_D3D12} Vulkan=${REXGLUE_USE_VULKAN}")
+message(STATUS "  Graphics: D3D12=${REXGLUE_USE_D3D12} Vulkan=${REXGLUE_USE_VULKAN} Metal=${REXGLUE_USE_METAL}")
 message(STATUS "  FidelityFX: ${REXGLUE_ENABLE_FIDELITYFX}")
 message(STATUS "  Tracy: ${REXGLUE_ENABLE_TRACY}")
 message(STATUS "  Perf Counters: ${REXGLUE_ENABLE_PERF_COUNTERS}")

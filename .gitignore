@@ -4,6 +4,7 @@
 ## Get latest from https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
 
 # User-specific files
+.DS_Store
 *.rsuser
 *.suo
 *.user
@@ -33,6 +34,13 @@ bld/
 [Oo]ut/
 [Ll]og/
 [Ll]ogs/
+
+# Title payloads and generated recompilation output.
+# Keep game assets local, and regenerate title C++ from manifests/configs.
+FM2/assets/
+FM2/generated/
+FH1/assets/
+FH1/generated/
 
 # Build results on 'Bin' directories
 **/[Bb]in/*

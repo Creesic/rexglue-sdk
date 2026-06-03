@@ -29,6 +29,7 @@ uint32_t xeNtWaitForMultipleObjectsEx(uint32_t count, rex::be<uint32_t>* handles
 uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason, uint32_t processor_mode,
                                  uint32_t alertable, uint64_t* timeout_ptr);
 uint32_t xeKeSetEvent(rex::system::X_KEVENT* event_ptr, uint32_t increment, uint32_t wait);
+void xeSignalLikelyVblankWaitObject();
 
 // Guest-memory spinlock helpers (PPCContext* for r13/PCR access)
 uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, rex::X_KSPINLOCK* lock, bool change_irql = true);

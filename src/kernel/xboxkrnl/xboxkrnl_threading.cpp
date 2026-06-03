@@ -38,9 +38,15 @@
 #include <rex/thread/atomic.h>
 #include <rex/thread/mutex.h>
 
+// TEMP_DIAG: XMA gap diagnostics
+#include "xma_gap_diag.h"
+// END TEMP_DIAG
+
 namespace rex::kernel::xboxkrnl {
 using namespace rex::system;
 using rex::runtime::current_ppc_context;
+
+std::atomic<uint32_t> g_likely_vblank_wait_handle{0};
 
 // r13 + 0x100: pointer to thread local state
 // Thread local state:
@@ -373,6 +379,10 @@ u32 KeQueryPerformanceFrequency_entry() {
 }
 
 u32 KeDelayExecutionThread_entry(u32 processor_mode, u32 alertable, mapped_u64 interval_ptr) {
+  // TEMP_DIAG: XMA gap - delay
+  double delay_enter_ms = xma_gap_diag::LogDelayEnter("KeDelayExecutionThread", (uint64_t)*interval_ptr);
+  // END TEMP_DIAG
+
   XThread* thread = XThread::GetCurrentThread();
 
   if (alertable) {
@@ -385,6 +395,10 @@ u32 KeDelayExecutionThread_entry(u32 processor_mode, u32 alertable, mapped_u64 i
     thread->DeliverAPCs();
   }
 
+  // TEMP_DIAG: XMA gap - delay exit
+  xma_gap_diag::LogDelayExit("KeDelayExecutionThread", result, delay_enter_ms);
+  // END TEMP_DIAG
+
   return result;
 }
 
@@ -395,6 +409,9 @@ u32 NtYieldExecution_entry() {
 
 void KeQuerySystemTime_entry(mapped_u64 time_ptr) {
   uint64_t time = chrono::Clock::QueryGuestSystemTime();
+  // TEMP_DIAG: log timer reads from FMOD thread during gap
+  xma_gap_diag::LogTimerRead("KeQuerySystemTime", time);
+  // END TEMP_DIAG
   if (time_ptr) {
     *time_ptr = time;
   }
@@ -472,10 +489,16 @@ uint32_t xeKeSetEvent(X_KEVENT* event_ptr, uint32_t increment, uint32_t wait) {
 }
 
 u32 KeSetEvent_entry(ppc_ptr_t<X_KEVENT> event_ptr, u32 increment, u32 wait) {
+  // TEMP_DIAG: XMA gap - signal tracking (with guest address)
+  xma_gap_diag::LogSignal("KeSetEvent", event_ptr.guest_address());
+  // END TEMP_DIAG
   return xeKeSetEvent(event_ptr, increment, wait);
 }
 
 u32 KePulseEvent_entry(ppc_ptr_t<X_KEVENT> event_ptr, u32 increment, u32 wait) {
+  // TEMP_DIAG: XMA gap - pulse tracking
+  xma_gap_diag::LogSignal("KePulseEvent", event_ptr.guest_address());
+  // END TEMP_DIAG
   auto ev = XObject::GetNativeObject<XEvent>(REX_KERNEL_STATE(), event_ptr);
   if (!ev) {
     assert_always();
@@ -612,6 +635,9 @@ uint32_t xeKeReleaseSemaphore(X_KSEMAPHORE* semaphore_ptr, uint32_t increment, u
 
 u32 KeReleaseSemaphore_entry(ppc_ptr_t<X_KSEMAPHORE> semaphore_ptr, u32 increment, u32 adjustment,
                              u32 wait) {
+  // TEMP_DIAG: XMA gap - signal tracking (with guest address)
+  xma_gap_diag::LogSignal("KeReleaseSemaphore", semaphore_ptr.guest_address(), adjustment);
+  // END TEMP_DIAG
   return xeKeReleaseSemaphore(semaphore_ptr, increment, adjustment, wait);
 }
 
@@ -835,22 +861,79 @@ uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason, uint32_
   return result;
 }
 
+void xeSignalLikelyVblankWaitObject() {
+  uint32_t handle = g_likely_vblank_wait_handle.load(std::memory_order_relaxed);
+  if (!handle) {
+    return;
+  }
+
+  static uint32_t signal_log_count = 0;
+
+  if (auto ev = REX_KERNEL_OBJECTS()->LookupObject<XEvent>(handle)) {
+    ev->Set(0, false);
+    if (signal_log_count < 20) {
+      ++signal_log_count;
+      REXLOG_INFO("[vblank-wait] signaled event handle=0x{:08X}", handle);
+    }
+    return;
+  }
+  if (auto sem = REX_KERNEL_OBJECTS()->LookupObject<XSemaphore>(handle)) {
+    int32_t previous_count = 0;
+    sem->ReleaseSemaphore(1, &previous_count);
+    if (signal_log_count < 20) {
+      ++signal_log_count;
+      REXLOG_INFO("[vblank-wait] released semaphore handle=0x{:08X} prev_count={}", handle,
+                  previous_count);
+    }
+  }
+}
+
 u32 KeWaitForSingleObject_entry(mapped_void object_ptr, u32 wait_reason, u32 processor_mode,
                                 u32 alertable, mapped_u64 timeout_ptr) {
+  // TEMP_DIAG: XMA gap - wait tracking (with guest address)
   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
-  // REXKRNL_IMPORT_TRACE("KeWaitForSingleObject", "obj={:#x} reason={} mode={} alertable={}
-  // timeout={}",
-  // object_ptr.guest_address(), (uint32_t)wait_reason,
-  //(uint32_t)processor_mode, (uint32_t)alertable,
-  // timeout_ptr ? (int64_t)timeout : -1);
+  if (timeout_ptr && static_cast<int64_t>(timeout) == -300000 && wait_reason == 3 &&
+      alertable == 0) {
+    auto object_for_capture = XObject::GetNativeObject<XObject>(REX_KERNEL_STATE(), object_ptr);
+    if (object_for_capture &&
+        (object_for_capture->type() == XObject::Type::Event ||
+         object_for_capture->type() == XObject::Type::Semaphore)) {
+      uint32_t handle = object_for_capture->handle();
+      g_likely_vblank_wait_handle.store(handle, std::memory_order_relaxed);
+      static uint32_t capture_log_count = 0;
+      if (capture_log_count < 20) {
+        ++capture_log_count;
+        REXLOG_INFO("[vblank-wait] captured handle=0x{:08X} type={}", handle,
+                    static_cast<int>(object_for_capture->type()));
+      }
+    }
+  }
+  double wait_enter_ms = xma_gap_diag::LogWaitEnter("KeWaitForSingle", object_ptr.guest_address(),
+                                                    alertable, !timeout_ptr, (int64_t)timeout);
+  // END TEMP_DIAG
+
+  // TEMP_DIAG: XMA gap - wait exit
   auto result = xeKeWaitForSingleObject(object_ptr, wait_reason, processor_mode, alertable,
                                         timeout_ptr ? &timeout : nullptr);
-  // REXKRNL_IMPORT_RESULT("KeWaitForSingleObject", "{:#x}", result);
+  xma_gap_diag::LogWaitExit("KeWaitForSingle", object_ptr.guest_address(), result, wait_enter_ms);
+  // END TEMP_DIAG
   return result;
 }
 
 u32 NtWaitForSingleObjectEx_entry(u32 object_handle, u32 wait_mode, u32 alertable,
                                   mapped_u64 timeout_ptr) {
+  // TEMP_DIAG: XMA gap - NtWait tracking
+  double ntwait_enter_ms = 0.0;
+  uint32_t rf_before = 0;
+  if (xma_gap_diag::IsXmaThread()) {
+    rf_before = audio_diag_get_render_frame();
+    uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
+    REXKRNL_ERROR("GAP_WAIT ENTER rf={} NtWaitForSingleObjectEx handle={:08X} lr={:08X}",
+                  rf_before, object_handle, (uint32_t)xma_gap_diag::GetGuestLR());
+    ntwait_enter_ms = xma_gap_diag::WallMs();
+  }
+  // END TEMP_DIAG
+
   X_STATUS result = X_STATUS_SUCCESS;
 
   auto object = REX_KERNEL_OBJECTS()->LookupObject<XObject>(object_handle);
@@ -864,6 +947,15 @@ u32 NtWaitForSingleObjectEx_entry(u32 object_handle, u32 wait_mode, u32 alertabl
     result = X_STATUS_INVALID_HANDLE;
   }
 
+  // TEMP_DIAG: XMA gap - NtWait exit
+  if (ntwait_enter_ms > 0.0) {
+    double elapsed = xma_gap_diag::WallMs() - ntwait_enter_ms;
+    uint32_t rf_after = audio_diag_get_render_frame();
+    REXKRNL_ERROR("GAP_WAIT EXIT  rf={} NtWaitForSingleObjectEx result={:08X} elapsed_ms={:.1f} frames={}",
+                  rf_after, result, elapsed, rf_after - rf_before);
+  }
+  // END TEMP_DIAG
+
   return result;
 }
 
@@ -871,6 +963,16 @@ u32 KeWaitForMultipleObjects_entry(u32 count, mapped_u32 objects_ptr, u32 wait_t
                                    u32 wait_reason, u32 processor_mode, u32 alertable,
                                    mapped_u64 timeout_ptr, mapped_void wait_block_array_ptr) {
   assert_true(wait_type <= 1);
+
+  // TEMP_DIAG: XMA gap - multi-wait tracking
+  uint32_t obj_addrs[4] = {};
+  for (uint32_t n = 0; n < count && n < 4; n++) {
+    obj_addrs[n] = objects_ptr[n];
+  }
+  bool mwait_infinite = !timeout_ptr;
+  double mwait_enter_ms = xma_gap_diag::LogMultiWaitEnter("KeWaitMultiple", count, obj_addrs,
+                                                            alertable, mwait_infinite);
+  // END TEMP_DIAG
 
   std::vector<object_ref<XObject>> objects;
   for (uint32_t n = 0; n < count; n++) {
@@ -887,6 +989,11 @@ u32 KeWaitForMultipleObjects_entry(u32 count, mapped_u32 objects_ptr, u32 wait_t
   X_STATUS result = XObject::WaitMultiple(
       uint32_t(objects.size()), reinterpret_cast<XObject**>(objects.data()), wait_type, wait_reason,
       processor_mode, alertable, timeout_ptr ? &timeout : nullptr);
+
+  // TEMP_DIAG: XMA gap - multi-wait exit
+  xma_gap_diag::LogMultiWaitExit("KeWaitMultiple", count, obj_addrs, result, mwait_enter_ms);
+  // END TEMP_DIAG
+
   if (alertable && result == X_STATUS_USER_APC) {
     XThread::GetCurrentThread()->DeliverAPCs();
   }

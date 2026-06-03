@@ -69,12 +69,16 @@ nlohmann::json buildTemplateData(const rex::codegen::CodegenContext& ctx,
       funcName = fmt::format("sub_{:08X}", fn->base());
     }
 
+    const bool isImport = fn->authority() == rex::codegen::FunctionAuthority::IMPORT;
+    const bool isUnresolvedImport = isImport && funcName.starts_with("sub_");
+
     functionsJson.push_back({
         {"address", fmt::format("0x{:X}", fn->base())},
         {"name", funcName},
         {"is_rexcrt", isRexcrt},
         {"below_code_base", (fn->base() < codeMin)},
-        {"is_import", fn->authority() == rex::codegen::FunctionAuthority::IMPORT},
+        {"is_import", isImport},
+        {"is_unresolved_import", isUnresolvedImport},
     });
   }
 
@@ -102,6 +106,9 @@ nlohmann::json buildTemplateData(const rex::codegen::CodegenContext& ctx,
       {"is_dll", ctx.isDllModule()},
       {"config_flags", configFlags},
       {"functions", functionsJson},
+      {"import_stub_files", nlohmann::json::array()},
+      {"register_files", nlohmann::json::array()},
+      {"register_part_indices", nlohmann::json::array()},
       {"recomp_files", nlohmann::json::array()},
   };
 }
@@ -111,6 +118,7 @@ nlohmann::json buildTemplateData(const rex::codegen::CodegenContext& ctx,
 namespace rex::codegen {
 
 constexpr size_t kOutputBufferReserveSize = 32 * 1024 * 1024;  // 32 MB
+constexpr size_t kRegisterFunctionsPerChunk = 2048;
 
 CodegenWriter::CodegenWriter(CodegenContext& ctx, Runtime* runtime)
     : ctx_(ctx), runtime_(runtime) {}
@@ -207,11 +215,75 @@ bool CodegenWriter::write(bool force) {
   out = renderWithJson(registry, "codegen/init_cpp", tmplData);
   SaveCurrentOutData(fmt::format("{}_init.cpp", projectName));
 
-  // Generate {project}_register.cpp (registration function for hash-based dispatch)
-  REXCODEGEN_TRACE("Recompile: generating {}_register.cpp", projectName);
+  {
+    nlohmann::json unresolvedImports = nlohmann::json::array();
+    for (const auto& fn : tmplData["functions"]) {
+      if (fn["is_unresolved_import"].get<bool>()) {
+        unresolvedImports.push_back(fn);
+      }
+    }
+
+    auto& importStubFiles = tmplData["import_stub_files"];
+    importStubFiles = nlohmann::json::array();
+    if (!unresolvedImports.empty()) {
+      nlohmann::json importStubData = tmplData;
+      importStubData["unresolved_imports"] = unresolvedImports;
+
+      const auto importStubFile = fmt::format("{}_import_stubs.cpp", projectName);
+      REXCODEGEN_TRACE("Recompile: generating {}", importStubFile);
+      out = renderWithJson(registry, "codegen/import_stubs_cpp", importStubData);
+      SaveCurrentOutData(importStubFile);
+      importStubFiles.push_back(importStubFile);
+    }
+  }
+
   tmplData["is_dll"] = ctx_.isDllModule();
-  out = renderWithJson(registry, "codegen/register_cpp", tmplData);
-  SaveCurrentOutData(fmt::format("{}_register.cpp", projectName));
+  {
+    auto& registerFiles = tmplData["register_files"];
+    auto& registerPartIndices = tmplData["register_part_indices"];
+    registerFiles = nlohmann::json::array();
+    registerPartIndices = nlohmann::json::array();
+
+    const auto wrapperFile = fmt::format("{}_register.cpp", projectName);
+    registerFiles.push_back(wrapperFile);
+
+    nlohmann::json registerFunctions = nlohmann::json::array();
+    for (const auto& fn : tmplData["functions"]) {
+      if (!fn["below_code_base"].get<bool>() || fn["is_import"].get<bool>()) {
+        registerFunctions.push_back(fn);
+      }
+    }
+
+    const size_t registerChunkCount =
+        (registerFunctions.size() + kRegisterFunctionsPerChunk - 1) / kRegisterFunctionsPerChunk;
+
+    for (size_t chunkIndex = 0; chunkIndex < registerChunkCount; ++chunkIndex) {
+      const size_t chunkBegin = chunkIndex * kRegisterFunctionsPerChunk;
+      const size_t chunkEnd =
+          std::min(chunkBegin + kRegisterFunctionsPerChunk, registerFunctions.size());
+
+      nlohmann::json chunkData = tmplData;
+      chunkData["register_chunk_index"] = chunkIndex;
+      auto& chunkFunctions = chunkData["register_functions"];
+      chunkFunctions = nlohmann::json::array();
+      for (size_t i = chunkBegin; i < chunkEnd; ++i) {
+        chunkFunctions.push_back(registerFunctions[i]);
+      }
+
+      const auto chunkFile = fmt::format("{}_register_part.{}.cpp", projectName, chunkIndex);
+      REXCODEGEN_TRACE("Recompile: generating {}", chunkFile);
+      out = renderWithJson(registry, "codegen/register_part_cpp", chunkData);
+      SaveCurrentOutData(chunkFile);
+
+      registerFiles.push_back(chunkFile);
+      registerPartIndices.push_back(chunkIndex);
+    }
+
+    // Generate {project}_register.cpp (wrapper entry point for hash-based dispatch)
+    REXCODEGEN_TRACE("Recompile: generating {}", wrapperFile);
+    out = renderWithJson(registry, "codegen/register_cpp", tmplData);
+    SaveCurrentOutData(wrapperFile);
+  }
 
   // Filter out imports and rexcrt functions before recompilation
   std::erase_if(functions, [](const FunctionNode* fn) {

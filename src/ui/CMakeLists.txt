@@ -54,6 +54,31 @@ if(REXGLUE_USE_D3D12)
     )
 endif()
 
+# Metal UI backend
+if(REXGLUE_USE_METAL)
+    set(REXUI_METAL_SOURCES
+        metal/provider.cpp
+        metal/presenter.cpp
+    )
+    if(APPLE)
+        list(APPEND REXUI_METAL_SOURCES
+            metal/capture_diag.mm
+        )
+        set_source_files_properties(
+            metal/capture_diag.mm
+            PROPERTIES
+                COMPILE_OPTIONS "-fobjc-arc"
+        )
+    endif()
+    foreach(_rexui_metal_source IN LISTS REXUI_METAL_SOURCES)
+        if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_rexui_metal_source}")
+            message(FATAL_ERROR
+                "REXGLUE_USE_METAL is enabled, but UI Metal source "
+                "'src/ui/${_rexui_metal_source}' is missing from this checkout.")
+        endif()
+    endforeach()
+endif()
+
 # Platform-specific sources
 if(WIN32)
     set(REXUI_PLATFORM_SOURCES
@@ -61,6 +86,19 @@ if(WIN32)
         window_win.cpp
         windowed_app_context_win.cpp
     )
+elseif(APPLE)
+    set(REXUI_PLATFORM_SOURCES
+        surface_mac.mm
+        window_mac.mm
+        windowed_app_context_mac.mm
+    )
+    foreach(_rexui_platform_source IN LISTS REXUI_PLATFORM_SOURCES)
+        if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_rexui_platform_source}")
+            message(FATAL_ERROR
+                "macOS UI platform source 'src/ui/${_rexui_platform_source}' is missing.\n"
+                "Import the macOS window/surface layer before configuring Apple builds.")
+        endif()
+    endforeach()
 else()
     set(REXUI_PLATFORM_SOURCES
         surface_gnulinux.cpp
@@ -82,6 +120,10 @@ endif()
 
 if(REXGLUE_USE_D3D12)
     list(APPEND REXUI_SOURCES ${REXUI_D3D12_SOURCES})
+endif()
+
+if(REXGLUE_USE_METAL)
+    list(APPEND REXUI_SOURCES ${REXUI_METAL_SOURCES})
 endif()
 
 add_library(rexui OBJECT ${REXUI_SOURCES})
@@ -130,11 +172,25 @@ if(REXGLUE_USE_VULKAN)
     )
 endif()
 
+if(REXGLUE_USE_METAL)
+    target_include_directories(rexui PUBLIC
+        $<BUILD_INTERFACE:${REXGLUE_ROOT}/thirdparty/metal-cpp>
+    )
+endif()
+
 # Platform-specific dependencies
 if(WIN32)
     target_link_libraries(rexui PUBLIC
         dwmapi
         Shcore
+    )
+elseif(APPLE)
+    target_link_libraries(rexui PUBLIC
+        "-framework Cocoa"
+        "-framework Metal"
+        "-framework MetalKit"
+        "-framework QuartzCore"
+        "-framework Foundation"
     )
 else()
     find_package(PkgConfig REQUIRED)
@@ -159,5 +215,3 @@ if(REXGLUE_USE_D3D12)
         dxc-headers
     )
 endif()
-
-

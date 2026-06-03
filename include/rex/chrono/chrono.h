@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <type_traits>
 
 #include <rex/chrono/clock.h>
 
@@ -115,6 +116,20 @@ using XSystemClock = detail::NtSystemClock<detail::Domain::Guest>;
 }  // namespace rex
 
 namespace std::chrono {
+
+#if defined(_LIBCPP_VERSION) && !__has_include(<__chrono/clock.h>)
+template <class DestinationClock, class SourceClock>
+struct clock_time_conversion;
+
+template <class DestinationClock, class SourceClock, class Duration>
+constexpr auto clock_cast(const std::chrono::time_point<SourceClock, Duration>& tp) {
+  if constexpr (std::is_same_v<DestinationClock, SourceClock>) {
+    return std::chrono::time_point<DestinationClock, Duration>{tp.time_since_epoch()};
+  } else {
+    return clock_time_conversion<DestinationClock, SourceClock>{}(tp);
+  }
+}
+#endif
 
 template <>
 struct clock_time_conversion<::rex::chrono::WinSystemClock, ::rex::chrono::XSystemClock> {

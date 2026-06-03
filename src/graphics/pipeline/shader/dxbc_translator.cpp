@@ -28,6 +28,10 @@ REXCVAR_DEFINE_BOOL(dxbc_switch, true, "GPU/Shader", "Use switch statements in D
 
 REXCVAR_DEFINE_BOOL(dxbc_source_map, false, "GPU/Shader", "Generate source maps for DXBC");
 
+REXCVAR_DEFINE_BOOL(dxbc_fm2_scale_overbright_texcoord4, false, "GPU/Shader",
+                    "Scale FM2 overbright TEXCOORD4 diagnostic shader input")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 namespace rex::graphics {
 using namespace ucode;
 
@@ -108,6 +112,8 @@ uint64_t DxbcShaderTranslator::GetDefaultPixelShaderModification(
   shader_modification.pixel.dynamic_addressable_register_count = dynamic_addressable_register_count;
   shader_modification.pixel.interpolator_mask = (UINT32_C(1) << xenos::kMaxInterpolators) - 1;
   shader_modification.pixel.depth_stencil_mode = Modification::DepthStencilMode::kNoModifiers;
+  shader_modification.pixel.rt0_blend_rgb_factor_for_premult = xenos::BlendFactor::kOne;
+  shader_modification.pixel.rt0_blend_a_factor_for_premult = xenos::BlendFactor::kOne;
   return shader_modification.value;
 }
 
@@ -637,6 +643,15 @@ void DxbcShaderTranslator::StartPixelShader() {
                  ? dxbc::Src::V1D(in_reg_ps_interpolators_ +
                                   rex::bit_count(interpolator_mask & ((UINT32_C(1) << i) - 1)))
                  : dxbc::Src::LF(0.0f));
+  }
+  if (REXCVAR_GET(dxbc_fm2_scale_overbright_texcoord4) &&
+      current_shader().ucode_data_hash() == UINT64_C(0x0A9AB4E93B7E98B5) &&
+      register_count() > 4 && param_gen_interpolator != 4) {
+    a_.OpMul(uses_register_dynamic_addressing ? dxbc::Dest::X(0, 4, 0b0111)
+                                              : dxbc::Dest::R(4, 0b0111),
+             uses_register_dynamic_addressing ? dxbc::Src::X(0, 4, dxbc::Src::kXYZW)
+                                              : dxbc::Src::R(4),
+             dxbc::Src::LF(0.125f));
   }
 
   // Write the pixel parameters to the specified interpolator register

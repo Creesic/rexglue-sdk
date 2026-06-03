@@ -1,0 +1,381 @@
+/**
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2025 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ */
+
+/**
+ * DXBC to DXIL converter implementation
+ * Uses the in-process dxilconv library on macOS.
+ */
+
+#include <rex/graphics/metal/dxbc_to_dxil_converter.h>
+
+#include <unistd.h>
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+
+#include "dxcapi.h"
+#include "DxbcConverter.h"
+
+#include <rex/logging.h>
+
+namespace rex {
+namespace graphics {
+namespace metal {
+
+namespace {
+constexpr wchar_t kDefaultExtraOptions[] = L"-skip-container-parts";
+constexpr const char* kDxbcToDxilCliEnv = "REX_DXBC2DXIL_PATH";
+
+extern "C" HRESULT DxilConvCreateInstance(void** ppv);
+
+std::wstring WidenAscii(const std::string& value) {
+  std::wstring out;
+  out.reserve(value.size());
+  for (char c : value) {
+    out.push_back(static_cast<wchar_t>(c));
+  }
+  return out;
+}
+
+std::string HResultHex(HRESULT hr) {
+  char buffer[11];
+  std::snprintf(buffer, sizeof(buffer), "%08X", static_cast<unsigned>(hr));
+  return std::string(buffer);
+}
+
+struct ThreadConverter {
+  IDxbcConverter* converter = nullptr;
+  ~ThreadConverter() {
+    if (converter) {
+      converter->Release();
+    }
+  }
+};
+
+std::string NarrowAscii(const std::wstring& value) {
+  std::string out;
+  out.reserve(value.size());
+  for (wchar_t c : value) {
+    out.push_back(static_cast<char>(c));
+  }
+  return out;
+}
+
+bool IsExecutableFile(const std::filesystem::path& path) {
+  std::error_code ec;
+  return std::filesystem::is_regular_file(path, ec) && access(path.c_str(), X_OK) == 0;
+}
+
+std::string QuoteShell(const std::filesystem::path& path) {
+  std::string s = path.string();
+  std::string out;
+  out.reserve(s.size() + 2);
+  out.push_back('\'');
+  for (char c : s) {
+    if (c == '\'') {
+      out += "'\\''";
+    } else {
+      out.push_back(c);
+    }
+  }
+  out.push_back('\'');
+  return out;
+}
+
+std::string QuoteShell(const std::string& value) {
+  return QuoteShell(std::filesystem::path(value));
+}
+
+std::string FindDxbcToDxilCliPath() {
+  if (const char* env_path = std::getenv(kDxbcToDxilCliEnv)) {
+    if (*env_path && IsExecutableFile(env_path)) {
+      return env_path;
+    }
+  }
+
+  const std::filesystem::path repo_root = std::filesystem::path(__FILE__).parent_path()
+      .parent_path().parent_path().parent_path();
+  const std::filesystem::path home = std::getenv("HOME") ? std::getenv("HOME") : "";
+  const std::filesystem::path cwd = std::filesystem::current_path();
+
+  const std::filesystem::path candidates[] = {
+      repo_root / "thirdparty" / "dxilconv" / "bin" / "dxbc2dxil",
+      repo_root.parent_path() / "xenia-mac" / "third_party" / "DirectXShaderCompiler" /
+          "build_dxilconv_macos" / "bin" / "dxbc2dxil",
+      cwd / "thirdparty" / "dxilconv" / "bin" / "dxbc2dxil",
+      home / "Documents" / "GitHub" / "xenia-mac" / "third_party" / "DirectXShaderCompiler" /
+          "build_dxilconv_macos" / "bin" / "dxbc2dxil",
+  };
+
+  for (const auto& candidate : candidates) {
+    if (IsExecutableFile(candidate)) {
+      return candidate.string();
+    }
+  }
+
+  return {};
+}
+}  // namespace
+
+DxbcToDxilConverter::DxbcToDxilConverter() = default;
+
+DxbcToDxilConverter::~DxbcToDxilConverter() = default;
+
+bool DxbcToDxilConverter::Initialize() {
+  const char* extra_options = std::getenv("XENIA_DXBC2DXIL_FLAGS");
+  if (extra_options) {
+    extra_options_ = WidenAscii(extra_options);
+  } else {
+    extra_options_ = kDefaultExtraOptions;
+  }
+
+  IDxbcConverter* test_converter = nullptr;
+  HRESULT hr = DxilConvCreateInstance(reinterpret_cast<void**>(&test_converter));
+  if (hr != S_OK || !test_converter) {
+    cli_fallback_path_ = FindDxbcToDxilCliPath();
+    if (!cli_fallback_path_.empty()) {
+      use_cli_fallback_ = true;
+      is_available_ = true;
+      REXLOG_WARN(
+          "DxbcToDxilConverter: Falling back to dxbc2dxil CLI at {} after "
+          "IDxbcConverter creation failed (hr=0x{:08X})",
+          cli_fallback_path_, static_cast<unsigned>(hr));
+    } else {
+      REXLOG_ERROR("DxbcToDxilConverter: Failed to create IDxbcConverter (hr=0x{:08X})",
+             static_cast<unsigned>(hr));
+      is_available_ = false;
+      return false;
+    }
+  } else {
+    test_converter->Release();
+    use_cli_fallback_ = false;
+    is_available_ = true;
+  }
+
+  if (extra_options && *extra_options) {
+    REXLOG_INFO("DxbcToDxilConverter: Using extra options: {}", extra_options);
+  } else if (extra_options && !*extra_options) {
+    REXLOG_INFO("DxbcToDxilConverter: Extra options disabled via env");
+  } else {
+    REXLOG_INFO(
+        "DxbcToDxilConverter: Using default extra options: "
+        "-skip-container-parts");
+  }
+  return true;
+}
+
+bool DxbcToDxilConverter::Convert(const std::vector<uint8_t>& dxbc_data,
+                                  std::vector<uint8_t>& dxil_data_out,
+                                  std::string* error_message) {
+  if (!is_available_) {
+    if (error_message) {
+      *error_message =
+          "DxbcToDxilConverter not initialized or dxilconv unavailable";
+    }
+    return false;
+  }
+
+  // Validate DXBC header
+  if (dxbc_data.size() < 4 || dxbc_data[0] != 'D' || dxbc_data[1] != 'X' ||
+      dxbc_data[2] != 'B' || dxbc_data[3] != 'C') {
+    if (error_message) {
+      *error_message = "Invalid DXBC data - missing DXBC magic header";
+    }
+    return false;
+  }
+
+  // Check for debug output directories from environment
+  const char* dxbc_dir = std::getenv("XENIA_DXBC_OUTPUT_DIR");
+  const char* dxil_dir = std::getenv("XENIA_DXIL_OUTPUT_DIR");
+
+  // Generate unique shader ID based on data hash
+  uint64_t hash = 0;
+  const size_t hash_bytes = std::min(dxbc_data.size(), size_t(64));
+  for (size_t i = 0; i < hash_bytes; ++i) {
+    hash = hash * 31 + dxbc_data[i];
+  }
+  std::string shader_id = std::to_string(hash) + "_" + std::to_string(getpid());
+
+  // Save DXBC to debug directory if requested.
+  if (dxbc_dir) {
+    std::string debug_input =
+        std::string(dxbc_dir) + "/shader_" + shader_id + ".dxbc";
+    WriteFile(debug_input, dxbc_data);
+  }
+
+  if (use_cli_fallback_) {
+    if (!ConvertViaCommandLine(dxbc_data, dxil_data_out, shader_id, error_message)) {
+      return false;
+    }
+  } else {
+    IDxbcConverter* converter = GetThreadConverter(error_message);
+    if (!converter) {
+      return false;
+    }
+
+    void* dxil_ptr = nullptr;
+    UINT32 dxil_size = 0;
+    wchar_t* diag = nullptr;
+
+    HRESULT hr = converter->Convert(
+        dxbc_data.data(), static_cast<UINT32>(dxbc_data.size()),
+        extra_options_.empty() ? nullptr : extra_options_.c_str(), &dxil_ptr,
+        &dxil_size, &diag);
+
+    if (hr != S_OK || dxil_ptr == nullptr || dxil_size == 0) {
+      if (error_message) {
+        if (diag) {
+          std::string diag_utf8;
+          for (const wchar_t* p = diag; *p; ++p) {
+            diag_utf8.push_back(static_cast<char>(*p));
+          }
+          *error_message = "dxbc2dxil failed: " + diag_utf8;
+        } else {
+          *error_message = "dxbc2dxil failed with HRESULT 0x" + HResultHex(hr);
+        }
+      }
+      CoTaskMemFree(diag);
+      CoTaskMemFree(dxil_ptr);
+      return false;
+    }
+
+    dxil_data_out.assign(reinterpret_cast<const uint8_t*>(dxil_ptr),
+                         reinterpret_cast<const uint8_t*>(dxil_ptr) + dxil_size);
+
+    CoTaskMemFree(diag);
+    CoTaskMemFree(dxil_ptr);
+  }
+
+  // Copy to debug directory if specified.
+  if (dxil_dir) {
+    std::string debug_output =
+        std::string(dxil_dir) + "/shader_" + shader_id + ".dxil";
+    WriteFile(debug_output, dxil_data_out);
+  }
+
+  // Validate DXIL header (DXBC magic for container, or DXIL for raw).
+  if (dxil_data_out.size() < 4) {
+    if (error_message) {
+      *error_message = "Output DXIL blob too small";
+    }
+    return false;
+  }
+
+  REXLOG_DEBUG(
+      "DxbcToDxilConverter: Successfully converted {} bytes DXBC to {} bytes "
+      "DXIL",
+      dxbc_data.size(), dxil_data_out.size());
+
+  return true;
+}
+
+bool DxbcToDxilConverter::ConvertViaCommandLine(
+    const std::vector<uint8_t>& dxbc_data, std::vector<uint8_t>& dxil_data_out,
+    const std::string& shader_id, std::string* error_message) {
+  namespace fs = std::filesystem;
+
+  std::error_code ec;
+  fs::path temp_dir = fs::temp_directory_path(ec);
+  if (ec) {
+    temp_dir = fs::current_path();
+  }
+  fs::path base = temp_dir / ("rex_dxbc2dxil_" + shader_id);
+  fs::path input_path = base;
+  input_path += ".dxbc";
+  fs::path output_path = base;
+  output_path += ".dxil";
+  fs::path log_path = base;
+  log_path += ".log";
+
+  if (!WriteFile(input_path.string(), dxbc_data)) {
+    if (error_message) {
+      *error_message = "Failed to write temporary DXBC input file";
+    }
+    return false;
+  }
+
+  std::string command = QuoteShell(cli_fallback_path_) + " " + QuoteShell(input_path) +
+                        " -o " + QuoteShell(output_path);
+  std::string extra_options = NarrowAscii(extra_options_);
+  if (extra_options.find("skip-container-parts") != std::string::npos) {
+    command += " --skip-container-parts";
+  }
+  command += " > " + QuoteShell(log_path) + " 2>&1";
+
+  int exit_code = std::system(command.c_str());
+  if (exit_code != 0) {
+    std::ifstream log_file(log_path, std::ios::binary);
+    std::string log((std::istreambuf_iterator<char>(log_file)),
+                    std::istreambuf_iterator<char>());
+    if (error_message) {
+      *error_message = "dxbc2dxil CLI failed with exit code " +
+                       std::to_string(exit_code) +
+                       (log.empty() ? "" : (": " + log));
+    }
+    fs::remove(input_path, ec);
+    fs::remove(output_path, ec);
+    fs::remove(log_path, ec);
+    return false;
+  }
+
+  std::ifstream output_file(output_path, std::ios::binary);
+  if (!output_file) {
+    if (error_message) {
+      *error_message = "dxbc2dxil CLI produced no output file";
+    }
+    fs::remove(input_path, ec);
+    fs::remove(output_path, ec);
+    fs::remove(log_path, ec);
+    return false;
+  }
+  dxil_data_out.assign(std::istreambuf_iterator<char>(output_file),
+                       std::istreambuf_iterator<char>());
+
+  fs::remove(input_path, ec);
+  fs::remove(output_path, ec);
+  fs::remove(log_path, ec);
+  return true;
+}
+
+IDxbcConverter* DxbcToDxilConverter::GetThreadConverter(
+    std::string* error_message) {
+  static thread_local ThreadConverter thread_state;
+  if (thread_state.converter) {
+    return thread_state.converter;
+  }
+
+   HRESULT hr =
+       DxilConvCreateInstance(reinterpret_cast<void**>(&thread_state.converter));
+  if (hr != S_OK || !thread_state.converter) {
+    if (error_message) {
+      *error_message =
+          "Failed to create IDxbcConverter (HRESULT 0x" + HResultHex(hr) + ")";
+    }
+    return nullptr;
+  }
+  return thread_state.converter;
+}
+
+bool DxbcToDxilConverter::WriteFile(const std::string& path,
+                                    const std::vector<uint8_t>& data) {
+  std::ofstream file(path, std::ios::binary);
+  if (!file) {
+    return false;
+  }
+
+  file.write(reinterpret_cast<const char*>(data.data()), data.size());
+  return file.good();
+}
+
+}  // namespace metal
+}  // namespace gpu
+}  // namespace xe

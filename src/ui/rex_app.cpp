@@ -11,6 +11,8 @@
 
 #include <rex/rex_app.h>
 
+#include <cstdio>
+
 #include <rex/cvar.h>
 #include <rex/ui/flags.h>
 #include <rex/kernel/crt/heap.h>
@@ -26,6 +28,9 @@
 #endif
 #if REX_HAS_D3D12
 #include <rex/graphics/d3d12/graphics_system.h>
+#endif
+#if REX_HAS_METAL
+#include <rex/graphics/metal/graphics_system.h>
 #endif
 #include <rex/audio/audio_system.h>
 #include <rex/audio/sdl/sdl_audio_system.h>
@@ -263,6 +268,8 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
 bool ReXApp::SetupPresentation() {
 #if REX_HAS_D3D12
   config_.graphics = REX_GRAPHICS_BACKEND(rex::graphics::d3d12::D3D12GraphicsSystem);
+#elif REX_HAS_METAL
+  config_.graphics = REX_GRAPHICS_BACKEND(rex::graphics::metal::MetalGraphicsSystem);
 #elif REX_HAS_VULKAN
   config_.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
 #endif
@@ -271,6 +278,10 @@ bool ReXApp::SetupPresentation() {
   config_.kernel_init = rex::kernel::InitializeKernel;
 
   OnPreSetup(config_);
+  std::fprintf(stderr, "[probe] ReXApp::SetupPresentation graphics=%d audio_factory=%d input_factory=%d\n",
+               config_.graphics ? 1 : 0, config_.audio_factory ? 1 : 0,
+               config_.input_factory ? 1 : 0);
+  std::fflush(stderr);
 
   if (config_.graphics) {
     X_STATUS status = config_.graphics->SetupPresentation(&app_context());
@@ -293,6 +304,14 @@ bool ReXApp::SetupPresentation() {
 
   window_->AddListener(this);
   window_->AddInputListener(this, 0);
+  std::fprintf(stderr, "[probe] ReXApp::SetupPresentation window=%p presenter_ready=%d\n",
+               static_cast<void*>(window_.get()),
+               config_.graphics &&
+                       static_cast<rex::graphics::GraphicsSystem*>(config_.graphics.get())
+                           ->presenter()
+                   ? 1
+                   : 0);
+  std::fflush(stderr);
 
   if (REXCVAR_GET(fullscreen)) {
     window_->SetFullscreen(true);
@@ -338,6 +357,9 @@ bool ReXApp::SetupPresentation() {
       }
     }
     window_->SetPresenter(presenter);
+    if (presenter) {
+      window_->RequestPaint();
+    }
   }
 
   return true;

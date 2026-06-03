@@ -14,22 +14,31 @@
 # runtime DLL staging is the host's job (see rexglue_configure_target).
 #==========================================================
 function(rexglue_apply_target_settings target_name)
+    set(_rexglue_target_processor "${REXGLUE_SYSTEM_PROCESSOR}")
+    if(NOT _rexglue_target_processor)
+        if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+            list(GET CMAKE_OSX_ARCHITECTURES 0 _rexglue_target_processor)
+        else()
+            set(_rexglue_target_processor "${CMAKE_SYSTEM_PROCESSOR}")
+        endif()
+    endif()
+
     if(UNIX AND NOT APPLE)
         find_package(PkgConfig REQUIRED)
         pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
         target_include_directories(${target_name} PRIVATE ${GTK3_INCLUDE_DIRS})
         target_link_libraries(${target_name} PRIVATE ${GTK3_LIBRARIES})
         # Large executable support
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        if(_rexglue_target_processor MATCHES "x86_64|AMD64")
             target_link_options(${target_name} PRIVATE -Wl,--no-relax)
             target_compile_options(${target_name} PRIVATE -mcmodel=large)
-        elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+        elseif(_rexglue_target_processor MATCHES "aarch64|ARM64|arm64")
             target_compile_options(${target_name} PRIVATE -march=armv8-a)
         endif()
     endif()
 
     if(NOT MSVC)
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        if(_rexglue_target_processor MATCHES "x86_64|AMD64")
             target_compile_options(${target_name} PRIVATE -msse4.1)
         endif()
     endif()
@@ -42,15 +51,30 @@ endfunction()
 #   - Platform entry point source (windowed_app_main_*.cpp)
 #   - ReXApp base class source (rex_app.cpp)
 #   - Build-config define for the version stamp
-#   - $ORIGIN RPATH on UNIX so the host finds librexruntime.so next to itself
+#   - Build/install RPATH on UNIX so the host finds librexruntime next to itself
 #   - Windows POST_BUILD copy of TARGET_RUNTIME_DLLS and the FidelityFX DLLs.
 #     Guest modules colocate with the host (see rexglue_configure_module_target),
 #     so this single copy handles them transitively.
 #==========================================================
 function(rexglue_configure_target target_name)
+    set(_rexglue_install_libdir "${CMAKE_INSTALL_LIBDIR}")
+    if(NOT _rexglue_install_libdir)
+        set(_rexglue_install_libdir "lib")
+    endif()
+    set(_rexglue_build_rpath "")
+    if(DEFINED REXGLUE_ROOT AND DEFINED REX_PLATFORM)
+        list(APPEND _rexglue_build_rpath
+            "${REXGLUE_ROOT}/out/${REX_PLATFORM}/$<CONFIG>"
+            "${REXGLUE_ROOT}/out/${REX_PLATFORM}")
+    endif()
+    list(APPEND _rexglue_build_rpath "$<TARGET_FILE_DIR:rex::runtime>")
+
     if(WIN32)
         target_sources(${target_name} PRIVATE
             ${REXGLUE_SHARE_DIR}/windowed_app_main_win.cpp)
+    elseif(APPLE)
+        target_sources(${target_name} PRIVATE
+            ${REXGLUE_SHARE_DIR}/windowed_app_main_mac.mm)
     else()
         target_sources(${target_name} PRIVATE
             ${REXGLUE_SHARE_DIR}/windowed_app_main_posix.cpp)
@@ -62,7 +86,12 @@ function(rexglue_configure_target target_name)
     target_compile_definitions(${target_name} PRIVATE
         REXGLUE_BUILD_CONFIG="$<CONFIG>")
 
-    if(UNIX AND NOT APPLE)
+    if(APPLE)
+        set_target_properties(${target_name} PROPERTIES
+            BUILD_RPATH "${_rexglue_build_rpath}"
+            INSTALL_RPATH "@loader_path;@loader_path/../${_rexglue_install_libdir}"
+        )
+    elseif(UNIX AND NOT APPLE)
         set_target_properties(${target_name} PROPERTIES
             INSTALL_RPATH "$ORIGIN"
             BUILD_WITH_INSTALL_RPATH ON

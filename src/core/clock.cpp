@@ -16,6 +16,7 @@
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
 #include <rex/math.h>
+#include <rex/thread.h>  // TEMP_DIAG: for current_thread_system_id() in gap timer tracing
 
 REXCVAR_DEFINE_BOOL(clock_no_scaling, false, "Clock",
                     "Disable clock scaling (inverted: false = scaling enabled)");
@@ -155,8 +156,27 @@ void Clock::set_guest_system_time_base(uint64_t time_base) {
   guest_system_time_base_ = time_base;
 }
 
+// TEMP_DIAG: Bridge declarations for gap timer tracing
+extern "C" {
+bool xma_gap_diag_gap_active();
+uint32_t xma_gap_diag_get_native_tid();
+void xma_gap_diag_log_timebase(uint64_t value);
+}
+// END TEMP_DIAG
+
 uint64_t Clock::QueryGuestTickCount() {
   auto guest_tick_count = UpdateGuestClock();
+  // TEMP_DIAG: log timebase reads from FMOD thread during gap
+  // This catches REX_QUERY_TIMEBASE (mftb/mftbu) calls from generated code
+  {
+    if (xma_gap_diag_gap_active()) {
+      uint32_t my_tid = rex::thread::current_thread_system_id();
+      if (my_tid == xma_gap_diag_get_native_tid()) {
+        xma_gap_diag_log_timebase(guest_tick_count);
+      }
+    }
+  }
+  // END TEMP_DIAG
   return guest_tick_count;
 }
 

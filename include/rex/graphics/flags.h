@@ -78,6 +78,7 @@ REXCVAR_DECLARE(bool, use_fuzzy_alpha_epsilon);
 REXCVAR_DECLARE(std::string, dump_shaders);
 REXCVAR_DECLARE(bool, dxbc_switch);
 REXCVAR_DECLARE(bool, dxbc_source_map);
+REXCVAR_DECLARE(bool, dxbc_fm2_scale_overbright_texcoord4);
 REXCVAR_DECLARE(std::string, trace_gpu_prefix);
 REXCVAR_DECLARE(bool, trace_gpu_stream);
 REXCVAR_DECLARE(std::string, swap_post_effect);
@@ -106,8 +107,28 @@ REXCVAR_DECLARE(int32_t, d3d12_pipeline_creation_threads);
 REXCVAR_DECLARE(bool, d3d12_tessellation_wireframe);
 REXCVAR_DECLARE(bool, d3d12_tiled_shared_memory);
 REXCVAR_DECLARE(std::string, render_target_path_d3d12);
+REXCVAR_DECLARE(bool, d3d12_ignore_8bit_color_exp_bias);
+REXCVAR_DECLARE(bool, d3d12_invert_8bit_color_exp_bias);
 // Legacy backend compatibility aliases for shared readback controls.
 REXCVAR_DECLARE(bool, d3d12_readback_memexport);
 REXCVAR_DECLARE(bool, d3d12_readback_resolve);
+
+// Metal
+REXCVAR_DECLARE(bool, metal_shader_disk_cache);
+REXCVAR_DECLARE(bool, metal_pipeline_binary_archive);
+REXCVAR_DECLARE(bool, metal_pipeline_disk_cache);
+REXCVAR_DECLARE(bool, metal_use_heaps);
+REXCVAR_DECLARE(bool, metal_shared_memory_zero_copy);
+REXCVAR_DECLARE(int32_t, metal_heap_min_bytes);
+REXCVAR_DECLARE(bool, metal_texture_cache_use_private);
+REXCVAR_DECLARE(bool, metal_texture_upload_via_blit);
+REXCVAR_DECLARE(int32_t, metal_pipeline_creation_threads);
+REXCVAR_DECLARE(bool, metal_force_bc_decompress);
+REXCVAR_DECLARE(bool, metal_transfer_fast_divmod);
+REXCVAR_DECLARE(bool, metal_transfer_msaa_sample_id);
+REXCVAR_DECLARE(bool, metal_transfer_tile_instancing);
+REXCVAR_DECLARE(int32_t, metal_memory_log_rate);
+REXCVAR_DECLARE(bool, submit_on_primary_buffer_end);
+REXCVAR_DECLARE(bool, metal_allow_gamma_unorm16);
 
 #define XE_GPU_FINE_GRAINED_DRAW_SCOPES 1

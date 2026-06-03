@@ -25,6 +25,10 @@ if(REXGLUE_USE_VULKAN)
     )
 endif()
 
+if(REXGLUE_USE_METAL)
+    # Metal uses dxilconv + metalirconverter rather than the Vulkan SPIR-V path.
+endif()
+
 if(REXGLUE_USE_D3D12)
     list(APPEND REXGLUE_INSTALL_TARGETS dxc-headers)
 endif()
@@ -113,12 +117,52 @@ if(REXGLUE_USE_VULKAN)
 endif()
 
 # Install platform entry point sources and ReXApp for SDK consumers
-install(FILES
+set(REXGLUE_ENTRYPOINT_SOURCES
     src/ui/windowed_app_main_win.cpp
     src/ui/windowed_app_main_posix.cpp
     src/ui/rex_app.cpp
+)
+if(EXISTS "${CMAKE_SOURCE_DIR}/src/ui/windowed_app_main_mac.mm")
+    list(APPEND REXGLUE_ENTRYPOINT_SOURCES src/ui/windowed_app_main_mac.mm)
+endif()
+install(FILES ${REXGLUE_ENTRYPOINT_SOURCES}
     DESTINATION ${CMAKE_INSTALL_DATADIR}/rexglue
 )
+
+if(REXGLUE_USE_METAL)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/thirdparty/metal-cpp/Foundation")
+        install(DIRECTORY thirdparty/metal-cpp/Foundation
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+        install(DIRECTORY thirdparty/metal-cpp/QuartzCore
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+        install(DIRECTORY thirdparty/metal-cpp/Metal
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.hpp"
+        )
+    endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/thirdparty/metal-shader-converter/include")
+        install(DIRECTORY thirdparty/metal-shader-converter/include/
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.h"
+        )
+    endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/thirdparty/dxilconv/include")
+        install(DIRECTORY thirdparty/dxilconv/include/
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+            FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
+        )
+    endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/src/graphics/metal/metal_cpp_impl.cpp")
+        install(FILES
+            src/graphics/metal/metal_cpp_impl.cpp
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/rexglue
+        )
+    endif()
+endif()
 
 # Install DXC API headers (vendored, for D3D12 backend)
 if(REXGLUE_USE_D3D12)

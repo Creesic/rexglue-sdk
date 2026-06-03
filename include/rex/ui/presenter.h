@@ -697,6 +697,10 @@ class Presenter {
   // Call via PaintAndPresent.
   virtual PaintResult PaintAndPresentImpl(bool execute_ui_drawers) = 0;
 
+  // When true, the UI thread keeps repainting even without overlays or guest
+  // output (for host-side bring-up tests such as the Metal rainbow cube).
+  virtual bool WantsContinuousUIPaintFromUIThread() const { return false; }
+
   // For calling from the painting implementations if requested.
   void ExecuteUIDrawersFromUIThread(UIDrawContext& ui_draw_context);
 

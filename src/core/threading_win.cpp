@@ -85,7 +85,7 @@ void set_current_thread_name(const std::string_view name) {
 }
 
 void MaybeYield() {
-  SwitchToThread();
+  ::Sleep(0);
   MemoryBarrier();
 }
 

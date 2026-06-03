@@ -42,6 +42,7 @@ namespace rex {
 namespace runtime {
 class FunctionDispatcher;
 class ExportResolver;
+void TraceGuestStore(uint32_t address, uint32_t size, uint64_t value, const char* function_name);
 }  // namespace runtime
 namespace system {
 class KernelState;

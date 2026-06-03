@@ -13,6 +13,8 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
 #include <cstring>
+#include <chrono>
+#include <thread>
 
 #include <rex/cvar.h>
 #include <rex/kernel/xam/private.h>
@@ -26,6 +28,7 @@
 #include <rex/system/xenumerator.h>
 #include <rex/system/xio.h>
 #include <rex/system/xthread.h>
+#include <rex/thread.h>
 #include <rex/system/xtypes.h>
 
 REXCVAR_DEFINE_UINT32(user_language, 1, "Kernel", "User's language ID");
@@ -476,15 +479,18 @@ u32 XamUserAreUsersFriends_entry(u32 user_index, u32 unk1, u32 unk2, mapped_u32 
 }
 
 u32 XamShowSigninUI_entry(u32 unk, u32 unk_mask) {
-  // Mask values vary. Probably matching user types? Local/remote?
+  auto* kernel_state = REX_KERNEL_STATE();
 
-  // To fix game modes that display a 4 profile signin UI (even if playing
-  // alone):
-  // XN_SYS_SIGNINCHANGED
-  REX_KERNEL_STATE()->BroadcastNotification(0x0000000A, 1);
-  // Games seem to sit and loop until we trigger this notification:
-  // XN_SYS_UI (off)
-  REX_KERNEL_STATE()->BroadcastNotification(0x00000009, 0);
+  // Fire XN_SYS_UI on immediately, then defer SIGNINCHANGED + UI off
+  // so the game has time to set up its notification listener.
+  kernel_state->BroadcastNotification(0x00000009, 1);
+
+  std::thread([kernel_state]() {
+    rex::thread::Sleep(std::chrono::milliseconds(100));
+    kernel_state->BroadcastNotification(0x0000000A, 1);
+    kernel_state->BroadcastNotification(0x00000009, 0);
+  }).detach();
+
   return X_ERROR_SUCCESS;
 }
 

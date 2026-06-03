@@ -51,6 +51,10 @@ macro(rexglue_setup_target target_name)
     )
     target_link_libraries({{ cmake_var("target_name") }} PRIVATE rex::runtime)
     rexglue_configure_target({{ cmake_var("target_name") }})
+    if(APPLE AND REXSDK_DIR AND DEFINED REX_PLATFORM)
+        set_property(TARGET {{ cmake_var("target_name") }} PROPERTY BUILD_RPATH
+            "{{ cmake_var("REXSDK_DIR") }}/out/{{ cmake_var("REX_PLATFORM") }}/$<CONFIG>;{{ cmake_var("REXSDK_DIR") }}/out/{{ cmake_var("REX_PLATFORM") }}")
+    endif()
 endmacro()
 
 # Include DLL module shared library targets if codegen has generated them

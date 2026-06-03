@@ -12,6 +12,7 @@
 // Disable warnings about unused parameters for kernel functions
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
+#include <cstdio>
 #include <algorithm>
 #include <string>
 
@@ -286,6 +287,14 @@ u32 VdInitializeEngines_entry(u32 unk0, u32 callback, mapped_void arg, mapped_u3
   // r5 = function arg
   // r6 = PFP Microcode
   // r7 = ME Microcode
+  if (REXCVAR_QUERY(bool, metal_present_probe)) {
+    static uint32_t vd_init_probe_count = 0;
+    if (vd_init_probe_count < 4) {
+      ++vd_init_probe_count;
+      REXLOG_WARN("VdInitializeEngines callback={:08X} arg={:08X} pfp={:08X} me={:08X}", callback,
+                  arg.guest_address(), pfp_ptr.guest_address(), me_ptr.guest_address());
+    }
+  }
   return 1;
 }
 
@@ -325,6 +334,9 @@ void VdInitializeRingBuffer_entry(mapped_void ptr, i32 size_log2) {
       static_cast<graphics::GraphicsSystem*>(REX_KERNEL_STATE()->emulator()->graphics_system());
   if (!graphics_system)
     return;
+  std::fprintf(stderr, "[probe] VdInitializeRingBuffer ptr=%08X size_log2=%d\n",
+               ptr.guest_address(), int(size_log2));
+  std::fflush(stderr);
   graphics_system->InitializeRingBuffer(ptr.guest_address(), size_log2);
 }
 
@@ -334,10 +346,26 @@ void VdEnableRingBufferRPtrWriteBack_entry(mapped_void ptr, i32 block_size_log2)
       static_cast<graphics::GraphicsSystem*>(REX_KERNEL_STATE()->emulator()->graphics_system());
   if (!graphics_system)
     return;
+  if (REXCVAR_QUERY(bool, metal_present_probe)) {
+    static uint32_t vd_rptr_probe_count = 0;
+    if (vd_rptr_probe_count < 8) {
+      ++vd_rptr_probe_count;
+      REXLOG_WARN("VdEnableRingBufferRPtrWriteBack ptr={:08X} block_size_log2={}",
+                  ptr.guest_address(), block_size_log2);
+    }
+  }
   graphics_system->EnableReadPointerWriteBack(ptr.guest_address(), block_size_log2);
 }
 
 void VdGetSystemCommandBuffer_entry(mapped_void p0_ptr, mapped_void p1_ptr) {
+  if (REXCVAR_QUERY(bool, metal_present_probe)) {
+    static uint32_t vd_syscmd_probe_count = 0;
+    if (vd_syscmd_probe_count < 16) {
+      ++vd_syscmd_probe_count;
+      REXLOG_WARN("VdGetSystemCommandBuffer out0={:08X} out1={:08X}", p0_ptr.guest_address(),
+                  p1_ptr.guest_address());
+    }
+  }
   p0_ptr.Zero(0x94);
   memory::store_and_swap<uint32_t>(p0_ptr, 0xBEEF0000);
   memory::store_and_swap<uint32_t>(p1_ptr, 0xBEEF0001);
@@ -474,6 +502,18 @@ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
   assert_true(color_space == 0);  // RGB(0)
   assert_true(*width == 1 + gpu_fetch.size_2d.width);
   assert_true(*height == 1 + gpu_fetch.size_2d.height);
+
+  if (REXCVAR_QUERY(bool, metal_present_probe)) {
+    static uint32_t vd_swap_probe_count = 0;
+    if (vd_swap_probe_count < 16) {
+      ++vd_swap_probe_count;
+      REXLOG_WARN(
+          "VdSwap_entry virt={:08X} phys={:08X} {}x{} fmt={} color_space={} buffer={:08X}",
+          frontbuffer_virtual_address, frontbuffer_physical_address, width.value(),
+          height.value(), int(texture_format), static_cast<uint32_t>(color_space),
+          buffer_ptr.guest_address());
+    }
+  }
 
   // The caller seems to reserve 64 words (256b) in the primary ringbuffer
   // for this method to do what it needs. We just zero them out and send a

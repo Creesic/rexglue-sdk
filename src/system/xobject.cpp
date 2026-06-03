@@ -209,8 +209,8 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
   }
 
   auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
-                                      TimeoutTicksToMs(*opt_timeout)))
-                                : std::chrono::milliseconds::max();
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
 
   auto result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
   switch (result) {
@@ -234,12 +234,12 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, ui
                                 uint32_t processor_mode, uint32_t alertable,
                                 uint64_t* opt_timeout) {
   auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
-                                      TimeoutTicksToMs(*opt_timeout)))
-                                : std::chrono::milliseconds::max();
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
 
   auto result =
       rex::thread::SignalAndWait(signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
-                                 alertable ? true : false, timeout_ms);
+                                  alertable ? true : false, timeout_ms);
   switch (result) {
     case rex::thread::WaitResult::kSuccess:
       wait_object->WaitCallback();
@@ -267,8 +267,8 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
   }
 
   auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
-                                      TimeoutTicksToMs(*opt_timeout)))
-                                : std::chrono::milliseconds::max();
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
 
   if (wait_type) {
     auto result =

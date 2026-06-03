@@ -10,8 +10,10 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <string_view>
 
@@ -31,6 +33,7 @@
 #include <rex/math.h>
 #include <rex/memory.h>
 #include <rex/memory/ring_buffer.h>
+#include <rex/ppc/intrinsics.h>
 #include <rex/stream.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/user_module.h>
@@ -80,6 +83,39 @@ REXCVAR_DEFINE_BOOL(async_shader_compilation, true, "GPU",
                     "pipelines are being prepared.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(gpu_command_stats, true, "GPU/Diagnostics",
+                    "Log per-frame command processor statistics for diagnosing slow frames")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(gpu_command_stats_min_us, 25000, "GPU/Diagnostics",
+                      "Only log command processor frame statistics at or above this duration")
+    .range(0, 1000000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(gpu_command_stats_interval, 1, "GPU/Diagnostics",
+                      "Log every Nth qualifying command processor frame")
+    .range(1, 10000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(gpu_wait_reg_mem_yield_short_waits, true, "GPU/Diagnostics",
+                    "Use pause spins with occasional yields instead of sleeping for short "
+                    "WAIT_REG_MEM waits")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(gpu_wait_reg_mem_short_wait_yield_interval, 256, "GPU/Diagnostics",
+                      "Yield once every N failed polls for short WAIT_REG_MEM waits")
+    .range(1, 65536)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(gpu_mem_write_trace_addr, 0, "GPU/Diagnostics",
+                      "Physical memory address where GPU packet writes should be logged")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(gpu_mem_write_trace_size, 0, "GPU/Diagnostics",
+                      "Byte size of the GPU packet memory-write trace window")
+    .range(0, 4096)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace rex::graphics {
 
 using namespace rex::graphics::xenos;
@@ -97,6 +133,163 @@ ReadbackResolveMode ParseReadbackResolveMode(std::string_view value) {
     return ReadbackResolveMode::kFull;
   }
   return ReadbackResolveMode::kDisabled;
+}
+
+std::string Pm4OpcodeName(uint32_t opcode) {
+  switch (opcode) {
+    case PM4_ME_INIT:
+      return "ME_INIT";
+    case PM4_NOP:
+      return "NOP";
+    case PM4_INTERRUPT:
+      return "INTERRUPT";
+    case PM4_XE_SWAP:
+      return "XE_SWAP";
+    case PM4_INDIRECT_BUFFER:
+      return "IB";
+    case PM4_INDIRECT_BUFFER_PFD:
+      return "IB_PFD";
+    case PM4_WAIT_REG_MEM:
+      return "WAIT_REG_MEM";
+    case PM4_REG_RMW:
+      return "REG_RMW";
+    case PM4_REG_TO_MEM:
+      return "REG_TO_MEM";
+    case PM4_MEM_WRITE:
+      return "MEM_WRITE";
+    case PM4_COND_WRITE:
+      return "COND_WRITE";
+    case PM4_EVENT_WRITE:
+      return "EVENT_WRITE";
+    case PM4_EVENT_WRITE_SHD:
+      return "EVENT_WRITE_SHD";
+    case PM4_EVENT_WRITE_EXT:
+      return "EVENT_WRITE_EXT";
+    case PM4_EVENT_WRITE_ZPD:
+      return "EVENT_WRITE_ZPD";
+    case PM4_DRAW_INDX:
+      return "DRAW_INDX";
+    case PM4_DRAW_INDX_2:
+      return "DRAW_INDX_2";
+    case PM4_SET_CONSTANT:
+      return "SET_CONSTANT";
+    case PM4_SET_CONSTANT2:
+      return "SET_CONSTANT2";
+    case PM4_LOAD_ALU_CONSTANT:
+      return "LOAD_ALU_CONSTANT";
+    case PM4_SET_SHADER_CONSTANTS:
+      return "SET_SHADER_CONSTANTS";
+    case PM4_IM_LOAD:
+      return "IM_LOAD";
+    case PM4_IM_LOAD_IMMEDIATE:
+      return "IM_LOAD_IMMEDIATE";
+    case PM4_INVALIDATE_STATE:
+      return "INVALIDATE_STATE";
+    case PM4_VIZ_QUERY:
+      return "VIZ_QUERY";
+    case PM4_SET_BIN_MASK:
+      return "SET_BIN_MASK";
+    case PM4_SET_BIN_SELECT:
+      return "SET_BIN_SELECT";
+    case PM4_SET_BIN_MASK_LO:
+      return "SET_BIN_MASK_LO";
+    case PM4_SET_BIN_MASK_HI:
+      return "SET_BIN_MASK_HI";
+    case PM4_SET_BIN_SELECT_LO:
+      return "SET_BIN_SELECT_LO";
+    case PM4_SET_BIN_SELECT_HI:
+      return "SET_BIN_SELECT_HI";
+    case PM4_CONTEXT_UPDATE:
+      return "CONTEXT_UPDATE";
+    case PM4_WAIT_FOR_IDLE:
+      return "WAIT_FOR_IDLE";
+    default:
+      return fmt::format("0x{:02X}", opcode);
+  }
+}
+
+std::string FormatTopType3Opcodes(const std::array<uint64_t, 128>& opcode_counts) {
+  struct TopOpcode {
+    uint32_t opcode = 0;
+    uint64_t count = 0;
+  };
+
+  std::array<TopOpcode, 6> top = {};
+  for (uint32_t opcode = 0; opcode < opcode_counts.size(); ++opcode) {
+    uint64_t count = opcode_counts[opcode];
+    if (!count || count <= top.back().count) {
+      continue;
+    }
+    for (size_t index = 0; index < top.size(); ++index) {
+      if (count > top[index].count) {
+        for (size_t move = top.size() - 1; move > index; --move) {
+          top[move] = top[move - 1];
+        }
+        top[index] = {opcode, count};
+        break;
+      }
+    }
+  }
+
+  std::string result;
+  for (const TopOpcode& entry : top) {
+    if (!entry.count) {
+      continue;
+    }
+    if (!result.empty()) {
+      result += ", ";
+    }
+    result += fmt::format("{}={}", Pm4OpcodeName(entry.opcode), entry.count);
+  }
+  return result.empty() ? std::string("none") : result;
+}
+
+template <typename T>
+void AtomicMax(std::atomic<T>& target, T value) {
+  T current = target.load(std::memory_order_relaxed);
+  while (current < value &&
+         !target.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
+  }
+}
+
+std::string_view WaitRegMemConditionName(uint32_t wait_info) {
+  switch (wait_info & 0x7) {
+    case 0x0:
+      return "never";
+    case 0x1:
+      return "lt";
+    case 0x2:
+      return "le";
+    case 0x3:
+      return "eq";
+    case 0x4:
+      return "ne";
+    case 0x5:
+      return "ge";
+    case 0x6:
+      return "gt";
+    case 0x7:
+      return "always";
+    default:
+      return "?";
+  }
+}
+
+void TraceGpuMemoryWrite(const char* source, uint32_t address, uint32_t size, uint64_t value) {
+  uint32_t watch_addr = REXCVAR_GET(gpu_mem_write_trace_addr);
+  uint32_t watch_size = REXCVAR_GET(gpu_mem_write_trace_size);
+  if (!watch_size) {
+    return;
+  }
+  uint64_t write_start = address;
+  uint64_t write_end = write_start + size;
+  uint64_t watch_start = watch_addr;
+  uint64_t watch_end = watch_start + watch_size;
+  if (write_start >= watch_end || watch_start >= write_end) {
+    return;
+  }
+  REXGPU_ERROR("gpu_mem_write_watch source={} addr={:08X} size={} value={:016X}", source, address,
+               size, value);
 }
 
 }  // namespace
@@ -263,6 +456,393 @@ bool CommandProcessor::IsReadbackMemexportEnabled(bool legacy_backend_flag) cons
   return REXCVAR_GET(readback_memexport);
 }
 
+bool CommandProcessor::CommandStatsEnabled() const { return REXCVAR_GET(gpu_command_stats); }
+
+uint64_t CommandProcessor::QueryCommandStatsTick() const {
+  return rex::chrono::Clock::QueryHostTickCount();
+}
+
+uint64_t CommandProcessor::CommandStatsTicksToUs(uint64_t ticks) const {
+  uint64_t frequency = rex::chrono::Clock::QueryHostTickFrequency();
+  return frequency ? (ticks * 1000000) / frequency : 0;
+}
+
+uint32_t CommandProcessor::GetPrimaryBufferDwordCount(uint32_t read_index,
+                                                      uint32_t write_index) const {
+  uint32_t primary_dwords = primary_buffer_size_ / sizeof(uint32_t);
+  if (!primary_dwords) {
+    return 0;
+  }
+  if (write_index >= read_index) {
+    return write_index - read_index;
+  }
+  return primary_dwords - read_index + write_index;
+}
+
+void CommandProcessor::EnsureCommandStatsFrameStarted(uint64_t now_tick) {
+  if (!command_stats_frame_start_tick_) {
+    command_stats_frame_start_tick_ = now_tick;
+  }
+}
+
+uint64_t CommandProcessor::BeginCommandStatsPrimary(uint32_t read_index, uint32_t write_index) {
+  if (!CommandStatsEnabled()) {
+    return 0;
+  }
+  uint64_t now = QueryCommandStatsTick();
+  EnsureCommandStatsFrameStarted(now);
+  ++command_stats_.primary_buffers;
+  command_stats_.primary_dwords += GetPrimaryBufferDwordCount(read_index, write_index);
+  return now;
+}
+
+void CommandProcessor::EndCommandStatsPrimary(uint64_t start_tick) {
+  if (!start_tick) {
+    return;
+  }
+  command_stats_.primary_us += CommandStatsTicksToUs(QueryCommandStatsTick() - start_tick);
+}
+
+uint64_t CommandProcessor::BeginCommandStatsIndirect(uint32_t dword_count) {
+  if (!CommandStatsEnabled()) {
+    return 0;
+  }
+  uint64_t now = QueryCommandStatsTick();
+  EnsureCommandStatsFrameStarted(now);
+  ++command_stats_indirect_depth_;
+  ++command_stats_.indirect_buffers;
+  command_stats_.indirect_dwords += dword_count;
+  command_stats_.indirect_max_dwords =
+      std::max(command_stats_.indirect_max_dwords, dword_count);
+  command_stats_.indirect_max_depth =
+      std::max(command_stats_.indirect_max_depth, command_stats_indirect_depth_);
+  return now;
+}
+
+void CommandProcessor::EndCommandStatsIndirect(uint64_t start_tick) {
+  if (!start_tick) {
+    return;
+  }
+  command_stats_.indirect_us += CommandStatsTicksToUs(QueryCommandStatsTick() - start_tick);
+  assert_not_zero(command_stats_indirect_depth_);
+  --command_stats_indirect_depth_;
+}
+
+void CommandProcessor::RecordCommandStatsNullPacket() {
+  if (!CommandStatsEnabled()) {
+    return;
+  }
+  ++command_stats_.packets;
+  ++command_stats_.packet_null;
+  ++command_stats_.packet_dwords;
+}
+
+void CommandProcessor::RecordCommandStatsType0Packet(uint32_t dword_count) {
+  if (!CommandStatsEnabled()) {
+    return;
+  }
+  ++command_stats_.packets;
+  ++command_stats_.packet_type0;
+  command_stats_.packet_dwords += dword_count;
+}
+
+void CommandProcessor::RecordCommandStatsType1Packet() {
+  if (!CommandStatsEnabled()) {
+    return;
+  }
+  ++command_stats_.packets;
+  ++command_stats_.packet_type1;
+  command_stats_.packet_dwords += 3;
+}
+
+void CommandProcessor::RecordCommandStatsType2Packet() {
+  if (!CommandStatsEnabled()) {
+    return;
+  }
+  ++command_stats_.packets;
+  ++command_stats_.packet_type2;
+  ++command_stats_.packet_dwords;
+}
+
+void CommandProcessor::RecordCommandStatsType3Packet(uint32_t opcode, uint32_t dword_count) {
+  if (!CommandStatsEnabled()) {
+    return;
+  }
+  ++command_stats_.packets;
+  ++command_stats_.packet_type3;
+  command_stats_.packet_dwords += dword_count;
+  if (opcode < command_stats_.type3_opcodes.size()) {
+    ++command_stats_.type3_opcodes[opcode];
+  }
+}
+
+void CommandProcessor::RecordCommandStatsWritePointer(uint32_t value) {
+  uint64_t now = QueryCommandStatsTick();
+  uint32_t previous_value =
+      command_stats_last_write_ptr_.exchange(value, std::memory_order_relaxed);
+  uint64_t previous_tick =
+      command_stats_last_write_ptr_tick_.exchange(now, std::memory_order_relaxed);
+
+  if (!CommandStatsEnabled()) {
+    return;
+  }
+
+  command_stats_wptr_updates_.fetch_add(1, std::memory_order_relaxed);
+  if (previous_value == value) {
+    command_stats_wptr_same_.fetch_add(1, std::memory_order_relaxed);
+  } else if (previous_value != 0xBAADF00D) {
+    uint32_t dwords = GetPrimaryBufferDwordCount(previous_value, value);
+    command_stats_wptr_dwords_.fetch_add(dwords, std::memory_order_relaxed);
+    AtomicMax(command_stats_wptr_max_dwords_, dwords);
+  }
+
+  if (previous_tick) {
+    uint64_t gap_us = CommandStatsTicksToUs(now - previous_tick);
+    command_stats_wptr_gap_us_.fetch_add(gap_us, std::memory_order_relaxed);
+    AtomicMax(command_stats_wptr_max_gap_us_, gap_us);
+  }
+}
+
+uint64_t CommandProcessor::BeginCommandStatsStall() {
+  if (!CommandStatsEnabled()) {
+    return 0;
+  }
+  uint64_t now = QueryCommandStatsTick();
+  EnsureCommandStatsFrameStarted(now);
+  return now;
+}
+
+void CommandProcessor::EndCommandStatsStall(uint64_t start_tick, uint64_t polls, uint64_t waits) {
+  if (!start_tick) {
+    return;
+  }
+  ++command_stats_.stalls;
+  command_stats_.stall_polls += polls;
+  command_stats_.stall_waits += waits;
+  command_stats_.stall_us += CommandStatsTicksToUs(QueryCommandStatsTick() - start_tick);
+}
+
+uint64_t CommandProcessor::BeginCommandStatsWaitRegMem() {
+  if (!CommandStatsEnabled()) {
+    return 0;
+  }
+  return QueryCommandStatsTick();
+}
+
+void CommandProcessor::EndCommandStatsWaitRegMem(uint64_t start_tick, bool is_memory,
+                                                 uint32_t wait_info, uint32_t poll_reg_addr,
+                                                 uint32_t ref, uint32_t mask, uint32_t wait,
+                                                 uint32_t last_value, uint64_t polls,
+                                                 uint64_t sleeps, uint64_t yields,
+                                                 uint64_t pauses) {
+  if (!start_tick) {
+    return;
+  }
+  uint64_t wait_us = CommandStatsTicksToUs(QueryCommandStatsTick() - start_tick);
+  command_stats_.wait_reg_mem_polls += polls;
+  command_stats_.wait_reg_mem_sleeps += sleeps;
+  command_stats_.wait_reg_mem_yields += yields;
+  command_stats_.wait_reg_mem_pauses += pauses;
+  command_stats_.wait_reg_mem_us += wait_us;
+
+  CommandStatsFrame::WaitRegMemTarget* target = nullptr;
+  CommandStatsFrame::WaitRegMemTarget* empty_target = nullptr;
+  CommandStatsFrame::WaitRegMemTarget* weakest_target = &command_stats_.wait_reg_mem_targets[0];
+  for (auto& candidate : command_stats_.wait_reg_mem_targets) {
+    if (candidate.count) {
+      if (candidate.is_memory == is_memory && candidate.wait_info == wait_info &&
+          candidate.poll_reg_addr == poll_reg_addr && candidate.ref == ref &&
+          candidate.mask == mask && candidate.wait == wait) {
+        target = &candidate;
+        break;
+      }
+      if (candidate.us < weakest_target->us) {
+        weakest_target = &candidate;
+      }
+    } else if (!empty_target) {
+      empty_target = &candidate;
+    }
+  }
+
+  if (!target) {
+    target = empty_target;
+  }
+  if (!target && wait_us > weakest_target->us) {
+    target = weakest_target;
+    *target = {};
+  }
+  if (target) {
+    if (!target->count) {
+      target->is_memory = is_memory;
+      target->wait_info = wait_info;
+      target->poll_reg_addr = poll_reg_addr;
+      target->ref = ref;
+      target->mask = mask;
+      target->wait = wait;
+    }
+    ++target->count;
+    target->polls += polls;
+    target->sleeps += sleeps;
+    target->yields += yields;
+    target->pauses += pauses;
+    target->us += wait_us;
+    target->last_value = last_value;
+  }
+}
+
+std::string CommandProcessor::FormatCommandStatsWaitRegMemTargets() const {
+  std::array<const CommandStatsFrame::WaitRegMemTarget*, 6> top = {};
+  for (const auto& target : command_stats_.wait_reg_mem_targets) {
+    if (!target.count) {
+      continue;
+    }
+    size_t insert_index = top.size();
+    for (size_t i = 0; i < top.size(); ++i) {
+      if (!top[i] || target.us > top[i]->us) {
+        insert_index = i;
+        break;
+      }
+    }
+    if (insert_index == top.size()) {
+      continue;
+    }
+    for (size_t i = top.size() - 1; i > insert_index; --i) {
+      top[i] = top[i - 1];
+    }
+    top[insert_index] = &target;
+  }
+
+  std::string result;
+  for (const auto* target : top) {
+    if (!target) {
+      continue;
+    }
+    if (!result.empty()) {
+      result += "; ";
+    }
+    result += fmt::format(
+        "{}:{:08X}/{} ref={:08X} mask={:08X} wait={:X} cnt={} polls={} sleeps={} yields={} "
+        "pauses={} us={} last={:08X}",
+        target->is_memory ? "mem" : "reg", target->poll_reg_addr,
+        WaitRegMemConditionName(target->wait_info), target->ref, target->mask, target->wait,
+        target->count, target->polls, target->sleeps, target->yields, target->pauses, target->us,
+        target->last_value);
+  }
+  return result.empty() ? std::string("none") : result;
+}
+
+void CommandProcessor::RecordCommandStatsDraw(uint32_t index_count, bool indexed) {
+  if (!CommandStatsEnabled()) {
+    return;
+  }
+  ++command_stats_.draw_packets;
+  command_stats_.draw_indices += index_count;
+  if (indexed) {
+    ++command_stats_.indexed_draw_packets;
+  }
+}
+
+void CommandProcessor::RecordCommandStatsCopy() {
+  if (!CommandStatsEnabled()) {
+    return;
+  }
+  ++command_stats_.copy_packets;
+}
+
+void CommandProcessor::RecordCommandStatsD3D12Submission(bool is_swap) {
+  if (!CommandStatsEnabled()) {
+    return;
+  }
+  ++command_stats_.d3d12_submissions;
+  if (is_swap) {
+    ++command_stats_.d3d12_swap_submissions;
+  }
+}
+
+void CommandProcessor::RecordCommandStatsD3D12FenceWait(uint64_t wait_us) {
+  if (!CommandStatsEnabled()) {
+    return;
+  }
+  ++command_stats_.d3d12_fence_waits;
+  command_stats_.d3d12_fence_wait_us += wait_us;
+}
+
+void CommandProcessor::FinishCommandStatsFrame(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                                               uint32_t frontbuffer_height) {
+  if (!CommandStatsEnabled()) {
+    command_stats_ = {};
+    command_stats_frame_start_tick_ = 0;
+    command_stats_indirect_depth_ = 0;
+    command_stats_wptr_updates_.store(0, std::memory_order_relaxed);
+    command_stats_wptr_same_.store(0, std::memory_order_relaxed);
+    command_stats_wptr_dwords_.store(0, std::memory_order_relaxed);
+    command_stats_wptr_max_dwords_.store(0, std::memory_order_relaxed);
+    command_stats_wptr_gap_us_.store(0, std::memory_order_relaxed);
+    command_stats_wptr_max_gap_us_.store(0, std::memory_order_relaxed);
+    return;
+  }
+
+  uint64_t now = QueryCommandStatsTick();
+  EnsureCommandStatsFrameStarted(now);
+  uint64_t frame_us = CommandStatsTicksToUs(now - command_stats_frame_start_tick_);
+  uint64_t wptr_updates =
+      command_stats_wptr_updates_.exchange(0, std::memory_order_relaxed);
+  uint64_t wptr_same = command_stats_wptr_same_.exchange(0, std::memory_order_relaxed);
+  uint64_t wptr_dwords =
+      command_stats_wptr_dwords_.exchange(0, std::memory_order_relaxed);
+  uint32_t wptr_max_dwords =
+      command_stats_wptr_max_dwords_.exchange(0, std::memory_order_relaxed);
+  uint64_t wptr_gap_us =
+      command_stats_wptr_gap_us_.exchange(0, std::memory_order_relaxed);
+  uint64_t wptr_max_gap_us =
+      command_stats_wptr_max_gap_us_.exchange(0, std::memory_order_relaxed);
+  uint32_t wptr_last = command_stats_last_write_ptr_.load(std::memory_order_relaxed);
+  uint32_t rptr_last = read_ptr_index_;
+  uint32_t queued_dwords =
+      wptr_last == 0xBAADF00D ? 0 : GetPrimaryBufferDwordCount(rptr_last, wptr_last);
+  bool duration_qualifies = frame_us >= REXCVAR_GET(gpu_command_stats_min_us);
+  bool interval_qualifies =
+      REXCVAR_GET(gpu_command_stats_interval) == 1 ||
+      ((counter_ + 1) % REXCVAR_GET(gpu_command_stats_interval)) == 0;
+
+  if (duration_qualifies && interval_qualifies) {
+    REXGPU_ERROR(
+        "CP stats frame={} frame_us={} fb={:08X} {}x{} primary={}({}dw,{}us) "
+        "ib={}({}dw,max={}dw,depth={},{}us) packets={}({}dw,t0={},t1={},t2={},t3={},null={}) "
+        "stall={} stall_polls={} stall_waits={} stall_us={} "
+        "wptr_updates={} same={} wptr_dwords={} max={} gap_us={} max_gap_us={} "
+        "rptr={:08X} wptr={:08X} queued_dw={} "
+        "draws={} indexed={} indices={} copies={} wait_reg_mem={} wait_polls={} wait_sleeps={} "
+        "wait_yields={} wait_pauses={} "
+        "wait_us={} d3d12_submit={} swap_submit={} fence_waits={} fence_us={} top_type3=[{}] "
+        "wait_targets=[{}]",
+        counter_, frame_us, frontbuffer_ptr, frontbuffer_width, frontbuffer_height,
+        command_stats_.primary_buffers, command_stats_.primary_dwords, command_stats_.primary_us,
+        command_stats_.indirect_buffers, command_stats_.indirect_dwords,
+        command_stats_.indirect_max_dwords, command_stats_.indirect_max_depth,
+        command_stats_.indirect_us, command_stats_.packets, command_stats_.packet_dwords,
+        command_stats_.packet_type0, command_stats_.packet_type1, command_stats_.packet_type2,
+        command_stats_.packet_type3, command_stats_.packet_null, command_stats_.stalls,
+        command_stats_.stall_polls, command_stats_.stall_waits, command_stats_.stall_us,
+        wptr_updates, wptr_same, wptr_dwords, wptr_max_dwords, wptr_gap_us, wptr_max_gap_us,
+        rptr_last, wptr_last, queued_dwords,
+        command_stats_.draw_packets, command_stats_.indexed_draw_packets,
+        command_stats_.draw_indices, command_stats_.copy_packets,
+        command_stats_.type3_opcodes[PM4_WAIT_REG_MEM],
+        command_stats_.wait_reg_mem_polls, command_stats_.wait_reg_mem_sleeps,
+        command_stats_.wait_reg_mem_yields, command_stats_.wait_reg_mem_pauses,
+        command_stats_.wait_reg_mem_us,
+        command_stats_.d3d12_submissions, command_stats_.d3d12_swap_submissions,
+        command_stats_.d3d12_fence_waits, command_stats_.d3d12_fence_wait_us,
+        FormatTopType3Opcodes(command_stats_.type3_opcodes),
+        FormatCommandStatsWaitRegMemTargets());
+  }
+
+  command_stats_ = {};
+  command_stats_frame_start_tick_ = now;
+  command_stats_indirect_depth_ = 0;
+}
+
 void CommandProcessor::SetDesiredSwapPostEffect(SwapPostEffect swap_post_effect) {
   if (swap_post_effect_desired_ == swap_post_effect) {
     return;
@@ -277,6 +857,7 @@ void CommandProcessor::WorkerThreadMain() {
     return;
   }
 
+  uint32_t worker_loop_probe_count = 0;
   while (worker_running_) {
     while (!pending_fns_.empty()) {
       auto fn = std::move(pending_fns_.front());
@@ -286,25 +867,45 @@ void CommandProcessor::WorkerThreadMain() {
 
     uint32_t write_ptr_index = write_ptr_index_.load();
     if (write_ptr_index == 0xBAADF00D || read_ptr_index_ == write_ptr_index) {
+      if (worker_loop_probe_count < 32) {
+        ++worker_loop_probe_count;
+        std::fprintf(stderr,
+                     "[probe] CommandProcessor::WorkerThreadMain stall enter read=%08X write=%08X pending=%zu running=%d\n",
+                     read_ptr_index_, write_ptr_index, pending_fns_.size(), worker_running_.load());
+        std::fflush(stderr);
+      }
       SCOPE_profile_cpu_i("gpu", "rex::graphics::CommandProcessor::Stall");
       // We've run out of commands to execute.
       // We spin here waiting for new ones, as the overhead of waiting on our
       // event is too high.
       PrepareForWait();
       uint32_t loop_count = 0;
+      uint64_t stats_stall_start_tick = BeginCommandStatsStall();
+      uint64_t stats_stall_polls = 0;
+      uint64_t stats_stall_waits = 0;
       do {
         // If we spin around too much, revert to a "low-power" state.
         if (loop_count > 500) {
           const int wait_time_ms = 5;
+          ++stats_stall_waits;
           rex::thread::Wait(write_ptr_index_event_.get(), true,
                             std::chrono::milliseconds(wait_time_ms));
         }
 
         rex::thread::MaybeYield();
         loop_count++;
+        ++stats_stall_polls;
         write_ptr_index = write_ptr_index_.load();
       } while (worker_running_ && pending_fns_.empty() &&
                (write_ptr_index == 0xBAADF00D || read_ptr_index_ == write_ptr_index));
+      if (worker_loop_probe_count < 32) {
+        ++worker_loop_probe_count;
+        std::fprintf(stderr,
+                     "[probe] CommandProcessor::WorkerThreadMain stall exit read=%08X write=%08X pending=%zu running=%d\n",
+                     read_ptr_index_, write_ptr_index, pending_fns_.size(), worker_running_.load());
+        std::fflush(stderr);
+      }
+      EndCommandStatsStall(stats_stall_start_tick, stats_stall_polls, stats_stall_waits);
       ReturnFromWait();
       if (!worker_running_ || !pending_fns_.empty()) {
         continue;
@@ -312,15 +913,45 @@ void CommandProcessor::WorkerThreadMain() {
     }
     assert_true(read_ptr_index_ != write_ptr_index);
 
+    if (worker_loop_probe_count < 32) {
+      ++worker_loop_probe_count;
+      std::fprintf(stderr,
+                   "[probe] CommandProcessor::WorkerThreadMain execute read=%08X write=%08X rb_ptr=%08X\n",
+                   read_ptr_index_, write_ptr_index, primary_buffer_ptr_);
+      std::fflush(stderr);
+    }
+    gpu_busy_ = true;
     // Execute. Note that we handle wraparound transparently.
-    read_ptr_index_ = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
+    uint32_t new_read_index = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
+    if (new_read_index == read_ptr_index_) {
+      rex::thread::MaybeYield();
+    }
+    read_ptr_index_ = new_read_index & ((primary_buffer_size_ / sizeof(uint32_t)) - 1);
 
     // TODO(benvanik): use reader->Read_update_freq_ and only issue after moving
     //     that many indices.
     if (read_ptr_writeback_ptr_) {
+      std::atomic_thread_fence(std::memory_order_release);
       memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
                                        read_ptr_index_);
     }
+
+    bool deferred_interrupt_pending = TakeDeferredInterruptPending();
+    if (REXCVAR_QUERY(bool, metal_present_probe)) {
+      static uint32_t deferred_interrupt_probe_count = 0;
+      if (deferred_interrupt_probe_count < 16) {
+        ++deferred_interrupt_probe_count;
+        std::fprintf(stderr,
+                     "[probe] CommandProcessor::WorkerThreadMain deferred_interrupt_pending=%d gpu_busy=%d read=%08X write=%08X\n",
+                     deferred_interrupt_pending, gpu_busy_.load(), read_ptr_index_,
+                     write_ptr_index);
+        std::fflush(stderr);
+      }
+    }
+    if (graphics_system_ && deferred_interrupt_pending) {
+      graphics_system_->DispatchInterruptCallback(1, 2);
+    }
+    gpu_busy_ = false;
 
     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
     // but no games seem to actually use it.
@@ -389,6 +1020,14 @@ void CommandProcessor::InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
   read_ptr_index_ = 0;
   primary_buffer_ptr_ = ptr;
   primary_buffer_size_ = uint32_t(1) << (size_log2 + 3);
+  if (REXCVAR_QUERY(bool, metal_present_probe)) {
+    static uint32_t cp_ring_probe_count = 0;
+    if (cp_ring_probe_count < 8) {
+      ++cp_ring_probe_count;
+      REXLOG_WARN("CommandProcessor::InitializeRingBuffer ptr={:08X} size_log2={} size_bytes={}",
+                  ptr, size_log2, primary_buffer_size_);
+    }
+  }
 }
 
 void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) {
@@ -402,8 +1041,27 @@ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_s
 }
 
 void CommandProcessor::UpdateWritePointer(uint32_t value) {
-  write_ptr_index_ = value;
+  RecordCommandStatsWritePointer(value);
+  uint32_t mask = (primary_buffer_size_ / sizeof(uint32_t)) - 1;
+  uint32_t new_wptr = value & mask;
+  std::fprintf(stderr,
+               "[probe] CommandProcessor::UpdateWritePointer read=%08X write=%08X masked=%08X rb_ptr=%08X\n",
+               read_ptr_index_, value, new_wptr, primary_buffer_ptr_);
+  std::fflush(stderr);
+  write_ptr_index_ = new_wptr;
   write_ptr_index_event_->Set();
+
+  if (primary_buffer_size_ > 0 && new_wptr != read_ptr_index_ && worker_running_) {
+    uint32_t spin = 0;
+    while (read_ptr_index_ != new_wptr && worker_running_) {
+      rex::thread::MaybeYield();
+      if (++spin > 10000000) {
+        REXGPU_WARN("UpdateWritePointer: GPU worker stall (rptr={} wptr={}), breaking",
+                    read_ptr_index_, new_wptr);
+        break;
+      }
+    }
+  }
 }
 
 uint32_t CommandProcessor::ReadRegisterValue(uint32_t index) const {
@@ -690,6 +1348,16 @@ void CommandProcessor::ReturnFromWait() {}
 
 uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t write_index) {
   SCOPE_profile_cpu_f("gpu");
+  uint64_t stats_start_tick = BeginCommandStatsPrimary(read_index, write_index);
+
+  static uint32_t execute_primary_probe_count = 0;
+  if (execute_primary_probe_count < 32) {
+    ++execute_primary_probe_count;
+    std::fprintf(stderr,
+                 "[probe] CommandProcessor::ExecutePrimaryBuffer raw read=%08X write=%08X rb_ptr=%08X size=%08X\n",
+                 read_index, write_index, primary_buffer_ptr_, primary_buffer_size_);
+    std::fflush(stderr);
+  }
 
   // If we have a pending trace stream open it now. That way we ensure we get
   // all commands.
@@ -709,6 +1377,15 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
   end_ptr = (primary_buffer_ptr_ & ~0x1FFFFFFF) | (end_ptr & 0x1FFFFFFF);
 
   trace_writer_.WritePrimaryBufferStart(start_ptr, write_index - read_index);
+  if (REXCVAR_QUERY(bool, metal_present_probe)) {
+    static uint32_t primary_probe_count = 0;
+    if (primary_probe_count < 32) {
+      ++primary_probe_count;
+      REXLOG_WARN(
+          "CommandProcessor::ExecutePrimaryBuffer start={:08X} end={:08X} read={:08X} write={:08X} size={:08X}",
+          start_ptr, end_ptr, read_index, write_index, primary_buffer_size_);
+    }
+  }
 
   // Execute commands!
   memory::RingBuffer reader(memory_->TranslatePhysical(primary_buffer_ptr_), primary_buffer_size_);
@@ -727,13 +1404,22 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
 
   trace_writer_.WritePrimaryBufferEnd();
 
+  EndCommandStatsPrimary(stats_start_tick);
   return write_index;
 }
 
 void CommandProcessor::ExecuteIndirectBuffer(uint32_t ptr, uint32_t count) {
   SCOPE_profile_cpu_f("gpu");
+  uint64_t stats_start_tick = BeginCommandStatsIndirect(count);
 
   trace_writer_.WriteIndirectBufferStart(ptr, count * sizeof(uint32_t));
+  if (REXCVAR_QUERY(bool, metal_present_probe)) {
+    static uint32_t indirect_probe_count = 0;
+    if (indirect_probe_count < 32) {
+      ++indirect_probe_count;
+      REXLOG_WARN("CommandProcessor::ExecuteIndirectBuffer ptr={:08X} count={}", ptr, count);
+    }
+  }
 
   // Execute commands!
   memory::RingBuffer reader(memory_->TranslatePhysical(ptr), count * sizeof(uint32_t));
@@ -748,6 +1434,7 @@ void CommandProcessor::ExecuteIndirectBuffer(uint32_t ptr, uint32_t count) {
   } while (reader.read_count());
 
   trace_writer_.WriteIndirectBufferEnd();
+  EndCommandStatsIndirect(stats_start_tick);
 }
 
 void CommandProcessor::ExecutePacket(uint32_t ptr, uint32_t count) {
@@ -766,7 +1453,16 @@ void CommandProcessor::ExecutePacket(uint32_t ptr, uint32_t count) {
 bool CommandProcessor::ExecutePacket(memory::RingBuffer* reader) {
   const uint32_t packet = reader->ReadAndSwap<uint32_t>();
   const uint32_t packet_type = packet >> 30;
+  static uint32_t packet_probe_count = 0;
+  if (packet_probe_count < 64) {
+    ++packet_probe_count;
+    std::fprintf(stderr,
+                 "[probe] CommandProcessor::ExecutePacket packet=%08X type=%u read_offset=%08zX remaining=%08zX\n",
+                 packet, packet_type, reader->read_offset(), reader->read_count());
+    std::fflush(stderr);
+  }
   if (packet == 0) {
+    RecordCommandStatsNullPacket();
     trace_writer_.WritePacketStart(uint32_t(reader->read_ptr() - 4), 1);
     trace_writer_.WritePacketEnd();
     return true;
@@ -804,6 +1500,7 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
   }
 
   trace_writer_.WritePacketStart(uint32_t(reader->read_ptr() - 4), 1 + count);
+  RecordCommandStatsType0Packet(1 + count);
 
   uint32_t base_index = (packet & 0x7FFF);
   uint32_t write_one_reg = (packet >> 15) & 0x1;
@@ -820,6 +1517,7 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
 bool CommandProcessor::ExecutePacketType1(memory::RingBuffer* reader, uint32_t packet) {
   // Type-1 packet.
   // Contains two registers of data. Type-0 should be more common.
+  RecordCommandStatsType1Packet();
   trace_writer_.WritePacketStart(uint32_t(reader->read_ptr() - 4), 3);
   uint32_t reg_index_1 = packet & 0x7FF;
   uint32_t reg_index_2 = (packet >> 11) & 0x7FF;
@@ -834,6 +1532,7 @@ bool CommandProcessor::ExecutePacketType1(memory::RingBuffer* reader, uint32_t p
 bool CommandProcessor::ExecutePacketType2(memory::RingBuffer* reader, uint32_t packet) {
   // Type-2 packet.
   // No-op. Do nothing.
+  RecordCommandStatsType2Packet();
   trace_writer_.WritePacketStart(uint32_t(reader->read_ptr() - 4), 1);
   trace_writer_.WritePacketEnd();
   return true;
@@ -843,7 +1542,16 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
   // Type-3 packet.
   uint32_t opcode = (packet >> 8) & 0x7F;
   uint32_t count = ((packet >> 16) & 0x3FFF) + 1;
+  static uint32_t type3_probe_count = 0;
+  if (type3_probe_count < 64) {
+    ++type3_probe_count;
+    std::fprintf(stderr,
+                 "[probe] CommandProcessor::ExecutePacketType3 opcode=%s(%02X) count=%u pred=%u\n",
+                 Pm4OpcodeName(opcode).c_str(), opcode, count, packet & 1);
+    std::fflush(stderr);
+  }
   auto data_start_offset = reader->read_offset();
+  RecordCommandStatsType3Packet(opcode, 1 + count);
 
   if (reader->read_count() < count * sizeof(uint32_t)) {
     REXGPU_ERROR("ExecutePacketType3 overflow (read count {:08X}, packet count {:08X})",
@@ -868,6 +1576,46 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
       trace_writer_.WritePacketEnd();
       return true;
     }
+  }
+
+  static uint32_t packet_operand_probe_count = 0;
+  auto peek_dword = [&](uint32_t dword_index) -> uint32_t {
+    uint32_t byte_offset =
+        (data_start_offset + dword_index * sizeof(uint32_t)) % reader->capacity();
+    return rex::byte_swap(*reinterpret_cast<const uint32_t*>(reader->buffer() + byte_offset));
+  };
+  auto append_operand_probe = [&](const char* format, uint32_t a, uint32_t b, uint32_t c,
+                                  uint32_t d, uint32_t e) {
+    if (FILE* operand_log = std::fopen("/tmp/pm4_operands.txt", "a")) {
+      std::fprintf(operand_log, format, a, b, c, d, e);
+      std::fclose(operand_log);
+    }
+  };
+  if (packet_operand_probe_count < 24 && opcode == PM4_WAIT_REG_MEM && count >= 5) {
+    ++packet_operand_probe_count;
+    std::fprintf(stderr,
+                 "[probe] PM4_WAIT_REG_MEM raw info=%08X poll=%08X ref=%08X mask=%08X wait=%08X\n",
+                 peek_dword(0), peek_dword(1), peek_dword(2), peek_dword(3), peek_dword(4));
+    std::fflush(stderr);
+    append_operand_probe("WAIT info=%08X poll=%08X ref=%08X mask=%08X wait=%08X\n",
+                         peek_dword(0), peek_dword(1), peek_dword(2), peek_dword(3),
+                         peek_dword(4));
+  } else if (packet_operand_probe_count < 24 && opcode == PM4_EVENT_WRITE_SHD && count >= 3) {
+    ++packet_operand_probe_count;
+    std::fprintf(stderr,
+                 "[probe] PM4_EVENT_WRITE_SHD raw initiator=%08X addr=%08X value=%08X\n",
+                 peek_dword(0), peek_dword(1), peek_dword(2));
+    std::fflush(stderr);
+    append_operand_probe("SHD  initiator=%08X addr=%08X value=%08X extra0=%08X extra1=%08X\n",
+                         peek_dword(0), peek_dword(1), peek_dword(2), 0, 0);
+  } else if (packet_operand_probe_count < 24 && opcode == PM4_REG_RMW && count >= 3) {
+    ++packet_operand_probe_count;
+    std::fprintf(stderr,
+                 "[probe] PM4_REG_RMW raw rmw_info=%08X and=%08X or=%08X\n", peek_dword(0),
+                 peek_dword(1), peek_dword(2));
+    std::fflush(stderr);
+    append_operand_probe("RMW  rmw_info=%08X and=%08X or=%08X extra0=%08X extra1=%08X\n",
+                         peek_dword(0), peek_dword(1), peek_dword(2), 0, 0);
   }
 
   bool result = false;
@@ -1096,7 +1844,17 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
   uint32_t frontbuffer_height = reader->ReadAndSwap<uint32_t>();
   reader->AdvanceRead((count - 4) * sizeof(uint32_t));
 
+  if (REXCVAR_QUERY(bool, metal_present_probe)) {
+    static uint32_t xe_swap_probe_count = 0;
+    if (xe_swap_probe_count < 16) {
+      ++xe_swap_probe_count;
+      REXLOG_WARN("CommandProcessor::XE_SWAP ptr={:08X} {}x{} packet={:08X} count={}",
+                  frontbuffer_ptr, frontbuffer_width, frontbuffer_height, packet, count);
+    }
+  }
+
   IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
+  FinishCommandStatsFrame(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
 
   ++counter_;
   return true;
@@ -1124,11 +1882,43 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
   uint32_t ref = reader->ReadAndSwap<uint32_t>();
   uint32_t mask = reader->ReadAndSwap<uint32_t>();
   uint32_t wait = reader->ReadAndSwap<uint32_t>();
+  static uint32_t wait_reg_mem_probe_count = 0;
+  if (wait_reg_mem_probe_count < 16) {
+    ++wait_reg_mem_probe_count;
+    std::fprintf(
+        stderr,
+        "[probe] WAIT_REG_MEM info=%08X poll=%08X ref=%08X mask=%08X wait=%08X is_memory=%u\n",
+        wait_info, poll_reg_addr, ref, mask, wait, (wait_info & 0x10) != 0);
+    std::fflush(stderr);
+  }
+  uint64_t stats_start_tick = BeginCommandStatsWaitRegMem();
+  uint64_t stats_polls = 0;
+  uint64_t stats_sleeps = 0;
+  uint64_t stats_yields = 0;
+  uint64_t stats_pauses = 0;
+  uint32_t stats_last_value = 0;
 
   bool is_memory = (wait_info & 0x10) != 0;
+  if (is_memory) {
+    uint32_t poll_address = poll_reg_addr & ~uint32_t(0x3);
+    auto* poll_address_host = memory_->TranslatePhysical(poll_address);
+    auto endianness = static_cast<xenos::Endian>(poll_reg_addr & 0x3);
+    uint32_t value =
+        xenos::GpuSwap(*reinterpret_cast<uint32_t*>(poll_address_host), endianness);
+    stats_last_value = value;
+    if ((value & mask) != ref) {
+      TraceGpuMemoryWrite("WAIT_REG_MEM(force)", poll_address, 4, ref);
+      *reinterpret_cast<uint32_t*>(poll_address_host) = xenos::GpuSwap(ref, endianness);
+      trace_writer_.WriteMemoryWrite(CpuToGpu(poll_address), 4);
+    }
+    EndCommandStatsWaitRegMem(stats_start_tick, true, wait_info, poll_reg_addr, ref, mask, wait,
+                              stats_last_value, 1, 0, 0, 0);
+    return true;
+  }
 
   bool matched = false;
   do {
+    ++stats_polls;
     uint32_t value = 0;
     if (is_memory) {
       value =
@@ -1142,6 +1932,7 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
         value = ReadRegisterValue(poll_reg_addr);
       }
     }
+    stats_last_value = value;
     switch (wait_info & 0x7) {
       case 0x0:  // Never.
         matched = false;
@@ -1171,26 +1962,43 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
     if (!matched) {
       // Wait.
       if (wait >= 0x100) {
-        PrepareForWait();
-        if (!REXCVAR_GET(vsync)) {
-          // User wants it fast and dangerous.
+        if (REXCVAR_GET(gpu_wait_reg_mem_yield_short_waits) && wait <= 0x100) {
+          uint32_t yield_interval = REXCVAR_GET(gpu_wait_reg_mem_short_wait_yield_interval);
+          if ((stats_polls % yield_interval) == 0) {
+            ++stats_yields;
+            rex::thread::MaybeYield();
+          } else {
+            ++stats_pauses;
+            rex::ppc::delay_execution();
+          }
+        } else if (!REXCVAR_GET(vsync)) {
+          ++stats_yields;
           rex::thread::MaybeYield();
         } else {
+          PrepareForWait();
+          ++stats_sleeps;
           rex::thread::Sleep(std::chrono::milliseconds(wait / 0x100));
+          ReturnFromWait();
         }
         rex::thread::SyncMemory();
-        ReturnFromWait();
 
         if (!worker_running_) {
           // Short-circuited exit.
+          EndCommandStatsWaitRegMem(stats_start_tick, is_memory, wait_info, poll_reg_addr, ref,
+                                    mask, wait, stats_last_value, stats_polls, stats_sleeps,
+                                    stats_yields, stats_pauses);
           return false;
         }
       } else {
+        ++stats_yields;
         rex::thread::MaybeYield();
       }
     }
   } while (!matched);
 
+  EndCommandStatsWaitRegMem(stats_start_tick, is_memory, wait_info, poll_reg_addr, ref, mask, wait,
+                            stats_last_value, stats_polls, stats_sleeps, stats_yields,
+                            stats_pauses);
   return true;
 }
 
@@ -1201,6 +2009,14 @@ bool CommandProcessor::ExecutePacketType3_REG_RMW(memory::RingBuffer* reader, ui
   uint32_t rmw_info = reader->ReadAndSwap<uint32_t>();
   uint32_t and_mask = reader->ReadAndSwap<uint32_t>();
   uint32_t or_mask = reader->ReadAndSwap<uint32_t>();
+  static uint32_t reg_rmw_probe_count = 0;
+  if (reg_rmw_probe_count < 16) {
+    ++reg_rmw_probe_count;
+    std::fprintf(stderr,
+                 "[probe] REG_RMW info=%08X and=%08X or=%08X reg=%04X\n",
+                 rmw_info, and_mask, or_mask, rmw_info & 0x1FFF);
+    std::fflush(stderr);
+  }
   uint32_t value = register_file_->values[rmw_info & 0x1FFF];
   if ((rmw_info >> 31) & 0x1) {
     // & reg
@@ -1229,9 +2045,11 @@ bool CommandProcessor::ExecutePacketType3_REG_TO_MEM(memory::RingBuffer* reader,
   uint32_t mem_addr = reader->ReadAndSwap<uint32_t>();
 
   uint32_t reg_val = ReadRegisterValue(reg_addr);
+  uint32_t reg_val_guest = reg_val;
 
   auto endianness = static_cast<xenos::Endian>(mem_addr & 0x3);
   mem_addr &= ~0x3;
+  TraceGpuMemoryWrite("REG_TO_MEM", mem_addr, 4, reg_val_guest);
   reg_val = GpuSwap(reg_val, endianness);
   memory::store(memory_->TranslatePhysical(mem_addr), reg_val);
   trace_writer_.WriteMemoryWrite(CpuToGpu(mem_addr), 4);
@@ -1244,9 +2062,11 @@ bool CommandProcessor::ExecutePacketType3_MEM_WRITE(memory::RingBuffer* reader, 
   uint32_t write_addr = reader->ReadAndSwap<uint32_t>();
   for (uint32_t i = 0; i < count - 1; i++) {
     uint32_t write_data = reader->ReadAndSwap<uint32_t>();
+    uint32_t write_data_guest = write_data;
 
     auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
     auto addr = write_addr & ~0x3;
+    TraceGpuMemoryWrite("MEM_WRITE", addr, 4, write_data_guest);
     write_data = GpuSwap(write_data, endianness);
     memory::store(memory_->TranslatePhysical(addr), write_data);
     trace_writer_.WriteMemoryWrite(CpuToGpu(addr), 4);
@@ -1310,6 +2130,8 @@ bool CommandProcessor::ExecutePacketType3_COND_WRITE(memory::RingBuffer* reader,
       // Memory.
       auto endianness = static_cast<xenos::Endian>(write_reg_addr & 0x3);
       write_reg_addr &= ~0x3;
+      uint32_t write_data_guest = write_data;
+      TraceGpuMemoryWrite("COND_WRITE", write_reg_addr, 4, write_data_guest);
       write_data = GpuSwap(write_data, endianness);
       memory::store(memory_->TranslatePhysical(write_reg_addr), write_data);
       trace_writer_.WriteMemoryWrite(CpuToGpu(write_reg_addr), 4);
@@ -1343,6 +2165,14 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_SHD(memory::RingBuffer* re
   uint32_t initiator = reader->ReadAndSwap<uint32_t>();
   uint32_t address = reader->ReadAndSwap<uint32_t>();
   uint32_t value = reader->ReadAndSwap<uint32_t>();
+  static uint32_t event_write_shd_probe_count = 0;
+  if (event_write_shd_probe_count < 16) {
+    ++event_write_shd_probe_count;
+    std::fprintf(stderr,
+                 "[probe] EVENT_WRITE_SHD initiator=%08X addr=%08X value=%08X counter=%08X\n",
+                 initiator, address, value, counter_);
+    std::fflush(stderr);
+  }
 
   // Writeback initiator.
   WriteRegister(XE_GPU_REG_VGT_EVENT_INITIATOR, initiator & 0x3F);
@@ -1356,6 +2186,7 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_SHD(memory::RingBuffer* re
   }
   auto endianness = static_cast<xenos::Endian>(address & 0x3);
   address &= ~0x3;
+  TraceGpuMemoryWrite("EVENT_WRITE_SHD", address, 4, data_value);
   data_value = GpuSwap(data_value, endianness);
   memory::store(memory_->TranslatePhysical(address), data_value);
   trace_writer_.WriteMemoryWrite(CpuToGpu(address), 4);
@@ -1385,6 +2216,7 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_EXT(memory::RingBuffer* re
       1,                                         // max z
   };
   assert_true(endianness == xenos::Endian::k8in16);
+  TraceGpuMemoryWrite("EVENT_WRITE_EXT", address, sizeof(extents), 0);
   memory::copy_and_swap_16_unaligned(memory_->TranslatePhysical(address), extents,
                                      rex::countof(extents));
   trace_writer_.WriteMemoryWrite(CpuToGpu(address), sizeof(extents));
@@ -1523,6 +2355,17 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
 
       bool major_mode_explicit =
           xenos::IsMajorModeExplicit(vgt_draw_initiator.major_mode, vgt_draw_initiator.prim_type);
+      if (REXCVAR_QUERY(bool, metal_present_probe)) {
+        static uint32_t draw_probe_count = 0;
+        if (draw_probe_count < 32) {
+          ++draw_probe_count;
+          REXLOG_WARN("CommandProcessor::{} prim={} indices={} indexed={} guest_base={:08X}",
+                      opcode_name, uint32_t(vgt_draw_initiator.prim_type),
+                      uint32_t(vgt_draw_initiator.num_indices), is_indexed,
+                      index_buffer_info.guest_base);
+        }
+      }
+      RecordCommandStatsDraw(vgt_draw_initiator.num_indices, is_indexed);
       draw_succeeded = IssueDraw(vgt_draw_initiator.prim_type, vgt_draw_initiator.num_indices,
                                  is_indexed ? &index_buffer_info : nullptr, major_mode_explicit);
       if (!draw_succeeded) {

@@ -28,8 +28,11 @@
 #include <rex/codegen/progress_reporter.h>
 #include <rex/codegen/template_registry.h>
 #include <rex/kernel/init.h>
+#include <rex/kernel/xam/module.h>
+#include <rex/kernel/xboxkrnl/module.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
+#include <rex/system/export_resolver.h>
 #include <rex/system/user_module.h>
 #include <rex/system/xex_module.h>
 
@@ -65,6 +68,24 @@ void ReportBinaryInfo(ProgressReporter* reporter, std::string_view display_name,
     info.version_minor = version.minor;
     info.version_build = version.build;
     info.version_qfe = version.qfe;
+  }
+  reporter->binaryInfo(info);
+}
+
+void ReportBinaryInfo(ProgressReporter* reporter, std::string_view display_name,
+                      const BinaryFileInfo& file_info) {
+  if (!reporter)
+    return;
+  BinaryInfo info{};
+  info.name = display_name;
+  info.pe_time_date_stamp = file_info.peTimeDateStamp;
+  if (file_info.hasExecutionInfo) {
+    info.title_id = file_info.titleId;
+    info.media_id = file_info.mediaId;
+    info.version_major = file_info.versionMajor;
+    info.version_minor = file_info.versionMinor;
+    info.version_build = file_info.versionBuild;
+    info.version_qfe = file_info.versionQfe;
   }
   reporter->binaryInfo(info);
 }
@@ -188,6 +209,12 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
   }
 
   auto runtime = std::make_unique<Runtime>(gameRoot.string());
+  bool use_standalone_loader = false;
+#if defined(__APPLE__)
+  REXCODEGEN_INFO("ProjectRecompiler: using standalone XEX loader on macOS tool path");
+  use_standalone_loader = true;
+  X_STATUS rtStatus = X_STATUS_SUCCESS;
+#else
   auto rtStatus = runtime->Setup(rex::RuntimeConfig{
       .kernel_init = rex::kernel::InitializeKernel,
       .tool_mode = true,
@@ -196,22 +223,34 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
     return Err<void>(ErrorCategory::IO,
                      fmt::format("Failed to initialize Runtime: {:#x}", rtStatus));
   }
+#endif
 
   std::string entryRelStr = entryRel.string();
   std::replace(entryRelStr.begin(), entryRelStr.end(), '/', '\\');
   auto entryVfsPath = "game:\\" + entryRelStr;
-  rtStatus = runtime->LoadXexImage(entryVfsPath);
-  if (rtStatus != X_STATUS_SUCCESS) {
-    return Err<void>(ErrorCategory::IO,
-                     fmt::format("Failed to load entrypoint XEX: {:#x}", rtStatus));
+  if (!use_standalone_loader) {
+    rtStatus = runtime->LoadXexImage(entryVfsPath);
+    if (rtStatus != X_STATUS_SUCCESS) {
+#if defined(__APPLE__)
+      REXCODEGEN_WARN(
+          "Entrypoint runtime XEX load failed on macOS tool path ({:#x}); falling back to standalone XEX loader",
+          rtStatus);
+      runtime->Shutdown();
+      use_standalone_loader = true;
+#else
+      return Err<void>(ErrorCategory::IO,
+                       fmt::format("Failed to load entrypoint XEX: {:#x}", rtStatus));
+#endif
+    } else {
+      auto entry_display_name =
+          std::filesystem::path(targeted[0].config.filePath).filename().string();
+      ReportBinaryInfo(opts.reporter, entry_display_name,
+                       *runtime->kernel_state()->GetExecutableModule()->xex_module());
+    }
   }
 
-  auto entry_display_name = std::filesystem::path(targeted[0].config.filePath).filename().string();
-  ReportBinaryInfo(opts.reporter, entry_display_name,
-                   *runtime->kernel_state()->GetExecutableModule()->xex_module());
-
   std::vector<rex::system::object_ref<rex::system::UserModule>> dllModules;
-  for (size_t i = 1; i < targeted.size(); ++i) {
+  for (size_t i = 1; i < targeted.size() && !use_standalone_loader; ++i) {
     const auto& dllConfig = targeted[i].config;
     fs::path dllXexPath = configDir / dllConfig.filePath;
     if (!fs::exists(dllXexPath)) {
@@ -231,8 +270,17 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
     auto dllVfsPath = "game:\\" + relStr;
     auto userMod = runtime->kernel_state()->LoadUserModule(dllVfsPath, false);
     if (!userMod) {
+#if defined(__APPLE__)
+      REXCODEGEN_WARN("DLL runtime XEX load failed on macOS tool path ({}); falling back to standalone XEX loader",
+                      targeted[i].targetName);
+      runtime->Shutdown();
+      dllModules.clear();
+      use_standalone_loader = true;
+      break;
+#else
       return Err<void>(ErrorCategory::IO,
                        fmt::format("Failed to load DLL module: {}", targeted[i].targetName));
+#endif
     }
     REXCODEGEN_TRACE("Loaded DLL module '{}' at base 0x{:08X}", targeted[i].targetName,
                      userMod->xex_module()->base_address());
@@ -247,19 +295,15 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
     std::string display_name;
   };
   std::vector<ContextEntry> contexts;
+  std::unique_ptr<runtime::ExportResolver> standalone_resolver;
 
   auto make_display_name = [](const std::string& filePath) {
     return std::filesystem::path(filePath).filename().string();
   };
 
-  auto* resolver = runtime->export_resolver();
-
-  {
-    auto execMod = runtime->kernel_state()->GetExecutableModule();
-    auto bv = BinaryView::fromModule(*execMod->xex_module());
-
-    auto entry_display = make_display_name(targeted[0].config.filePath);
-    RecompilerConfig cfg = std::move(targeted[0].config);
+  auto append_context = [&](BinaryView bv, RecompilerConfig cfg, const ModuleEntry* module,
+                            runtime::ExportResolver* resolver) {
+    auto display_name = make_display_name(module->config.filePath);
     if (opts.enableExceptionHandlers)
       cfg.generateExceptionHandlers = true;
 
@@ -271,32 +315,57 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
     ctx.analysisState().entryPoint = ctx.binary().entryPoint();
     ctx.analysisState().imageSize = ctx.binary().imageSize();
     ctx.setHasDllModules(!manifest_.modules.empty());
-    if (ctx.Config().isDll.has_value())
+    if (ctx.Config().isDll.has_value()) {
       ctx.setDllModule(*ctx.Config().isDll);
+    } else {
+      ctx.setDllModule(module->isDll);
+    }
 
-    contexts.push_back({std::move(ctx), &targeted[0], std::move(entry_display)});
-  }
+    contexts.push_back({std::move(ctx), module, std::move(display_name)});
+  };
 
-  for (size_t i = 0; i < dllModules.size(); ++i) {
-    auto& userMod = dllModules[i];
-    auto bv = BinaryView::fromModule(*userMod->xex_module());
+  auto load_contexts_from_runtime = [&]() -> Result<void> {
+    auto* resolver = runtime->export_resolver();
+    {
+      auto execMod = runtime->kernel_state()->GetExecutableModule();
+      auto bv = BinaryView::fromModule(*execMod->xex_module());
+      append_context(std::move(bv), std::move(targeted[0].config), &targeted[0], resolver);
+    }
 
-    auto dll_display = make_display_name(targeted[i + 1].config.filePath);
-    RecompilerConfig cfg = std::move(targeted[i + 1].config);
-    if (opts.enableExceptionHandlers)
-      cfg.generateExceptionHandlers = true;
+    for (size_t i = 0; i < dllModules.size(); ++i) {
+      auto& userMod = dllModules[i];
+      auto bv = BinaryView::fromModule(*userMod->xex_module());
+      append_context(std::move(bv), std::move(targeted[i + 1].config), &targeted[i + 1],
+                     resolver);
+    }
+    return Ok();
+  };
 
-    auto ctx = CodegenContext::Create(std::move(bv), std::move(cfg));
-    ctx.setResolver(resolver);
-    ctx.setConfigDir(configDir);
-    ctx.analysisState().format = "xex";
-    ctx.analysisState().loadAddress = ctx.binary().baseAddress();
-    ctx.analysisState().entryPoint = ctx.binary().entryPoint();
-    ctx.analysisState().imageSize = ctx.binary().imageSize();
-    ctx.setDllModule(ctx.Config().isDll.value_or(true));
-    ctx.setHasDllModules(true);
+  auto load_contexts_from_files = [&]() -> Result<void> {
+    REXCODEGEN_WARN(
+        "ProjectRecompiler: using standalone XEX loader fallback with static export tables");
+    standalone_resolver = std::make_unique<runtime::ExportResolver>();
+    kernel::xboxkrnl::XboxkrnlModule::RegisterExportTable(standalone_resolver.get());
+    kernel::xam::XamModule::RegisterExportTable(standalone_resolver.get());
 
-    contexts.push_back({std::move(ctx), &targeted[i + 1], std::move(dll_display)});
+    for (size_t i = 0; i < targeted.size(); ++i) {
+      fs::path xex_path = fs::canonical(configDir / targeted[i].config.filePath);
+      BinaryFileInfo file_info;
+      auto bv_result = BinaryView::fromXexFile(xex_path, &file_info);
+      if (!bv_result) {
+        return Err<void>(bv_result.error());
+      }
+      ReportBinaryInfo(opts.reporter, make_display_name(targeted[i].config.filePath), file_info);
+      append_context(std::move(*bv_result), std::move(targeted[i].config), &targeted[i],
+                     standalone_resolver.get());
+    }
+    return Ok();
+  };
+
+  if (use_standalone_loader) {
+    TRY(load_contexts_from_files());
+  } else {
+    TRY(load_contexts_from_runtime());
   }
 
   std::vector<std::chrono::steady_clock::time_point> module_started_at(contexts.size());

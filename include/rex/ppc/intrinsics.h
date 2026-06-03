@@ -20,6 +20,7 @@
 #include <simde/x86/avx.h>
 #include <simde/x86/avx2.h>
 #include <simde/x86/sse.h>
+#include <simde/x86/sse2.h>
 #include <simde/x86/sse4.1.h>
 
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -29,6 +30,10 @@
 #include <rex/types.h>
 
 namespace rex::ppc {
+
+inline void delay_execution() {
+  simde_mm_pause();
+}
 
 //=============================================================================
 // Vector Load/Store Mask Tables

@@ -205,9 +205,24 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
                  PageAccess access) {
   // Emulates Windows VirtualAlloc behavior:
   // - Reserve: create PROT_NONE mapping to hold address space
-  // - Commit on existing reservation: mprotect to enable access (EEXIST path)
+  // - Commit on existing reservation: mprotect to enable access
   // - New allocation: mmap with MAP_FIXED_NOREPLACE (never silently replace)
   const uint32_t prot_requested = ToPosixProtectFlags(access);
+
+  // Most guest pages already live inside file-backed views reserved during memory
+  // initialization. On POSIX, a commit against that existing mapping should be a
+  // protection change, not a fresh mmap that replaces the backing view.
+  if (base_address &&
+      (allocation_type == AllocationType::kCommit ||
+       allocation_type == AllocationType::kReserveCommit)) {
+    if (mprotect(base_address, length, static_cast<int>(prot_requested)) == 0) {
+      return base_address;
+    }
+    std::fprintf(stderr,
+                 "AllocFixed mprotect failed base=%p len=%zu type=%d prot=%u errno=%d (%s)\n",
+                 base_address, length, int(allocation_type), prot_requested, errno, std::strerror(errno));
+    std::fflush(stderr);
+  }
 
   // Determine initial protection based on allocation type
   int prot_initial = 0;
@@ -236,8 +251,15 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
 
   void* result = mmap(base_address, length, prot_initial, flags, -1, 0);
   if (result != MAP_FAILED) {
+    std::fprintf(stderr, "AllocFixed mmap ok base=%p len=%zu type=%d prot=%d flags=%x result=%p\n",
+                 base_address, length, int(allocation_type), prot_initial, flags, result);
+    std::fflush(stderr);
     return result;
   }
+  std::fprintf(stderr, "AllocFixed mmap failed base=%p len=%zu type=%d prot=%d flags=%x errno=%d (%s)\n",
+               base_address, length, int(allocation_type), prot_initial, flags, errno,
+               std::strerror(errno));
+  std::fflush(stderr);
 #if defined(MAP_FIXED_NOREPLACE) && REX_PLATFORM_LINUX
   // Handle EEXIST: address already has a mapping (e.g., from prior Reserve)
   // This is the "commit on existing reservation" path
@@ -372,7 +394,11 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
   if (ret < 0) {
     return kFileMappingHandleInvalid;
   }
+#if REX_PLATFORM_MAC
+  if (ftruncate(ret, static_cast<off_t>(length)) != 0) {
+#else
   if (ftruncate64(ret, static_cast<off_t>(length)) != 0) {
+#endif
     close(ret);
     shm_unlink(full_path.c_str());
     return kFileMappingHandleInvalid;
@@ -407,8 +433,13 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, P
   }
 
   uint32_t prot = ToPosixProtectFlags(access);
+#if REX_PLATFORM_MAC
+  void* result =
+      mmap(base_address, length, prot, flags, static_cast<int>(handle), static_cast<off_t>(file_offset));
+#else
   void* result = mmap64(base_address, length, prot, flags, static_cast<int>(handle),
                         static_cast<off_t>(file_offset));
+#endif
   if (result == MAP_FAILED) {
     return nullptr;
   }

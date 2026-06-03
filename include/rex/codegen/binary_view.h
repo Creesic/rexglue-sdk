@@ -12,16 +12,30 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <rex/result.h>
 
 namespace rex::runtime {
 class Module;
 }
 
 namespace rex::codegen {
+
+struct BinaryFileInfo {
+  uint32_t peTimeDateStamp = 0;
+  bool hasExecutionInfo = false;
+  uint32_t titleId = 0;
+  uint32_t mediaId = 0;
+  uint32_t versionMajor = 0;
+  uint32_t versionMinor = 0;
+  uint32_t versionBuild = 0;
+  uint32_t versionQfe = 0;
+};
 
 /// Lightweight view of a binary section (points into BinaryView's owned data)
 struct SectionView {
@@ -53,6 +67,8 @@ class BinaryView {
  public:
   /// Factory - copies all data from Module
   static BinaryView fromModule(const runtime::Module& module);
+  static rex::Result<BinaryView> fromXexFile(const std::filesystem::path& path,
+                                             BinaryFileInfo* info = nullptr);
 
   // Move-only (owns large buffers)
   BinaryView(BinaryView&&) noexcept = default;

@@ -13,11 +13,13 @@
 #include <rex/audio/audio_driver.h>
 #include <rex/audio/audio_system.h>
 #include <rex/audio/flags.h>
+#include <atomic>
 #include <rex/audio/xma/decoder.h>
 #include <rex/dbg.h>
 #include <rex/logging.h>
 #include <rex/math.h>
 #include <rex/memory/ring_buffer.h>
+#include <rex/memory/utils.h>
 #include <rex/stream.h>
 #include <rex/string/buffer.h>
 #include <rex/system/thread_state.h>
@@ -39,6 +41,11 @@ REXCVAR_DEFINE_INT32(
 // The XMA*() functions just manipulate the audio system in the guest context
 // and let the normal AudioSystem handling take it, to prevent duplicate
 // implementations. They can be found in xboxkrnl_audio_xma.cc
+
+// TEMP_DIAG: Global render frame counter for cross-subsystem correlation
+static std::atomic<uint32_t> g_render_frame_counter{0};
+uint32_t audio_diag_get_render_frame() { return g_render_frame_counter.load(std::memory_order_relaxed); }
+// END TEMP_DIAG
 
 namespace rex::audio {
 
@@ -141,13 +148,68 @@ void AudioSystem::WorkerThreadMain() {
                        client_callback, client_callback_arg, index);
         }
         SCOPE_profile_cpu_i("apu", "rex::audio::AudioSystem->client_callback");
+        auto cb_start = std::chrono::steady_clock::now();
+
+        // TEMP_DIAG: Pre-callback log — if next log line is the post-callback,
+        // the callback completed. If only this line appears, callback is hung.
+        if (diag_pump_count % 500 == 0 || diag_pump_count < 5) {
+          REXAPU_ERROR("AUDIO_DIAG_PRE: count={} about to call callback {:08X}",
+                       diag_pump_count, client_callback);
+        }
+
         uint64_t args[] = {client_callback_arg};
         function_dispatcher_->Execute(worker_thread_->thread_state(), client_callback, args,
                                       rex::countof(args));
-        if (diag_pump_count < 10) {
-          REXAPU_DEBUG("AudioWorker: callback returned for client {}", index);
+        auto cb_elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                 std::chrono::steady_clock::now() - cb_start)
+                                 .count();
+
+        // TEMP_DIAG: Read guest TLS and audio context state after callback returns.
+        // The guest audio callback (sub_823E83C8) writes *(r13+0x100) to ctx+0x12C.
+        // If this value is 0, the worker thread (sub_823E8250) exits its loop,
+        // causing permanent deadlock on the next KeWaitForMultipleObjects call.
+        // dword_829F1024 is the global audio context pointer.
+        // Log the TLS identity and ctx+0x12C to detect when/why it goes to 0.
+        {
+          auto* ppc_ctx = worker_thread_->thread_state()->context();
+          uint32_t r13 = ppc_ctx->r13.u32;
+          uint32_t tls_identity = 0;
+          if (r13) {
+            auto base = memory()->TranslateVirtual(r13);
+            if (base) {
+              tls_identity = memory::load_and_swap<uint32_t>(base + 0x100);
+            }
+          }
+          // Read dword_829F1024 (audio context pointer) and ctx+0x12C
+          // Must use load_and_swap — guest memory is big-endian
+          uint32_t audio_ctx_ptr = 0;
+          uint32_t thread_id_field = 0;
+          uint32_t thread_count_field = 0;
+          {
+            auto p = memory()->TranslateVirtual(0x829F1024);
+            if (p) audio_ctx_ptr = memory::load_and_swap<uint32_t>(p);
+          }
+          if (audio_ctx_ptr) {
+            auto p = memory()->TranslateVirtual(audio_ctx_ptr);
+            if (p) {
+              thread_id_field = memory::load_and_swap<uint32_t>(p + 0x12C);
+              thread_count_field = memory::load_and_swap<uint32_t>(p + 0x130);
+            }
+          }
+
+          // Log first 20, then periodic every 500, and any time tls_identity==0
+          if (diag_pump_count < 20 || (diag_pump_count % 500 == 0) || tls_identity == 0 ||
+              thread_id_field == 0) {
+            REXAPU_ERROR(
+                "AUDIO_DIAG: r13={:08X} tls_id={:08X} actx={:08X} ctx+12C={:08X} ctx+130={:08X} "
+                "cb={:.2f}ms count={}",
+                r13, tls_identity, audio_ctx_ptr, thread_id_field, thread_count_field,
+                cb_elapsed_us / 1000.0, diag_pump_count);
+          }
         }
+
         diag_pump_count++;
+        g_render_frame_counter.store(diag_pump_count, std::memory_order_relaxed);  // TEMP_DIAG
       } else {
         REXAPU_DEBUG("AudioWorker: semaphore signaled for client {} but callback is 0", index);
       }

@@ -16,6 +16,7 @@
 #include <utility>
 
 #include <rex/assert.h>
+#include <rex/chrono/clock.h>
 #include <rex/cvar.h>
 #include <rex/dbg.h>
 #include <rex/perf/counter.h>
@@ -43,9 +44,52 @@ REXCVAR_DEFINE_BOOL(d3d12_readback_resolve, false, "GPU/D3D12",
                     "Read render-to-texture results on the CPU")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(d3d12_ignore_8bit_color_exp_bias, false, "GPU/D3D12",
+                    "Ignore Xenos color exponent bias for 8-bit host render targets")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(d3d12_invert_8bit_color_exp_bias, false, "GPU/D3D12",
+                    "Apply inverse Xenos color exponent bias for 8-bit host render targets")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(d3d12_submit_on_primary_buffer_end, true, "GPU/D3D12",
                     "Submit command list when PM4 primary buffer ends")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DECLARE(uint32_t, gpu_mem_write_trace_addr);
+REXCVAR_DECLARE(uint32_t, gpu_mem_write_trace_size);
+
+namespace {
+
+void TraceD3D12MemexportReadback(const char* source, uint32_t address, uint32_t size,
+                                 const uint8_t* data) {
+  uint32_t watch_addr = REXCVAR_GET(gpu_mem_write_trace_addr);
+  uint32_t watch_size = REXCVAR_GET(gpu_mem_write_trace_size);
+  if (!watch_size || !data) {
+    return;
+  }
+
+  uint64_t write_start = address;
+  uint64_t write_end = write_start + size;
+  uint64_t watch_start = watch_addr;
+  uint64_t watch_end = watch_start + watch_size;
+  if (write_start >= watch_end || watch_start >= write_end) {
+    return;
+  }
+
+  uint64_t overlap_start = std::max(write_start, watch_start);
+  uint64_t overlap_end = std::min(write_end, watch_end);
+  uint64_t sample = 0;
+  uint32_t sample_offset = uint32_t(overlap_start - write_start);
+  uint32_t sample_size = uint32_t(std::min<uint64_t>(sizeof(sample), overlap_end - overlap_start));
+  std::memcpy(&sample, data + sample_offset, sample_size);
+  REXGPU_ERROR(
+      "gpu_mem_write_watch source={} addr={:08X} size={} overlap={:08X}+{} sample_le={:016X}",
+      source, address, size, uint32_t(overlap_start), uint32_t(overlap_end - overlap_start),
+      sample);
+}
+
+}  // namespace
 
 namespace rex::graphics::d3d12 {
 
@@ -2789,8 +2833,11 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_s
 
   const uint8_t* readback_bytes = reinterpret_cast<const uint8_t*>(readback_mapping);
   for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
-    std::memcpy(memory_->TranslatePhysical(memexport_range.base_address_dwords << 2),
-                readback_bytes, memexport_range.size_bytes);
+    uint32_t guest_address = memexport_range.base_address_dwords << 2;
+    TraceD3D12MemexportReadback("D3D12_MEMEXPORT_FULL", guest_address,
+                                memexport_range.size_bytes, readback_bytes);
+    std::memcpy(memory_->TranslatePhysical(guest_address), readback_bytes,
+                memexport_range.size_bytes);
     readback_bytes += memexport_range.size_bytes;
   }
 
@@ -2886,8 +2933,11 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
 
   const uint8_t* readback_bytes = static_cast<const uint8_t*>(readback.mapped_data[read_index]);
   for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
-    std::memcpy(memory_->TranslatePhysical(memexport_range.base_address_dwords << 2),
-                readback_bytes, memexport_range.size_bytes);
+    uint32_t guest_address = memexport_range.base_address_dwords << 2;
+    TraceD3D12MemexportReadback("D3D12_MEMEXPORT_FAST", guest_address,
+                                memexport_range.size_bytes, readback_bytes);
+    std::memcpy(memory_->TranslatePhysical(guest_address), readback_bytes,
+                memexport_range.size_bytes);
     readback_bytes += memexport_range.size_bytes;
   }
   readback.current_index = read_index;
@@ -2918,6 +2968,7 @@ bool D3D12CommandProcessor::IssueCopy() {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+  RecordCommandStatsCopy();
   if (!BeginSubmission(true)) {
     return false;
   }
@@ -3162,7 +3213,11 @@ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
                     SUCCEEDED(queue_operations_since_submission_fence_->SetEventOnCompletion(
                         fence_value, fence_completion_event_)))) {
         PROFILE_CMD_BUFFER_STALL();
+        uint64_t fence_wait_start = rex::chrono::Clock::QueryHostTickCount();
         WaitForSingleObject(fence_completion_event_, INFINITE);
+        uint64_t fence_wait_ticks = rex::chrono::Clock::QueryHostTickCount() - fence_wait_start;
+        RecordCommandStatsD3D12FenceWait(
+            fence_wait_ticks * 1000000 / rex::chrono::Clock::QueryHostTickFrequency());
         queue_operations_done_since_submission_signal_ = false;
       } else {
         REXGPU_ERROR(
@@ -3181,7 +3236,11 @@ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
     if (SUCCEEDED(
             submission_fence_->SetEventOnCompletion(await_submission, fence_completion_event_))) {
       PROFILE_CMD_BUFFER_STALL();
+      uint64_t fence_wait_start = rex::chrono::Clock::QueryHostTickCount();
       WaitForSingleObject(fence_completion_event_, INFINITE);
+      uint64_t fence_wait_ticks = rex::chrono::Clock::QueryHostTickCount() - fence_wait_start;
+      RecordCommandStatsD3D12FenceWait(
+          fence_wait_ticks * 1000000 / rex::chrono::Clock::QueryHostTickFrequency());
       submission_completed_ = submission_fence_->GetCompletedValue();
     }
   }
@@ -3495,6 +3554,7 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
     }
 
     direct_queue->Signal(submission_fence_, submission_current_++);
+    RecordCommandStatsD3D12Submission(is_swap);
 
     submission_open_ = false;
 
@@ -3944,8 +4004,17 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
         color_exp_bias -= 5;
       }
     }
+    if (render_target_cache_->GetPath() == RenderTargetCache::Path::kHostRenderTargets &&
+        (color_info.color_format == xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
+         color_info.color_format == xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)) {
+      if (REXCVAR_GET(d3d12_invert_8bit_color_exp_bias)) {
+        color_exp_bias = -color_exp_bias;
+      } else if (REXCVAR_GET(d3d12_ignore_8bit_color_exp_bias)) {
+        color_exp_bias = 0;
+      }
+    }
     auto color_exp_bias_scale =
-        rex::memory::Reinterpret<float>(int32_t(0x3F800000 + (color_exp_bias << 23)));
+        rex::memory::Reinterpret<float>(uint32_t(127 + color_exp_bias) << 23);
     dirty |= system_constants_.color_exp_bias[i] != color_exp_bias_scale;
     system_constants_.color_exp_bias[i] = color_exp_bias_scale;
     if (edram_rov_used) {

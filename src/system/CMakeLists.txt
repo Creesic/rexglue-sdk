@@ -53,6 +53,8 @@ set_target_properties(rexruntime PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
 
 target_include_directories(rexruntime PUBLIC
     $<BUILD_INTERFACE:${REXGLUE_ROOT}/include>
+    $<BUILD_INTERFACE:${REXGLUE_BINARY_INCLUDE_DIR}>
+    $<BUILD_INTERFACE:${REXGLUE_ROOT}/thirdparty/imgui>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_include_directories(rexruntime PRIVATE
@@ -98,4 +100,7 @@ if(REXGLUE_USE_VULKAN)
         SPIRV-Tools-static
     )
     target_compile_definitions(rexruntime PUBLIC REX_HAS_VULKAN=1)
+endif()
+if(REXGLUE_USE_METAL)
+    target_compile_definitions(rexruntime PUBLIC REX_HAS_METAL=1)
 endif()

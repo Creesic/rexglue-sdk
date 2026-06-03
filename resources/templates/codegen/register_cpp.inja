@@ -2,8 +2,10 @@
 // ReXGlue Generated - {{ project }} Function Registration
 //=============================================================================
 
-#include "{{ project }}_init.h"
 #include <rex/system/function_dispatcher.h>
+
+{% for index in register_part_indices %}void {{ project }}_RegisterFunctionsPart{{ index }}(rex::runtime::IModuleRegistrar* registrar);
+{% endfor %}
 
 {% if is_dll %}
 #ifdef _WIN32
@@ -17,5 +19,5 @@ void ReXModule_Register(rex::runtime::IModuleRegistrar* registrar) {
 {% else %}
 void {{ project }}_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
 {% endif %}
-{% for fn in functions %}{% if not fn.below_code_base or fn.is_import %}  registrar->SetFunction({{ fn.address }}, {{ fn.name }});
-{% endif %}{% endfor %}}
+{% for index in register_part_indices %}  {{ project }}_RegisterFunctionsPart{{ index }}(registrar);
+{% endfor %}}

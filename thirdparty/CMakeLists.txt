@@ -5,10 +5,16 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 #=============================================================================
 # Architecture detection
 #=============================================================================
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+if(DEFINED REXGLUE_SYSTEM_PROCESSOR)
+    set(REXGLUE_THIRDPARTY_SYSTEM_PROCESSOR "${REXGLUE_SYSTEM_PROCESSOR}")
+else()
+    set(REXGLUE_THIRDPARTY_SYSTEM_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+if(REXGLUE_THIRDPARTY_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
     set(IS_ARM64 FALSE)
     set(IS_X86_64 TRUE)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|ARM64)$")
+elseif(REXGLUE_THIRDPARTY_SYSTEM_PROCESSOR MATCHES "^(aarch64|ARM64|arm64)$")
     set(IS_ARM64 TRUE)
     set(IS_X86_64 FALSE)
 else()
@@ -41,6 +47,10 @@ if(REXGLUE_USE_VULKAN)
     )
 endif()
 
+if(REXGLUE_USE_METAL)
+    list(APPEND REQUIRED_SUBMODULES metal-cpp)
+endif()
+
 
 if(REXGLUE_ENABLE_TRACY)
     list(APPEND REQUIRED_SUBMODULES tracy)
@@ -51,7 +61,16 @@ if(REXGLUE_BUILD_TESTS)
 endif()
 
 foreach(submodule ${REQUIRED_SUBMODULES})
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/.git")
+    set(_rexglue_submodule_ready OFF)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/.git")
+        set(_rexglue_submodule_ready ON)
+    elseif(submodule STREQUAL "metal-cpp" AND
+           EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/Metal/Metal.hpp")
+        # The Mac port may vendor metal-cpp directly instead of wiring it as a
+        # git submodule in this checkout.
+        set(_rexglue_submodule_ready ON)
+    endif()
+    if(NOT _rexglue_submodule_ready)
         message(FATAL_ERROR
             "Git submodule '${submodule}' is not initialized.\n"
             "Please run: git submodule update --init --recursive\n"
@@ -280,6 +299,52 @@ if(REXGLUE_USE_D3D12)
     target_include_directories(dxc-headers INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/dxc/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/dxc>)
+endif()
+
+#=============================================================================
+# Metal Shader Converter + DXBC to DXIL (Metal backend only)
+#=============================================================================
+if(REXGLUE_USE_METAL)
+    foreach(_rexglue_metal_path
+        metal-shader-converter/include
+        metal-shader-converter/lib/libmetalirconverter.dylib
+        dxilconv/include
+        dxilconv/lib/libdxilconv.dylib
+        DirectX-Headers/include
+    )
+        if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_rexglue_metal_path}")
+            message(FATAL_ERROR
+                "Metal dependency '${_rexglue_metal_path}' is missing.\n"
+                "Import the Metal Shader Converter, dxilconv, and DirectX-Headers payloads "
+                "before enabling REXGLUE_USE_METAL.")
+        endif()
+    endforeach()
+
+    set(REXGLUE_METALIRCONVERTER_LIBRARY
+        "${CMAKE_CURRENT_SOURCE_DIR}/metal-shader-converter/lib/libmetalirconverter.dylib")
+    get_filename_component(REXGLUE_METALIRCONVERTER_LIBRARY_DIR
+        "${REXGLUE_METALIRCONVERTER_LIBRARY}" DIRECTORY)
+
+    add_library(metalirconverter SHARED IMPORTED GLOBAL)
+    set_target_properties(metalirconverter PROPERTIES
+        IMPORTED_LOCATION "${REXGLUE_METALIRCONVERTER_LIBRARY}"
+        INTERFACE_LINK_DIRECTORIES "${REXGLUE_METALIRCONVERTER_LIBRARY_DIR}"
+        INTERFACE_LINK_OPTIONS
+            "$<$<PLATFORM_ID:Darwin>:-Wl,-rpath,${REXGLUE_METALIRCONVERTER_LIBRARY_DIR}>"
+    )
+
+    set(REXGLUE_DXILCONV_LIBRARY
+        "${CMAKE_CURRENT_SOURCE_DIR}/dxilconv/lib/libdxilconv.dylib")
+    get_filename_component(REXGLUE_DXILCONV_LIBRARY_DIR
+        "${REXGLUE_DXILCONV_LIBRARY}" DIRECTORY)
+
+    add_library(dxilconv SHARED IMPORTED GLOBAL)
+    set_target_properties(dxilconv PROPERTIES
+        IMPORTED_LOCATION "${REXGLUE_DXILCONV_LIBRARY}"
+        INTERFACE_LINK_DIRECTORIES "${REXGLUE_DXILCONV_LIBRARY_DIR}"
+        INTERFACE_LINK_OPTIONS
+            "$<$<PLATFORM_ID:Darwin>:-Wl,-rpath,${REXGLUE_DXILCONV_LIBRARY_DIR}>"
+    )
 endif()
 
 #=============================================================================

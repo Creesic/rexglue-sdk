@@ -9,6 +9,9 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <cstdio>
+#include <cstdlib>
+
 #include <rex/logging.h>
 #include <rex/stream.h>
 #include <rex/string.h>
@@ -25,6 +28,9 @@ XModule::XModule(KernelState* kernel_state, ModuleType module_type)
       hmodule_ptr_(0) {
   // Loader data (HMODULE)
   hmodule_ptr_ = memory()->SystemHeapAlloc(sizeof(X_LDR_DATA_TABLE_ENTRY));
+  if (!hmodule_ptr_) {
+    std::abort();
+  }
 
   // Hijack the checksum field to store our kernel object handle.
   auto ldr_data = memory()->TranslateVirtual<X_LDR_DATA_TABLE_ENTRY*>(hmodule_ptr_);

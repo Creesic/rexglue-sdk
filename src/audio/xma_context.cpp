@@ -10,6 +10,7 @@
 */
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 
 #include <rex/audio/xma/context.h>
@@ -20,6 +21,10 @@
 #include <rex/memory/ring_buffer.h>
 #include <rex/platform.h>
 #include <rex/stream.h>
+
+// TEMP_DIAG: Access global render frame counter from audio_system.cpp
+extern uint32_t audio_diag_get_render_frame();
+// END TEMP_DIAG
 
 extern "C" {
 #if REX_COMPILER_MSVC
@@ -306,6 +311,25 @@ memory::RingBuffer XmaContext::PrepareOutputRingBuffer(XMA_CONTEXT_DATA* data) {
   const uint32_t output_read_offset = data->output_buffer_read_offset * kOutputBytesPerBlock;
   const uint32_t output_write_offset = data->output_buffer_write_offset * kOutputBytesPerBlock;
 
+  // TEMP_DIAG: Log initial ring buffer state
+  {
+    static uint32_t porb_count[32] = {};
+    if (id() < 32) {
+      porb_count[id()]++;
+      if (porb_count[id()] <= 200) {
+        REXAPU_ERROR("XMA_STATE: PrepareRing rf={} ctx={} #{} cap={} roff_blks={} woff_blks={} "
+                     "roff_bytes={} woff_bytes={} obc={}",
+                     audio_diag_get_render_frame(),
+                     id(), porb_count[id()], output_capacity,
+                     (uint32_t)data->output_buffer_read_offset,
+                     (uint32_t)data->output_buffer_write_offset,
+                     output_read_offset, output_write_offset,
+                     (uint32_t)data->output_buffer_block_count);
+      }
+    }
+  }
+  // END TEMP_DIAG
+
   if (output_capacity > kOutputMaxSizeBytes) {
     REXAPU_WARN(
         "XmaContext {}: Output buffer exceeds expected size! "
@@ -378,6 +402,37 @@ kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
 
 void XmaContext::StoreContextMerged(const XMA_CONTEXT_DATA& data,
                                     const XMA_CONTEXT_DATA& initial_data, uint8_t* context_ptr) {
+  // TEMP_DIAG: Log what we're about to write back for output offsets
+  {
+    static uint32_t scm_count[32] = {};
+    if (id() < 32) {
+      scm_count[id()]++;
+      if (scm_count[id()] <= 200) {
+        // Read the raw DWORD 0 from guest memory BEFORE writeback
+        uint32_t raw_dword0_before = 0;
+        std::memcpy(&raw_dword0_before, context_ptr, sizeof(uint32_t));
+        // Read raw DWORD 9 (output_buffer_read_offset)
+        uint32_t raw_dword9_before = 0;
+        std::memcpy(&raw_dword9_before, context_ptr + 9 * sizeof(uint32_t), sizeof(uint32_t));
+
+        REXAPU_ERROR("XMA_STATE: StoreCtxMerged rf={} ctx={} #{} "
+                     "data.woff={} data.roff={} data.ov={} "
+                     "init.woff={} init.roff={} init.ov={} "
+                     "dword0_before=0x{:08X} dword9_before=0x{:08X}",
+                     audio_diag_get_render_frame(),
+                     id(), scm_count[id()],
+                     (uint32_t)data.output_buffer_write_offset,
+                     (uint32_t)data.output_buffer_read_offset,
+                     (uint32_t)data.output_buffer_valid,
+                     (uint32_t)initial_data.output_buffer_write_offset,
+                     (uint32_t)initial_data.output_buffer_read_offset,
+                     (uint32_t)initial_data.output_buffer_valid,
+                     raw_dword0_before, raw_dword9_before);
+      }
+    }
+  }
+  // END TEMP_DIAG
+
   XMA_CONTEXT_DATA fresh(context_ptr);
 
   fresh.loop_count = data.loop_count;
@@ -399,12 +454,46 @@ void XmaContext::StoreContextMerged(const XMA_CONTEXT_DATA& data,
   fresh.output_buffer_read_offset = data.output_buffer_read_offset;
 
   fresh.Store(context_ptr);
+
+  // TEMP_DIAG: Log guest memory AFTER writeback
+  {
+    static uint32_t scm_post_count[32] = {};
+    if (id() < 32) {
+      scm_post_count[id()]++;
+      if (scm_post_count[id()] <= 200) {
+        uint32_t raw_dword0_after = 0;
+        std::memcpy(&raw_dword0_after, context_ptr, sizeof(uint32_t));
+        uint32_t raw_dword9_after = 0;
+        std::memcpy(&raw_dword9_after, context_ptr + 9 * sizeof(uint32_t), sizeof(uint32_t));
+        // Re-parse to verify what a reader would see
+        XMA_CONTEXT_DATA verify(context_ptr);
+        REXAPU_ERROR("XMA_STATE: StoreCtxMerged_POST rf={} ctx={} #{} "
+                     "fresh.woff={} fresh.roff={} fresh.ov={} "
+                     "dword0_after=0x{:08X} dword9_after=0x{:08X} "
+                     "verify.woff={} verify.roff={}",
+                     audio_diag_get_render_frame(),
+                     id(), scm_post_count[id()],
+                     (uint32_t)fresh.output_buffer_write_offset,
+                     (uint32_t)fresh.output_buffer_read_offset,
+                     (uint32_t)fresh.output_buffer_valid,
+                     raw_dword0_after, raw_dword9_after,
+                     (uint32_t)verify.output_buffer_write_offset,
+                     (uint32_t)verify.output_buffer_read_offset);
+      }
+    }
+  }
+  // END TEMP_DIAG
 }
 
 void XmaContext::Consume(memory::RingBuffer* output_rb, const XMA_CONTEXT_DATA* data) {
   if (!current_frame_remaining_subframes_) {
     return;
   }
+
+  // TEMP_DIAG: Log consume details
+  uint32_t rb_write_before = output_rb->write_offset();
+  uint32_t rb_read_before = output_rb->read_offset();
+  // END TEMP_DIAG
 
   if (loop_frame_output_limit_ > 0) {
     const uint8_t total_subframes = (kBytesPerFrameChannel / kOutputBytesPerBlock)
@@ -445,10 +534,48 @@ void XmaContext::Consume(memory::RingBuffer* output_rb, const XMA_CONTEXT_DATA* 
 
   remaining_subframe_blocks_in_output_buffer_ -= subframes_to_write + headroom;
   current_frame_remaining_subframes_ -= subframes_to_write;
+
+  // TEMP_DIAG: Log output ring movement
+  {
+    static uint32_t con_count[32] = {};
+    if (id() < 32) {
+      con_count[id()]++;
+      if (con_count[id()] <= 100 || con_count[id()] % 500 == 0) {
+        uint32_t bytes_written = subframes_to_write * kOutputBytesPerBlock;
+        REXAPU_ERROR("XMA_DIAG: Consume rf={} ctx={} #{} subframes_out={} bytes_out={} "
+                     "rb_write {:#x}->{:#x} rb_read={:#x} rb_capacity={} "
+                     "remaining_subframes={}",
+                     audio_diag_get_render_frame(),
+                     id(), con_count[id()], (int)subframes_to_write, bytes_written,
+                     rb_write_before, output_rb->write_offset(),
+                     rb_read_before, output_rb->capacity(),
+                     (int)current_frame_remaining_subframes_);
+      }
+    }
+  }
+  // END TEMP_DIAG
 }
 
 int XmaContext::PrepareDecoder(int sample_rate, bool is_two_channel) {
-  sample_rate = GetSampleRate(sample_rate);
+  int resolved_rate = GetSampleRate(sample_rate);
+  // TEMP_DIAG: Log every PrepareDecoder call for first 50 calls per context
+  {
+    static uint32_t pd_call_count[32] = {};  // per context id
+    if (id() < 32) {
+      pd_call_count[id()]++;
+      if (pd_call_count[id()] <= 50) {
+        REXAPU_ERROR("XMA_DIAG: PrepareDecoder rf={} ctx={} rate_raw={} resolved_rate={} "
+                     "is_stereo={} av_rate={} av_ch={} av_nb_samples={}",
+                     audio_diag_get_render_frame(),
+                     id(), sample_rate, resolved_rate, is_two_channel,
+                     av_context_->sample_rate, av_context_->channels,
+                     av_frame_ ? av_frame_->nb_samples : -1);
+      }
+    }
+  }
+  // END TEMP_DIAG
+
+  sample_rate = resolved_rate;
 
   uint32_t channels = is_two_channel ? 2 : 1;
   if (av_context_->sample_rate != sample_rate ||
@@ -643,6 +770,25 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
   PrepareDecoder(data->sample_rate, bool(data->is_stereo));
   PreparePacket(packet_info.current_frame_size_, padding_start);
   if (DecodePacket(av_context_, av_packet_, av_frame_)) {
+    // TEMP_DIAG: Log decode results
+    {
+      static uint32_t dec_count[32] = {};
+      if (id() < 32) {
+        dec_count[id()]++;
+        if (dec_count[id()] <= 100 || dec_count[id()] % 500 == 0) {
+          REXAPU_ERROR("XMA_DIAG: Decode rf={} ctx={} #{} sr_raw={} sr_resolved={} "
+                       "is_stereo={} ff_nb_samples={} ff_rate={} ff_ch={} "
+                       "subframes_before_consume={}",
+                       audio_diag_get_render_frame(),
+                       id(), dec_count[id()], (int)data->sample_rate,
+                       av_context_->sample_rate, (int)data->is_stereo,
+                       av_frame_->nb_samples, av_context_->sample_rate,
+                       av_context_->channels,
+                       4 << data->is_stereo);
+        }
+      }
+    }
+    // END TEMP_DIAG
     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
                  raw_frame_.data());
     current_frame_remaining_subframes_ = 4 << data->is_stereo;

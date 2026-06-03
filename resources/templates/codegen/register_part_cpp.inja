@@ -1,0 +1,11 @@
+//=============================================================================
+// ReXGlue Generated - {{ project }} Function Registration Part {{ register_chunk_index }}
+//=============================================================================
+
+#include "{{ project }}_init.h"
+#include <rex/system/function_dispatcher.h>
+
+void {{ project }}_RegisterFunctionsPart{{ register_chunk_index }}(
+    rex::runtime::IModuleRegistrar* registrar) {
+{% for fn in register_functions %}  registrar->SetFunction({{ fn.address }}, {{ fn.name }});
+{% endfor %}}

@@ -25,10 +25,19 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xtypes.h>
 
+// TEMP_DIAG: Access global render frame counter from audio_system.cpp (global namespace)
+extern uint32_t audio_diag_get_render_frame();
+// END TEMP_DIAG
+
+// TEMP_DIAG: XMA gap diagnostics
+#include "xma_gap_diag.h"
+// END TEMP_DIAG
+
 namespace rex::kernel::xboxkrnl {
 using namespace rex::system;
 
 using rex::audio::XMA_CONTEXT_DATA;
+
 
 // See audio_system.cc for implementation details.
 //
@@ -123,6 +132,25 @@ struct XMA_CONTEXT_INIT {
 static_assert_size(XMA_CONTEXT_INIT, 56);
 
 u32 XMAInitializeContext_entry(mapped_void context_ptr, ppc_ptr_t<XMA_CONTEXT_INIT> context_init) {
+  // TEMP_DIAG: Log context initialization details
+  {
+    uint32_t sr_raw = context_init->sample_rate;
+    uint32_t ch_raw = context_init->channel_count;
+    uint32_t sdc = context_init->subframe_decode_count;
+    uint32_t obc = context_init->output_buffer_block_count;
+    REXAPU_ERROR("XMA_DIAG: InitContext rf={} ctx={:08X} sr_raw={} ch_raw={} "
+                 "is_stereo={} sdc={} obc={} "
+                 "buf0={:08X}[{}] buf1={:08X}[{}] out={:08X}",
+                 audio_diag_get_render_frame(), context_ptr.guest_address(), sr_raw, ch_raw,
+                 ch_raw >= 1 ? 1 : 0, sdc, obc,
+                 (uint32_t)context_init->input_buffer_0_ptr,
+                 (uint32_t)context_init->input_buffer_0_packet_count,
+                 (uint32_t)context_init->input_buffer_1_ptr,
+                 (uint32_t)context_init->input_buffer_1_packet_count,
+                 (uint32_t)context_init->output_buffer_ptr);
+  }
+  // END TEMP_DIAG
+
   // Input buffers may be null (buffer 1 in 415607D4).
   // Convert to host endianness.
   uint32_t input_buffer_0_guest_ptr = context_init->input_buffer_0_ptr;
@@ -219,6 +247,20 @@ u32 XMASetInputBufferReadOffset_entry(mapped_void context_ptr, u32 value) {
 }
 
 u32 XMASetInputBuffer0_entry(mapped_void context_ptr, mapped_void buffer, u32 packet_count) {
+  // TEMP_DIAG: XMA gap - boundary marker
+  xma_gap_diag::LogXmaEnter("XMASetInputBuf0", context_ptr.guest_address());
+  // END TEMP_DIAG
+  // TEMP_DIAG: Track input buffer refills
+  {
+    static uint32_t sib0_count = 0;
+    sib0_count++;
+    if (sib0_count <= 200 || sib0_count % 200 == 0) {
+      REXAPU_ERROR("XMA_STATE: SetInputBuf0 rf={} ctx={:08X} buf={:08X} pc={} n={}",
+                   audio_diag_get_render_frame(),
+                   context_ptr.guest_address(), buffer.guest_address(), packet_count, sib0_count);
+    }
+  }
+  // END TEMP_DIAG
   uint32_t buffer_physical_address =
       REX_KERNEL_MEMORY()->GetPhysicalAddress(buffer.guest_address());
   assert_true(buffer_physical_address != UINT32_MAX);
@@ -236,12 +278,22 @@ u32 XMASetInputBuffer0_entry(mapped_void context_ptr, mapped_void buffer, u32 pa
 
   context.Store(context_ptr);
 
+  // TEMP_DIAG: XMA gap - boundary marker exit
+  xma_gap_diag::LogXmaExit("XMASetInputBuf0", context_ptr.guest_address());
+  // END TEMP_DIAG
   return 0;
 }
 
 u32 XMAIsInputBuffer0Valid_entry(mapped_void context_ptr) {
+  // TEMP_DIAG: XMA gap - boundary marker
+  xma_gap_diag::LogXmaEnter("XMAIsInputBuf0Valid", context_ptr.guest_address());
+  // END TEMP_DIAG
   XMA_CONTEXT_DATA context(context_ptr);
-  return context.input_buffer_0_valid;
+  auto val = context.input_buffer_0_valid;
+  // TEMP_DIAG: XMA gap - boundary marker exit
+  xma_gap_diag::LogXmaExit("XMAIsInputBuf0Valid", context_ptr.guest_address());
+  // END TEMP_DIAG
+  return val;
 }
 
 u32 XMASetInputBuffer0Valid_entry(mapped_void context_ptr) {
@@ -253,6 +305,20 @@ u32 XMASetInputBuffer0Valid_entry(mapped_void context_ptr) {
 }
 
 u32 XMASetInputBuffer1_entry(mapped_void context_ptr, mapped_void buffer, u32 packet_count) {
+  // TEMP_DIAG: XMA gap - boundary marker
+  xma_gap_diag::LogXmaEnter("XMASetInputBuf1", context_ptr.guest_address());
+  // END TEMP_DIAG
+  // TEMP_DIAG: Track input buffer refills
+  {
+    static uint32_t sib1_count = 0;
+    sib1_count++;
+    if (sib1_count <= 200 || sib1_count % 200 == 0) {
+      REXAPU_ERROR("XMA_STATE: SetInputBuf1 rf={} ctx={:08X} buf={:08X} pc={} n={}",
+                   audio_diag_get_render_frame(),
+                   context_ptr.guest_address(), buffer.guest_address(), packet_count, sib1_count);
+    }
+  }
+  // END TEMP_DIAG
   uint32_t buffer_physical_address =
       REX_KERNEL_MEMORY()->GetPhysicalAddress(buffer.guest_address());
   assert_true(buffer_physical_address != UINT32_MAX);
@@ -270,12 +336,22 @@ u32 XMASetInputBuffer1_entry(mapped_void context_ptr, mapped_void buffer, u32 pa
 
   context.Store(context_ptr);
 
+  // TEMP_DIAG: XMA gap - boundary marker exit
+  xma_gap_diag::LogXmaExit("XMASetInputBuf1", context_ptr.guest_address());
+  // END TEMP_DIAG
   return 0;
 }
 
 u32 XMAIsInputBuffer1Valid_entry(mapped_void context_ptr) {
+  // TEMP_DIAG: XMA gap - boundary marker
+  xma_gap_diag::LogXmaEnter("XMAIsInputBuf1Valid", context_ptr.guest_address());
+  // END TEMP_DIAG
   XMA_CONTEXT_DATA context(context_ptr);
-  return context.input_buffer_1_valid;
+  auto val = context.input_buffer_1_valid;
+  // TEMP_DIAG: XMA gap - boundary marker exit
+  xma_gap_diag::LogXmaExit("XMAIsInputBuf1Valid", context_ptr.guest_address());
+  // END TEMP_DIAG
+  return val;
 }
 
 u32 XMASetInputBuffer1Valid_entry(mapped_void context_ptr) {
@@ -292,19 +368,69 @@ u32 XMAIsOutputBufferValid_entry(mapped_void context_ptr) {
 }
 
 u32 XMASetOutputBufferValid_entry(mapped_void context_ptr) {
+  // TEMP_DIAG: XMA gap - boundary marker
+  xma_gap_diag::LogXmaEnter("XMASetOutputValid", context_ptr.guest_address());
+  // END TEMP_DIAG
+  {
+    static uint32_t sov_count = 0;
+    sov_count++;
+    XMA_CONTEXT_DATA pre(context_ptr);
+    if (sov_count <= 200 || sov_count % 200 == 0) {
+      REXAPU_ERROR("XMA_STATE: SetOutputValid rf={} ctx={:08X} woff={} roff={} ov={} -> ov=1",
+                   audio_diag_get_render_frame(),
+                   context_ptr.guest_address(),
+                   (uint32_t)pre.output_buffer_write_offset,
+                   (uint32_t)pre.output_buffer_read_offset,
+                   (uint32_t)pre.output_buffer_valid);
+    }
+  }
+  // END TEMP_DIAG
   XMA_CONTEXT_DATA context(context_ptr);
   context.output_buffer_valid = 1;
   context.Store(context_ptr);
 
+  // TEMP_DIAG: XMA gap - boundary marker exit
+  xma_gap_diag::LogXmaExit("XMASetOutputValid", context_ptr.guest_address());
+  // END TEMP_DIAG
   return 0;
 }
 
 u32 XMAGetOutputBufferReadOffset_entry(mapped_void context_ptr) {
+  // TEMP_DIAG: XMA gap - boundary marker
+  xma_gap_diag::LogXmaEnter("XMAGetOutputReadOff", context_ptr.guest_address());
+  // END TEMP_DIAG
   XMA_CONTEXT_DATA context(context_ptr);
-  return context.output_buffer_read_offset;
+  uint32_t val = context.output_buffer_read_offset;
+  // TEMP_DIAG: Detailed output offset state
+  {
+    static uint32_t gro_count = 0;
+    gro_count++;
+    if (gro_count <= 200 || gro_count % 500 == 0) {
+      uint32_t raw_dword9 = 0;
+      std::memcpy(&raw_dword9, context_ptr, sizeof(uint32_t) * 10);
+      std::memcpy(&raw_dword9, static_cast<const uint8_t*>(static_cast<const void*>(context_ptr)) + 9 * sizeof(uint32_t), sizeof(uint32_t));
+      REXAPU_ERROR("XMA_STATE: GetOutputReadOff rf={} ctx={:08X} val={} dword9_raw=0x{:08X}",
+                   audio_diag_get_render_frame(), context_ptr.guest_address(), val, raw_dword9);
+    }
+  }
+  // END TEMP_DIAG
+  // TEMP_DIAG: XMA gap - boundary marker exit
+  xma_gap_diag::LogXmaExit("XMAGetOutputReadOff", context_ptr.guest_address());
+  // END TEMP_DIAG
+  return val;
 }
 
 u32 XMASetOutputBufferReadOffset_entry(mapped_void context_ptr, u32 value) {
+  // TEMP_DIAG
+  {
+    static uint32_t sro_count = 0;
+    sro_count++;
+    if (sro_count <= 200 || sro_count % 200 == 0) {
+      REXAPU_ERROR("XMA_STATE: SetOutputReadOff rf={} ctx={:08X} val={}",
+                   audio_diag_get_render_frame(), context_ptr.guest_address(), value);
+    }
+  }
+  // END TEMP_DIAG
   XMA_CONTEXT_DATA context(context_ptr);
   context.output_buffer_read_offset = value;
   context.Store(context_ptr);
@@ -313,8 +439,24 @@ u32 XMASetOutputBufferReadOffset_entry(mapped_void context_ptr, u32 value) {
 }
 
 u32 XMAGetOutputBufferWriteOffset_entry(mapped_void context_ptr) {
+  // TEMP_DIAG: XMA gap - boundary marker
+  xma_gap_diag::LogXmaEnter("XMAGetOutputWriteOff", context_ptr.guest_address());
+  // END TEMP_DIAG
   XMA_CONTEXT_DATA context(context_ptr);
-  return context.output_buffer_write_offset;
+  uint32_t val = context.output_buffer_write_offset;
+  // TEMP_DIAG: Detailed output offset state
+  {
+    static uint32_t gwo_count = 0;
+    gwo_count++;
+    if (gwo_count <= 200 || gwo_count % 500 == 0) {
+      uint32_t raw_dword0 = 0;
+      std::memcpy(&raw_dword0, static_cast<const uint8_t*>(static_cast<const void*>(context_ptr)), sizeof(uint32_t));
+      REXAPU_ERROR("XMA_STATE: GetOutputWriteOff rf={} ctx={:08X} val={} dword0_raw=0x{:08X}",
+                   audio_diag_get_render_frame(), context_ptr.guest_address(), val, raw_dword0);
+    }
+  }
+  // END TEMP_DIAG
+  return val;
 }
 
 u32 XMAGetPacketMetadata_entry(mapped_void context_ptr) {
@@ -323,11 +465,54 @@ u32 XMAGetPacketMetadata_entry(mapped_void context_ptr) {
 }
 
 u32 XMAEnableContext_entry(mapped_void context_ptr) {
+  // TEMP_DIAG: XMA gap - boundary marker
+  xma_gap_diag::LogXmaEnter("XMAEnableContext", context_ptr.guest_address());
+  // END TEMP_DIAG
+  // TEMP_DIAG
+  {
+    static uint32_t enc_count = 0;
+    enc_count++;
+    if (enc_count <= 200 || enc_count % 200 == 0) {
+      XMA_CONTEXT_DATA pre(context_ptr);
+      REXAPU_ERROR("XMA_STATE: EnableContext rf={} ctx={:08X} woff={} roff={} ov={} "
+                   "ib0v={} ib1v={} ib0pc={} ib1pc={}",
+                   audio_diag_get_render_frame(),
+                   context_ptr.guest_address(),
+                   (uint32_t)pre.output_buffer_write_offset,
+                   (uint32_t)pre.output_buffer_read_offset,
+                   (uint32_t)pre.output_buffer_valid,
+                   (uint32_t)pre.input_buffer_0_valid,
+                   (uint32_t)pre.input_buffer_1_valid,
+                   (uint32_t)pre.input_buffer_0_packet_count,
+                   (uint32_t)pre.input_buffer_1_packet_count);
+    }
+  }
+  // END TEMP_DIAG
   StoreXmaContextIndexedRegister(REX_KERNEL_STATE(), 0x1940, context_ptr.guest_address());
+  // TEMP_DIAG: XMA gap - boundary marker exit
+  xma_gap_diag::LogXmaExit("XMAEnableContext", context_ptr.guest_address());
+  // END TEMP_DIAG
   return 0;
 }
 
 u32 XMADisableContext_entry(mapped_void context_ptr, u32 wait) {
+  // TEMP_DIAG: XMA gap - boundary marker
+  xma_gap_diag::LogXmaEnter("XMADisableContext", context_ptr.guest_address());
+  // END TEMP_DIAG
+  // TEMP_DIAG
+  {
+    static uint32_t dic_count = 0;
+    dic_count++;
+    if (dic_count <= 200 || dic_count % 200 == 0) {
+      XMA_CONTEXT_DATA pre(context_ptr);
+      REXAPU_ERROR("XMA_STATE: DisableContext rf={} ctx={:08X} wait={} woff={} roff={} ov={}",
+                   audio_diag_get_render_frame(), context_ptr.guest_address(), wait,
+                   (uint32_t)pre.output_buffer_write_offset,
+                   (uint32_t)pre.output_buffer_read_offset,
+                   (uint32_t)pre.output_buffer_valid);
+    }
+  }
+  // END TEMP_DIAG
   X_HRESULT result = X_E_SUCCESS;
   StoreXmaContextIndexedRegister(REX_KERNEL_STATE(), 0x1A40, context_ptr.guest_address());
   if (!static_cast<audio::AudioSystem*>(REX_KERNEL_STATE()->emulator()->audio_system())
@@ -335,10 +520,29 @@ u32 XMADisableContext_entry(mapped_void context_ptr, u32 wait) {
            ->BlockOnContext(context_ptr.guest_address(), !wait)) {
     result = X_E_FALSE;
   }
+  // TEMP_DIAG: XMA gap - boundary marker exit
+  xma_gap_diag::LogXmaExit("XMADisableContext", context_ptr.guest_address());
+  // END TEMP_DIAG
   return result;
 }
 
+
 u32 XMABlockWhileInUse_entry(mapped_void context_ptr) {
+  // TEMP_DIAG: Track block/wait calls
+  {
+    static uint32_t bwiu_count = 0;
+    bwiu_count++;
+    if (bwiu_count <= 100 || bwiu_count % 500 == 0) {
+      XMA_CONTEXT_DATA pre(context_ptr);
+      REXAPU_ERROR("XMA_STATE: BlockWhileInUse rf={} ctx={:08X} ib0v={} ib1v={} wb={} n={}",
+                   audio_diag_get_render_frame(),
+                   context_ptr.guest_address(),
+                   (uint32_t)pre.input_buffer_0_valid,
+                   (uint32_t)pre.input_buffer_1_valid,
+                   (uint32_t)pre.work_buffer_ptr, bwiu_count);
+    }
+  }
+  // END TEMP_DIAG
   do {
     XMA_CONTEXT_DATA context(context_ptr);
     if (!context.input_buffer_0_valid && !context.input_buffer_1_valid) {
@@ -353,6 +557,29 @@ u32 XMABlockWhileInUse_entry(mapped_void context_ptr) {
 }
 
 }  // namespace rex::kernel::xboxkrnl
+
+// ============================================================================
+// TEMP_DIAG: Bridge functions for clock.cpp to call into xma_gap_diag
+// These are declared extern "C" in clock.cpp and defined here.
+// ============================================================================
+
+extern "C" {
+
+bool xma_gap_diag_gap_active() {
+  return xma_gap_diag::g_in_gap.load(std::memory_order_relaxed);
+}
+
+uint32_t xma_gap_diag_get_native_tid() {
+  return xma_gap_diag::g_xma_native_tid.load(std::memory_order_relaxed);
+}
+
+void xma_gap_diag_log_timebase(uint64_t value) {
+  xma_gap_diag::log_timebase_impl(value);
+}
+
+}  // extern "C"
+
+// END TEMP_DIAG
 
 REX_EXPORT(__imp__XMACreateContext, rex::kernel::xboxkrnl::XMACreateContext_entry)
 REX_EXPORT(__imp__XMAReleaseContext, rex::kernel::xboxkrnl::XMAReleaseContext_entry)

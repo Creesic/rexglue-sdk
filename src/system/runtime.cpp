@@ -27,6 +27,7 @@
 #include <rex/system/xmemory.h>
 #include <rex/system/xthread.h>
 #include <rex/thread.h>
+#include <cstdio>
 
 REXCVAR_DEFINE_STRING(game_data_root, "", "Runtime", "Override game data path");
 REXCVAR_DEFINE_STRING(user_data_root, "", "Runtime", "Override user data path");
@@ -34,6 +35,15 @@ REXCVAR_DEFINE_STRING(update_data_root, "", "Runtime", "Override update data pat
 REXCVAR_DEFINE_STRING(cache_root, "", "Runtime", "Override shader cache path");
 
 namespace rex {
+
+namespace runtime {
+
+void TraceGuestStore(uint32_t address, uint32_t size, uint64_t value, const char* function_name) {
+  REXSYS_ERROR("guest_store_watch addr={:08X} size={} value={:016X} fn={}", address, size, value,
+               function_name ? function_name : "?");
+}
+
+}  // namespace runtime
 
 // Static instance for global access
 Runtime* Runtime::instance_ = nullptr;
@@ -151,8 +161,14 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
 
   // Initialize GPU from injected config
   if (config.graphics) {
+    std::fprintf(stderr, "[probe] Runtime::Setup graphics config present app_context=%p tool_mode=%d\n",
+                 static_cast<void*>(app_context_), int(tool_mode_));
+    std::fflush(stderr);
     graphics_system_ = std::move(config.graphics);
     bool with_presentation = (app_context_ != nullptr);
+    std::fprintf(stderr, "[probe] Runtime::Setup calling graphics Setup with_presentation=%d\n",
+                 int(with_presentation));
+    std::fflush(stderr);
     X_STATUS gpu_status = graphics_system_->Setup(function_dispatcher_.get(), kernel_state_.get(),
                                                   app_context_, with_presentation);
     if (XFAILED(gpu_status)) {

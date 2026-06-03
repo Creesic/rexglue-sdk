@@ -446,12 +446,22 @@ void Presenter::PaintFromUIThread(bool force_paint) {
   // connection has become outdated and has requested the UI thread to
   // reconnect).
   bool draw_ui = !ui_drawers_.empty();
-  bool do_paint = force_paint || draw_ui;
+  bool do_paint = force_paint || draw_ui || WantsContinuousUIPaintFromUIThread();
   // Reset ui_thread_paint_requested_ unconditionally also, regardless of
   // whether the UI needs to be drawn - the flag may be set to try reconnecting,
   // for example.
   if (ui_thread_paint_requested_.exchange(false, std::memory_order_relaxed)) {
     do_paint = true;
+  }
+  if (REXCVAR_QUERY(bool, metal_present_probe)) {
+    static uint32_t ui_paint_probe_count = 0;
+    if (ui_paint_probe_count < 16) {
+      ++ui_paint_probe_count;
+      REXLOG_WARN(
+          "Presenter::PaintFromUIThread force={} draw_ui={} do_paint={} mode={} conn={}",
+          force_paint, draw_ui, do_paint, int(paint_mode_),
+          int(surface_paint_connection_state_));
+    }
   }
   PaintResult paint_result = PaintResult::kNotPresented;
   bool request_repaint_at_tick = false;
@@ -469,7 +479,9 @@ void Presenter::PaintFromUIThread(bool force_paint) {
     }
     // Try to recover from the connection becoming outdated in the previous
     // paint.
-    if (surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedOutdated) {
+    if (surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedOutdated ||
+        surface_paint_connection_state_ ==
+            SurfacePaintConnectionState::kUnconnectedRetryAtStateChange) {
       UpdateSurfacePaintConnectionFromUIThread(nullptr, false);
     }
     // If still paintable or recovered successfully, paint.
@@ -544,6 +556,9 @@ void Presenter::PaintFromUIThread(bool force_paint) {
     if (request_ui_paint_after_current_ui_thread_paint_ && !ui_drawers_.empty()) {
       request_repaint_at_tick = true;
     }
+    if (WantsContinuousUIPaintFromUIThread()) {
+      request_repaint_immediately = true;
+    }
   }
   if (request_repaint_at_tick || request_repaint_immediately) {
     RequestPaintOrConnectionRecoveryViaWindow(request_repaint_immediately);
@@ -554,6 +569,17 @@ bool Presenter::RefreshGuestOutput(
     uint32_t frontbuffer_width, uint32_t frontbuffer_height, uint32_t display_aspect_ratio_x,
     uint32_t display_aspect_ratio_y,
     std::function<bool(GuestOutputRefreshContext& context)> refresher) {
+  if (REXCVAR_QUERY(bool, metal_present_probe)) {
+    static uint32_t refresh_entry_probe_count = 0;
+    if (refresh_entry_probe_count < 16) {
+      ++refresh_entry_probe_count;
+      REXLOG_WARN(
+          "Presenter::RefreshGuestOutput in fb={}x{} aspect={}x{} mode={} conn={}",
+          frontbuffer_width, frontbuffer_height, display_aspect_ratio_x,
+          display_aspect_ratio_y, int(paint_mode_),
+          int(surface_paint_connection_state_));
+    }
+  }
   GuestOutputProperties& writable_properties =
       guest_output_properties_[guest_output_mailbox_writable_];
   writable_properties.frontbuffer_width = frontbuffer_width;

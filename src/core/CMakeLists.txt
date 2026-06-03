@@ -78,7 +78,11 @@ target_include_directories(rexcore PRIVATE
 )
 
 if(UNIX)
-    target_link_libraries(rexcore PRIVATE pthread rt dl)
+    find_package(Threads REQUIRED)
+    target_link_libraries(rexcore PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    if(NOT APPLE)
+        target_link_libraries(rexcore PRIVATE rt)
+    endif()
 endif()
 
 target_link_libraries(rexcore
@@ -103,4 +107,3 @@ if(REXGLUE_ENABLE_PERF_COUNTERS)
     target_compile_definitions(rexcore PUBLIC
         $<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
 endif()
-

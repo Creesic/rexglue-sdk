@@ -51,3 +51,36 @@ bool IsGpuDebugMarkersEnabled() {
   }
   return result;
 }
+
+REXCVAR_DEFINE_BOOL(metal_shader_disk_cache, true, "GPU/Metal",
+                    "Cache compiled Metal shader libraries to disk");
+REXCVAR_DEFINE_BOOL(metal_pipeline_binary_archive, true, "GPU/Metal",
+                    "Use MTLBinaryArchive for Metal pipeline caching");
+REXCVAR_DEFINE_BOOL(metal_pipeline_disk_cache, true, "GPU/Metal",
+                    "Store Metal pipeline descriptor keys to disk");
+REXCVAR_DEFINE_BOOL(metal_use_heaps, true, "GPU/Metal",
+                    "Use MTLHeap-backed texture allocations");
+REXCVAR_DEFINE_BOOL(metal_shared_memory_zero_copy, true, "GPU/Metal",
+                    "Use zero-copy shared memory mapping");
+REXCVAR_DEFINE_INT32(metal_heap_min_bytes, 33554432, "GPU/Metal",
+                     "Minimum heap size for Metal heap allocations");
+REXCVAR_DEFINE_BOOL(metal_texture_cache_use_private, true, "GPU/Metal",
+                    "Use MTLStorageModePrivate for texture cache textures");
+REXCVAR_DEFINE_BOOL(metal_texture_upload_via_blit, true, "GPU/Metal",
+                    "Upload textures via blit command encoder");
+REXCVAR_DEFINE_INT32(metal_pipeline_creation_threads, 0, "GPU/Metal",
+                     "Number of threads for Metal pipeline creation (0 = auto)");
+REXCVAR_DEFINE_BOOL(metal_force_bc_decompress, false, "GPU/Metal",
+                    "Force BC texture decompression");
+REXCVAR_DEFINE_BOOL(metal_transfer_fast_divmod, true, "GPU/Metal",
+                    "Use fast divmod in Metal transfer shaders");
+REXCVAR_DEFINE_BOOL(metal_transfer_msaa_sample_id, true, "GPU/Metal",
+                    "Use sample_id in Metal MSAA transfer shaders");
+REXCVAR_DEFINE_BOOL(metal_transfer_tile_instancing, true, "GPU/Metal",
+                    "Use tile instancing in Metal transfer shaders");
+REXCVAR_DEFINE_INT32(metal_memory_log_rate, 0, "GPU/Metal",
+                     "Emit Metal memory logs every N frames (0 disables)");
+REXCVAR_DEFINE_BOOL(submit_on_primary_buffer_end, false, "GPU/Metal",
+                    "Submit GPU commands on primary buffer end");
+REXCVAR_DEFINE_BOOL(metal_allow_gamma_unorm16, false, "GPU/Metal",
+                    "Allow gamma UNORM16 render targets on Metal despite known issues");

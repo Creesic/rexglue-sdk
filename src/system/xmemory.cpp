@@ -10,8 +10,14 @@
  */
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <utility>
+
+#if REX_PLATFORM_MAC
+#include <sys/mman.h>
+#endif
 
 #include <fmt/format.h>
 
@@ -38,6 +44,29 @@ REXCVAR_DEFINE_BOOL(protect_on_release, false, "Memory",
 REXCVAR_DEFINE_BOOL(scribble_heap, false, "Memory", "Scribble 0xCD into all allocated heap memory");
 
 namespace rex::memory {
+
+namespace {
+
+struct HostCommitRange {
+  uint8_t* base = nullptr;
+  size_t length = 0;
+};
+
+HostCommitRange ComputeHostCommitRange(const BaseHeap& heap, uint32_t start_page_number,
+                                       uint32_t page_count) {
+  const size_t guest_relative = size_t(start_page_number) * heap.page_size();
+  const size_t guest_length = size_t(page_count) * heap.page_size();
+  const size_t host_page_size = rex::memory::page_size();
+  const size_t host_relative = guest_relative + heap.host_address_offset();
+  const size_t host_start = host_relative & ~(host_page_size - 1);
+  const size_t host_end = rex::round_up(host_relative + guest_length, host_page_size);
+  return {
+      .base = heap.TranslateRelative<uint8_t*>(guest_relative) - (host_relative - host_start),
+      .length = host_end - host_start,
+  };
+}
+
+}  // namespace
 
 uint32_t get_page_count(uint32_t value, uint32_t page_size, uint32_t page_size_shift) {
   return rex::round_up(value, page_size) >> page_size_shift;
@@ -132,16 +161,26 @@ bool Memory::Initialize() {
 
   // Create main page file-backed mapping. This is all reserved but
   // uncommitted (so it shouldn't expand page file).
-  mapping_ =
-      rex::memory::CreateFileMappingHandle(file_name_,
-                                           // entire 4gb space + 512mb physical:
-                                           0x11FFFFFFF, rex::memory::PageAccess::kReadWrite, false);
+  const size_t mapping_size =
+      rex::round_up(static_cast<size_t>(0x120000000ull) + system_allocation_granularity_,
+                    static_cast<size_t>(system_allocation_granularity_));
+  mapping_ = rex::memory::CreateFileMappingHandle(file_name_, mapping_size,
+                                                  rex::memory::PageAccess::kReadWrite, false);
   if (mapping_ == rex::memory::kFileMappingHandleInvalid) {
     REXSYS_ERROR("Unable to reserve the 4gb guest address space.");
     assert_always();
     return false;
   }
 
+#if REX_PLATFORM_MAC
+  // Reserve one contiguous host range, then remap all guest views into it.
+  if (MapViewsMac()) {
+    REXSYS_ERROR("Unable to find a continuous block in the 64bit address space.");
+    assert_always();
+    return false;
+  }
+  mapping_base_ = views_.all_views[0];
+#else
   // Attempt to create our views. This may fail at the first address
   // we pick, so try a few times.
   mapping_base_ = 0;
@@ -157,8 +196,10 @@ bool Memory::Initialize() {
     assert_always();
     return false;
   }
+#endif
   virtual_membase_ = mapping_base_;
   physical_membase_ = mapping_base_ + 0x100000000ull;
+  host_page_offset_ = (rex::memory::allocation_granularity() > 0x1000) ? 0x1000 : 0;
 
   // Prepare virtual heaps.
   heaps_.v00000000.Initialize(this, virtual_membase_, memory::HeapType::kGuestVirtual, 0x00000000,
@@ -291,6 +332,50 @@ static const struct {
         0x0000000100000000ull,
     },
 };
+
+#if REX_PLATFORM_MAC
+int Memory::MapViewsMac() {
+  assert_true(rex::countof(map_info) == rex::countof(views_.all_views));
+
+  const size_t total_size =
+      static_cast<size_t>(map_info[rex::countof(map_info) - 1].virtual_address_end -
+                          map_info[0].virtual_address_start + 1);
+
+  void* reserved_base = mmap(nullptr, total_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (reserved_base == MAP_FAILED) {
+    REXSYS_ERROR("MapViewsMac: reserve failed: {}", std::strerror(errno));
+    return 1;
+  }
+
+  uint8_t* mapping_base = reinterpret_cast<uint8_t*>(reserved_base);
+  uint64_t granularity_mask = ~uint64_t(system_allocation_granularity_ - 1);
+
+  for (size_t n = 0; n < rex::countof(map_info); n++) {
+    size_t view_size = static_cast<size_t>(map_info[n].virtual_address_end -
+                                           map_info[n].virtual_address_start + 1);
+    size_t file_offset = static_cast<size_t>(map_info[n].target_address & granularity_mask);
+    void* target_address = mapping_base + map_info[n].virtual_address_start;
+    void* result = mmap(target_address, view_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+                        mapping_, file_offset);
+    if (result == MAP_FAILED || result != target_address) {
+      int err = errno;
+      REXSYS_ERROR(
+          "MapViewsMac: map failed view {} addr 0x{:016X} size 0x{:X} offset 0x{:X} err {} ({})", n,
+          reinterpret_cast<uintptr_t>(target_address), view_size, file_offset, err,
+          std::strerror(err));
+      munmap(reserved_base, total_size);
+      for (auto& view : views_.all_views) {
+        view = nullptr;
+      }
+      return 1;
+    }
+    views_.all_views[n] = reinterpret_cast<uint8_t*>(result);
+  }
+
+  return 0;
+}
+#endif
+
 int Memory::MapViews(uint8_t* mapping_base) {
   assert_true(rex::countof(map_info) == rex::countof(views_.all_views));
   // 0xE0000000 4 KB offset is emulated via host_address_offset and on the CPU
@@ -846,7 +931,9 @@ void BaseHeap::Dispose() {
   for (uint32_t page_number = 0; page_number < page_table_.size(); ++page_number) {
     auto& page_entry = page_table_[page_number];
     if (page_entry.state) {
-      rex::memory::DeallocFixed(TranslateRelative(page_number << page_size_shift_), 0,
+      rex::memory::DeallocFixed(TranslateRelative(page_number << page_size_shift_),
+                                static_cast<size_t>(page_entry.region_page_count)
+                                    << page_size_shift_,
                                 rex::memory::DeallocationType::kRelease);
       page_number += page_entry.region_page_count;
     }
@@ -1106,9 +1193,9 @@ bool BaseHeap::AllocFixed(uint32_t base_address, uint32_t size, uint32_t alignme
     auto alloc_type = (allocation_type & memory::kMemoryAllocationCommit)
                           ? rex::memory::AllocationType::kCommit
                           : rex::memory::AllocationType::kReserve;
-    void* result =
-        rex::memory::AllocFixed(TranslateRelative(start_page_number << page_size_shift_),
-                                page_count << page_size_shift_, alloc_type, ToPageAccess(protect));
+    HostCommitRange host_commit = ComputeHostCommitRange(*this, start_page_number, page_count);
+    void* result = rex::memory::AllocFixed(host_commit.base, host_commit.length, alloc_type,
+                                           ToPageAccess(protect));
     if (!result) {
       REXSYS_ERROR("BaseHeap::AllocFixed failed to alloc range from host");
       return false;
@@ -1260,9 +1347,9 @@ bool BaseHeap::AllocRange(uint32_t low_address, uint32_t high_address, uint32_t 
     auto alloc_type = (allocation_type & memory::kMemoryAllocationCommit)
                           ? rex::memory::AllocationType::kCommit
                           : rex::memory::AllocationType::kReserve;
-    void* result =
-        rex::memory::AllocFixed(TranslateRelative(start_page_number << page_size_shift_),
-                                page_count << page_size_shift_, alloc_type, ToPageAccess(protect));
+    HostCommitRange host_commit = ComputeHostCommitRange(*this, start_page_number, page_count);
+    void* result = rex::memory::AllocFixed(host_commit.base, host_commit.length, alloc_type,
+                                           ToPageAccess(protect));
     if (!result) {
       REXSYS_ERROR("BaseHeap::Alloc failed to alloc range from host");
       return false;
@@ -1444,7 +1531,9 @@ bool BaseHeap::Protect(uint32_t address, uint32_t size, uint32_t protect, uint32
     }
   } else {
     REXSYS_WARN("BaseHeap::Protect: ignoring request as not 4k page aligned");
+#if !REX_PLATFORM_MAC
     return false;
+#endif
   }
 
   // Perform table change.

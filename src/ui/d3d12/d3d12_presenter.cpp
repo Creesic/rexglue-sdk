@@ -1148,17 +1148,17 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
     ui_submission_tracker_.NextSubmission();
   }
   paint_context_.paint_submission_tracker.NextSubmission();
-  // Present as soon as possible, without waiting for vsync (the host refresh
-  // rate may be something like 144 Hz, which is not a multiple of the common
-  // 30 Hz or 60 Hz guest refresh rate), and allowing dropping outdated queued
-  // frames for lower latency. Also, if possible, allowing tearing to use
-  // variable refresh rate in borderless fullscreen (note that if DXGI
-  // fullscreen is ever used in, the allow tearing flag must not be passed in
-  // fullscreen, but DXGI fullscreen is largely unneeded with the flip
-  // presentation model used in Direct3D 12).
+  // TEMP_BYPASS: Use sync_interval=1 when vsync is enabled to cap frame rate.
+  // On Xbox 360, Present blocks until vblank, naturally pacing the game at 30/60fps.
+  // Without this, the game runs uncapped (~74fps), starving the audio worker thread.
+  // Long-term: keep sync_interval=0 (unlimited fps) but fix audio thread scheduling
+  // so it isn't starved by the main thread's CPU usage.
+  UINT sync_interval = cvar::Query<bool>("vsync") ? 1 : 0;
   HRESULT present_result = paint_context_.swap_chain->Present(
-      0, DXGI_PRESENT_RESTART |
-             (paint_context_.swap_chain_allows_tearing ? DXGI_PRESENT_ALLOW_TEARING : 0));
+      sync_interval, DXGI_PRESENT_RESTART |
+             (paint_context_.swap_chain_allows_tearing && sync_interval == 0
+                  ? DXGI_PRESENT_ALLOW_TEARING
+                  : 0));
   // Even if presentation has failed, work might have been enqueued anyway
   // internally before the failure according to Jesse Natalie from the DirectX
   // Discord server.
