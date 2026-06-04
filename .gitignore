@@ -419,8 +419,25 @@ FodyWeavers.xsd
 
 # CMake User Overrides
 CMakeUserPresets.json
-/FM2
-/pgr3
-/Graine25
-/include
-/thirdparty
+.DS_Store
+*.tracy
+
+# Title payloads and generated/build output stay local. Track title configs,
+# manifests, hooks, and source files so a reclone preserves the debug setup.
+/FM2/assets/
+/FM2/generated/
+/FM2/out/
+/FM2/logs/
+/FM2/.vs/
+/pgr3/assets/
+/pgr3/generated/
+/pgr3/out/
+/pgr3/logs/
+/pgr3/.vs/
+/pgr3/.idea/
+/pgr3/*.xtr
+/Graine25/assets/
+/Graine25/generated/
+/Graine25/out/
+/Graine25/logs/
+/Graine25/.vs/
