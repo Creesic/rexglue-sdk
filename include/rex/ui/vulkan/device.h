@@ -159,6 +159,10 @@ class VulkanDevice {
 
     bool nonSeamlessCubeMap = false;
 
+    // VK_KHR_fragment_shader_barycentric (#322)
+
+    bool fragmentShaderBarycentric = false;
+
     // VK_EXT_custom_border_color
 
     bool customBorderColors = false;
@@ -195,6 +199,8 @@ class VulkanDevice {
     bool ext_EXT_custom_border_color = false;
     // Has optional features not implied by this being true.
     bool ext_EXT_robustness2 = false;
+    // Has optional features not implied by this being true.
+    bool ext_KHR_fragment_shader_barycentric = false;
     // Has optional features not implied by this being true.
     bool ext_1_3_KHR_maintenance4 = false;  // #414
     // Has optional features not implied by this being true.

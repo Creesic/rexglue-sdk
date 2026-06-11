@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,12 +22,53 @@
 #include <fmt/format.h>
 
 #include <rex/assert.h>
+#include <rex/graphics/flags.h>
 #include <rex/graphics/pipeline/shader/spirv.h>
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
+#include <rex/logging.h>
 #include <rex/math.h>
 #include <rex/string/buffer.h>
 
 namespace rex::graphics {
+
+namespace {
+static std::optional<spv::SpvVersion> g_cached_spirv_version;
+
+bool TestSpirvVersionSupport(const ui::vulkan::VulkanDevice* vulkan_device,
+                             spv::SpvVersion spv_version) {
+  SpirvBuilder builder(spv_version, SpirvShaderTranslator::kSpirvMagicToolId, nullptr);
+  builder.setSource(spv::SourceLanguageUnknown, 0);
+  builder.setMemoryModel(spv::AddressingModelLogical, spv::MemoryModelGLSL450);
+  builder.addCapability(spv::CapabilityShader);
+
+  std::vector<spv::Id> param_types;
+  spv::Block* entry_block = nullptr;
+  spv::Function* main_function = builder.makeFunctionEntry(spv::NoPrecision, builder.makeVoidType(),
+                                                           "main", param_types, {}, &entry_block);
+  builder.addEntryPoint(spv::ExecutionModelGLCompute, main_function, "main");
+  builder.addExecutionMode(main_function, spv::ExecutionModeLocalSize, 1, 1, 1);
+  builder.makeReturn(false);
+  builder.leaveFunction();
+
+  std::vector<uint32_t> spirv_code;
+  builder.dump(spirv_code);
+
+  VkShaderModuleCreateInfo create_info = {};
+  create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  create_info.codeSize = spirv_code.size() * sizeof(uint32_t);
+  create_info.pCode = spirv_code.data();
+
+  VkShaderModule test_module = VK_NULL_HANDLE;
+  VkResult result = vulkan_device->functions().vkCreateShaderModule(vulkan_device->device(),
+                                                                    &create_info, nullptr,
+                                                                    &test_module);
+  if (result == VK_SUCCESS) {
+    vulkan_device->functions().vkDestroyShaderModule(vulkan_device->device(), test_module, nullptr);
+    return true;
+  }
+  return false;
+}
+}  // namespace
 
 SpirvShaderTranslator::Features::Features(bool all)
     : spirv_version(all ? spv::Spv_1_5 : spv::Spv_1_0),
@@ -42,6 +84,8 @@ SpirvShaderTranslator::Features::Features(bool all)
       rounding_mode_rte_float32(all),
       fragment_shader_sample_interlock(all),
       demote_to_helper_invocation(all),
+      fragment_shader_barycentric(all),
+      allow_float_contraction(false),
       sample_rate_shading(all) {}
 
 SpirvShaderTranslator::Features::Features(const ui::vulkan::VulkanDevice* const vulkan_device)
@@ -59,16 +103,45 @@ SpirvShaderTranslator::Features::Features(const ui::vulkan::VulkanDevice* const 
       rounding_mode_rte_float32(vulkan_device->properties().shaderRoundingModeRTEFloat32),
       fragment_shader_sample_interlock(vulkan_device->properties().fragmentShaderSampleInterlock),
       demote_to_helper_invocation(vulkan_device->properties().shaderDemoteToHelperInvocation),
+      fragment_shader_barycentric(vulkan_device->properties().fragmentShaderBarycentric),
+      allow_float_contraction(REXCVAR_GET(spirv_moltenvk_allow_contraction) &&
+                              vulkan_device->properties().driverID == VK_DRIVER_ID_MOLTENVK),
       sample_rate_shading(vulkan_device->properties().sampleRateShading) {
-  const uint32_t vulkan_api_version = vulkan_device->properties().apiVersion;
-  if (vulkan_api_version >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
-    spirv_version = spv::Spv_1_5;
-  } else if (vulkan_device->extensions().ext_1_2_KHR_spirv_1_4) {
-    spirv_version = spv::Spv_1_4;
-  } else if (vulkan_api_version >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
-    spirv_version = spv::Spv_1_3;
-  } else {
+  const std::string& override_version = REXCVAR_GET(spirv_version_override);
+  if (override_version == "1.0") {
     spirv_version = spv::Spv_1_0;
+  } else if (override_version == "1.3") {
+    spirv_version = spv::Spv_1_3;
+  } else if (override_version == "1.4") {
+    spirv_version = spv::Spv_1_4;
+  } else if (override_version == "1.5") {
+    spirv_version = spv::Spv_1_5;
+  } else if (override_version == "1.6") {
+    // This tree's bundled SPIR-V headers currently top out at 1.5.
+    spirv_version = spv::Spv_1_5;
+  } else {
+    if (override_version == "auto") {
+      if (g_cached_spirv_version.has_value()) {
+        spirv_version = g_cached_spirv_version.value();
+      } else if (TestSpirvVersionSupport(vulkan_device, spv::Spv_1_5)) {
+        spirv_version = spv::Spv_1_5;
+        g_cached_spirv_version = static_cast<spv::SpvVersion>(spirv_version);
+      } else {
+        spirv_version = spv::Spv_1_0;
+        g_cached_spirv_version = static_cast<spv::SpvVersion>(spirv_version);
+      }
+    } else {
+      const uint32_t vulkan_api_version = vulkan_device->properties().apiVersion;
+      if (vulkan_api_version >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
+        spirv_version = spv::Spv_1_5;
+      } else if (vulkan_device->extensions().ext_1_2_KHR_spirv_1_4) {
+        spirv_version = spv::Spv_1_4;
+      } else if (vulkan_api_version >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
+        spirv_version = spv::Spv_1_3;
+      } else {
+        spirv_version = spv::Spv_1_0;
+      }
+    }
   }
 }
 
@@ -86,6 +159,8 @@ uint64_t SpirvShaderTranslator::GetDefaultPixelShaderModification(
     uint32_t dynamic_addressable_register_count) const {
   Modification shader_modification;
   shader_modification.pixel.dynamic_addressable_register_count = dynamic_addressable_register_count;
+  shader_modification.pixel.precise_interpolation =
+      REXCVAR_GET(vulkan_precise_interpolation) ? 1u : 0u;
   return shader_modification.value;
 }
 
@@ -121,6 +196,9 @@ void SpirvShaderTranslator::Reset() {
   input_front_facing_ = spv::NoResult;
   input_sample_id_ = spv::NoResult;
   input_sample_mask_ = spv::NoResult;
+  input_barycentric_coord_ = spv::NoResult;
+  std::fill(input_interpolators_per_vertex_.begin(), input_interpolators_per_vertex_.end(),
+            spv::NoResult);
   std::fill(input_output_interpolators_.begin(), input_output_interpolators_.end(), spv::NoResult);
   output_point_coordinates_ = spv::NoResult;
   output_point_size_ = spv::NoResult;
@@ -173,6 +251,7 @@ void SpirvShaderTranslator::StartTranslation() {
   // TODO(Triang3l): Logger.
   builder_ = std::make_unique<SpirvBuilder>(features_.spirv_version, (kSpirvMagicToolId << 16) | 1,
                                             nullptr);
+  builder_->SetAllowContraction(features_.allow_float_contraction);
 
   builder_->addCapability(IsSpirvTessEvalShader() ? spv::CapabilityTessellation
                                                   : spv::CapabilityShader);
@@ -1243,7 +1322,7 @@ std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
     builder_->addCapability(spv::CapabilitySignedZeroInfNanPreserve);
     builder_->addExecutionMode(function_main_, spv::ExecutionModeSignedZeroInfNanPreserve, 32);
   }
-  if (features_.rounding_mode_rte_float32) {
+  if (features_.rounding_mode_rte_float32 && !REXCVAR_GET(spirv_disable_rounding_mode_rte)) {
     builder_->addCapability(spv::CapabilityRoundingModeRTE);
     builder_->addExecutionMode(function_main_, spv::ExecutionModeRoundingModeRTE, 32);
   }
@@ -2875,7 +2954,40 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
     uint32_t input_location = 0;
 
     // Interpolator inputs.
-    {
+    bool use_barycentric_interpolation =
+        shader_modification.pixel.precise_interpolation &&
+        features_.fragment_shader_barycentric && !shader_modification.pixel.param_gen_point;
+    if (use_barycentric_interpolation) {
+      builder_->addExtension("SPV_KHR_fragment_shader_barycentric");
+      builder_->addCapability(spv::CapabilityFragmentBarycentricNV);
+
+      input_barycentric_coord_ =
+          builder_->createVariable(spv::NoPrecision, spv::StorageClassInput, type_float3_,
+                                   "gl_BaryCoordKHR");
+      builder_->addDecoration(input_barycentric_coord_, spv::DecorationBuiltIn,
+                              static_cast<int>(spv::BuiltInBaryCoordNV));
+      main_interface_.push_back(input_barycentric_coord_);
+
+      spv::Id type_float4_array_3 =
+          builder_->makeArrayType(type_float4_, builder_->makeUintConstant(3), 0);
+      uint32_t interpolators_remaining = GetModificationInterpolatorMask();
+      uint32_t interpolator_index;
+      while (rex::bit_scan_forward(interpolators_remaining, &interpolator_index)) {
+        interpolators_remaining &= ~(UINT32_C(1) << interpolator_index);
+        spv::Id interpolator_per_vertex = builder_->createVariable(
+            spv::NoPrecision, spv::StorageClassInput, type_float4_array_3,
+            fmt::format("xe_in_interpolator_{}_per_vertex", interpolator_index).c_str());
+        input_interpolators_per_vertex_[interpolator_index] = interpolator_per_vertex;
+        builder_->addDecoration(interpolator_per_vertex, spv::DecorationLocation, int(input_location));
+        builder_->addDecoration(interpolator_per_vertex, spv::DecorationPerVertexNV);
+        if (shader_modification.pixel.interpolators_centroid &
+            (UINT32_C(1) << interpolator_index)) {
+          builder_->addDecoration(interpolator_per_vertex, spv::DecorationCentroid);
+        }
+        main_interface_.push_back(interpolator_per_vertex);
+        ++input_location;
+      }
+    } else {
       uint32_t interpolators_remaining = GetModificationInterpolatorMask();
       uint32_t interpolator_index;
       while (rex::bit_scan_forward(interpolators_remaining, &interpolator_index)) {
@@ -3187,23 +3299,72 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
   // references them after only initializing them conditionally, and copy
   // interpolants to GPRs.
   uint32_t interpolator_mask = GetModificationInterpolatorMask();
+  Modification shader_modification = GetSpirvShaderModification();
+  bool use_barycentric_interpolation =
+      shader_modification.pixel.precise_interpolation &&
+      features_.fragment_shader_barycentric && !shader_modification.pixel.param_gen_point;
+  spv::Id bary_y_vec4 = spv::NoResult;
+  spv::Id bary_z_vec4 = spv::NoResult;
+  if (use_barycentric_interpolation && interpolator_mask) {
+    spv::Id barycentric_coords =
+        builder_->createLoad(input_barycentric_coord_, spv::NoPrecision);
+    spv::Id bary_y = builder_->createCompositeExtract(barycentric_coords, type_float_, 1);
+    spv::Id bary_z = builder_->createCompositeExtract(barycentric_coords, type_float_, 2);
+    id_vector_temp_util_.clear();
+    for (uint32_t i = 0; i < 4; ++i) {
+      id_vector_temp_util_.push_back(bary_y);
+    }
+    bary_y_vec4 = builder_->createCompositeConstruct(type_float4_, id_vector_temp_util_);
+    id_vector_temp_util_.clear();
+    for (uint32_t i = 0; i < 4; ++i) {
+      id_vector_temp_util_.push_back(bary_z);
+    }
+    bary_z_vec4 = builder_->createCompositeConstruct(type_float4_, id_vector_temp_util_);
+  }
   for (uint32_t i = 0; i < register_count(); ++i) {
     if (i == param_gen_interpolator) {
       continue;
     }
     id_vector_temp_.clear();
     id_vector_temp_.push_back(builder_->makeIntConstant(int(i)));
-    builder_->createStore(
-        (i < xenos::kMaxInterpolators && (interpolator_mask & (UINT32_C(1) << i)))
-            ? builder_->createLoad(input_output_interpolators_[i], spv::NoPrecision)
-            : const_float4_0_,
-        builder_->createAccessChain(spv::StorageClassFunction, var_main_registers_,
-                                    id_vector_temp_));
+    spv::Id interpolated_value;
+    if (i < xenos::kMaxInterpolators && (interpolator_mask & (UINT32_C(1) << i))) {
+      if (use_barycentric_interpolation) {
+        spv::Id per_vertex_array = input_interpolators_per_vertex_[i];
+        id_vector_temp_util_.clear();
+        id_vector_temp_util_.push_back(builder_->makeIntConstant(0));
+        spv::Id v0 = builder_->createLoad(
+            builder_->createAccessChain(spv::StorageClassInput, per_vertex_array, id_vector_temp_util_),
+            spv::NoPrecision);
+        id_vector_temp_util_[0] = builder_->makeIntConstant(1);
+        spv::Id v1 = builder_->createLoad(
+            builder_->createAccessChain(spv::StorageClassInput, per_vertex_array, id_vector_temp_util_),
+            spv::NoPrecision);
+        id_vector_temp_util_[0] = builder_->makeIntConstant(2);
+        spv::Id v2 = builder_->createLoad(
+            builder_->createAccessChain(spv::StorageClassInput, per_vertex_array, id_vector_temp_util_),
+            spv::NoPrecision);
+
+        spv::Id d1 = builder_->createBinOp(spv::OpFSub, type_float4_, v1, v0);
+        spv::Id d2 = builder_->createBinOp(spv::OpFSub, type_float4_, v2, v0);
+        spv::Id term1 = builder_->createBinOp(spv::OpFMul, type_float4_, d1, bary_y_vec4);
+        spv::Id term2 = builder_->createBinOp(spv::OpFMul, type_float4_, d2, bary_z_vec4);
+        spv::Id sum_terms = builder_->createBinOp(spv::OpFAdd, type_float4_, term1, term2);
+        interpolated_value = builder_->createBinOp(spv::OpFAdd, type_float4_, v0, sum_terms);
+      } else {
+        interpolated_value = builder_->createLoad(input_output_interpolators_[i], spv::NoPrecision);
+      }
+    } else {
+      interpolated_value = const_float4_0_;
+    }
+    builder_->createStore(interpolated_value,
+                          builder_->createAccessChain(spv::StorageClassFunction,
+                                                      var_main_registers_, id_vector_temp_));
   }
 
   // Pixel parameters.
   if (param_gen_interpolator != UINT32_MAX) {
-    Modification modification = GetSpirvShaderModification();
+    Modification modification = shader_modification;
     // Rounding the position down, and taking the absolute value, so in case the
     // host GPU for some reason has quads used for derivative calculation at odd
     // locations, the left and top edges will have correct derivative magnitude

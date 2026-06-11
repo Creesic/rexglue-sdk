@@ -76,6 +76,8 @@ REXCVAR_DECLARE(bool, use_fuzzy_alpha_epsilon);
 
 // GPU Shader Translation / Tracing
 REXCVAR_DECLARE(std::string, dump_shaders);
+REXCVAR_DECLARE(std::string, spirv_version_override);
+REXCVAR_DECLARE(bool, spirv_disable_rounding_mode_rte);
 REXCVAR_DECLARE(bool, dxbc_switch);
 REXCVAR_DECLARE(bool, dxbc_source_map);
 REXCVAR_DECLARE(std::string, trace_gpu_prefix);
@@ -89,6 +91,8 @@ REXCVAR_DECLARE(bool, vulkan_dynamic_rendering);
 REXCVAR_DECLARE(bool, vulkan_async_skip_incomplete_frames);
 REXCVAR_DECLARE(int32_t, vulkan_pipeline_creation_threads);
 REXCVAR_DECLARE(bool, vulkan_tessellation_wireframe);
+REXCVAR_DECLARE(bool, vulkan_precise_interpolation);
+REXCVAR_DECLARE(bool, spirv_moltenvk_allow_contraction);
 REXCVAR_DECLARE(bool, vulkan_force_expand_point_sprites_in_vs);
 REXCVAR_DECLARE(bool, vulkan_force_expand_rectangle_lists_in_vs);
 REXCVAR_DECLARE(bool, vulkan_force_convert_quad_lists_to_triangle_lists);
