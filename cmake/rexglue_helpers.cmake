@@ -165,6 +165,9 @@ function(rexglue_configure_target target_name)
     if(WIN32)
         target_sources(${target_name} PRIVATE
             ${REXGLUE_SHARE_DIR}/windowed_app_main_win.cpp)
+    elseif(APPLE)
+        target_sources(${target_name} PRIVATE
+            ${REXGLUE_SHARE_DIR}/windowed_app_main_mac.cpp)
     else()
         target_sources(${target_name} PRIVATE
             ${REXGLUE_SHARE_DIR}/windowed_app_main_posix.cpp)
@@ -176,7 +179,12 @@ function(rexglue_configure_target target_name)
     target_compile_definitions(${target_name} PRIVATE
         REXGLUE_BUILD_CONFIG="$<CONFIG>")
 
-    if(UNIX AND NOT APPLE)
+    if(APPLE)
+        set_target_properties(${target_name} PROPERTIES
+            INSTALL_RPATH "@executable_path"
+            BUILD_WITH_INSTALL_RPATH ON
+        )
+    elseif(UNIX)
         set_target_properties(${target_name} PROPERTIES
             INSTALL_RPATH "$ORIGIN"
             BUILD_WITH_INSTALL_RPATH ON
@@ -207,9 +215,18 @@ function(rexglue_configure_target target_name)
         endforeach()
     endif()
 
-    if(APPLE AND REXGLUE_USE_VULKAN)
-        rexglue_find_macos_vulkan_runtime(_rexglue_macos_vulkan_runtime_root)
-        _rexglue_copy_macos_vulkan_runtime(${target_name} "${_rexglue_macos_vulkan_runtime_root}")
+    if(APPLE)
+        # Stage runtime dylibs (librexruntime.dylib, etc.) next to the host
+        # binary on every link so @executable_path resolves correctly.
+        add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND "$<$<BOOL:$<TARGET_RUNTIME_DLLS:${target_name}>>:${CMAKE_COMMAND};-E;copy_if_different;$<TARGET_RUNTIME_DLLS:${target_name}>;$<TARGET_FILE_DIR:${target_name}>>"
+            COMMAND_EXPAND_LISTS
+            VERBATIM
+        )
+        if(REXGLUE_USE_VULKAN)
+            rexglue_find_macos_vulkan_runtime(_rexglue_macos_vulkan_runtime_root)
+            _rexglue_copy_macos_vulkan_runtime(${target_name} "${_rexglue_macos_vulkan_runtime_root}")
+        endif()
     endif()
 endfunction()
 
