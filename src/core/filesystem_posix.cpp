@@ -166,10 +166,7 @@ class PosixFileHandle : public FileHandle {
 };
 
 std::unique_ptr<FileHandle> FileHandle::OpenExisting(const std::filesystem::path& path,
-                                                     uint32_t desired_access,
-                                                     bool /*allow_share_delete*/) {
-  // POSIX allows unlinking/replacing an open file, so there is no share-delete
-  // analog to thread through here.
+                                                     uint32_t desired_access) {
   int open_access = 0;
   if (desired_access & FileAccess::kGenericRead) {
     open_access |= O_RDONLY;
