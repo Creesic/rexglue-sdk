@@ -43,7 +43,7 @@
 #include <rex/ui/surface_win.h>
 #endif
 #if REX_PLATFORM_MAC
-#include <rex/ui/surface_mac.h>
+#include <rex/ui/surface_sdl.h>
 #endif
 
 REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
@@ -440,7 +440,7 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
 #endif
 #if REX_PLATFORM_MAC
   if (instance_extensions.ext_EXT_metal_surface) {
-    type_flags |= Surface::kTypeFlag_CAMetalLayer;
+    type_flags |= Surface::kTypeFlag_SDLMetalView;
   }
 #endif
   return type_flags;
@@ -833,13 +833,13 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
       } break;
 #endif
 #if REX_PLATFORM_MAC
-      case Surface::kTypeIndex_CAMetalLayer: {
-        auto& metal_surface = static_cast<const CAMetalLayerSurface&>(new_surface);
+      case Surface::kTypeIndex_SDLMetalView: {
+        auto& metal_surface = static_cast<const SDLMetalViewSurface&>(new_surface);
         VkMetalSurfaceCreateInfoEXT surface_create_info;
         surface_create_info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
         surface_create_info.pNext = nullptr;
         surface_create_info.flags = 0;
-        surface_create_info.pLayer = metal_surface.layer();
+        surface_create_info.pLayer = metal_surface.metal_layer();
         vulkan_surface_create_result = ifn.vkCreateMetalSurfaceEXT(
             instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
       } break;
@@ -2575,6 +2575,9 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(GuestOutputPaintEffec
   VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {};
   input_assembly_state.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
   input_assembly_state.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+#if REX_PLATFORM_MAC
+  input_assembly_state.primitiveRestartEnable = VK_TRUE;
+#endif
 
   VkPipelineViewportStateCreateInfo viewport_state = {};
   viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
