@@ -47,6 +47,7 @@ if(WIN32)
     target_compile_definitions(rexcore PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 elseif(APPLE)
     target_sources(rexcore PRIVATE
+        autorelease_pool_mac.mm
         atomic_posix.cpp
         clock_posix.cpp
         dbg_mac.cpp

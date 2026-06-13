@@ -10,11 +10,14 @@
 
 #pragma once
 
+#include <cerrno>
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include <fmt/format.h>
 
@@ -60,6 +63,26 @@ inline T from_string(const std::string_view value, bool force_hex = false) {
 }
 
 namespace detail {
+
+template <typename T>
+inline bool from_chars_float_fallback(const char* first, const char* last,
+                                      T& value, const char** ptr_out) {
+  std::string text(first, last);
+  char* parse_end = nullptr;
+  errno = 0;
+  if constexpr (std::is_same_v<T, float>) {
+    value = std::strtof(text.c_str(), &parse_end);
+  } else {
+    value = std::strtod(text.c_str(), &parse_end);
+  }
+  if (parse_end == text.c_str() || errno == ERANGE) {
+    return false;
+  }
+  if (ptr_out) {
+    *ptr_out = first + (parse_end - text.c_str());
+  }
+  return true;
+}
 
 template <typename T, typename V = std::make_signed_t<T>>
 inline T make_negative(T value) {
@@ -133,10 +156,11 @@ inline T fpfs(const std::string_view value, bool force_hex) {
     }
     std::memcpy(&result, &pun, sizeof(PUN));
   } else {
-    auto [p, error] = std::from_chars(range.data(), range.data() + range.size(), result,
-                                      std::chars_format::general);
+    bool parsed = from_chars_float_fallback(range.data(),
+                                            range.data() + range.size(),
+                                            result, nullptr);
     // TODO(gibbed): do something more with errors?
-    if (error != std::errc()) {
+    if (!parsed) {
       assert_always();
       return T();
     }
@@ -253,12 +277,12 @@ inline vec128_t from_string<vec128_t>(const std::string_view value, bool force_h
         assert_always();
         return vec128_t();
       }
-      auto result = std::from_chars(p, end, v.f32[i], std::chars_format::general);
-      if (result.ec != std::errc()) {
+      const char* result_ptr = nullptr;
+      if (!detail::from_chars_float_fallback(p, end, v.f32[i], &result_ptr)) {
         assert_always();
         return vec128_t();
       }
-      p = result.ptr;
+      p = result_ptr;
     }
   }
   return v;

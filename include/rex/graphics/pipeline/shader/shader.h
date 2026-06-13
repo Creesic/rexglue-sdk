@@ -968,6 +968,13 @@ class Shader {
   // microcode to the storage once. UINT32_MAX by default.
   uint32_t ucode_storage_index() const { return ucode_storage_index_; }
   void set_ucode_storage_index(uint32_t storage_index) { ucode_storage_index_ = storage_index; }
+  bool try_set_ucode_storage_index(uint32_t storage_index) {
+    if (ucode_storage_index_ == storage_index) {
+      return false;
+    }
+    ucode_storage_index_ = storage_index;
+    return true;
+  }
 
   // Dumps the shader's microcode binary and, if analyzed, disassembly, to files
   // in the given directory based on ucode hash. Returns the name of the written

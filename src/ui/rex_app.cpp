@@ -23,6 +23,9 @@
 #include <rex/ui/overlay/debug_overlay.h>
 #include <rex/ui/overlay/settings_overlay.h>
 #include <rex/graphics/graphics_system.h>
+#if REX_HAS_METAL
+#include <rex/graphics/metal/metal_graphics_system.h>
+#endif
 #if REX_HAS_VULKAN
 #include <rex/graphics/vulkan/graphics_system.h>
 #endif
@@ -268,7 +271,9 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
 }
 
 bool ReXApp::SetupPresentation() {
-#if REX_HAS_D3D12
+#if REX_HAS_METAL
+  config_.graphics = REX_GRAPHICS_BACKEND(rex::graphics::metal::MetalGraphicsSystem);
+#elif REX_HAS_D3D12
   config_.graphics = REX_GRAPHICS_BACKEND(rex::graphics::d3d12::D3D12GraphicsSystem);
 #elif REX_HAS_VULKAN
   config_.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);

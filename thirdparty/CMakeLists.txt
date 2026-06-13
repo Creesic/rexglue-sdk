@@ -250,10 +250,10 @@ set(SDL_UNIX_CONSOLE_BUILD ON CACHE BOOL "" FORCE)
 
 # Disable unused subsystems
 if(APPLE)
-    # macOS uses SDL for windowing + Metal surface — video/Metal/Vulkan must be on
+    # macOS uses SDL for windowing + Metal surface.
     set(SDL_VIDEO ON CACHE BOOL "" FORCE)
     set(SDL_METAL ON CACHE BOOL "" FORCE)
-    set(SDL_VULKAN ON CACHE BOOL "" FORCE)
+    set(SDL_VULKAN ${REXGLUE_USE_VULKAN} CACHE BOOL "" FORCE)
 else()
     set(SDL_VIDEO OFF CACHE BOOL "" FORCE)
     set(SDL_METAL OFF CACHE BOOL "" FORCE)
@@ -300,6 +300,177 @@ if(REXGLUE_USE_D3D12)
     target_include_directories(dxc-headers INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/dxc/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/dxc>)
+endif()
+
+#=============================================================================
+# Metal dependencies (Apple only)
+#=============================================================================
+if(REXGLUE_USE_METAL)
+    if(NOT APPLE)
+        message(FATAL_ERROR "REXGLUE_USE_METAL is supported only on Apple platforms")
+    endif()
+
+    set(REXGLUE_METAL_SHADER_CONVERTER_ROOT
+        "${CMAKE_CURRENT_SOURCE_DIR}/metal-shader-converter")
+    set(REXGLUE_METAL_SHADER_CONVERTER_DYLIB
+        "${REXGLUE_METAL_SHADER_CONVERTER_ROOT}/lib/libmetalirconverter.dylib")
+    if(NOT EXISTS "${REXGLUE_METAL_SHADER_CONVERTER_DYLIB}")
+        message(FATAL_ERROR
+            "Metal Shader Converter dylib not found at "
+            "${REXGLUE_METAL_SHADER_CONVERTER_DYLIB}.")
+    endif()
+
+    add_library(rex-thirdparty-metal-shader-converter SHARED IMPORTED GLOBAL)
+    set_target_properties(rex-thirdparty-metal-shader-converter PROPERTIES
+        IMPORTED_CONFIGURATIONS "Release"
+        IMPORTED_LOCATION "${REXGLUE_METAL_SHADER_CONVERTER_DYLIB}"
+        IMPORTED_LOCATION_RELEASE "${REXGLUE_METAL_SHADER_CONVERTER_DYLIB}"
+        INTERFACE_INCLUDE_DIRECTORIES
+            "${REXGLUE_METAL_SHADER_CONVERTER_ROOT}/include;${REXGLUE_METAL_SHADER_CONVERTER_ROOT}/include/metal_irconverter;${REXGLUE_METAL_SHADER_CONVERTER_ROOT}/include/metal_irconverter_runtime"
+        INTERFACE_COMPILE_DEFINITIONS
+            "METAL_SHADER_CONVERTER_AVAILABLE;IR_RUNTIME_METALCPP")
+
+    set(REXGLUE_METAL_SHADER_CONVERTER_STAGED_DYLIB
+        "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libmetalirconverter.dylib")
+    add_custom_command(
+        OUTPUT "${REXGLUE_METAL_SHADER_CONVERTER_STAGED_DYLIB}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${REXGLUE_METAL_SHADER_CONVERTER_DYLIB}"
+            "${REXGLUE_METAL_SHADER_CONVERTER_STAGED_DYLIB}"
+        DEPENDS "${REXGLUE_METAL_SHADER_CONVERTER_DYLIB}"
+        COMMENT "Staging Metal shader converter dylib"
+        VERBATIM)
+    add_custom_target(rex-thirdparty-metal-shader-converter-stage
+        DEPENDS "${REXGLUE_METAL_SHADER_CONVERTER_STAGED_DYLIB}")
+
+    add_library(metal-cpp INTERFACE)
+    target_include_directories(metal-cpp INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
+    add_executable(rex-metal-shader-cc
+        ${PROJECT_SOURCE_DIR}/tools/build/metal_shader_cc.cpp)
+    set_target_properties(rex-metal-shader-cc PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/host_tools")
+
+    set(REXGLUE_DXILCONV_ROOT
+        "${CMAKE_CURRENT_SOURCE_DIR}/DirectXShaderCompiler")
+    set(REXGLUE_DXILCONV_HEADERS_ROOT
+        "${CMAKE_CURRENT_SOURCE_DIR}/DirectX-Headers/include")
+    if(NOT EXISTS "${REXGLUE_DXILCONV_ROOT}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "DirectXShaderCompiler source not found at ${REXGLUE_DXILCONV_ROOT}.")
+    endif()
+
+    if(IS_X86_64)
+        set(REXGLUE_DXILCONV_BUILD_DIR
+            "${REXGLUE_DXILCONV_ROOT}/build_dxilconv_macos_x86_64")
+        set(REXGLUE_DXILCONV_ARCH "x86_64")
+        set(REXGLUE_DXILCONV_TRIPLE "x86_64-apple-darwin")
+    else()
+        set(REXGLUE_DXILCONV_BUILD_DIR
+            "${REXGLUE_DXILCONV_ROOT}/build_dxilconv_macos_arm64")
+        set(REXGLUE_DXILCONV_ARCH "arm64")
+        set(REXGLUE_DXILCONV_TRIPLE "arm64-apple-darwin")
+    endif()
+    set(REXGLUE_DXILCONV_DYLIB
+        "${REXGLUE_DXILCONV_BUILD_DIR}/lib/libdxilconv.dylib")
+    set(REXGLUE_DXBC2DXIL_BIN
+        "${REXGLUE_DXILCONV_BUILD_DIR}/bin/dxbc2dxil")
+    set(REXGLUE_DXILCONV_OUTPUTS
+        "${REXGLUE_DXILCONV_DYLIB}"
+        "${REXGLUE_DXBC2DXIL_BIN}")
+
+    add_custom_command(
+        OUTPUT ${REXGLUE_DXILCONV_OUTPUTS}
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${REXGLUE_DXILCONV_BUILD_DIR}"
+        COMMAND "${CMAKE_COMMAND}"
+            -G "Unix Makefiles"
+            -S "${REXGLUE_DXILCONV_ROOT}"
+            -B "${REXGLUE_DXILCONV_BUILD_DIR}"
+            "-DD3D12_INCLUDE_DIR=${REXGLUE_DXILCONV_HEADERS_ROOT}/directx"
+            "-DDXGI_INCLUDE_DIR=${REXGLUE_DXILCONV_HEADERS_ROOT}/directx"
+            "-DWSL_INCLUDE_DIR=${REXGLUE_DXILCONV_HEADERS_ROOT}/wsl"
+            -DCMAKE_BUILD_TYPE=Release
+            "-DCMAKE_OSX_ARCHITECTURES=${REXGLUE_DXILCONV_ARCH}"
+            "-DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}"
+            -DLLVM_TARGETS_TO_BUILD=None
+            -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=
+            "-DLLVM_DEFAULT_TARGET_TRIPLE=${REXGLUE_DXILCONV_TRIPLE}"
+            -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON
+            -DLLVM_INCLUDE_TOOLS=OFF
+            -DLLVM_BUILD_TOOLS=OFF
+            -DLLVM_ENABLE_THREADS=ON
+            -DLLVM_ENABLE_PIC=ON
+            -DLLVM_BUILD_32_BITS=OFF
+            -DBUILD_SHARED_LIBS=OFF
+            -DLLVM_OPTIMIZED_TABLEGEN=ON
+            -DLLVM_USE_INTEL_JITEVENTS=OFF
+            -DLLVM_ENABLE_ZLIB=ON
+            -DLLVM_ENABLE_TERMINFO=OFF
+            -DLLVM_ENABLE_LIBXML2=OFF
+            -DCLANG_BUILD_EXAMPLES=OFF
+            -DLLVM_INCLUDE_TESTS=OFF
+            -DLLVM_INCLUDE_EXAMPLES=OFF
+            -DLLVM_INCLUDE_DOCS=OFF
+            -DCLANG_INCLUDE_TESTS=OFF
+            -DHLSL_INCLUDE_TESTS=OFF
+            -DENABLE_SPIRV_CODEGEN=OFF
+            -DSPIRV_BUILD_TESTS=OFF
+            -DCLANG_ENABLE_STATIC_ANALYZER=OFF
+            -DCLANG_ENABLE_ARCMT=OFF
+            -DLLVM_ENABLE_BINDINGS=OFF
+            -DLLVM_ENABLE_EH=ON
+            -DLLVM_ENABLE_RTTI=ON
+            -DLLVM_REQUIRES_EH=ON
+            -DLLVM_REQUIRES_RTTI=ON
+            -DCMAKE_C_COMPILER=/usr/bin/clang
+            -DCMAKE_CXX_COMPILER=/usr/bin/clang++
+            -DCMAKE_CXX_STANDARD=17
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON
+            -DCMAKE_CXX_EXTENSIONS=OFF
+            "-DCMAKE_C_FLAGS="
+            "-DCMAKE_CXX_FLAGS=-stdlib=libc++ -Wno-unknown-warning-option -Wno-deprecated-declarations -Wno-deprecated -Wno-deprecated-literal-operator -Wno-invalid-specialization -Wno-nontrivial-memcall"
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        COMMAND "${CMAKE_COMMAND}" --build "${REXGLUE_DXILCONV_BUILD_DIR}"
+            --target dxilconv --config Release --parallel 2
+        COMMAND "${CMAKE_COMMAND}" --build "${REXGLUE_DXILCONV_BUILD_DIR}"
+            --target dxbc2dxil --config Release --parallel 2
+        DEPENDS
+            "${REXGLUE_DXILCONV_ROOT}/projects/dxilconv/include/DxbcConverter.h"
+            "${REXGLUE_DXILCONV_ROOT}/projects/dxilconv/tools/dxilconv/dxilconv_unix.cpp"
+            "${REXGLUE_DXILCONV_ROOT}/projects/dxilconv/tools/dxbc2dxil/dxbc2dxil_unix.cpp"
+        COMMENT "Building dxilconv for Metal shader conversion"
+        VERBATIM)
+
+    add_custom_target(rex-thirdparty-dxilconv-build
+        DEPENDS ${REXGLUE_DXILCONV_OUTPUTS})
+
+    set(REXGLUE_DXILCONV_STAGED_DYLIB
+        "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libdxilconv.dylib")
+    add_custom_command(
+        OUTPUT "${REXGLUE_DXILCONV_STAGED_DYLIB}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${REXGLUE_DXILCONV_DYLIB}"
+            "${REXGLUE_DXILCONV_STAGED_DYLIB}"
+        DEPENDS "${REXGLUE_DXILCONV_DYLIB}"
+        COMMENT "Staging dxilconv dylib"
+        VERBATIM)
+    add_custom_target(rex-thirdparty-dxilconv-stage
+        DEPENDS "${REXGLUE_DXILCONV_STAGED_DYLIB}")
+
+    add_library(rex-thirdparty-dxilconv SHARED IMPORTED GLOBAL)
+    add_dependencies(rex-thirdparty-dxilconv rex-thirdparty-dxilconv-build)
+    set_target_properties(rex-thirdparty-dxilconv PROPERTIES
+        IMPORTED_CONFIGURATIONS "Release"
+        IMPORTED_LOCATION "${REXGLUE_DXILCONV_DYLIB}"
+        IMPORTED_LOCATION_RELEASE "${REXGLUE_DXILCONV_DYLIB}"
+        INTERFACE_INCLUDE_DIRECTORIES
+            "${REXGLUE_DXILCONV_ROOT}/include;${REXGLUE_DXILCONV_ROOT}/projects/dxilconv/include")
 endif()
 
 #=============================================================================

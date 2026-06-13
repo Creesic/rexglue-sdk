@@ -19,6 +19,7 @@ find_dependency(Snappy CONFIG)
 find_dependency(utf8cpp CONFIG)
 find_dependency(SDL3 CONFIG)
 
+set(REXGLUE_USE_METAL @REXGLUE_USE_METAL@)
 set(REXGLUE_USE_VULKAN @REXGLUE_USE_VULKAN@)
 if(REXGLUE_USE_VULKAN)
     find_dependency(VulkanHeaders CONFIG)

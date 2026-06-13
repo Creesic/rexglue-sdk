@@ -34,6 +34,7 @@ REXCVAR_DECLARE(bool, readback_resolve_half_pixel_offset);
 REXCVAR_DECLARE(bool, readback_memexport);
 REXCVAR_DECLARE(bool, readback_memexport_fast);
 REXCVAR_DECLARE(bool, occlusion_query_enable);
+REXCVAR_DECLARE(bool, occlusion_query_log);
 REXCVAR_DECLARE(int32_t, query_occlusion_fake_sample_count);
 
 // GPU Depth / Render Target Behavior
@@ -83,6 +84,7 @@ REXCVAR_DECLARE(bool, dxbc_source_map);
 REXCVAR_DECLARE(std::string, trace_gpu_prefix);
 REXCVAR_DECLARE(bool, trace_gpu_stream);
 REXCVAR_DECLARE(std::string, swap_post_effect);
+REXCVAR_DECLARE(bool, submit_on_primary_buffer_end);
 
 // Vulkan
 REXCVAR_DECLARE(bool, vulkan_sparse_shared_memory);
@@ -100,6 +102,29 @@ REXCVAR_DECLARE(std::string, render_target_path_vulkan);
 // Legacy backend compatibility aliases for shared readback controls.
 REXCVAR_DECLARE(bool, vulkan_readback_resolve);
 REXCVAR_DECLARE(bool, vulkan_readback_memexport);
+
+// Metal
+REXCVAR_DECLARE(bool, metal_allow_gamma_unorm16);
+REXCVAR_DECLARE(bool, metal_backend_telemetry);
+REXCVAR_DECLARE(int32_t, metal_backend_telemetry_interval);
+REXCVAR_DECLARE(bool, metal_constant_payload_cache);
+REXCVAR_DECLARE(bool, metal_direct_host_resolve);
+REXCVAR_DECLARE(bool, metal_float_constants_dirty_on_change);
+REXCVAR_DECLARE(bool, metal_force_bc_decompress);
+REXCVAR_DECLARE(int32_t, metal_heap_min_bytes);
+REXCVAR_DECLARE(bool, metal_pipeline_binary_archive);
+REXCVAR_DECLARE(int32_t, metal_pipeline_creation_threads);
+REXCVAR_DECLARE(std::string, metal_residency_sets);
+REXCVAR_DECLARE(bool, metal_root_rebuild_detail_telemetry);
+REXCVAR_DECLARE(bool, metal_shader_disk_cache);
+REXCVAR_DECLARE(bool, metal_shared_memory_direct_write);
+REXCVAR_DECLARE(bool, metal_texture_cache_use_private);
+REXCVAR_DECLARE(bool, metal_texture_upload_via_blit);
+REXCVAR_DECLARE(bool, metal_transfer_fast_divmod);
+REXCVAR_DECLARE(bool, metal_transfer_in_draw_pass);
+REXCVAR_DECLARE(bool, metal_transfer_msaa_sample_id);
+REXCVAR_DECLARE(bool, metal_transfer_native_stencil_output);
+REXCVAR_DECLARE(bool, metal_use_heaps);
 
 // D3D12
 REXCVAR_DECLARE(bool, d3d12_bindless);

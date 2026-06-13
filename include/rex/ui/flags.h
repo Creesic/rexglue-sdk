@@ -39,6 +39,16 @@ REXCVAR_DECLARE(int32_t, d3d12_adapter);
 REXCVAR_DECLARE(int32_t, d3d12_queue_priority);
 REXCVAR_DECLARE(bool, d3d12_allow_variable_refresh_rate_and_tearing);
 
+// Metal
+REXCVAR_DECLARE(bool, metal_allow_tearing);
+REXCVAR_DECLARE(bool, metal_presenter_debug_markers);
+REXCVAR_DECLARE(bool, metal_presenter_force_10bpc);
+REXCVAR_DECLARE(int32_t, metal_presenter_metalfx_color_processing);
+REXCVAR_DECLARE(int32_t, metal_presenter_metalfx_scale_x);
+REXCVAR_DECLARE(int32_t, metal_presenter_metalfx_scale_y);
+REXCVAR_DECLARE(bool, metal_presenter_use_backing_scale);
+REXCVAR_DECLARE(bool, metal_presenter_use_metalfx);
+
 // Vulkan
 REXCVAR_DECLARE(bool, vulkan_log_debug_messages);
 REXCVAR_DECLARE(bool, vulkan_allow_present_mode_immediate);

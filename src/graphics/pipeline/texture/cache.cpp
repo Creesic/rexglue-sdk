@@ -684,15 +684,21 @@ TextureCache::Texture::~Texture() {
 
 void TextureCache::Texture::MakeUpToDateAndWatch(
     const std::unique_lock<std::recursive_mutex>& global_lock) {
+  MakeLoadedDataUpToDateAndWatch(global_lock, true, true);
+}
+
+void TextureCache::Texture::MakeLoadedDataUpToDateAndWatch(
+    const std::unique_lock<std::recursive_mutex>& global_lock,
+    bool loaded_base, bool loaded_mips) {
   SharedMemory& shared_memory = texture_cache().shared_memory();
-  if (base_outdated_) {
+  if (loaded_base && base_outdated_) {
     assert_not_zero(GetGuestBaseSize());
     base_outdated_ = false;
     base_watch_handle_ = shared_memory.WatchMemoryRange(
         key().base_page << 12, GetGuestBaseSize(), TextureCache::WatchCallback, this, nullptr, 0);
     outdated_mask_.fetch_and(~kOutdatedBitBase, std::memory_order_release);
   }
-  if (mips_outdated_) {
+  if (loaded_mips && mips_outdated_) {
     assert_not_zero(GetGuestMipsSize());
     mips_outdated_ = false;
     mips_watch_handle_ = shared_memory.WatchMemoryRange(
@@ -755,6 +761,25 @@ void TextureCache::DestroyAllTextures(bool from_destructor) {
   ResetTextureBindings(from_destructor);
   textures_.clear();
   COUNT_profile_set("gpu/texture_cache/textures", 0);
+}
+
+bool TextureCache::DestroyOldestTextureIfUnused(
+    uint64_t completed_submission_index) {
+  Texture* texture = texture_used_first_;
+  if (!texture ||
+      texture->last_usage_submission_index() > completed_submission_index) {
+    return false;
+  }
+  ResetTextureBindings();
+  auto found_texture_it = textures_.find(texture->key());
+  assert_true(found_texture_it != textures_.end());
+  if (found_texture_it == textures_.end()) {
+    return false;
+  }
+  assert_true(found_texture_it->second.get() == texture);
+  textures_.erase(found_texture_it);
+  COUNT_profile_set("gpu/texture_cache/textures", textures_.size());
+  return true;
 }
 
 TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
@@ -893,6 +918,14 @@ bool TextureCache::LoadTextureData(Texture& texture) {
   }
 
   return CommitPreparedTextureLoad(pending_load);
+}
+
+void TextureCache::LoadTexturesData(Texture** textures, uint32_t texture_count) {
+  for (uint32_t i = 0; i < texture_count; ++i) {
+    if (textures[i]) {
+      LoadTextureData(*textures[i]);
+    }
+  }
 }
 
 void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetch_t& fetch,

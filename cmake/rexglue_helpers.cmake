@@ -121,6 +121,78 @@ function(_rexglue_copy_macos_vulkan_runtime target_name runtime_root)
     )
 endfunction()
 
+# rex_shader_rules_metal(target shader_dir generated_prefix)
+#
+# Generates Metal metallib bytecode headers for built-in XeSL/Metal shaders.
+# Outputs are placed under:
+#   ${PROJECT_BINARY_DIR}/generated/${generated_prefix}/bytecode/metal
+# so sources can include paths such as
+#   rex/graphics/shaders/bytecode/metal/foo_cs.h
+function(rex_shader_rules_metal target_name shader_dir generated_prefix)
+    if(NOT APPLE)
+        return()
+    endif()
+
+    get_filename_component(shader_dir "${shader_dir}" ABSOLUTE)
+    set(_generated_root "${PROJECT_BINARY_DIR}/generated")
+    set(_bytecode_dir "${_generated_root}/${generated_prefix}/bytecode/metal")
+    set(_valid_stages vs ps cs)
+    set(_metal_args)
+    if(CMAKE_OSX_DEPLOYMENT_TARGET)
+        list(APPEND _metal_args
+            --metal-min-version-flag
+            "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    endif()
+    if(REXGLUE_METAL_SHADER_DEBUG_INFO)
+        list(APPEND _metal_args --metal-debug)
+    endif()
+
+    file(GLOB _sources "${shader_dir}/*.xesl" "${shader_dir}/*.xesli")
+    set(_outputs)
+    file(MAKE_DIRECTORY "${_bytecode_dir}")
+    foreach(src ${_sources})
+        get_filename_component(_name "${src}" NAME)
+        if(_name MATCHES "^fxaa" OR _name MATCHES "ffx_")
+            continue()
+        endif()
+        string(REGEX REPLACE "\\.[^.]+$" "" _basename "${_name}")
+        string(REPLACE "." "_" _id "${_basename}")
+        string(LENGTH "${_id}" _len)
+        if(_len LESS 3)
+            continue()
+        endif()
+        math(EXPR _stage_start "${_len} - 2")
+        string(SUBSTRING "${_id}" ${_stage_start} 2 _stage)
+        if(NOT _stage IN_LIST _valid_stages)
+            continue()
+        endif()
+
+        set(_out "${_bytecode_dir}/${_id}.h")
+        set(_dep "${_out}.d")
+        list(APPEND _outputs "${_out}")
+        add_custom_command(
+            OUTPUT "${_out}"
+            COMMAND $<TARGET_FILE:rex-metal-shader-cc>
+                    ${_metal_args}
+                    --depfile "${_dep}"
+                    "${src}"
+                    "${_out}"
+            DEPENDS "${src}" rex-metal-shader-cc
+            DEPFILE "${_dep}"
+            COMMENT "Metal: ${_name}"
+            VERBATIM
+        )
+    endforeach()
+
+    if(_outputs)
+        add_custom_target(${target_name}-metal-shaders DEPENDS ${_outputs})
+        add_dependencies(${target_name} ${target_name}-metal-shaders)
+        target_include_directories(${target_name} BEFORE PRIVATE "${_generated_root}")
+        set_source_files_properties(${_sources} PROPERTIES HEADER_FILE_ONLY TRUE)
+        target_sources(${target_name} PRIVATE ${_sources})
+    endif()
+endfunction()
+
 #==========================================================
 # rexglue_apply_target_settings(<target>) - Common flags
 #

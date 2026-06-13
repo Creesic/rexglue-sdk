@@ -70,6 +70,7 @@ class TextureCache {
   static bool GetConfigDrawResolutionScale(uint32_t& x_out, uint32_t& y_out);
   uint32_t draw_resolution_scale_x() const { return draw_resolution_scale_x_; }
   uint32_t draw_resolution_scale_y() const { return draw_resolution_scale_y_; }
+  size_t GetTotalTextureCount() const { return textures_.size(); }
   bool IsDrawResolutionScaled() const {
     return draw_resolution_scale_x_ > 1 || draw_resolution_scale_y_ > 1;
   }
@@ -219,6 +220,12 @@ class TextureCache {
     static constexpr uint32_t kOutdatedBitBase = UINT32_C(1) << 0;
     static constexpr uint32_t kOutdatedBitMips = UINT32_C(1) << 1;
     uint32_t outdated_mask() const { return outdated_mask_.load(std::memory_order_acquire); }
+    bool base_outdated_lockless() const {
+      return (outdated_mask() & kOutdatedBitBase) != 0;
+    }
+    bool mips_outdated_lockless() const {
+      return (outdated_mask() & kOutdatedBitMips) != 0;
+    }
 
     bool base_outdated(const std::unique_lock<std::recursive_mutex>& global_lock) const {
       return base_outdated_;
@@ -227,6 +234,9 @@ class TextureCache {
       return mips_outdated_;
     }
     void MakeUpToDateAndWatch(const std::unique_lock<std::recursive_mutex>& global_lock);
+    void MakeLoadedDataUpToDateAndWatch(
+        const std::unique_lock<std::recursive_mutex>& global_lock,
+        bool loaded_base, bool loaded_mips);
 
     void WatchCallback(const std::unique_lock<std::recursive_mutex>& global_lock, bool is_mip);
 
@@ -519,12 +529,17 @@ class TextureCache {
     return load_shader_info_[load_shader_index];
   }
   bool LoadTextureData(Texture& texture);
+  void LoadTexturesData(Texture** textures, uint32_t texture_count);
+  bool DestroyOldestTextureIfUnused(uint64_t completed_submission_index);
   // Writes the texture data (for base, mips or both - but not neither) from the
   // shared memory or the scaled resolve memory. The shared memory management is
   // done outside this function, the implementation just needs to load the data
   // into the texture object.
   virtual bool LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base,
                                                      bool load_mips) = 0;
+  std::unique_lock<std::recursive_mutex> AcquireGlobalLock() {
+    return global_critical_region_.Acquire();
+  }
 
   // Converts a texture fetch constant to a texture key, normalizing and
   // validating the values, or creating an invalid key, and also gets the

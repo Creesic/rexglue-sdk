@@ -55,6 +55,17 @@ if(REXGLUE_USE_D3D12)
     )
 endif()
 
+# Metal UI backend
+if(REXGLUE_USE_METAL)
+    set(REXUI_METAL_SOURCES
+        metal/metal_api.cc
+        metal/metal_gpu_completion_timeline.cc
+        metal/metal_immediate_drawer.mm
+        metal/metal_presenter.mm
+        metal/metal_provider.cc
+    )
+endif()
+
 # Platform-specific sources
 if(WIN32)
     set(REXUI_PLATFORM_SOURCES
@@ -91,6 +102,10 @@ if(REXGLUE_USE_D3D12)
     list(APPEND REXUI_SOURCES ${REXUI_D3D12_SOURCES})
 endif()
 
+if(REXGLUE_USE_METAL)
+    list(APPEND REXUI_SOURCES ${REXUI_METAL_SOURCES})
+endif()
+
 add_library(rexui OBJECT ${REXUI_SOURCES})
 add_library(rex::ui ALIAS rexui)
 
@@ -99,6 +114,7 @@ target_include_directories(rexui PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_include_directories(rexui PRIVATE
+    ${REXGLUE_ROOT}
     ${REXGLUE_ROOT}/src  # For ui/shaders/bytecode includes
 )
 
@@ -135,6 +151,28 @@ if(REXGLUE_USE_VULKAN)
         GPUOpen::VulkanMemoryAllocator
         SPIRV-Tools-static
     )
+endif()
+
+if(REXGLUE_USE_METAL)
+    target_link_libraries(rexui PUBLIC
+        metal-cpp
+        "-framework AppKit"
+        "-framework Foundation"
+        "-framework Metal"
+        "-framework MetalKit"
+        "-framework QuartzCore"
+    )
+    if(CMAKE_SYSTEM_VERSION VERSION_GREATER_EQUAL "23.0")
+        target_link_libraries(rexui PUBLIC "-framework MetalFX")
+    endif()
+    target_compile_definitions(rexui PUBLIC REX_HAS_METAL=1 IR_RUNTIME_METALCPP)
+    target_include_directories(rexui PRIVATE "${PROJECT_BINARY_DIR}/generated")
+    rex_shader_rules_metal(rexui
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+        "rex/ui/shaders")
+    if(TARGET rexgraphics-metal-shaders)
+        add_dependencies(rexui rexgraphics-metal-shaders)
+    endif()
 endif()
 
 # Platform-specific dependencies

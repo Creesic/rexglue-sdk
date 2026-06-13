@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstring>
 #include <string>
@@ -175,7 +176,11 @@ class DxbcShaderTranslator : public ShaderTranslator {
       uint32_t param_gen_point : 1;
       uint32_t dynamic_addressable_register_count : 8;
       // Non-ROV - depth / stencil output mode.
-      DepthStencilMode depth_stencil_mode : 2;
+      DepthStencilMode depth_stencil_mode : 3;
+      // For MIN/MAX blend ops, pre-multiply RT0 output by Xbox blend factors
+      // because host APIs may ignore factors for MIN/MAX.
+      xenos::BlendFactor rt0_blend_rgb_factor_for_premult : 5;
+      xenos::BlendFactor rt0_blend_a_factor_for_premult : 5;
     } pixel;
 
     explicit Modification(uint64_t modification_value = 0) : value(modification_value) {
@@ -865,13 +870,34 @@ class DxbcShaderTranslator : public ShaderTranslator {
     if (cbuffer_index_fetch_constants_ == kBindingIndexUnallocated) {
       cbuffer_index_fetch_constants_ = cbuffer_count_++;
     }
+    MarkTextureFetchConstantDwordUsed(fetch_constant_index * 6 +
+                                      pair_index * 2);
+    MarkTextureFetchConstantDwordUsed(fetch_constant_index * 6 +
+                                      pair_index * 2 + 1);
     uint32_t total_pair_index = fetch_constant_index * 3 + pair_index;
     return dxbc::Src::CB(cbuffer_index_fetch_constants_, uint32_t(CbufferRegister::kFetchConstants),
                          total_pair_index >> 1, (total_pair_index & 1) ? 0b10101110 : 0b00000100);
   }
   dxbc::Src RequestTextureFetchConstantWord(uint32_t fetch_constant_index, uint32_t word_index) {
-    return RequestTextureFetchConstantWordPair(fetch_constant_index, word_index >> 1)
+    if (cbuffer_index_fetch_constants_ == kBindingIndexUnallocated) {
+      cbuffer_index_fetch_constants_ = cbuffer_count_++;
+    }
+    MarkTextureFetchConstantDwordUsed(fetch_constant_index * 6 + word_index);
+    uint32_t pair_index = word_index >> 1;
+    uint32_t total_pair_index = fetch_constant_index * 3 + pair_index;
+    return dxbc::Src::CB(cbuffer_index_fetch_constants_, uint32_t(CbufferRegister::kFetchConstants),
+                         total_pair_index >> 1, (total_pair_index & 1) ? 0b10101110 : 0b00000100)
         .SelectFromSwizzled(word_index & 1);
+  }
+  void MarkTextureFetchConstantDwordUsed(uint32_t dword_index) {
+    constexpr uint32_t kFetchConstantDwordCount =
+        xenos::kTextureFetchConstantCount * 6;
+    if (dword_index >= kFetchConstantDwordCount) {
+      assert_always();
+      return;
+    }
+    texture_fetch_constant_dword_mask_[dword_index >> 5] |=
+        uint32_t(1) << (dword_index & 31);
   }
 
   void KillPixel(bool condition, const dxbc::Src& condition_src,
@@ -992,6 +1018,8 @@ class DxbcShaderTranslator : public ShaderTranslator {
   uint32_t cbuffer_index_bool_loop_constants_;
   uint32_t cbuffer_index_fetch_constants_;
   uint32_t cbuffer_index_descriptor_indices_;
+  std::array<uint32_t, xenos::kTextureFetchConstantCount * 6 / 32>
+      texture_fetch_constant_dword_mask_;
 
   struct SystemConstantRdef {
     const char* name;

@@ -69,7 +69,7 @@ struct RuntimeConfig {
 /// Helper macros for populating RuntimeConfig with concrete backends.
 /// Usage:
 ///   rex::RuntimeConfig config;
-///   config.graphics      = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
+///   config.graphics      = REX_GRAPHICS_BACKEND(rex::graphics::metal::MetalGraphicsSystem);
 ///   config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
 #define REX_GRAPHICS_BACKEND(Type) std::make_unique<Type>()
 #define REX_AUDIO_BACKEND(Type)                                                                 \

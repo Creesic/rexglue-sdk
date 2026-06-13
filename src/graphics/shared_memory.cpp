@@ -402,7 +402,12 @@ void SharedMemory::UnlinkWatchRange(WatchRange* range) {
   watch_range_first_free_ = range;
 }
 
-bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, size_t count) {
+bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges,
+                                 size_t count, RequestRangeStats* stats) {
+  if (stats) {
+    *stats = {};
+    stats->input_ranges = static_cast<uint32_t>(count);
+  }
   if (ranges == nullptr || !count) {
     return true;
   }
@@ -417,6 +422,9 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
       continue;
     }
     if (start > kBufferSize || (kBufferSize - start) < length) {
+      if (stats) {
+        ++stats->invalid_input_ranges;
+      }
       return false;
     }
     merged_ranges.emplace_back(start, length);
@@ -565,6 +573,17 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
                     uint32_t(merged_ranges.size()));
   COUNT_profile_set("gpu/shared_memory/request_ranges_upload_count",
                     uint32_t(upload_ranges_.size()));
+  if (stats) {
+    stats->upload_page_ranges_before_coalesce =
+        static_cast<uint32_t>(upload_ranges_.size());
+    stats->upload_page_ranges_after_coalesce =
+        static_cast<uint32_t>(upload_ranges_.size());
+    const uint64_t page_size = uint64_t(1) << page_size_log2_;
+    for (const std::pair<uint32_t, uint32_t>& upload_range :
+         upload_ranges_) {
+      stats->upload_bytes += uint64_t(upload_range.second) * page_size;
+    }
+  }
 
   if (upload_ranges_.empty()) {
     return true;
@@ -573,9 +592,93 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
   return UploadRanges(upload_ranges_);
 }
 
+bool SharedMemory::RequestRanges(const Range* ranges, uint32_t range_count,
+                                 RequestRangeStats* stats) {
+  if (ranges == nullptr || !range_count) {
+    if (stats) {
+      *stats = {};
+      stats->input_ranges = range_count;
+    }
+    return true;
+  }
+  std::vector<std::pair<uint32_t, uint32_t>> pair_ranges;
+  pair_ranges.reserve(range_count);
+  for (uint32_t i = 0; i < range_count; ++i) {
+    pair_ranges.emplace_back(ranges[i].start, ranges[i].length);
+  }
+  return RequestRanges(pair_ranges.data(), pair_ranges.size(), stats);
+}
+
 bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
   std::pair<uint32_t, uint32_t> range(start, length);
   return RequestRanges(&range, 1);
+}
+
+bool SharedMemory::IsRangeValid(uint32_t start, uint32_t length) const {
+  if (!length) {
+    return true;
+  }
+  if (start > kBufferSize || (kBufferSize - start) < length) {
+    return false;
+  }
+
+  uint32_t page_first = start >> page_size_log2_;
+  uint32_t page_last = (start + length - 1) >> page_size_log2_;
+  uint32_t block_first = page_first >> 6;
+  uint32_t block_last = page_last >> 6;
+
+  uint64_t* valid_flags = active_valid_flags_.load(std::memory_order_acquire);
+  if (!valid_flags) {
+    return false;
+  }
+  for (uint32_t i = block_first; i <= block_last; ++i) {
+    uint64_t block_valid = valid_flags[i];
+    if (i == block_first) {
+      uint64_t block_before = (uint64_t(1) << (page_first & 63)) - 1;
+      block_valid |= block_before;
+    }
+    if (i == block_last && (page_last & 63) != 63) {
+      uint64_t block_after =
+          ~((uint64_t(1) << ((page_last & 63) + 1)) - 1);
+      block_valid |= block_after;
+    }
+    if (block_valid != UINT64_MAX) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool SharedMemory::IsRangeInvalid(uint32_t start, uint32_t length) const {
+  if (!length) {
+    return true;
+  }
+  if (start > kBufferSize || (kBufferSize - start) < length) {
+    return false;
+  }
+
+  uint32_t page_first = start >> page_size_log2_;
+  uint32_t page_last = (start + length - 1) >> page_size_log2_;
+  uint32_t block_first = page_first >> 6;
+  uint32_t block_last = page_last >> 6;
+
+  uint64_t* valid_flags = active_valid_flags_.load(std::memory_order_acquire);
+  if (!valid_flags) {
+    return false;
+  }
+  for (uint32_t i = block_first; i <= block_last; ++i) {
+    uint64_t range_mask = UINT64_MAX;
+    if (i == block_first) {
+      range_mask &= ~((uint64_t(1) << (page_first & 63)) - 1);
+    }
+    if (i == block_last && (page_last & 63) != 63) {
+      range_mask &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
+    }
+    if (valid_flags[i] & range_mask) {
+      return false;
+    }
+  }
+  return true;
 }
 
 std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallbackThunk(

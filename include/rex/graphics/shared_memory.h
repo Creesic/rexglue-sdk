@@ -35,6 +35,18 @@ class SharedMemory {
   void SetSystemPageBlocksValidWithGpuDataWritten();
   void InvalidateAllPages();
 
+  struct Range {
+    uint32_t start;
+    uint32_t length;
+  };
+  struct RequestRangeStats {
+    uint32_t input_ranges = 0;
+    uint32_t invalid_input_ranges = 0;
+    uint32_t upload_page_ranges_before_coalesce = 0;
+    uint32_t upload_page_ranges_after_coalesce = 0;
+    uint64_t upload_bytes = 0;
+  };
+
   typedef void (*GlobalWatchCallback)(const std::unique_lock<std::recursive_mutex>& global_lock,
                                       void* context, uint32_t address_first, uint32_t address_last,
                                       bool invalidated_by_gpu);
@@ -77,8 +89,13 @@ class SharedMemory {
   // Checks if the range has been updated, uploads new data if needed and
   // ensures the host GPU memory backing the range are resident. Returns true if
   // the range has been fully updated and is usable.
-  bool RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, size_t count);
+  bool RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, size_t count,
+                     RequestRangeStats* stats = nullptr);
+  bool RequestRanges(const Range* ranges, uint32_t range_count,
+                     RequestRangeStats* stats = nullptr);
   bool RequestRange(uint32_t start, uint32_t length);
+  bool IsRangeValid(uint32_t start, uint32_t length) const;
+  bool IsRangeInvalid(uint32_t start, uint32_t length) const;
 
   // Marks the range and, if not exact_range, potentially its surroundings
   // (to up to the first GPU-written page, as an access violation exception

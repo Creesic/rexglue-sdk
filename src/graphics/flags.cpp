@@ -56,6 +56,37 @@ REXCVAR_DEFINE_BOOL(
     "When translating SPIR-V for MoltenVK, omit NoContraction decorations so "
     "SPIRV-Cross doesn't emit MSL helper wrappers with disabled optimization. "
     "Other Vulkan drivers keep NoContraction enabled.");
+REXCVAR_DEFINE_BOOL(
+    submit_on_primary_buffer_end, true, "GPU",
+    "Submit the command buffer when a PM4 primary buffer ends if it can be "
+    "submitted immediately.");
+REXCVAR_DEFINE_BOOL(occlusion_query_log, false, "GPU",
+                    "Log occlusion query lifetime and summary stats.");
+REXCVAR_DEFINE_BOOL(
+    metal_shader_disk_cache, true, "Metal",
+    "Cache translated Metal shader artifacts and binding metadata in the packed "
+    "Metal artifact store.");
+REXCVAR_DEFINE_BOOL(
+    metal_pipeline_binary_archive, true, "Metal",
+    "Use MTLBinaryArchive for Metal pipeline compilation caching when supported.");
+REXCVAR_DEFINE_BOOL(
+    metal_backend_telemetry, false, "Metal",
+    "Log concise Metal backend decision counters for render encoder lifetime, "
+    "resolve and transfer planning, bindless binding, and texture uploads.");
+REXCVAR_DEFINE_INT32(
+    metal_backend_telemetry_interval, 120, "Metal",
+    "Number of guest swaps between Metal backend telemetry summaries. Set to 0 "
+    "to log only on shutdown.");
+REXCVAR_DEFINE_BOOL(
+    metal_root_rebuild_detail_telemetry, false, "Metal",
+    "Collect expensive Metal root argument rebuild diagnostics.");
+REXCVAR_DEFINE_BOOL(
+    metal_constant_payload_cache, false, "Metal",
+    "Reuse identical Metal constant and descriptor payload uploads across draws "
+    "within a frame.");
+REXCVAR_DEFINE_STRING(
+    metal_residency_sets, "auto", "Metal",
+    "Use Metal residency sets for stable allocations: auto, true, or false.");
 
 bool IsGpuDebugMarkersEnabled() {
   static bool cached = false;
