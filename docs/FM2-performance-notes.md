@@ -301,3 +301,76 @@ Note:
 - Purpose: quantify how much real CPU time this hotspot consumes per second,
   and verify whether it is a meaningful optimization target versus wait-heavy
   scheduler/fence paths.
+
+## June 2 Load Trace Capture
+
+- Added a toggleable load-trace session in `FM2/src/fm2_hooks.cpp`:
+  - `--fm2_load_trace`
+  - `--fm2_load_trace_autostart_ms=0` keeps tracing manual (`0` disables autostart)
+  - `--fm2_load_trace_toggle_vk=49` for keyboard `1` (`0` disables the hotkey)
+  - `--fm2_load_trace_sample_limit=N` to bound sample lines per session
+  - The compact `F2` FPS overlay now shows `LT OFF`, `LT ARMED`, or `LT REC`
+    from the live trace state, so you can verify the feature is armed before
+    checking the log
+- The hotkey toggles a capture session on/off and writes:
+  - `FM2_LOAD_TRACE_START ...`
+  - bounded `FM2_LOAD_TRACE_PATH ...` samples from `FM2_PathBuilder_825CF298`
+  - bounded `FM2_LOAD_TRACE_READ ...` samples from:
+    - `FM2_BufferedFileReadAsyncAware`
+    - `FM2_BufferedFileRead`
+  - `FM2_LOAD_TRACE_SUMMARY ...` on stop
+- Session summary currently counts the main load-adjacent helpers:
+  - alloc/acquire paths (`0x823637F8`, `0x82363768`, `0x82367F60`, `0x82363538`)
+  - alloc grow/ensure paths (`0x821D03E8`, `0x821D0E10`, `0x821D1568`)
+  - string/path helpers (`0x821D24D8`, `0x821D25C0`, `0x82430C10`, `0x825CF298`)
+  - stream/keyed lookup (`0x824344C0`)
+  - buffered read entry points (`0x8243C140`, `0x8243C8D0`)
+  - producer wait sites (`0x823693F8`, `0x82369400`, `0x82369408`)
+- Current allocator naming / structure from Ghidra:
+  - `0x823637F8` is only a branch thunk into `0x82363768`
+  - `0x82363768` is `FM2_AllocPoolAcquireOrInit`: try `0x82367F60`, init pool on failure, retry once
+  - `0x82367F60` is `FM2_AllocPoolTryAcquire`: small-object pool fast path when enabled and `size <= 0x200`, otherwise fallback to `0x82417720`
+- Current load-trace summary also records allocator detail from `0x82367F60`:
+  - request byte total / max
+  - request size buckets: `<=32`, `33..64`, `65..128`, `129..512`, `>512`
+  - pool fast hits vs misses
+  - fallback allocator calls / hits / fails
+- Intended use:
+  - press keyboard `1` just before a loading screen begins
+  - press keyboard `1` again when gameplay resumes to stop and emit the session summary
+  - inspect `C:\temp\fm2-clean.log` for the `FM2_LOAD_TRACE_*` block and compare
+    session summaries between loads
+
+### June 10 Producer Guard Deep Trace Wiring
+
+- The load-screen capture showed repeatable `7-8s` sessions with about `6.2k`
+  buffered reads and roughly `1.0M-1.2M` `prod_wait` hits, while
+  `prod_timeout=0` and `prod_ret0=0`.
+- `fm2_prod_guard_trace` was enabled, but the deeper trace fields initially
+  stayed zero because the existing deep producer hook functions were not wired
+  in `FM2/fm2_manifest.toml`.
+- Wired trace-only hooks for:
+  - `FM2_ProducerProgressGuard_82369340` entry LR histogram
+  - early flag-blocked branch check
+  - cursor compare
+  - wait/timeout delta buckets and sampled wait state
+  - `sub_823729E0` wait-loop sample/result counters
+- Added codegen support for `"lr"` in `midasm_hook.registers`, emitted as
+  `uint64_t& lr` and passed as `ctx.lr`.
+- Regenerated and rebuilt FM2 after the manifest change. Next capture should
+  populate `FM2_PROD_GUARD_TRACE_PERSEC` and `FM2_PROD_WAITLOOP_72A70` fields
+  instead of leaving them at zero.
+
+### June 10 Producer Wait-Loop Break Experiment
+
+- `fm2_prod_waitloop_spin_min_gap=2` was present in the active `fm2.toml`, but
+  the first restart capture still logged `small_break=0` throughout the run.
+- Root cause: `FM2ProducerWaitLoopShouldSpin82372A78` existed in
+  `FM2/src/fm2_hooks.cpp`, but was not wired in `FM2/fm2_manifest.toml`, so
+  generated code never called it.
+- Wired a conditional midasm hook after the compare at `0x82372A8C`. Returning
+  false jumps to `0x82372A94`, the existing loop-exit path; returning true
+  lets the original `blt 0x82372A68` decision continue.
+- A valid threshold test should now show nonzero `small_break` and
+  `break_th=2` in `FM2_PROD_WAITLOOP_72A70` lines if the small-gap break is
+  active.

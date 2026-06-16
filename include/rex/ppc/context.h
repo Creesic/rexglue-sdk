@@ -38,6 +38,11 @@ using PPCFunc = void(PPCContext& ctx, uint8_t* base);
 
 namespace rex::runtime {
 PPCFunc* ResolveIndirectFunction(uint32_t guest_address);
+
+// Append "<seconds_since_start> <name>" to the trace file when
+// `trace_guest_functions` is enabled. No-op when disabled. Called from the
+// REX_FUNC_PROLOGUE macro at the entry of every recompiled function.
+void TraceGuestFunction(const char* name);
 }  // namespace rex::runtime
 
 //=============================================================================

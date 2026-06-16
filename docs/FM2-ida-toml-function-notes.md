@@ -193,3 +193,71 @@ stores a function pointer at one of these addresses and calls it each cycle.
 - Runtime instrumentation hooks added for timing/call counts:
   - entry `0x82697F08` -> `FM2ApuMixRenderEnter82697F08`
   - exits `0x826983A0` / `0x826983C0` -> `FM2ApuMixRenderExitA/B...`
+
+## June 1 Update: FMOD/XMA LR Hotspots + New Trace Labels
+
+From latest `C:\temp\fm2-clean.log`:
+
+- dominant LR pair: `0x82693910` / `0x82693998` (codec-read disable/enable returns)
+- recurring XMA reinit LRs: `0x82692B24`, `0x82692C8C`, `0x82692CA4`
+- additional caller-chain hotspots around `Function_8268C670` read path.
+
+Added manifest labels for the FMOD/XMA chain:
+
+- `0x8268C670` -> `FM2_FmodStreamRead_8268C670`
+- `0x82692AF0` -> `FM2_FmodXmaContextReinit_82692AF0`
+- `0x82692B24` -> `FM2_FmodXmaContextReinit_PostDisable_82692B24`
+- `0x82692C8C` -> `FM2_FmodXmaContextReinit_PostInit_82692C8C`
+- `0x82692CA4` -> `FM2_FmodXmaContextReinit_PostEnable_82692CA4`
+- `0x82693910` -> `FM2_FmodCodecRead_PostDisable_82693910`
+- `0x82693998` -> `FM2_FmodCodecRead_PostEnable_82693998`
+- `0x826939A8` -> `FM2_FmodCodecSeek_826939A8`
+- `0x82693AC0` -> `FM2_FmodCodecSeek_CallRead_82693AC0`
+- `0x826776E0` -> `FM2_FmodStreamReadDispatch_826776E0`
+- `0x826778C4` -> `FM2_FmodStreamReadDispatch_CallRead_826778C4`
+- `0x826949B0` -> `FM2_FmodCodecReadChunk_CallRead_826949B0`
+- `0x82695480` -> `FM2_FmodCodecReadConvert_82695480`
+- `0x8269550C` -> `FM2_FmodCodecReadConvert_CallRead_8269550C`
+- `0x826A3E80` -> `FM2_FmodCodecReadPaged_826A3E80`
+- `0x826A40A8` -> `FM2_FmodCodecReadPaged_CallRead_826A40A8`
+
+Also labeled new non-audio LR hotspots seen in the same log burst so future traces
+resolve immediately (allocator/string/path sites), including:
+
+- `0x821D15B0`, `0x821D0E74`, `0x821D0448`
+- `0x821D2550`, `0x821D266C`, `0x821D2704`, `0x821D2878`
+- `0x82430CF0`, `0x824318F0`
+- `0x825CF560`, `0x8259F3A0`, `0x825345A8`, `0x822097C8`
+- `0x821EA544`, `0x825ADE8C`
+
+## June 1 Update: APU Mix Gain/Matrix Chain (Ghidra)
+
+Deep pass in Ghidra around `0x82697F08` confirms the split between:
+
+- voice gain/matrix setup
+- per-buffer accumulation into output channels
+
+Newly labeled addresses:
+
+- `0x8269DB60` -> `FM2_ApuMixCoeffSetIdentity_8269DB60`
+- `0x8269DD80` -> `FM2_ApuMixCoeffUpdateDelta_8269DD80`
+- `0x8269DF48` -> `FM2_ApuMixCoeffIsIdentity_8269DF48`
+- `0x8269DFE0` -> `FM2_ApuMixSetBaseGain_8269DFE0`
+- `0x8269E000` -> `FM2_ApuMixBuildPanMatrix_8269E000`
+- `0x8269E6B0` -> `FM2_ApuMixSetOutputMatrix_8269E6B0`
+- `0x8269E8F0` -> `FM2_ApuMixAccumulateVoice_8269E8F0`
+- `0x826A62A0` -> `FM2_AudioVoiceSetVolumeQuantized_826A62A0`
+- `0x826A75E8` -> `FM2_AudioSourceSetVolume_826A75E8`
+- `0x826A8628` -> `FM2_AudioVoiceApplyOutputMatrix_826A8628`
+
+Key behavior observed:
+
+- `FM2_ApuMixRenderCore_82697F08` calls `FM2_ApuMixBuildPanMatrix_8269E000` then `FM2_ApuMixAccumulateVoice_8269E8F0` for active voices.
+- `FM2_ApuMixSetBaseGain_8269DFE0` writes the scalar gain field at `+0x5C` (and a sync field at `+0x60`), which feeds matrix generation.
+- `FM2_ApuMixCoeffUpdateDelta_8269DD80` computes smoothing deltas using `+0x8C` and sets a short ramp window (`+0x88 = 0x40`) when change is above threshold.
+- `FM2_ApuMixAccumulateVoice_8269E8F0` applies source samples through per-channel coefficient matrices (`+0x2C..+0x40`) into the mix buffer.
+- Callers near `0x826A85E4` multiply requested volume by extra class/bus scalars (`obj+0x54->0xD4` and `obj+0x54->0x88->0x40`) before forwarding to set-base-gain path.
+
+Implication for overlay interpretation:
+
+- If the overlay tracks pre-mix source level or decoded PCM magnitude, it can stay "hot" while audible output is quieter; attenuation may be happening later via matrix coefficients and/or bus scalars in this chain.

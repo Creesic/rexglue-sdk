@@ -356,6 +356,10 @@ void BuilderContext::emit_mid_asm_hook() {
         else
           out += f(std::atoi(reg.c_str() + 1));
         break;
+      case 'l':
+        if (reg == "lr")
+          out += "ctx.lr";
+        break;
       case 'v':
         out += v(std::atoi(reg.c_str() + 1));
         break;

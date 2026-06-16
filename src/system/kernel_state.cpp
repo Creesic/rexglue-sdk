@@ -16,7 +16,9 @@
 
 #include <rex/cvar.h>
 #include <rex/assert.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
+#include <rex/platform/dynlib.h>
 #include <rex/math.h>
 #include <rex/ppc/function.h>
 #include <rex/runtime.h>
@@ -690,9 +692,15 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
     }
 
     rex::platform::DynamicLibrary library_local;
-    if (!library_local.Load(std::filesystem::path(recomp->shared_lib_name),
+    const std::string lib_file =
+        rex::platform::SharedLibraryFileName(recomp->shared_lib_name);
+    const std::filesystem::path lib_path =
+        rex::filesystem::GetExecutableFolder() / lib_file;
+    if (!library_local.Load(lib_path, rex::platform::SymbolResolution::kImmediate) &&
+        !library_local.Load(std::filesystem::path(lib_file),
                             rex::platform::SymbolResolution::kImmediate)) {
-      REXSYS_ERROR("Failed to load shared library for module '{}'", recomp->pe_name);
+      REXSYS_ERROR("Failed to load shared library '{}' (tried '{}') for module '{}'",
+                   lib_file, lib_path.string(), recomp->pe_name);
     } else {
       auto register_func = reinterpret_cast<runtime::FunctionDispatcher::RegisterFn>(
           library_local.GetRawSymbol("ReXModule_Register"));

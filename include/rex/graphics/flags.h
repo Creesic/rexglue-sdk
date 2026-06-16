@@ -108,8 +108,8 @@ REXCVAR_DECLARE(int32_t, d3d12_pipeline_creation_threads);
 REXCVAR_DECLARE(bool, d3d12_tessellation_wireframe);
 REXCVAR_DECLARE(bool, d3d12_tiled_shared_memory);
 REXCVAR_DECLARE(std::string, render_target_path_d3d12);
-REXCVAR_DECLARE(bool, d3d12_ignore_8bit_color_exp_bias);
-REXCVAR_DECLARE(bool, d3d12_invert_8bit_color_exp_bias);
+REXCVAR_DECLARE(bool, gpu_ignore_8bit_color_exp_bias);
+REXCVAR_DECLARE(bool, gpu_invert_8bit_color_exp_bias);
 // Legacy backend compatibility aliases for shared readback controls.
 REXCVAR_DECLARE(bool, d3d12_readback_memexport);
 REXCVAR_DECLARE(bool, d3d12_readback_resolve);

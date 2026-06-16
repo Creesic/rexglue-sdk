@@ -248,7 +248,18 @@ uint32_t UserModule::GetProcAddressByOrdinal(uint16_t ordinal, uint32_t caller_a
     return guest_addr;
   }
 
-  return dispatcher->AllocateThunk(func, caller_address);
+  uint32_t caller_module_base = dispatcher->FindCallerModuleBase(caller_address);
+  ThunkKey key{caller_module_base, ordinal};
+  auto thunk_it = thunk_cache_.find(key);
+  if (thunk_it != thunk_cache_.end()) {
+    return thunk_it->second;
+  }
+
+  uint32_t thunk_addr = dispatcher->AllocateThunk(func, caller_address);
+  if (thunk_addr) {
+    thunk_cache_[key] = thunk_addr;
+  }
+  return thunk_addr;
 }
 
 uint32_t UserModule::GetProcAddressByName(std::string_view name) {

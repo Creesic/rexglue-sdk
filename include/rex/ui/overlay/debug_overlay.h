@@ -39,6 +39,10 @@ class DebugOverlayDialog : public ImGuiDialog {
  private:
   FrameStatsProvider stats_provider_;
   bool compact_only_ = false;
+  bool smoothed_stats_initialized_ = false;
+  double smoothed_fps_ = 0.0;
+  double smoothed_frame_time_ms_ = 0.0;
+  double last_stats_time_ = 0.0;
 #ifdef REXGLUE_ENABLE_PERF_COUNTERS
   static constexpr size_t kFrameHistorySize = 120;
   std::array<float, kFrameHistorySize> frame_time_history_{};

@@ -20,6 +20,9 @@
 #include <rex/thread/mutex.h>
 
 #include <span>
+#include <mutex>
+#include <string>
+#include <unordered_set>
 
 namespace rex::system {
 
@@ -176,6 +179,28 @@ X_STATUS XFile::ReadInternal(uint32_t buffer_guest_address, uint32_t buffer_leng
             position_ += bytes_read;
           }
         }
+      }
+    }
+  }
+
+  // TEMP DIAG (2026-06-03): trace reads to find the world-load streaming stall.
+  {
+    const char* p = file_->entry() ? file_->entry()->path().c_str() : "?";
+    if (buffer_length && (bytes_read == 0 || !XSUCCEEDED(result))) {
+      REXKRNL_WARN("[readtrace] ZERO path='{}' off={} req={} got={} status={:08X}", p, byte_offset,
+                   buffer_length, uint32_t(bytes_read), uint32_t(result));
+    } else if (buffer_length) {
+      static std::mutex s_seen_mtx;
+      static std::unordered_set<std::string> s_seen;
+      std::string key(p);
+      bool first = false;
+      {
+        std::lock_guard<std::mutex> lk(s_seen_mtx);
+        first = s_seen.insert(key).second;
+      }
+      if (first) {
+        REXKRNL_WARN("[readtrace] OPEN1 path='{}' off={} req={} got={}", p, byte_offset,
+                     buffer_length, uint32_t(bytes_read));
       }
     }
   }

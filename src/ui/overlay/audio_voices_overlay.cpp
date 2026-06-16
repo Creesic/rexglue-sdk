@@ -25,6 +25,9 @@ constexpr float kMeterFloorDbfs = -60.0f;
 constexpr float kMeterReleaseDbPerSecond = 18.0f;
 constexpr float kVoiceVolumeMin = 0.0f;
 constexpr float kVoiceVolumeMax = 1.0f;
+constexpr uint32_t kXmaPacketBytes = 2048;
+constexpr uint32_t kXmaPcmBitsPerSample = 16;
+constexpr uint32_t kXmaSamplesPerFramePerChannel = 512;
 
 float LinearToDbfs(float linear) {
   const float safe_linear = std::max(linear, 1.0e-6f);
@@ -33,6 +36,22 @@ float LinearToDbfs(float linear) {
 
 float DbfsToNormalized(float dbfs) {
   return std::clamp((dbfs - kMeterFloorDbfs) / -kMeterFloorDbfs, 0.0f, 1.0f);
+}
+
+float ExpSmoothingAlpha(double dt_seconds, double time_constant_seconds) {
+  if (time_constant_seconds <= 0.0) {
+    return 1.0f;
+  }
+  const double dt = std::max(0.0, dt_seconds);
+  return static_cast<float>(1.0 - std::exp(-dt / time_constant_seconds));
+}
+
+uint32_t SampleRateIdToHz(uint8_t sample_rate_id) {
+  static constexpr uint32_t kSampleRateTable[4] = {24000, 32000, 44100, 48000};
+  if (sample_rate_id >= 4) {
+    return 0;
+  }
+  return kSampleRateTable[sample_rate_id];
 }
 
 bool ContainsContext(const std::vector<uint32_t>& contexts, uint32_t context_id) {
@@ -64,12 +83,64 @@ uint64_t BuildContextSignature(const AudioXmaContextInfo& ctx) {
   return hash;
 }
 
-bool IsPlayingContext(const AudioXmaContextInfo& ctx) {
+float GetContextPeakForMode(const AudioXmaContextInfo& ctx, bool use_audible_meter) {
+  return use_audible_meter ? ctx.audible_peak_level : ctx.peak_level;
+}
+
+float GetContextRmsForMode(const AudioXmaContextInfo& ctx, bool use_audible_meter) {
+  return use_audible_meter ? ctx.audible_rms_level : ctx.rms_level;
+}
+
+bool IsPlayingContext(const AudioXmaContextInfo& ctx, bool use_audible_meter) {
   if (!ctx.allocated) {
     return false;
   }
-  return ctx.rms_level > 0.0005f || ctx.peak_level > 0.001f || ctx.enabled || ctx.input0_valid ||
-         ctx.input1_valid || ctx.output_valid;
+  const float rms = GetContextRmsForMode(ctx, use_audible_meter);
+  const float peak = GetContextPeakForMode(ctx, use_audible_meter);
+  return rms > 0.0005f || peak > 0.001f || ctx.enabled || ctx.input0_valid || ctx.input1_valid ||
+         ctx.output_valid;
+}
+
+void DrawLineGraphNoTooltip(const char* id, const std::vector<float>& values, float scale_min,
+                            float scale_max, ImVec2 graph_size, ImVec2* out_min = nullptr,
+                            ImVec2* out_max = nullptr) {
+  ImGui::InvisibleButton(id, graph_size);
+  const ImVec2 plot_min = ImGui::GetItemRectMin();
+  const ImVec2 plot_max = ImGui::GetItemRectMax();
+  if (out_min) {
+    *out_min = plot_min;
+  }
+  if (out_max) {
+    *out_max = plot_max;
+  }
+
+  ImDrawList* draw_list = ImGui::GetWindowDrawList();
+  const ImU32 bg_col = ImGui::GetColorU32(ImVec4(0.12f, 0.12f, 0.12f, 0.55f));
+  const ImU32 border_col = ImGui::GetColorU32(ImVec4(0.55f, 0.55f, 0.55f, 0.45f));
+  const ImU32 line_col = ImGui::GetColorU32(ImGuiCol_PlotLines);
+  draw_list->AddRectFilled(plot_min, plot_max, bg_col, 0.0f);
+  draw_list->AddRect(plot_min, plot_max, border_col, 0.0f);
+
+  if (values.size() < 2 || !(scale_max > scale_min)) {
+    return;
+  }
+
+  const float inner_left = plot_min.x + 1.0f;
+  const float inner_right = plot_max.x - 1.0f;
+  const float inner_top = plot_min.y + 1.0f;
+  const float inner_bottom = plot_max.y - 1.0f;
+  const float inner_width = std::max(1.0f, inner_right - inner_left);
+  const float inner_height = std::max(1.0f, inner_bottom - inner_top);
+  const size_t point_count = values.size();
+  for (size_t i = 1; i < point_count; ++i) {
+    const float t0 = static_cast<float>(i - 1) / static_cast<float>(point_count - 1);
+    const float t1 = static_cast<float>(i) / static_cast<float>(point_count - 1);
+    const float v0 = std::clamp((values[i - 1] - scale_min) / (scale_max - scale_min), 0.0f, 1.0f);
+    const float v1 = std::clamp((values[i] - scale_min) / (scale_max - scale_min), 0.0f, 1.0f);
+    const ImVec2 p0(inner_left + t0 * inner_width, inner_bottom - v0 * inner_height);
+    const ImVec2 p1(inner_left + t1 * inner_width, inner_bottom - v1 * inner_height);
+    draw_list->AddLine(p0, p1, line_col, 1.0f);
+  }
 }
 
 }  // namespace
@@ -91,7 +162,83 @@ AudioVoicesDialog::~AudioVoicesDialog() {
 }
 
 void AudioVoicesDialog::OnClose() {
+  ClearHoverSoloOverride();
   SaveLayoutState(true);
+}
+
+void AudioVoicesDialog::ClearHoverSoloOverride() {
+  if (!hover_solo_active_ || !set_context_mute_) {
+    hover_solo_active_ = false;
+    hover_solo_context_.reset();
+    hover_solo_saved_mute_states_.clear();
+    return;
+  }
+
+  for (const auto& [context_id, was_muted] : hover_solo_saved_mute_states_) {
+    set_context_mute_(context_id, was_muted);
+  }
+  hover_solo_saved_mute_states_.clear();
+  hover_solo_context_.reset();
+  hover_solo_active_ = false;
+}
+
+void AudioVoicesDialog::ApplyPersistedMuteStateToSnapshot(const AudioVoicesSnapshot& snapshot) {
+  if (!set_context_mute_) {
+    return;
+  }
+  for (const auto& ctx : snapshot.xma_contexts) {
+    const uint64_t signature = BuildContextSignature(ctx);
+    const bool should_be_muted =
+        signature ? (persisted_muted_signatures_.find(signature) != persisted_muted_signatures_.end())
+                  : (persisted_muted_contexts_.find(ctx.index) != persisted_muted_contexts_.end());
+    if (ctx.muted != should_be_muted) {
+      set_context_mute_(ctx.index, should_be_muted);
+    }
+  }
+}
+
+void AudioVoicesDialog::UpdateHoverSoloOverride(const AudioVoicesSnapshot& snapshot,
+                                                const std::optional<uint32_t>& hovered_context) {
+  if (!hover_solo_enabled_ || !set_context_mute_ || !hovered_context ||
+      ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+    ClearHoverSoloOverride();
+    ApplyPersistedMuteStateToSnapshot(snapshot);
+    return;
+  }
+
+  if (hover_solo_active_ && hover_solo_context_ && *hover_solo_context_ == *hovered_context) {
+    // Keep solo behavior strict even as contexts appear/disappear while hovering.
+    for (const auto& ctx : snapshot.xma_contexts) {
+      if (!ctx.allocated && !ctx.enabled && !ctx.input0_valid && !ctx.input1_valid &&
+          !ctx.output_valid) {
+        continue;
+      }
+      const bool should_mute = ctx.index != *hovered_context;
+      if (ctx.muted != should_mute) {
+        set_context_mute_(ctx.index, should_mute);
+      }
+    }
+    return;
+  }
+
+  ClearHoverSoloOverride();
+  hover_solo_saved_mute_states_.reserve(snapshot.xma_contexts.size());
+  for (const auto& ctx : snapshot.xma_contexts) {
+    if (!ctx.allocated && !ctx.enabled && !ctx.input0_valid && !ctx.input1_valid && !ctx.output_valid) {
+      continue;
+    }
+    hover_solo_saved_mute_states_[ctx.index] = ctx.muted;
+  }
+  if (hover_solo_saved_mute_states_.find(*hovered_context) == hover_solo_saved_mute_states_.end()) {
+    hover_solo_saved_mute_states_[*hovered_context] = false;
+  }
+
+  for (const auto& [context_id, _] : hover_solo_saved_mute_states_) {
+    const bool should_mute = context_id != *hovered_context;
+    set_context_mute_(context_id, should_mute);
+  }
+  hover_solo_context_ = hovered_context;
+  hover_solo_active_ = true;
 }
 
 void AudioVoicesDialog::LoadLayoutStateOnce() {
@@ -115,8 +262,10 @@ void AudioVoicesDialog::LoadLayoutStateOnce() {
   }
 
   normalize_volume_panel_ = loaded->normalize_volume_panel;
-  ignore_persisted_controls_ = loaded->ignore_persisted_controls;
+  // Persisted controls are always enabled; ignore legacy toggle state.
+  ignore_persisted_controls_ = false;
   show_playing_contexts_only_ = loaded->show_playing_contexts_only;
+  meter_use_audible_ = loaded->meter_use_audible;
   persisted_muted_contexts_ = std::move(loaded->muted_contexts);
   persisted_muted_signatures_ = std::move(loaded->muted_signatures);
   tracked_volume_contexts_ = std::move(loaded->tracked_volume_contexts);
@@ -140,10 +289,6 @@ void AudioVoicesDialog::LoadLayoutStateOnce() {
 
 void AudioVoicesDialog::ApplyMutedLayoutState(const AudioVoicesSnapshot& snapshot) {
   if (!pending_apply_mute_layout_ || !snapshot.valid) {
-    return;
-  }
-  if (ignore_persisted_controls_) {
-    pending_apply_mute_layout_ = false;
     return;
   }
   if (!set_context_mute_) {
@@ -185,8 +330,9 @@ AudioVoicesLayoutState AudioVoicesDialog::BuildLayoutState() const {
   state.window_width = pending_window_width_;
   state.window_height = pending_window_height_;
   state.normalize_volume_panel = normalize_volume_panel_;
-  state.ignore_persisted_controls = ignore_persisted_controls_;
+  state.ignore_persisted_controls = false;
   state.show_playing_contexts_only = show_playing_contexts_only_;
+  state.meter_use_audible = meter_use_audible_;
   state.muted_contexts = persisted_muted_contexts_;
   state.muted_signatures = persisted_muted_signatures_;
   state.tracked_volume_contexts = tracked_volume_contexts_;
@@ -243,6 +389,7 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
   }
 
   if (!snapshot.valid) {
+    ClearHoverSoloOverride();
     ImGui::TextUnformatted("Audio voice debug data unavailable.");
     ImGui::End();
     return;
@@ -262,17 +409,165 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
   ImGui::Text("Render Voices: %zu", snapshot.voices.size());
   ImGui::SameLine();
   ImGui::Text("Active XMA Contexts: %zu", active_xma_contexts);
-  ImGui::SameLine();
-  if (ImGui::Button(ignore_persisted_controls_ ? "Persisted Controls: OFF" : "Persisted Controls: ON")) {
-    ignore_persisted_controls_ = !ignore_persisted_controls_;
-    pending_apply_mute_layout_ = !ignore_persisted_controls_;
-    layout_dirty_ = true;
+
+  uint64_t submitted_frames_total = 0;
+  for (const auto& voice : snapshot.voices) {
+    submitted_frames_total += voice.submitted_frames;
   }
-  ImGui::SameLine();
-  if (ImGui::Button(show_playing_contexts_only_ ? "Squares: Playing Contexts" : "Squares: Hex Voices")) {
-    show_playing_contexts_only_ = !show_playing_contexts_only_;
-    layout_dirty_ = true;
+  const uint64_t rendered_callbacks_total = snapshot.render_callbacks_total;
+  const uint64_t queue_depth_estimated =
+      submitted_frames_total > rendered_callbacks_total
+          ? (submitted_frames_total - rendered_callbacks_total)
+          : 0;
+  const uint64_t queue_capacity_estimated =
+      std::max<uint64_t>(1, static_cast<uint64_t>(std::max<size_t>(1, snapshot.voices.size())) *
+                                static_cast<uint64_t>(std::max<uint32_t>(1, snapshot.queued_frames)));
+  const float utilization_percent = std::clamp(
+      (100.0f * static_cast<float>(queue_depth_estimated) /
+       static_cast<float>(queue_capacity_estimated)),
+      0.0f, 100.0f);
+
+  const double now_time = ImGui::GetTime();
+  auto push_history_value = [](std::vector<float>& history, float value, size_t limit) {
+    history.push_back(value);
+    if (history.size() > limit) {
+      history.erase(history.begin(), history.begin() + (history.size() - limit));
+    }
+  };
+  if (last_render_callbacks_total_ == 0) {
+    last_render_callbacks_total_ = rendered_callbacks_total;
+    last_render_callback_time_ = now_time;
+  } else if (rendered_callbacks_total > last_render_callbacks_total_) {
+    const uint64_t callback_delta = rendered_callbacks_total - last_render_callbacks_total_;
+    const double time_delta = now_time - last_render_callback_time_;
+    if (time_delta > 0.0) {
+      const float interval_ms =
+          static_cast<float>((time_delta * 1000.0) / static_cast<double>(callback_delta));
+      push_history_value(callback_interval_history_ms_, interval_ms, 240);
+      if (render_interval_ema_ms_ <= 0.0f) {
+        render_interval_ema_ms_ = interval_ms;
+      } else {
+        constexpr float kIntervalEmaAlpha = 0.12f;
+        render_interval_ema_ms_ += (interval_ms - render_interval_ema_ms_) * kIntervalEmaAlpha;
+      }
+      render_deviation_ms_ = std::fabs(interval_ms - render_interval_ema_ms_);
+    }
+    last_render_callbacks_total_ = rendered_callbacks_total;
+    last_render_callback_time_ = now_time;
   }
+  if (last_metrics_sample_time_ == 0.0 || (now_time - last_metrics_sample_time_) >= (1.0 / 30.0)) {
+    push_history_value(queue_depth_history_, static_cast<float>(queue_depth_estimated), 240);
+    last_metrics_sample_time_ = now_time;
+  }
+  const float pacing_interval_ms = callback_interval_history_ms_.empty()
+                                       ? render_interval_ema_ms_
+                                       : callback_interval_history_ms_.back();
+  const float latency_ms_estimated =
+      (render_interval_ema_ms_ > 0.0f)
+          ? (static_cast<float>(queue_depth_estimated) * render_interval_ema_ms_)
+          : 0.0f;
+  const double metrics_dt_seconds =
+      (last_metrics_smoothing_time_ > 0.0) ? (now_time - last_metrics_smoothing_time_) : 0.0;
+  const float metrics_alpha = ExpSmoothingAlpha(metrics_dt_seconds, 0.45);
+  if (!smoothed_metrics_initialized_) {
+    smoothed_utilization_percent_ = utilization_percent;
+    smoothed_deviation_ms_ = render_deviation_ms_;
+    smoothed_latency_ms_ = latency_ms_estimated;
+    smoothed_pacing_interval_ms_ = pacing_interval_ms;
+    smoothed_vp_total_us_ = static_cast<float>(snapshot.vp.total_worker_time_us);
+    smoothed_vp_sweeps_per_second_ = static_cast<float>(snapshot.vp.sweeps_per_second);
+    smoothed_vp_decode_iters_per_second_ =
+        static_cast<float>(snapshot.vp.decode_iterations_per_second);
+    smoothed_gp_cycles_ = static_cast<float>(snapshot.gp.cycles);
+    smoothed_ep_cycles_ = static_cast<float>(snapshot.ep.cycles);
+    smoothed_metrics_initialized_ = true;
+  } else {
+    smoothed_utilization_percent_ +=
+        (utilization_percent - smoothed_utilization_percent_) * metrics_alpha;
+    smoothed_deviation_ms_ += (render_deviation_ms_ - smoothed_deviation_ms_) * metrics_alpha;
+    smoothed_latency_ms_ += (latency_ms_estimated - smoothed_latency_ms_) * metrics_alpha;
+    smoothed_pacing_interval_ms_ +=
+        (pacing_interval_ms - smoothed_pacing_interval_ms_) * metrics_alpha;
+    smoothed_vp_total_us_ +=
+        (static_cast<float>(snapshot.vp.total_worker_time_us) - smoothed_vp_total_us_) *
+        metrics_alpha;
+    smoothed_vp_sweeps_per_second_ +=
+        (static_cast<float>(snapshot.vp.sweeps_per_second) - smoothed_vp_sweeps_per_second_) *
+        metrics_alpha;
+    smoothed_vp_decode_iters_per_second_ +=
+        (static_cast<float>(snapshot.vp.decode_iterations_per_second) -
+         smoothed_vp_decode_iters_per_second_) *
+        metrics_alpha;
+    smoothed_gp_cycles_ += (static_cast<float>(snapshot.gp.cycles) - smoothed_gp_cycles_) *
+                           metrics_alpha;
+    smoothed_ep_cycles_ += (static_cast<float>(snapshot.ep.cycles) - smoothed_ep_cycles_) *
+                           metrics_alpha;
+  }
+  last_metrics_smoothing_time_ = now_time;
+
+  ImGui::Text(
+      "Utilization: %.1f%%   Deviation: %.3f ms   Latency: %.2f ms   Queue: %llu / %llu   Pace: %.2f ms",
+      smoothed_utilization_percent_, smoothed_deviation_ms_, smoothed_latency_ms_,
+      static_cast<unsigned long long>(queue_depth_estimated),
+      static_cast<unsigned long long>(queue_capacity_estimated), smoothed_pacing_interval_ms_);
+  ImGui::Text("VP: %.0f us", smoothed_vp_total_us_);
+  if (ImGui::TreeNode("VP Workers")) {
+    ImGui::Text("W: #  us");
+    ImGui::Text("0: %2u %3u", snapshot.vp.workers[0].num_voices, snapshot.vp.workers[0].time_us);
+    ImGui::Text("Sweeps/s: %.0f   Decode Iters/s: %.0f", smoothed_vp_sweeps_per_second_,
+                smoothed_vp_decode_iters_per_second_);
+    ImGui::TreePop();
+  }
+  ImGui::Text("GP Cycles (est): %.0f", smoothed_gp_cycles_);
+  ImGui::Text("EP Cycles (est): %.0f", smoothed_ep_cycles_);
+  ImGui::TextDisabled("Queue utilization/latency are queue-depth based and may stay near zero when audio keeps up.");
+  ImGui::TextDisabled("VP/GP/EP values are host-side estimates in the current XMA pipeline.");
+  ImGui::Separator();
+
+  const float queue_plot_max = std::max(1.0f, static_cast<float>(queue_capacity_estimated));
+  if (!queue_depth_history_.empty()) {
+    ImGui::Text("Queue Depth Y-axis: 0 to %.0f frames (current %.0f)", queue_plot_max,
+                static_cast<float>(queue_depth_estimated));
+    DrawLineGraphNoTooltip("##queue_depth_graph", queue_depth_history_, 0.0f, queue_plot_max,
+                           ImVec2(ImGui::GetContentRegionAvail().x, 56.0f));
+  }
+  if (!callback_interval_history_ms_.empty()) {
+    float interval_max = 0.0f;
+    double interval_sum = 0.0;
+    for (float v : callback_interval_history_ms_) {
+      interval_max = std::max(interval_max, v);
+      interval_sum += static_cast<double>(v);
+    }
+    interval_max = std::max(4.0f, interval_max * 1.2f);
+    const float interval_mean_ms = static_cast<float>(
+        interval_sum / static_cast<double>(callback_interval_history_ms_.size()));
+    ImGui::Text("Callback Interval Y-axis: 0.00 to %.2f ms (mean %.2f ms, current %.2f ms)",
+                interval_max, interval_mean_ms, smoothed_pacing_interval_ms_);
+    ImVec2 plot_min, plot_max;
+    DrawLineGraphNoTooltip("##callback_interval_graph", callback_interval_history_ms_, 0.0f,
+                           interval_max, ImVec2(ImGui::GetContentRegionAvail().x, 56.0f),
+                           &plot_min, &plot_max);
+    if (interval_max > 1.0e-5f) {
+      const float plot_height = std::max(1.0f, plot_max.y - plot_min.y);
+      const float mean_ratio = std::clamp(interval_mean_ms / interval_max, 0.0f, 1.0f);
+      const float mean_y = plot_max.y - (mean_ratio * plot_height);
+      ImDrawList* draw_list = ImGui::GetWindowDrawList();
+      draw_list->AddLine(ImVec2(plot_min.x, mean_y), ImVec2(plot_max.x, mean_y),
+                         ImGui::GetColorU32(ImVec4(1.0f, 0.9f, 0.1f, 0.9f)), 1.5f);
+      char mean_text[48] = {};
+      std::snprintf(mean_text, sizeof(mean_text), "mean %.2f ms", interval_mean_ms);
+      const ImVec2 mean_text_size = ImGui::CalcTextSize(mean_text);
+      const ImVec2 mean_text_pos(plot_min.x + 6.0f, mean_y - ImGui::GetTextLineHeight() - 1.0f);
+      const ImVec2 mean_bg_min(mean_text_pos.x - 3.0f, mean_text_pos.y - 1.0f);
+      const ImVec2 mean_bg_max(mean_text_pos.x + mean_text_size.x + 3.0f,
+                               mean_text_pos.y + mean_text_size.y + 1.0f);
+      draw_list->AddRectFilled(mean_bg_min, mean_bg_max,
+                               ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.42f)), 2.0f);
+      draw_list->AddText(mean_text_pos, ImGui::GetColorU32(ImVec4(1.0f, 0.93f, 0.2f, 0.95f)),
+                         mean_text);
+    }
+  }
+
   ImGui::Separator();
 
   std::unordered_map<uint32_t, uint64_t> frame_context_signatures;
@@ -329,7 +624,7 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
     std::unordered_map<uint64_t, const AudioXmaContextInfo*> playing_by_signature;
     playing_by_signature.reserve(snapshot.xma_contexts.size());
     for (const auto& ctx : snapshot.xma_contexts) {
-      if (!IsPlayingContext(ctx)) {
+      if (!IsPlayingContext(ctx, meter_use_audible_)) {
         continue;
       }
       const uint64_t signature = BuildContextSignature(ctx);
@@ -423,9 +718,34 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
                ImGui::GetContentRegionAvail().x - kRightPanelMinWidth - style.ItemSpacing.x));
   ImGui::BeginChild("xma_grid", ImVec2(grid_width, 0), true);
   ImGui::Text("XMA Contexts (square view)");
+  const float mode_button_width = 78.0f;
+  const float hover_button_width = 112.0f;
+  const float button_spacing = style.ItemInnerSpacing.x;
+  const float mode_button_x =
+      ImGui::GetContentRegionAvail().x - (mode_button_width + button_spacing + hover_button_width);
+  if (mode_button_x > 8.0f) {
+    ImGui::SameLine(mode_button_x);
+  } else {
+    ImGui::SameLine();
+  }
+  if (ImGui::Button(show_playing_contexts_only_ ? "Context" : "Voice",
+                    ImVec2(mode_button_width, 0.0f))) {
+    show_playing_contexts_only_ = !show_playing_contexts_only_;
+    layout_dirty_ = true;
+  }
+  ImGui::SameLine(0.0f, button_spacing);
+  if (ImGui::Button(hover_solo_enabled_ ? "Solo: ON" : "Solo: OFF",
+                    ImVec2(hover_button_width, 0.0f))) {
+    hover_solo_enabled_ = !hover_solo_enabled_;
+    if (!hover_solo_enabled_) {
+      ClearHoverSoloOverride();
+      ApplyPersistedMuteStateToSnapshot(snapshot);
+    }
+  }
   ImGui::Text("Right-click mute/unmute (signature-persistent), right-drag paint, left-click pin details");
   ImGui::Text("Names/tracked voices auto-follow by XMA buffer signature");
-  ImGui::Text("Green=enabled, red=muted, brightness=linear peak");
+  ImGui::Text("Green=enabled, red=muted, brightness=linear %s peak",
+              meter_use_audible_ ? "audible" : "decode");
   ImGui::Text("Mode: %s", show_playing_contexts_only_
                              ? "playing-context instances (stable slots by buffer signature)"
                              : "hex voice slots (allocated/known)");
@@ -476,9 +796,10 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
     if (ctx_ptr) {
       const float prev_level = display_levels_[ctx_ptr->index];
       const float decayed = std::max(0.0f, prev_level - decay_step);
-      display_level = std::max(ctx_ptr->peak_level, decayed);
+      const float peak_level = std::clamp(GetContextPeakForMode(*ctx_ptr, meter_use_audible_), 0.0f, 1.0f);
+      display_level = std::max(peak_level, decayed);
       display_levels_[ctx_ptr->index] = display_level;
-      const float observed_peak = std::clamp(ctx_ptr->peak_level, 0.0f, 1.0f);
+      const float observed_peak = peak_level;
       const float previous_observed_peak = last_observed_peak_levels_[ctx_ptr->index];
       const double now_time = ImGui::GetTime();
       double& last_peak_change_time = last_peak_change_times_[ctx_ptr->index];
@@ -518,9 +839,21 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
     if (ImGui::IsItemHovered()) {
       if (ctx_ptr) {
         hovered_context = ctx_ptr->index;
-        ImGui::SetTooltip("ctx=0x%03X\nout=0x%08X\nin0=0x%08X\nin1=0x%08X", ctx_ptr->index,
-                          ctx_ptr->output_buffer_ptr, ctx_ptr->input_buffer_0_ptr,
-                          ctx_ptr->input_buffer_1_ptr);
+        const uint32_t sample_rate_hz = SampleRateIdToHz(ctx_ptr->sample_rate_id);
+        const uint32_t channels = ctx_ptr->stereo ? 2u : 1u;
+        const uint32_t sample_size_bytes = (kXmaPcmBitsPerSample / 8u) * channels;
+        const uint32_t in0_size = ctx_ptr->input_buffer_0_packet_count * kXmaPacketBytes;
+        const uint32_t in1_size = ctx_ptr->input_buffer_1_packet_count * kXmaPacketBytes;
+        ImGui::SetTooltip(
+            "ctx=0x%03X\nrate=%u Hz (id=%u)\ncontainer: in0=%u pkts (%u bytes), in1=%u pkts (%u "
+            "bytes)\nsample size=%u bytes (%u-bit %s), frame=%u samples/ch\nmultipass bin=%u  "
+            "mix=%s\nout=0x%08X\nin0=0x%08X\nin1=0x%08X",
+            ctx_ptr->index, sample_rate_hz, static_cast<uint32_t>(ctx_ptr->sample_rate_id),
+            static_cast<uint32_t>(ctx_ptr->input_buffer_0_packet_count), in0_size,
+            static_cast<uint32_t>(ctx_ptr->input_buffer_1_packet_count), in1_size, sample_size_bytes,
+            kXmaPcmBitsPerSample, ctx_ptr->stereo ? "stereo" : "mono", kXmaSamplesPerFramePerChannel,
+            static_cast<uint32_t>(ctx_ptr->packet_metadata), ctx_ptr->consume_only ? "consume-only" : "decode",
+            ctx_ptr->output_buffer_ptr, ctx_ptr->input_buffer_0_ptr, ctx_ptr->input_buffer_1_ptr);
       } else if (show_playing_contexts_only_) {
         ImGui::SetTooltip("Slot inactive");
       }
@@ -604,6 +937,8 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
     }
   }
 
+  UpdateHoverSoloOverride(snapshot, hovered_context);
+
   ImGui::Separator();
   ImGui::Text("Context Details");
   ImGui::Separator();
@@ -619,15 +954,14 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
       ImGui::Text("Context: 0x%03X (%u)", detail->index, detail->index);
       ImGui::Text("Allocated: %s  Enabled: %s", detail->allocated ? "yes" : "no",
                   detail->enabled ? "yes" : "no");
-      const float detail_rms_dbfs =
-          std::max(kMeterFloorDbfs, LinearToDbfs(std::clamp(detail->rms_level, 0.0f, 1.0f)));
-      const float detail_effective_rms = std::clamp(detail->muted ? 0.0f : detail->rms_level * detail->volume,
-                                                    0.0f, 1.0f);
-      const float detail_effective_rms_dbfs =
-          std::max(kMeterFloorDbfs, LinearToDbfs(detail_effective_rms));
-      ImGui::Text("Muted: %s  Decode RMS: %.3f (%.1f dBFS)  Effective RMS: %.3f (%.1f dBFS)",
-                  detail->muted ? "yes" : "no", detail->rms_level, detail_rms_dbfs,
-                  detail_effective_rms, detail_effective_rms_dbfs);
+      const float detail_decode_rms = std::clamp(detail->rms_level, 0.0f, 1.0f);
+      const float detail_decode_rms_dbfs = std::max(kMeterFloorDbfs, LinearToDbfs(detail_decode_rms));
+      const float detail_audible_rms = std::clamp(detail->audible_rms_level, 0.0f, 1.0f);
+      const float detail_audible_rms_dbfs =
+          std::max(kMeterFloorDbfs, LinearToDbfs(detail_audible_rms));
+      ImGui::Text("Muted: %s  Decode RMS: %.3f (%.1f dBFS)", detail->muted ? "yes" : "no",
+                  detail_decode_rms, detail_decode_rms_dbfs);
+      ImGui::Text("Audible RMS: %.3f (%.1f dBFS)", detail_audible_rms, detail_audible_rms_dbfs);
       ImGui::Text("In0: %s  In1: %s  Out: %s", detail->input0_valid ? "yes" : "no",
                   detail->input1_valid ? "yes" : "no", detail->output_valid ? "yes" : "no");
       ImGui::Text("Stereo: %s  ConsumeOnly: %s", detail->stereo ? "yes" : "no",
@@ -645,7 +979,29 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
       ImGui::Text("Subframe Decode Count: %u", detail->subframe_decode_count);
       ImGui::Text("Output Blocks: %u  Read: %u  Write: %u", detail->output_buffer_block_count,
                   detail->output_buffer_read_offset, detail->output_buffer_write_offset);
-      ImGui::Text("Sample Rate ID: %u  Loop Count: %u", detail->sample_rate_id, detail->loop_count);
+      const uint32_t detail_rate_hz = SampleRateIdToHz(detail->sample_rate_id);
+      const uint32_t detail_channels = detail->stereo ? 2u : 1u;
+      const uint32_t detail_sample_size_bytes = (kXmaPcmBitsPerSample / 8u) * detail_channels;
+      const uint32_t detail_in0_size =
+          static_cast<uint32_t>(detail->input_buffer_0_packet_count) * kXmaPacketBytes;
+      const uint32_t detail_in1_size =
+          static_cast<uint32_t>(detail->input_buffer_1_packet_count) * kXmaPacketBytes;
+      ImGui::Text("Rate: %u Hz (id=%u)  Loop Count: %u", detail_rate_hz,
+                  static_cast<uint32_t>(detail->sample_rate_id),
+                  static_cast<uint32_t>(detail->loop_count));
+      ImGui::Text("Container: in0=%u pkts (%u bytes)  in1=%u pkts (%u bytes)",
+                  static_cast<uint32_t>(detail->input_buffer_0_packet_count), detail_in0_size,
+                  static_cast<uint32_t>(detail->input_buffer_1_packet_count), detail_in1_size);
+      ImGui::Text("Sample Size: %u bytes (%u-bit %s)  Frame: %u/ch", detail_sample_size_bytes,
+                  kXmaPcmBitsPerSample, detail->stereo ? "stereo" : "mono",
+                  kXmaSamplesPerFramePerChannel);
+      ImGui::Text("Multipass Bin: %u  Mix: %s", static_cast<uint32_t>(detail->packet_metadata),
+                  detail->consume_only ? "consume-only" : "decode");
+      ImGui::Text("Loop SF start/end/skip: %u / %u / %u  Output Padding: %u",
+                  static_cast<uint32_t>(detail->loop_subframe_start),
+                  static_cast<uint32_t>(detail->loop_subframe_end),
+                  static_cast<uint32_t>(detail->loop_subframe_skip),
+                  static_cast<uint32_t>(detail->output_buffer_padding));
 
       ImGui::TableSetColumnIndex(1);
       const auto detail_sig_it = frame_context_signatures.find(detail->index);
@@ -702,11 +1058,22 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
 
   ImGui::SameLine();
   ImGui::BeginChild("xma_levels", ImVec2(0, 0), true);
-  ImGui::Text("Volume Indicators (Effective RMS dBFS)");
+  ImGui::Text("Volume Indicators (%s RMS dBFS)", meter_use_audible_ ? "Audible" : "Decode");
   ImGui::SameLine();
   if (ImGui::Button(normalize_volume_panel_ ? "Normalized" : "Absolute dBFS")) {
     normalize_volume_panel_ = !normalize_volume_panel_;
     meter_max_db_levels_.clear();
+    layout_dirty_ = true;
+  }
+  ImGui::SameLine();
+  if (ImGui::Button(meter_use_audible_ ? "Meters: Audible" : "Meters: Decode")) {
+    meter_use_audible_ = !meter_use_audible_;
+    display_levels_.clear();
+    meter_db_levels_.clear();
+    meter_max_db_levels_.clear();
+    meter_last_volume_levels_.clear();
+    last_observed_peak_levels_.clear();
+    last_peak_change_times_.clear();
     layout_dirty_ = true;
   }
   if (normalize_volume_panel_) {
@@ -714,7 +1081,10 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
   } else {
     ImGui::Text("Scale: %.0f dBFS to 0 dBFS", kMeterFloorDbfs);
   }
-  ImGui::TextUnformatted("Note: effective=decode RMS * context volume (still pre-mix/send matrix).");
+  ImGui::TextUnformatted(
+      meter_use_audible_
+          ? "Note: audible meter is post mute/voice-volume at XMA output (still pre-send/pre-final mix)."
+          : "Note: decode meter is raw decoded context level before mute/voice-volume.");
   ImGui::Separator();
   if (tracked_volume_contexts_.empty()) {
     ImGui::TextUnformatted("No tracked voices. Add one from Context Details.");
@@ -800,10 +1170,10 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
           voice_volume = std::clamp(persisted_volume_it->second, kVoiceVolumeMin, kVoiceVolumeMax);
         }
       }
-      const float raw_rms = std::clamp(ctx.rms_level, 0.0f, 1.0f);
-      const float effective_rms =
-          std::clamp(ctx.muted ? 0.0f : raw_rms * std::clamp(voice_volume, 0.0f, 1.0f), 0.0f, 1.0f);
-      const float current_db = std::max(kMeterFloorDbfs, LinearToDbfs(effective_rms));
+      const float decode_rms = std::clamp(ctx.rms_level, 0.0f, 1.0f);
+      const float audible_rms = std::clamp(ctx.audible_rms_level, 0.0f, 1.0f);
+      const float meter_rms = meter_use_audible_ ? audible_rms : decode_rms;
+      const float current_db = std::max(kMeterFloorDbfs, LinearToDbfs(meter_rms));
       const auto prev_it = meter_db_levels_.find(ctx.index);
       float shown_db = current_db;
       const float prev_volume = meter_last_volume_levels_[ctx.index];
@@ -815,6 +1185,9 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
       meter_db_levels_[ctx.index] = shown_db;
       meter_last_volume_levels_[ctx.index] = voice_volume;
       float level = DbfsToNormalized(shown_db);
+      float limit_level = DbfsToNormalized(
+          std::max(kMeterFloorDbfs,
+                   LinearToDbfs(std::clamp(ctx.muted ? 0.0f : decode_rms * voice_volume, 0.0f, 1.0f))));
       if (normalize_volume_panel_) {
         auto max_it = meter_max_db_levels_.find(ctx.index);
         if (max_it == meter_max_db_levels_.end()) {
@@ -824,6 +1197,10 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
         }
         const float normalized_range = std::max(max_it->second - kMeterFloorDbfs, 1.0e-3f);
         level = std::clamp((shown_db - kMeterFloorDbfs) / normalized_range, 0.0f, 1.0f);
+        const float limit_db = std::max(
+            kMeterFloorDbfs,
+            LinearToDbfs(std::clamp(ctx.muted ? 0.0f : decode_rms * voice_volume, 0.0f, 1.0f)));
+        limit_level = std::clamp((limit_db - kMeterFloorDbfs) / normalized_range, 0.0f, 1.0f);
       }
 
       ImGui::ProgressBar(0.0f, ImVec2(-1.0f, 0.0f), "");
@@ -841,8 +1218,8 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
             bar_min, ImVec2(fill_end_x, bar_max.y), ImGui::GetColorU32(ImGuiCol_PlotHistogram),
             ui_style.FrameRounding);
       }
-      const float filled_width = std::max(0.0f, fill_end_x - bar_min.x);
-      const float limited_end_x = std::clamp(bar_min.x + filled_width * voice_volume, bar_min.x, bar_max.x);
+      const float limited_end_target_x = bar_max.x - (1.0f - limit_level) * max_meter_scale_width;
+      const float limited_end_x = std::clamp(limited_end_target_x, bar_min.x, bar_max.x);
       ImGui::GetWindowDrawList()->AddLine(
           ImVec2(limited_end_x, bar_min.y + 1.0f), ImVec2(limited_end_x, bar_max.y - 1.0f),
           ImGui::GetColorU32(ImVec4(1.0f, 0.92f, 0.35f, 0.95f)), 2.0f);

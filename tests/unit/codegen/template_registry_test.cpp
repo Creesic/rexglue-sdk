@@ -131,6 +131,35 @@ TEST_CASE("TemplateRegistry: init_h includes shared indirect-call partial", "[Te
   CHECK(result.find("[[unlikely]]") != std::string::npos);
 }
 
+TEST_CASE("TemplateRegistry: init_h prologue traces stringified guest function names",
+          "[TemplateRegistry]") {
+  rex::codegen::TemplateRegistry registry;
+  std::string json = R"({
+    "config_flags": {
+      "skip_lr": false,
+      "ctr_as_local": false,
+      "xer_as_local": false,
+      "reserved_as_local": false,
+      "skip_msr": false,
+      "cr_as_local": false,
+      "non_argument_as_local": false,
+      "non_volatile_as_local": false
+    },
+    "image_base": "0x82000000",
+    "image_size": "0x1000000",
+    "code_base": "0x82010000",
+    "code_size": "0x100000",
+    "thunk_reserve_size": "0x1000",
+    "rexcrt_heap": false,
+    "functions": [],
+    "imports": []
+  })";
+  std::string result = registry.render("codegen/init_h", json);
+
+  CHECK(result.find("#define REX_FUNC_PROLOGUE(name)") != std::string::npos);
+  CHECK(result.find("rex::runtime::TraceGuestFunction(#name)") != std::string::npos);
+}
+
 TEST_CASE("TemplateRegistry: ppc_config_h includes shared indirect-call partial",
           "[TemplateRegistry]") {
   rex::codegen::TemplateRegistry registry;

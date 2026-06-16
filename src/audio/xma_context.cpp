@@ -59,6 +59,80 @@ void ApplyGainToBigEndianPcm16(const uint8_t* input, uint8_t* output, uint32_t b
   }
 }
 
+void ComputeBigEndianPcm16Levels(const uint8_t* input, uint32_t byte_count, float gain,
+                                 float* out_peak, float* out_rms) {
+  if (!out_peak || !out_rms) {
+    return;
+  }
+  *out_peak = 0.0f;
+  *out_rms = 0.0f;
+  if (!input || byte_count < 2 || gain <= 0.0f) {
+    return;
+  }
+
+  const float clamped_gain = std::clamp(gain, 0.0f, 1.0f);
+  double sum_squares = 0.0;
+  uint32_t sample_count = 0;
+  float peak = 0.0f;
+  for (uint32_t i = 0; i + 1 < byte_count; i += 2) {
+    const int16_t sample =
+        static_cast<int16_t>((static_cast<uint16_t>(input[i]) << 8) | input[i + 1]);
+    const float sample_linear =
+        (static_cast<float>(sample) / 32768.0f) * clamped_gain;
+    const float clamped = std::clamp(sample_linear, -1.0f, 1.0f);
+    peak = std::max(peak, std::fabs(clamped));
+    sum_squares += static_cast<double>(clamped) * static_cast<double>(clamped);
+    ++sample_count;
+  }
+
+  *out_peak = peak;
+  if (sample_count > 0) {
+    *out_rms = static_cast<float>(std::sqrt(sum_squares / static_cast<double>(sample_count)));
+  }
+}
+
+void ComputeBigEndianPcm16ChannelRms(const uint8_t* input, uint32_t byte_count, bool stereo,
+                                     float gain, float* out_rms_ch0, float* out_rms_ch1) {
+  if (!out_rms_ch0 || !out_rms_ch1) {
+    return;
+  }
+  *out_rms_ch0 = 0.0f;
+  *out_rms_ch1 = 0.0f;
+  if (!input || byte_count < 2 || gain <= 0.0f) {
+    return;
+  }
+
+  const float clamped_gain = std::clamp(gain, 0.0f, 1.0f);
+  const uint32_t channels = stereo ? 2u : 1u;
+  double sum_sq_ch0 = 0.0;
+  double sum_sq_ch1 = 0.0;
+  uint32_t count_ch0 = 0;
+  uint32_t count_ch1 = 0;
+
+  uint32_t sample_index = 0;
+  for (uint32_t i = 0; i + 1 < byte_count; i += 2, ++sample_index) {
+    const int16_t sample =
+        static_cast<int16_t>((static_cast<uint16_t>(input[i]) << 8) | input[i + 1]);
+    const float sample_linear =
+        std::clamp((static_cast<float>(sample) / 32768.0f) * clamped_gain, -1.0f, 1.0f);
+    const uint32_t channel_index = sample_index % channels;
+    if (channel_index == 0) {
+      sum_sq_ch0 += static_cast<double>(sample_linear) * static_cast<double>(sample_linear);
+      ++count_ch0;
+    } else {
+      sum_sq_ch1 += static_cast<double>(sample_linear) * static_cast<double>(sample_linear);
+      ++count_ch1;
+    }
+  }
+
+  if (count_ch0 > 0) {
+    *out_rms_ch0 = static_cast<float>(std::sqrt(sum_sq_ch0 / static_cast<double>(count_ch0)));
+  }
+  if (count_ch1 > 0) {
+    *out_rms_ch1 = static_cast<float>(std::sqrt(sum_sq_ch1 / static_cast<double>(count_ch1)));
+  }
+}
+
 }  // namespace
 
 const uint32_t XmaContext::kBitsPerPacketHeader;
@@ -212,6 +286,12 @@ void XmaContext::ClearLocked(XMA_CONTEXT_DATA* data) {
   loop_start_skip_pending_ = false;
   last_peak_level_.store(0.0f, std::memory_order_release);
   last_rms_level_.store(0.0f, std::memory_order_release);
+  last_rms_ch0_level_.store(0.0f, std::memory_order_release);
+  last_rms_ch1_level_.store(0.0f, std::memory_order_release);
+  last_audible_peak_level_.store(0.0f, std::memory_order_release);
+  last_audible_rms_level_.store(0.0f, std::memory_order_release);
+  last_audible_rms_ch0_level_.store(0.0f, std::memory_order_release);
+  last_audible_rms_ch1_level_.store(0.0f, std::memory_order_release);
 }
 
 void XmaContext::Disable() {
@@ -228,6 +308,12 @@ void XmaContext::Release() {
   volume_.store(1.0f, std::memory_order_release);
   last_peak_level_.store(0.0f, std::memory_order_release);
   last_rms_level_.store(0.0f, std::memory_order_release);
+  last_rms_ch0_level_.store(0.0f, std::memory_order_release);
+  last_rms_ch1_level_.store(0.0f, std::memory_order_release);
+  last_audible_peak_level_.store(0.0f, std::memory_order_release);
+  last_audible_rms_level_.store(0.0f, std::memory_order_release);
+  last_audible_rms_ch0_level_.store(0.0f, std::memory_order_release);
+  last_audible_rms_ch1_level_.store(0.0f, std::memory_order_release);
   auto context_ptr = memory()->TranslateVirtual(guest_ptr());
   std::memset(context_ptr, 0, sizeof(XMA_CONTEXT_DATA));
 }
@@ -466,6 +552,18 @@ void XmaContext::Consume(memory::RingBuffer* output_rb, const XMA_CONTEXT_DATA* 
   const uint32_t write_bytes = static_cast<uint32_t>(subframes_to_write) * kOutputBytesPerBlock;
   const uint8_t* frame_source =
       raw_frame_.data() + (kOutputBytesPerBlock * static_cast<uint32_t>(raw_frame_read_offset));
+  float audible_peak = 0.0f;
+  float audible_rms = 0.0f;
+  float audible_rms_ch0 = 0.0f;
+  float audible_rms_ch1 = 0.0f;
+  const float gain = is_muted() ? 0.0f : volume();
+  ComputeBigEndianPcm16Levels(frame_source, write_bytes, gain, &audible_peak, &audible_rms);
+  ComputeBigEndianPcm16ChannelRms(frame_source, write_bytes, data->is_stereo != 0, gain,
+                                  &audible_rms_ch0, &audible_rms_ch1);
+  last_audible_peak_level_.store(audible_peak, std::memory_order_release);
+  last_audible_rms_level_.store(audible_rms, std::memory_order_release);
+  last_audible_rms_ch0_level_.store(audible_rms_ch0, std::memory_order_release);
+  last_audible_rms_ch1_level_.store(audible_rms_ch1, std::memory_order_release);
   if (is_muted()) {
     static const std::array<uint8_t, kBytesPerFrameChannel * 2> kSilence = {};
     output_rb->Write(kSilence.data(), write_bytes);
@@ -684,23 +782,37 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
     float peak_level = 0.0f;
     float sum_squares = 0.0f;
     uint32_t sample_count = 0;
+    float sum_squares_ch0 = 0.0f;
+    float sum_squares_ch1 = 0.0f;
+    uint32_t sample_count_ch0 = 0;
+    uint32_t sample_count_ch1 = 0;
     for (uint32_t i = 0; i < kSamplesPerFrame; ++i) {
       const float sample0 = reinterpret_cast<const float*>(av_frame_->data[0])[i];
       const float sample0_clamped = std::clamp(sample0, -1.0f, 1.0f);
       peak_level = std::max(peak_level, std::fabs(sample0_clamped));
       sum_squares += sample0_clamped * sample0_clamped;
       ++sample_count;
+      sum_squares_ch0 += sample0_clamped * sample0_clamped;
+      ++sample_count_ch0;
       if (data->is_stereo) {
         const float sample1 = reinterpret_cast<const float*>(av_frame_->data[1])[i];
         const float sample1_clamped = std::clamp(sample1, -1.0f, 1.0f);
         peak_level = std::max(peak_level, std::fabs(sample1_clamped));
         sum_squares += sample1_clamped * sample1_clamped;
         ++sample_count;
+        sum_squares_ch1 += sample1_clamped * sample1_clamped;
+        ++sample_count_ch1;
       }
     }
     last_peak_level_.store(peak_level, std::memory_order_release);
     const float rms_level = sample_count ? std::sqrt(sum_squares / float(sample_count)) : 0.0f;
     last_rms_level_.store(rms_level, std::memory_order_release);
+    const float rms_ch0 =
+        sample_count_ch0 ? std::sqrt(sum_squares_ch0 / float(sample_count_ch0)) : 0.0f;
+    const float rms_ch1 =
+        sample_count_ch1 ? std::sqrt(sum_squares_ch1 / float(sample_count_ch1)) : 0.0f;
+    last_rms_ch0_level_.store(rms_ch0, std::memory_order_release);
+    last_rms_ch1_level_.store(rms_ch1, std::memory_order_release);
 
     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
                  raw_frame_.data());
@@ -724,6 +836,12 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
   } else {
     last_peak_level_.store(0.0f, std::memory_order_release);
     last_rms_level_.store(0.0f, std::memory_order_release);
+    last_rms_ch0_level_.store(0.0f, std::memory_order_release);
+    last_rms_ch1_level_.store(0.0f, std::memory_order_release);
+    last_audible_peak_level_.store(0.0f, std::memory_order_release);
+    last_audible_rms_level_.store(0.0f, std::memory_order_release);
+    last_audible_rms_ch0_level_.store(0.0f, std::memory_order_release);
+    last_audible_rms_ch1_level_.store(0.0f, std::memory_order_release);
   }
 
   // Compute where to go next.

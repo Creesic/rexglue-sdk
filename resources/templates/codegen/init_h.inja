@@ -71,30 +71,33 @@ extern PPCFuncMapping PPCFuncMappings[];
 #if defined(REXGLUE_PROFILE_GUEST_FUNCTIONS) && defined(REXGLUE_ENABLE_PROFILING)
 #include <tracy/Tracy.hpp>
 #if defined(__clang__)
-#define REX_FUNC_PROLOGUE()                     \
+#define REX_FUNC_PROLOGUE(name)                     \
   __builtin_assume(((size_t)base & 0x1F) == 0); \
-  ZoneNamedN(___tracy_guest_zone, __func__, true)
+  ZoneNamedN(___tracy_guest_zone, __func__, true); \
+  rex::runtime::TraceGuestFunction(#name)
 #elif defined(__GNUC__)
-#define REX_FUNC_PROLOGUE()         \
+#define REX_FUNC_PROLOGUE(name)         \
   do {                              \
     if (((size_t)base & 0x1F) != 0) \
       __builtin_unreachable();      \
   } while (0);                      \
-  ZoneNamedN(___tracy_guest_zone, __func__, true)
+  ZoneNamedN(___tracy_guest_zone, __func__, true); \
+  rex::runtime::TraceGuestFunction(#name)
 #else
-#define REX_FUNC_PROLOGUE() ZoneNamedN(___tracy_guest_zone, __func__, true)
+#define REX_FUNC_PROLOGUE(name) ZoneNamedN(___tracy_guest_zone, __func__, true); rex::runtime::TraceGuestFunction(#name)
 #endif
 #else
 #if defined(__clang__)
-#define REX_FUNC_PROLOGUE() __builtin_assume(((size_t)base & 0x1F) == 0)
+#define REX_FUNC_PROLOGUE(name) __builtin_assume(((size_t)base & 0x1F) == 0); rex::runtime::TraceGuestFunction(#name)
 #elif defined(__GNUC__)
-#define REX_FUNC_PROLOGUE()         \
+#define REX_FUNC_PROLOGUE(name)         \
   do {                              \
     if (((size_t)base & 0x1F) != 0) \
       __builtin_unreachable();      \
-  } while (0)
+  } while (0);                      \
+  rex::runtime::TraceGuestFunction(#name)
 #else
-#define REX_FUNC_PROLOGUE() ((void)0)
+#define REX_FUNC_PROLOGUE(name) rex::runtime::TraceGuestFunction(#name)
 #endif
 #endif
 

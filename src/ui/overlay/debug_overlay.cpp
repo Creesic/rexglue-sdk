@@ -10,14 +10,50 @@
  *              See LICENSE file in the project root for full license text.
  */
 #include <rex/ui/overlay/debug_overlay.h>
+#include <rex/cvar.h>
 #include <rex/version.h>
 #include <rex/perf/counter.h>
 #include <imgui.h>
+#include <algorithm>
+#include <cmath>
 #ifdef REXGLUE_ENABLE_PERF_COUNTERS
 #include <cinttypes>
 #endif
 
 namespace rex::ui {
+namespace {
+
+float ExpSmoothingAlpha(double dt_seconds, double time_constant_seconds) {
+  if (time_constant_seconds <= 0.0) {
+    return 1.0f;
+  }
+  const double dt = std::max(0.0, dt_seconds);
+  return static_cast<float>(1.0 - std::exp(-dt / time_constant_seconds));
+}
+
+const char* LoadTraceStatusText() {
+  if (!rex::cvar::Query<bool>("fm2_load_trace")) {
+    return "LT OFF";
+  }
+  switch (rex::cvar::Query<uint32_t>("fm2_load_trace_overlay_state")) {
+    case 2:
+      return "LT REC";
+    case 1:
+    default:
+      return "LT ARMED";
+  }
+}
+
+ImVec4 LoadTraceStatusColor() {
+  if (!rex::cvar::Query<bool>("fm2_load_trace")) {
+    return ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
+  }
+  return rex::cvar::Query<uint32_t>("fm2_load_trace_overlay_state") == 2u
+             ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f)
+             : ImVec4(1.0f, 0.85f, 0.35f, 1.0f);
+}
+
+}  // namespace
 
 DebugOverlayDialog::DebugOverlayDialog(ImGuiDrawer* imgui_drawer, FrameStatsProvider stats_provider,
                                        bool compact_only)
@@ -43,6 +79,22 @@ void DebugOverlayDialog::OnDraw(ImGuiIO& io) {
       has_stats = true;
     }
   }
+  if (has_stats) {
+    const double now = ImGui::GetTime();
+    const double dt_seconds = (last_stats_time_ > 0.0) ? (now - last_stats_time_) : 0.0;
+    const float alpha = ExpSmoothingAlpha(dt_seconds, 0.35);
+    if (!smoothed_stats_initialized_) {
+      smoothed_fps_ = stats.fps;
+      smoothed_frame_time_ms_ = stats.frame_time_ms;
+      smoothed_stats_initialized_ = true;
+    } else {
+      smoothed_fps_ += (stats.fps - smoothed_fps_) * alpha;
+      smoothed_frame_time_ms_ += (stats.frame_time_ms - smoothed_frame_time_ms_) * alpha;
+    }
+    last_stats_time_ = now;
+  } else {
+    smoothed_stats_initialized_ = false;
+  }
 
   if (compact_only_) {
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
@@ -51,10 +103,11 @@ void DebugOverlayDialog::OnDraw(ImGuiIO& io) {
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                          ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings)) {
       if (has_stats) {
-        ImGui::Text("FPS: %.1f (%.2f ms)", stats.fps, stats.frame_time_ms);
+        ImGui::Text("FPS: %.1f (%.2f ms)", smoothed_fps_, smoothed_frame_time_ms_);
       } else {
         ImGui::TextUnformatted("FPS: n/a");
       }
+      ImGui::TextColored(LoadTraceStatusColor(), "%s", LoadTraceStatusText());
     }
     ImGui::End();
     return;
@@ -69,7 +122,7 @@ void DebugOverlayDialog::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowBgAlpha(0.5f);
   if (ImGui::Begin("Debug##overlay", nullptr, ImGuiWindowFlags_NoCollapse)) {
     if (has_stats) {
-      ImGui::Text("Guest: %.1f FPS (%.2f ms)", stats.fps, stats.frame_time_ms);
+      ImGui::Text("Guest: %.1f FPS (%.2f ms)", smoothed_fps_, smoothed_frame_time_ms_);
     }
 #ifdef REXGLUE_ENABLE_PERF_COUNTERS
     ImGui::Separator();

@@ -42,6 +42,7 @@ set(REXKERNEL_SOURCES
     xboxkrnl/xboxkrnl_hid.cpp
     xboxkrnl/xboxkrnl_io.cpp
     xboxkrnl/xboxkrnl_io_info.cpp
+    xboxkrnl/xboxkrnl_lzx.cpp
     xboxkrnl/xboxkrnl_memory.cpp
     xboxkrnl/xboxkrnl_misc.cpp
     xboxkrnl/xboxkrnl_module.cpp

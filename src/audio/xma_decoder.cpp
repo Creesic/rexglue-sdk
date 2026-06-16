@@ -13,6 +13,7 @@
 #include <rex/audio/xma/decoder.h>
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <rex/cvar.h>
 #include <rex/dbg.h>
 #include <rex/logging.h>
@@ -23,6 +24,7 @@
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/thread_state.h>
 #include <rex/system/xthread.h>
+#include <unordered_map>
 #include <vector>
 
 extern "C" {
@@ -36,6 +38,12 @@ REXCVAR_DEFINE_INT32(audio_xma_mix_diag_top, 8, "Audio",
                      "Number of XMA contexts to include in each mix diagnostics sample");
 REXCVAR_DEFINE_INT32(audio_xma_mix_diag_interval_ms, 1000, "Audio",
                      "Interval in milliseconds for XMA mix diagnostics logging");
+REXCVAR_DEFINE_BOOL(audio_xma_player_trace, false, "Audio",
+                    "Track likely player-engine XMA contexts by stable signature and activity");
+REXCVAR_DEFINE_INT32(audio_xma_player_trace_top, 4, "Audio",
+                     "Number of likely player-engine candidates to log per trace sample");
+REXCVAR_DEFINE_INT32(audio_xma_player_trace_interval_ms, 1000, "Audio",
+                     "Interval in milliseconds for likely player-engine trace logging");
 
 // As with normal Microsoft, there are like twelve different ways to access
 // the audio APIs. Early games use XMA*() methods almost exclusively to touch
@@ -62,6 +70,181 @@ REXCVAR_DEFINE_INT32(audio_xma_mix_diag_interval_ms, 1000, "Audio",
 // using the XMA* functions.
 
 namespace rex::audio {
+
+namespace {
+
+uint64_t HashCombine64(uint64_t hash, uint64_t value) {
+  hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+  return hash;
+}
+
+uint64_t BuildContextSignature(const XMA_CONTEXT_DATA& ctx) {
+  if (ctx.output_buffer_ptr == 0 && ctx.input_buffer_0_ptr == 0 && ctx.input_buffer_1_ptr == 0) {
+    return 0;
+  }
+  uint64_t hash = 0xcbf29ce484222325ULL;
+  hash = HashCombine64(hash, static_cast<uint64_t>(ctx.output_buffer_ptr));
+  hash = HashCombine64(hash, static_cast<uint64_t>(ctx.input_buffer_0_ptr));
+  hash = HashCombine64(hash, static_cast<uint64_t>(ctx.input_buffer_1_ptr));
+  hash = HashCombine64(hash, static_cast<uint64_t>(ctx.sample_rate));
+  hash = HashCombine64(hash, ctx.is_stereo ? 1ULL : 0ULL);
+  return hash;
+}
+
+struct MixDiagContext {
+  uint32_t index = 0;
+  uint64_t signature = 0;
+  float rms = 0.0f;
+  float peak = 0.0f;
+  float rms_ch0 = 0.0f;
+  float rms_ch1 = 0.0f;
+  float audible_rms = 0.0f;
+  float audible_peak = 0.0f;
+  float audible_rms_ch0 = 0.0f;
+  float audible_rms_ch1 = 0.0f;
+  float volume = 1.0f;
+  bool muted = false;
+  bool enabled = false;
+  bool input0_valid = false;
+  bool input1_valid = false;
+  bool output_valid = false;
+  bool stereo = false;
+  uint8_t sample_rate_id = 0;
+  uint32_t input_buffer_0_ptr = 0;
+  uint32_t input_buffer_1_ptr = 0;
+  uint32_t output_buffer_ptr = 0;
+};
+
+struct PlayerTraceSigState {
+  uint64_t seen_samples = 0;
+  uint64_t active_samples = 0;
+  uint64_t last_seen_sample = 0;
+  float ema_audible_rms = 0.0f;
+  float ema_audible_peak = 0.0f;
+  float ema_activity_delta = 0.0f;
+  uint8_t sample_rate_id = 0;
+  bool stereo = false;
+  uint32_t last_ctx = 0;
+};
+
+struct PlayerTraceState {
+  uint64_t sample_counter = 0;
+  std::unordered_map<uint64_t, PlayerTraceSigState> by_signature;
+};
+
+PlayerTraceState& GetPlayerTraceState() {
+  static PlayerTraceState state;
+  return state;
+}
+
+void EmitLikelyPlayerTrace(const std::vector<MixDiagContext>& rows) {
+  auto& trace_state = GetPlayerTraceState();
+  trace_state.sample_counter += 1;
+  const uint64_t sample_index = trace_state.sample_counter;
+
+  std::unordered_map<uint64_t, const MixDiagContext*> rows_by_sig;
+  rows_by_sig.reserve(rows.size());
+  for (const auto& row : rows) {
+    if (row.signature == 0) {
+      continue;
+    }
+    rows_by_sig[row.signature] = &row;
+    auto& sig = trace_state.by_signature[row.signature];
+    const float prev_rms = sig.ema_audible_rms;
+    const float prev_peak = sig.ema_audible_peak;
+    const bool first = (sig.seen_samples == 0);
+    sig.seen_samples += 1;
+    sig.last_seen_sample = sample_index;
+    sig.sample_rate_id = row.sample_rate_id;
+    sig.stereo = row.stereo;
+    sig.last_ctx = row.index;
+    if (row.audible_rms > 0.01f || row.audible_peak > 0.02f || row.output_valid || row.enabled) {
+      sig.active_samples += 1;
+    }
+    if (first) {
+      sig.ema_audible_rms = row.audible_rms;
+      sig.ema_audible_peak = row.audible_peak;
+      sig.ema_activity_delta = 0.0f;
+    } else {
+      constexpr float kEmaAlpha = 0.20f;
+      constexpr float kDeltaAlpha = 0.20f;
+      sig.ema_audible_rms = prev_rms + (row.audible_rms - prev_rms) * kEmaAlpha;
+      sig.ema_audible_peak = prev_peak + (row.audible_peak - prev_peak) * kEmaAlpha;
+      const float instant_delta = std::abs(row.audible_rms - prev_rms);
+      sig.ema_activity_delta =
+          sig.ema_activity_delta + (instant_delta - sig.ema_activity_delta) * kDeltaAlpha;
+    }
+  }
+
+  for (auto it = trace_state.by_signature.begin(); it != trace_state.by_signature.end();) {
+    if (sample_index - it->second.last_seen_sample > 120) {
+      it = trace_state.by_signature.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  struct Candidate {
+    uint64_t signature = 0;
+    float score = 0.0f;
+    float persistence = 0.0f;
+    const PlayerTraceSigState* sig = nullptr;
+    const MixDiagContext* row = nullptr;
+  };
+
+  std::vector<Candidate> candidates;
+  candidates.reserve(trace_state.by_signature.size());
+  for (const auto& [signature, sig] : trace_state.by_signature) {
+    const auto row_it = rows_by_sig.find(signature);
+    if (row_it == rows_by_sig.end()) {
+      continue;
+    }
+    const uint64_t age = sample_index - sig.last_seen_sample;
+    if (age > 4 || sig.seen_samples < 3 || sig.active_samples < 2) {
+      continue;
+    }
+    const float persistence =
+        static_cast<float>(sig.active_samples) / static_cast<float>(sig.seen_samples);
+    const float stability = std::clamp(1.0f - sig.ema_activity_delta * 20.0f, 0.0f, 1.0f);
+    float score = sig.ema_audible_rms * 0.50f + persistence * 0.35f + stability * 0.15f;
+    if (sig.sample_rate_id == 3) {
+      score += 0.05f;
+    }
+    if (score < 0.20f) {
+      continue;
+    }
+    candidates.push_back(Candidate{signature, score, persistence, &sig, row_it->second});
+  }
+
+  std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+    if (a.score == b.score) {
+      return a.sig->ema_audible_rms > b.sig->ema_audible_rms;
+    }
+    return a.score > b.score;
+  });
+
+  const int32_t top_count =
+      std::max<int32_t>(1, std::min<int32_t>(REXCVAR_GET(audio_xma_player_trace_top), 12));
+  const int32_t limit = std::min<int32_t>(top_count, static_cast<int32_t>(candidates.size()));
+  REXAPU_ERROR("XMA_PLAYER_TRACE sample={} tracked={} candidates={}", sample_index,
+               trace_state.by_signature.size(), candidates.size());
+  for (int32_t i = 0; i < limit; ++i) {
+    const auto& c = candidates[static_cast<size_t>(i)];
+    const auto& s = *c.sig;
+    const auto& r = *c.row;
+    const uint64_t age = sample_index - s.last_seen_sample;
+    REXAPU_ERROR(
+        "XMA_PLAYER_TRACE #{:02d} sig={:016X} ctx={:03X} score={:.3f} ar={:.4f} ap={:.4f} "
+        "persist={:.2f} delta={:.5f} active={}/{} age={} vol={:.3f} muted={} en={} out={} "
+        "sr={} st={} out_ptr={:08X}",
+        i, c.signature, r.index, c.score, s.ema_audible_rms, s.ema_audible_peak, c.persistence,
+        s.ema_activity_delta, s.active_samples, s.seen_samples, age, r.volume, r.muted ? 1 : 0,
+        r.enabled ? 1 : 0, r.output_valid ? 1 : 0, static_cast<uint32_t>(r.sample_rate_id),
+        r.stereo ? 1 : 0, r.output_buffer_ptr);
+  }
+}
+
+}  // namespace
 
 XmaDecoder::XmaDecoder(runtime::FunctionDispatcher* function_dispatcher)
     : memory_(function_dispatcher->memory()), function_dispatcher_(function_dispatcher) {}
@@ -148,17 +331,46 @@ X_STATUS XmaDecoder::Setup(system::KernelState* kernel_state) {
 
 void XmaDecoder::WorkerThreadMain() {
   auto next_mix_diag_time = std::chrono::steady_clock::now();
+  auto next_player_trace_time = std::chrono::steady_clock::now();
+  auto next_debug_rate_time = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  uint32_t sweeps_this_second = 0;
+  uint32_t decode_iterations_this_second = 0;
   while (worker_running_) {
+    const auto sweep_start_time = std::chrono::steady_clock::now();
     // Okay, let's loop through XMA contexts to find ones we need to decode!
     bool did_work = false;
+    uint32_t worked_contexts = 0;
     for (uint32_t n = 0; n < kContextCount && worker_running_; n++) {
       XmaContext& context = contexts_[n];
       bool worked = context.Work();
       if (worked) {
         context.SignalWorkDone();
         PROFILE_XMA_FRAME_DECODED();
+        worked_contexts += 1;
       }
       did_work = did_work || worked;
+    }
+    const auto sweep_end_time = std::chrono::steady_clock::now();
+    const uint32_t sweep_time_us = static_cast<uint32_t>(std::chrono::duration_cast<
+                                                          std::chrono::microseconds>(
+                                                              sweep_end_time - sweep_start_time)
+                                                              .count());
+    debug_vp_total_worker_time_us_.store(sweep_time_us, std::memory_order_relaxed);
+    debug_vp_worker_voices_.store(worked_contexts, std::memory_order_relaxed);
+    sweeps_this_second += 1;
+    decode_iterations_this_second += worked_contexts;
+    if (sweep_end_time >= next_debug_rate_time) {
+      debug_vp_sweeps_per_second_.store(sweeps_this_second, std::memory_order_relaxed);
+      debug_vp_decode_iterations_per_second_.store(decode_iterations_this_second,
+                                                   std::memory_order_relaxed);
+      const uint64_t gp_cycles_estimate = static_cast<uint64_t>(sweep_time_us) * 160ULL;
+      debug_gp_cycles_estimate_.store(static_cast<uint32_t>(std::min<uint64_t>(
+                                          gp_cycles_estimate, std::numeric_limits<uint32_t>::max())),
+                                      std::memory_order_relaxed);
+      debug_ep_cycles_estimate_.store(0, std::memory_order_relaxed);
+      sweeps_this_second = 0;
+      decode_iterations_this_second = 0;
+      next_debug_rate_time = sweep_end_time + std::chrono::seconds(1);
     }
 
     if (paused_) {
@@ -167,26 +379,13 @@ void XmaDecoder::WorkerThreadMain() {
     }
 
     if (did_work) {
-      if (REXCVAR_GET(audio_xma_mix_diag)) {
+      const bool mix_diag_enabled = REXCVAR_GET(audio_xma_mix_diag);
+      const bool player_trace_enabled = REXCVAR_GET(audio_xma_player_trace);
+      if (mix_diag_enabled || player_trace_enabled) {
         const auto now = std::chrono::steady_clock::now();
-        if (now >= next_mix_diag_time) {
-          struct MixDiagContext {
-            uint32_t index = 0;
-            float rms = 0.0f;
-            float peak = 0.0f;
-            float volume = 1.0f;
-            bool muted = false;
-            bool enabled = false;
-            bool input0_valid = false;
-            bool input1_valid = false;
-            bool output_valid = false;
-            bool stereo = false;
-            uint8_t sample_rate_id = 0;
-            uint32_t input_buffer_0_ptr = 0;
-            uint32_t input_buffer_1_ptr = 0;
-            uint32_t output_buffer_ptr = 0;
-          };
-
+        const bool emit_mix_diag = mix_diag_enabled && now >= next_mix_diag_time;
+        const bool emit_player_trace = player_trace_enabled && now >= next_player_trace_time;
+        if (emit_mix_diag || emit_player_trace) {
           std::vector<MixDiagContext> rows;
           rows.reserve(kContextCount);
           for (uint32_t i = 0; i < kContextCount; ++i) {
@@ -201,8 +400,15 @@ void XmaDecoder::WorkerThreadMain() {
             XMA_CONTEXT_DATA data(context_ptr);
             MixDiagContext row;
             row.index = i;
+            row.signature = BuildContextSignature(data);
             row.rms = context.last_rms_level();
             row.peak = context.last_peak_level();
+            row.rms_ch0 = context.last_rms_ch0_level();
+            row.rms_ch1 = context.last_rms_ch1_level();
+            row.audible_rms = context.last_audible_rms_level();
+            row.audible_peak = context.last_audible_peak_level();
+            row.audible_rms_ch0 = context.last_audible_rms_ch0_level();
+            row.audible_rms_ch1 = context.last_audible_rms_ch1_level();
             row.volume = context.volume();
             row.muted = context.is_muted();
             row.enabled = context.is_enabled();
@@ -214,38 +420,58 @@ void XmaDecoder::WorkerThreadMain() {
             row.input_buffer_0_ptr = data.input_buffer_0_ptr;
             row.input_buffer_1_ptr = data.input_buffer_1_ptr;
             row.output_buffer_ptr = data.output_buffer_ptr;
-            if (row.rms > 0.0005f || row.peak > 0.001f || row.enabled || row.output_valid) {
+            if (row.audible_rms > 0.0005f || row.audible_peak > 0.001f || row.rms > 0.0005f ||
+                row.peak > 0.001f || row.enabled || row.output_valid) {
               rows.push_back(row);
             }
           }
 
-          std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
-            if (a.rms == b.rms) {
-              return a.peak > b.peak;
-            }
-            return a.rms > b.rms;
-          });
+          if (emit_mix_diag) {
+            std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+              if (a.audible_rms == b.audible_rms) {
+                if (a.rms == b.rms) {
+                  return a.peak > b.peak;
+                }
+                return a.rms > b.rms;
+              }
+              return a.audible_rms > b.audible_rms;
+            });
 
-          const int32_t top_count = std::max<int32_t>(1, std::min<int32_t>(REXCVAR_GET(audio_xma_mix_diag_top), 24));
-          REXAPU_ERROR("XMA_MIX_DIAG active={} top={}", rows.size(), top_count);
-          const int32_t limit = std::min<int32_t>(top_count, static_cast<int32_t>(rows.size()));
-          for (int32_t row_index = 0; row_index < limit; ++row_index) {
-            const auto& row = rows[static_cast<size_t>(row_index)];
-            REXAPU_ERROR(
-                "XMA_MIX_DIAG #{:02d} ctx={:03X} rms={:.4f} peak={:.4f} vol={:.3f} muted={} "
-                "en={} in0={} in1={} out={} st={} sr={} out_ptr={:08X} in0_ptr={:08X} "
-                "in1_ptr={:08X}",
-                row_index, row.index, row.rms, row.peak, row.volume, row.muted ? 1 : 0,
-                row.enabled ? 1 : 0, row.input0_valid ? 1 : 0, row.input1_valid ? 1 : 0,
-                row.output_valid ? 1 : 0, row.stereo ? 1 : 0, static_cast<uint32_t>(row.sample_rate_id),
-                row.output_buffer_ptr, row.input_buffer_0_ptr, row.input_buffer_1_ptr);
+            const int32_t top_count =
+                std::max<int32_t>(1, std::min<int32_t>(REXCVAR_GET(audio_xma_mix_diag_top), 24));
+            REXAPU_ERROR("XMA_MIX_DIAG active={} top={}", rows.size(), top_count);
+            const int32_t limit = std::min<int32_t>(top_count, static_cast<int32_t>(rows.size()));
+            for (int32_t row_index = 0; row_index < limit; ++row_index) {
+              const auto& row = rows[static_cast<size_t>(row_index)];
+              REXAPU_ERROR(
+                  "XMA_MIX_DIAG #{:02d} ctx={:03X} sig={:016X} rms={:.4f}[ch0={:.4f} ch1={:.4f}] "
+                  "peak={:.4f} audible_rms={:.4f}[ch0={:.4f} ch1={:.4f}] audible_peak={:.4f} "
+                  "vol={:.3f} muted={} "
+                  "en={} in0={} in1={} out={} st={} sr={} out_ptr={:08X} in0_ptr={:08X} "
+                  "in1_ptr={:08X}",
+                  row_index, row.index, row.signature, row.rms, row.rms_ch0, row.rms_ch1,
+                  row.peak, row.audible_rms, row.audible_rms_ch0, row.audible_rms_ch1,
+                  row.audible_peak, row.volume, row.muted ? 1 : 0,
+                  row.enabled ? 1 : 0, row.input0_valid ? 1 : 0, row.input1_valid ? 1 : 0,
+                  row.output_valid ? 1 : 0, row.stereo ? 1 : 0,
+                  static_cast<uint32_t>(row.sample_rate_id), row.output_buffer_ptr,
+                  row.input_buffer_0_ptr, row.input_buffer_1_ptr);
+            }
+
+            int32_t interval_ms = std::max<int32_t>(100, REXCVAR_GET(audio_xma_mix_diag_interval_ms));
+            next_mix_diag_time = now + std::chrono::milliseconds(interval_ms);
           }
 
-          int32_t interval_ms = std::max<int32_t>(100, REXCVAR_GET(audio_xma_mix_diag_interval_ms));
-          next_mix_diag_time = now + std::chrono::milliseconds(interval_ms);
+          if (emit_player_trace) {
+            EmitLikelyPlayerTrace(rows);
+            int32_t interval_ms =
+                std::max<int32_t>(100, REXCVAR_GET(audio_xma_player_trace_interval_ms));
+            next_player_trace_time = now + std::chrono::milliseconds(interval_ms);
+          }
         }
       } else {
         next_mix_diag_time = std::chrono::steady_clock::now();
+        next_player_trace_time = std::chrono::steady_clock::now();
       }
       continue;
     }
@@ -465,6 +691,15 @@ void XmaDecoder::Resume() {
 XmaDecoder::DebugSnapshot XmaDecoder::GetDebugSnapshot() {
   DebugSnapshot snapshot{};
   snapshot.paused = paused_.load(std::memory_order_acquire);
+  snapshot.vp.total_worker_time_us =
+      debug_vp_total_worker_time_us_.load(std::memory_order_relaxed);
+  snapshot.vp.sweeps_per_second = debug_vp_sweeps_per_second_.load(std::memory_order_relaxed);
+  snapshot.vp.decode_iterations_per_second =
+      debug_vp_decode_iterations_per_second_.load(std::memory_order_relaxed);
+  snapshot.vp.workers[0].num_voices = debug_vp_worker_voices_.load(std::memory_order_relaxed);
+  snapshot.vp.workers[0].time_us = snapshot.vp.total_worker_time_us;
+  snapshot.gp.cycles = debug_gp_cycles_estimate_.load(std::memory_order_relaxed);
+  snapshot.ep.cycles = debug_ep_cycles_estimate_.load(std::memory_order_relaxed);
 
   for (uint32_t i = 0; i < kContextCount; ++i) {
     auto& out = snapshot.contexts[i];
@@ -495,6 +730,12 @@ XmaDecoder::DebugSnapshot XmaDecoder::GetDebugSnapshot() {
     out.volume = context.volume();
     out.peak_level = context.last_peak_level();
     out.rms_level = context.last_rms_level();
+    out.rms_ch0_level = context.last_rms_ch0_level();
+    out.rms_ch1_level = context.last_rms_ch1_level();
+    out.audible_peak_level = context.last_audible_peak_level();
+    out.audible_rms_level = context.last_audible_rms_level();
+    out.audible_rms_ch0_level = context.last_audible_rms_ch0_level();
+    out.audible_rms_ch1_level = context.last_audible_rms_ch1_level();
     out.current_buffer = static_cast<uint8_t>(data.current_buffer);
     out.subframe_decode_count = static_cast<uint8_t>(data.subframe_decode_count);
     out.output_buffer_block_count = static_cast<uint8_t>(data.output_buffer_block_count);
@@ -502,6 +743,13 @@ XmaDecoder::DebugSnapshot XmaDecoder::GetDebugSnapshot() {
     out.output_buffer_read_offset = static_cast<uint8_t>(data.output_buffer_read_offset);
     out.sample_rate_id = static_cast<uint8_t>(data.sample_rate);
     out.loop_count = static_cast<uint8_t>(data.loop_count);
+    out.output_buffer_padding = static_cast<uint8_t>(data.output_buffer_padding);
+    out.loop_subframe_start = static_cast<uint8_t>(data.loop_subframe_start);
+    out.loop_subframe_end = static_cast<uint8_t>(data.loop_subframe_end);
+    out.loop_subframe_skip = static_cast<uint8_t>(data.loop_subframe_skip);
+    out.packet_metadata = static_cast<uint8_t>(data.packet_metadata);
+    out.input_buffer_0_packet_count = static_cast<uint16_t>(data.input_buffer_0_packet_count);
+    out.input_buffer_1_packet_count = static_cast<uint16_t>(data.input_buffer_1_packet_count);
     out.input_buffer_read_offset = data.input_buffer_read_offset;
     out.input_buffer_0_ptr = data.input_buffer_0_ptr;
     out.input_buffer_1_ptr = data.input_buffer_1_ptr;

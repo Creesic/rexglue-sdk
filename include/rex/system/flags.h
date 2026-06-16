@@ -28,3 +28,10 @@ REXCVAR_DECLARE(bool, writable_executable_memory);
 REXCVAR_DECLARE(bool, protect_zero);
 REXCVAR_DECLARE(bool, protect_on_release);
 REXCVAR_DECLARE(bool, scribble_heap);
+
+// Guest function entry tracing (debug). When trace_guest_functions is true,
+// every recompiled function entry appends "<seconds_since_start> <name>" to the
+// file specified by trace_guest_functions_file. Disable (or leave the file
+// path empty) to remove all overhead. See rex::runtime::TraceGuestFunction.
+REXCVAR_DECLARE(bool, trace_guest_functions);
+REXCVAR_DECLARE(std::string, trace_guest_functions_file);

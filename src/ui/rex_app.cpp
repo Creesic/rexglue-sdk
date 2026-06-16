@@ -249,6 +249,8 @@ std::optional<ui::AudioVoicesLayoutState> LoadAudioVoicesLayoutState(
       state.ignore_persisted_controls = value == "1" || value == "true";
     } else if (key == "show_playing_contexts_only") {
       state.show_playing_contexts_only = value == "1" || value == "true";
+    } else if (key == "meter_use_audible") {
+      state.meter_use_audible = value == "1" || value == "true";
     } else if (key == "muted_contexts") {
       ParseUintList(value, state.muted_contexts);
     } else if (key == "muted_signatures") {
@@ -297,6 +299,7 @@ void SaveAudioVoicesLayoutState(const std::filesystem::path& user_data_root, uin
   file << "normalize_volume_panel=" << (state.normalize_volume_panel ? "1" : "0") << "\n";
   file << "ignore_persisted_controls=" << (state.ignore_persisted_controls ? "1" : "0") << "\n";
   file << "show_playing_contexts_only=" << (state.show_playing_contexts_only ? "1" : "0") << "\n";
+  file << "meter_use_audible=" << (state.meter_use_audible ? "1" : "0") << "\n";
   file << "muted_contexts=" << JoinUintList(state.muted_contexts) << "\n";
   file << "muted_signatures=" << JoinUint64HexList(state.muted_signatures) << "\n";
   file << "tracked_contexts=" << JoinUintList(state.tracked_volume_contexts) << "\n";
@@ -646,6 +649,7 @@ bool ReXApp::SetupPresentation() {
                       out.valid = true;
                       out.paused = snapshot.paused;
                       out.queued_frames = snapshot.queued_frames;
+                      out.render_callbacks_total = snapshot.render_callbacks_total;
                       for (size_t i = 0; i < audio::AudioSystem::kMaximumClientCount; ++i) {
                         const auto& client = snapshot.clients[i];
                         if (!client.in_use) {
@@ -659,6 +663,14 @@ bool ReXApp::SetupPresentation() {
                       if (auto* xma_decoder = audio_system->xma_decoder()) {
                         auto xma_snapshot = xma_decoder->GetDebugSnapshot();
                         out.xma_paused = xma_snapshot.paused;
+                        out.vp.total_worker_time_us = xma_snapshot.vp.total_worker_time_us;
+                        out.vp.sweeps_per_second = xma_snapshot.vp.sweeps_per_second;
+                        out.vp.decode_iterations_per_second =
+                            xma_snapshot.vp.decode_iterations_per_second;
+                        out.vp.workers[0].num_voices = xma_snapshot.vp.workers[0].num_voices;
+                        out.vp.workers[0].time_us = xma_snapshot.vp.workers[0].time_us;
+                        out.gp.cycles = xma_snapshot.gp.cycles;
+                        out.ep.cycles = xma_snapshot.ep.cycles;
                         out.xma_contexts.reserve(audio::XmaDecoder::kContextCount);
                         for (size_t i = 0; i < audio::XmaDecoder::kContextCount; ++i) {
                           const auto& in = xma_snapshot.contexts[i];
@@ -666,10 +678,15 @@ bool ReXApp::SetupPresentation() {
                               static_cast<uint32_t>(i), in.allocated, in.enabled, in.input0_valid,
                               in.input1_valid, in.output_valid, in.stop_when_done,
                               in.interrupt_when_done, in.consume_only, in.stereo, in.muted, in.volume,
-                              in.peak_level, in.rms_level, in.current_buffer,
+                              in.peak_level, in.rms_level, in.audible_peak_level,
+                              in.audible_rms_level, in.current_buffer,
                               in.subframe_decode_count, in.output_buffer_block_count,
                               in.output_buffer_write_offset, in.output_buffer_read_offset,
-                              in.sample_rate_id, in.loop_count, in.guest_ptr,
+                              in.sample_rate_id, in.loop_count, in.output_buffer_padding,
+                              in.loop_subframe_start, in.loop_subframe_end,
+                              in.loop_subframe_skip, in.packet_metadata,
+                              in.input_buffer_0_packet_count, in.input_buffer_1_packet_count,
+                              in.guest_ptr,
                               in.input_buffer_read_offset, in.input_buffer_0_ptr,
                               in.input_buffer_1_ptr, in.output_buffer_ptr});
                         }

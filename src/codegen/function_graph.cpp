@@ -368,7 +368,7 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
 
     emit_println(out, "// STUB: Function at 0x{:08X} has no discovered code blocks", base());
     emit_println(out, "DEFINE_REX_FUNC({}) {{", name);
-    emit_println(out, "\tREX_FUNC_PROLOGUE();");
+    emit_println(out, "\tREX_FUNC_PROLOGUE({});", name);
     emit_println(out, "}}\n");
     return out;
   }
@@ -443,6 +443,10 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
               else
                 emit_print(out, "PPCRegister& {}", reg);
               break;
+            case 'l':
+              if (reg == "lr")
+                emit_print(out, "uint64_t& lr");
+              break;
             case 'v':
               emit_print(out, "PPCVRegister& {}", reg);
               break;
@@ -480,7 +484,7 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
 
   // Function signature with weak/alias pattern
   emit_println(out, "DEFINE_REX_FUNC({}) {{", name);
-  emit_println(out, "\tREX_FUNC_PROLOGUE();");
+  emit_println(out, "\tREX_FUNC_PROLOGUE({});", name);
 
   // --- Second pass: emit instruction code ---
   const JumpTable* activeJt = nullptr;

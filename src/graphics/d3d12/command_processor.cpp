@@ -44,14 +44,6 @@ REXCVAR_DEFINE_BOOL(d3d12_readback_resolve, false, "GPU/D3D12",
                     "Read render-to-texture results on the CPU")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(d3d12_ignore_8bit_color_exp_bias, false, "GPU/D3D12",
-                    "Ignore Xenos color exponent bias for 8-bit host render targets")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(d3d12_invert_8bit_color_exp_bias, false, "GPU/D3D12",
-                    "Apply inverse Xenos color exponent bias for 8-bit host render targets")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 REXCVAR_DEFINE_BOOL(d3d12_submit_on_primary_buffer_end, true, "GPU/D3D12",
                     "Submit command list when PM4 primary buffer ends")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -4007,9 +3999,9 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
     if (render_target_cache_->GetPath() == RenderTargetCache::Path::kHostRenderTargets &&
         (color_info.color_format == xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
          color_info.color_format == xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)) {
-      if (REXCVAR_GET(d3d12_invert_8bit_color_exp_bias)) {
+      if (REXCVAR_GET(gpu_invert_8bit_color_exp_bias)) {
         color_exp_bias = -color_exp_bias;
-      } else if (REXCVAR_GET(d3d12_ignore_8bit_color_exp_bias)) {
+      } else if (REXCVAR_GET(gpu_ignore_8bit_color_exp_bias)) {
         color_exp_bias = 0;
       }
     }

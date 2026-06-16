@@ -377,6 +377,7 @@ AudioSystem::DebugSnapshot AudioSystem::GetDebugSnapshot() {
   DebugSnapshot snapshot{};
   snapshot.paused = paused_;
   snapshot.queued_frames = queued_frames_;
+  snapshot.render_callbacks_total = g_audio_diag_render_frame_counter.load(std::memory_order_relaxed);
 
   auto global_lock = global_critical_region_.Acquire();
   for (size_t i = 0; i < kMaximumClientCount; ++i) {

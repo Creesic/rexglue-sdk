@@ -35,15 +35,15 @@
 // tests just need a no-op)
 #ifndef REX_FUNC_PROLOGUE
 #if defined(__clang__)
-#define REX_FUNC_PROLOGUE() __builtin_assume(((size_t)base & 0x1F) == 0)
+#define REX_FUNC_PROLOGUE(name) __builtin_assume(((size_t)base & 0x1F) == 0)
 #elif defined(__GNUC__)
-#define REX_FUNC_PROLOGUE()         \
+#define REX_FUNC_PROLOGUE(name)         \
   do {                              \
     if (((size_t)base & 0x1F) != 0) \
       __builtin_unreachable();      \
   } while (0)
 #else
-#define REX_FUNC_PROLOGUE() ((void)0)
+#define REX_FUNC_PROLOGUE(name) ((void)0)
 #endif
 #endif
 

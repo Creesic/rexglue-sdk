@@ -20,8 +20,20 @@
 #include <rex/memory.h>
 #include <rex/ppc/context.h>
 #include <rex/runtime.h>
+#include <rex/system/flags.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/thread_state.h>
+
+#include <chrono>
+#include <cstdio>
+#include <mutex>
+#include <string>
+
+REXCVAR_DEFINE_BOOL(trace_guest_functions, false, "Debug",
+                    "Trace every recompiled guest function entry. Use trace_guest_functions_file "
+                    "to set the output path. Hot-reloadable.");
+REXCVAR_DEFINE_STRING(trace_guest_functions_file, "", "Debug",
+                      "File path that trace_guest_functions appends to. Empty = disabled.");
 
 namespace rex::runtime {
 
@@ -33,6 +45,64 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// TraceGuestFunction
+//
+// Called from REX_FUNC_PROLOGUE at the entry of every recompiled function.
+// Hot path: when trace_guest_functions is false (default) this returns
+// immediately. The first call after the cvar is enabled opens the file lazily
+// and caches the handle until either the path changes or the process exits.
+// ---------------------------------------------------------------------------
+void TraceGuestFunction(const char* name) {
+  if (!REXCVAR_GET(trace_guest_functions)) {
+    return;
+  }
+
+  const std::string& path = REXCVAR_GET(trace_guest_functions_file);
+  if (path.empty() || name == nullptr) {
+    return;
+  }
+
+  // Steady-clock seconds since the first traced call. Avoids wall-clock
+  // discontinuities and gives reproducible deltas between runs.
+  static const auto kStart = std::chrono::steady_clock::now();
+  auto now = std::chrono::steady_clock::now();
+  double seconds =
+      std::chrono::duration<double>(now - kStart).count();
+
+  // Cached FILE* so we don't open/close on every entry. The cache is keyed on
+  // the path so toggling the cvar path mid-run re-opens correctly. A mutex
+  // guards the lazy-init because multiple threads can race here.
+  static std::mutex trace_mutex;
+  static std::string cached_path;
+  static FILE* cached_file = nullptr;
+
+  std::lock_guard<std::mutex> lock(trace_mutex);
+  if (cached_file == nullptr || cached_path != path) {
+    if (cached_file != nullptr) {
+      std::fclose(cached_file);
+      cached_file = nullptr;
+    }
+    cached_path = path;
+#if defined(_WIN32)
+    if (fopen_s(&cached_file, path.c_str(), "a") != 0) {
+      cached_file = nullptr;
+    }
+#else
+    cached_file = std::fopen(path.c_str(), "a");
+#endif
+    if (cached_file == nullptr) {
+      // Disable further attempts until the path changes.
+      cached_path.clear();
+      return;
+    }
+    // Line-buffered so tail -f is responsive.
+    std::setvbuf(cached_file, nullptr, _IOLBF, 256);
+  }
+
+  std::fprintf(cached_file, "%.6f %s\n", seconds, name);
+}
 
 static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
   REX_FATAL(
