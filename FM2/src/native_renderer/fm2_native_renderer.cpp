@@ -19,10 +19,6 @@
 #if FM2_HAS_PLUME && REX_PLATFORM_WIN32
 #include <plume_render_interface.h>
 
-#if defined(_MSC_VER)
-#pragma comment(lib, "d3d12.lib")
-#endif
-
 namespace plume {
 std::unique_ptr<RenderInterface> CreateD3D12Interface();
 }
@@ -207,7 +203,13 @@ bool CreateSwapchainLocked(rex::ui::Window* window) {
   g_plume.swapchain = g_plume.command_queue->createSwapChain(
       plume::RenderSwapChainDesc(render_window, kSwapchainFormat,
                                  kSwapchainBufferCount));
-  if (!g_plume.swapchain || !g_plume.swapchain->resize()) {
+  if (!g_plume.swapchain || g_plume.swapchain->isEmpty()) {
+    g_plume.swapchain.reset();
+    REXLOG_WARN("FM2 Plume failed to create a valid swapchain");
+    return false;
+  }
+
+  if (!g_plume.swapchain->resize()) {
     REXLOG_WARN("FM2 Plume failed to create or resize swapchain");
     return false;
   }

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <cstdlib>
 #include <filesystem>
 
 #include <rex/audio/nop/nop_audio_system.h>
@@ -16,6 +17,7 @@
 #endif
 #include <rex/logging.h>
 #include <rex/rex_app.h>
+#include <rex/system.h>
 
 #include "native_renderer/fm2_native_renderer.h"
 
@@ -42,10 +44,20 @@ class Fm2App : public rex::ReXApp {
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
   void OnPostSetup() override {
+    const auto mode = fm2::native_renderer::GetMode();
     if (!fm2::native_renderer::Initialize(window())) {
+      if (mode == fm2::native_renderer::Mode::kPlumeClear) {
+        constexpr const char* kMessage =
+            "FM2 Plume clear mode failed to initialize; startup cannot "
+            "continue because ReXGlue graphics is disabled.";
+        REXLOG_ERROR("{}", kMessage);
+        rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, kMessage);
+        std::exit(EXIT_FAILURE);
+      }
       REXLOG_WARN(
-          "FM2 Plume native renderer skeleton failed to initialize; continuing "
-          "with normal startup");
+          "FM2 Plume native renderer failed to initialize in mode={}; "
+          "continuing with normal startup",
+          fm2::native_renderer::GetModeName(mode));
     }
   }
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
