@@ -11,6 +11,7 @@
  */
 
 #include <string>
+#include <unordered_map>
 
 #include <rex/system/util/xex2_info.h>
 #include <rex/system/xex_module.h>
@@ -103,6 +104,20 @@ class UserModule : public XModule {
   bool is_dll_module_ = false;
   uint32_t entry_point_ = 0;
   uint32_t stack_size_ = 0;
+
+  struct ThunkKey {
+    uint32_t caller_module_base;
+    uint16_t ordinal;
+    bool operator==(const ThunkKey& other) const {
+      return caller_module_base == other.caller_module_base && ordinal == other.ordinal;
+    }
+  };
+  struct ThunkKeyHash {
+    std::size_t operator()(const ThunkKey& k) const noexcept {
+      return std::hash<uint64_t>{}((uint64_t(k.caller_module_base) << 16) | k.ordinal);
+    }
+  };
+  std::unordered_map<ThunkKey, uint32_t, ThunkKeyHash> thunk_cache_;
 };
 
 }  // namespace rex::system

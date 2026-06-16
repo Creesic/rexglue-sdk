@@ -90,6 +90,49 @@ cluster at `0x82375A40..0x82376A58`, the intrusive-list helpers at
 
 ---
 
+## June 16 Update: FM2 Native Renderer Survey
+
+IDA names and comments were added for the strongest native-renderer hook
+candidates. The same names were added to `FM2/fm2_manifest.toml` so regenerated
+code keeps stable symbols. Behavior details are still confidence-weighted until
+captures/logs confirm them.
+
+| Address | Working name | Evidence |
+| --- | --- | --- |
+| `0x82518DC0` | `FM2_Render_FramePipeline` | Main frame/pipeline orchestrator. Sets render/camera state, compiles draw buffers, and submits multiple render passes. |
+| `0x825181A8` | `FM2_Render_SubmitPassWrapper` | Simple pass-submit wrapper around `0x8252FF00`; stores a pass selector before submit. |
+| `0x8252FF00` | `FM2_Render_ExecuteSortedDrawLists` | Iterates sorted renderable arrays, updates object state, and emits cached draw-list command buffers through `FM2_D3D_EmitDirtyStateAndDrawList`. |
+| `0x82531DC0` | `FM2_Render_CompileMissingPassBuffers` | Time-budgeted scan for renderables missing cached pass command buffers; calls `0x82531370`. |
+| `0x82531370` | `FM2_Render_BuildObjectPassCommandBuffer` | Begins/finalizes a command-buffer batch, emits pass draw work through `0x8250F7C0`, creates texture/fixup records, and clones command buffers. |
+| `0x82509148` | `FM2_Render_SceneSliceEntry` | Prepares a scene/view slice, calls the command-buffer compiler, then executes sorted draw lists. |
+| `0x8250D950` | `FM2_Render_ViewTraversal` | Higher-level scene/view traversal; iterates view or light-mode entries and calls `0x82509148`. |
+| `0x825380B8` | `FM2_Render_BuildDirectIndexedDrawBuffers` | Uses renderer-interface calls to bind resources and issue indexed primitive draws, then clones generated command buffers. |
+| `0x82539650` | `FM2_Render_InstanceHybridDrawPath` | Sorts visible instances, uploads constants/textures, then either emits cached draw lists or directly calls indexed draw interface methods. |
+| `0x8253A680` | `FM2_Render_InstancePathWrapper` | Prepares camera/constants for the instance renderer and calls `0x82539650`. |
+| `0x825B8920` | `FM2_Render_ScopedBatchBegin` | Switches to a scoped command buffer/context and begins a batch. |
+| `0x825B8688` | `FM2_Render_ScopedBatchFinalize` | Finalizes scoped batch, releases current surfaces, and restores previous context. |
+| `0x825B8A60` | `FM2_Render_UiOrScreenDrawListSubmit` | Computes a 2D transform, uploads constants, then emits a selected draw-list command buffer. |
+
+Initial interpretation: FM2 already separates rendering into cached
+command-buffer construction and later sorted command-buffer execution. A
+Plume-native prototype should probably not decode command-buffer bytes first.
+The better first experiment is to instrument `0x82531370` and `0x8252FF00`,
+build native draw metadata in parallel with FM2's command-buffer construction,
+then replay one narrow pass through Plume while leaving the current backend as
+fallback.
+
+Ghidra 90 cross-check from the same `default.xex`: use Ghidra as a secondary
+source for this render survey, not as the primary caller graph. It agrees on
+many simple low-level direct xrefs, but it currently truncates large PPC
+functions such as `0x82518DC0` and `0x82539650` at compiler save/prologue helper
+calls, and does not recognize `0x8253A680` as a function. Because of that it
+misses important direct calls including `0x82518DC0 -> 0x82531DC0` at
+`0x825191C8` and `0x8253A680 -> 0x82539650` at `0x8253A964`. It did confirm
+data/vtable refs to `0x82518DC0` at `0x820441D0` and `0x82045000`; IDA also sees
+those plus `0x8218F858`.
+
+---
+
 ## May 30 Update: Missing Indirect Call Target Crash
 
 - Crash observed in `C:\temp\fm2-clean.log`:
@@ -193,3 +236,71 @@ stores a function pointer at one of these addresses and calls it each cycle.
 - Runtime instrumentation hooks added for timing/call counts:
   - entry `0x82697F08` -> `FM2ApuMixRenderEnter82697F08`
   - exits `0x826983A0` / `0x826983C0` -> `FM2ApuMixRenderExitA/B...`
+
+## June 1 Update: FMOD/XMA LR Hotspots + New Trace Labels
+
+From latest `C:\temp\fm2-clean.log`:
+
+- dominant LR pair: `0x82693910` / `0x82693998` (codec-read disable/enable returns)
+- recurring XMA reinit LRs: `0x82692B24`, `0x82692C8C`, `0x82692CA4`
+- additional caller-chain hotspots around `Function_8268C670` read path.
+
+Added manifest labels for the FMOD/XMA chain:
+
+- `0x8268C670` -> `FM2_FmodStreamRead_8268C670`
+- `0x82692AF0` -> `FM2_FmodXmaContextReinit_82692AF0`
+- `0x82692B24` -> `FM2_FmodXmaContextReinit_PostDisable_82692B24`
+- `0x82692C8C` -> `FM2_FmodXmaContextReinit_PostInit_82692C8C`
+- `0x82692CA4` -> `FM2_FmodXmaContextReinit_PostEnable_82692CA4`
+- `0x82693910` -> `FM2_FmodCodecRead_PostDisable_82693910`
+- `0x82693998` -> `FM2_FmodCodecRead_PostEnable_82693998`
+- `0x826939A8` -> `FM2_FmodCodecSeek_826939A8`
+- `0x82693AC0` -> `FM2_FmodCodecSeek_CallRead_82693AC0`
+- `0x826776E0` -> `FM2_FmodStreamReadDispatch_826776E0`
+- `0x826778C4` -> `FM2_FmodStreamReadDispatch_CallRead_826778C4`
+- `0x826949B0` -> `FM2_FmodCodecReadChunk_CallRead_826949B0`
+- `0x82695480` -> `FM2_FmodCodecReadConvert_82695480`
+- `0x8269550C` -> `FM2_FmodCodecReadConvert_CallRead_8269550C`
+- `0x826A3E80` -> `FM2_FmodCodecReadPaged_826A3E80`
+- `0x826A40A8` -> `FM2_FmodCodecReadPaged_CallRead_826A40A8`
+
+Also labeled new non-audio LR hotspots seen in the same log burst so future traces
+resolve immediately (allocator/string/path sites), including:
+
+- `0x821D15B0`, `0x821D0E74`, `0x821D0448`
+- `0x821D2550`, `0x821D266C`, `0x821D2704`, `0x821D2878`
+- `0x82430CF0`, `0x824318F0`
+- `0x825CF560`, `0x8259F3A0`, `0x825345A8`, `0x822097C8`
+- `0x821EA544`, `0x825ADE8C`
+
+## June 1 Update: APU Mix Gain/Matrix Chain (Ghidra)
+
+Deep pass in Ghidra around `0x82697F08` confirms the split between:
+
+- voice gain/matrix setup
+- per-buffer accumulation into output channels
+
+Newly labeled addresses:
+
+- `0x8269DB60` -> `FM2_ApuMixCoeffSetIdentity_8269DB60`
+- `0x8269DD80` -> `FM2_ApuMixCoeffUpdateDelta_8269DD80`
+- `0x8269DF48` -> `FM2_ApuMixCoeffIsIdentity_8269DF48`
+- `0x8269DFE0` -> `FM2_ApuMixSetBaseGain_8269DFE0`
+- `0x8269E000` -> `FM2_ApuMixBuildPanMatrix_8269E000`
+- `0x8269E6B0` -> `FM2_ApuMixSetOutputMatrix_8269E6B0`
+- `0x8269E8F0` -> `FM2_ApuMixAccumulateVoice_8269E8F0`
+- `0x826A62A0` -> `FM2_AudioVoiceSetVolumeQuantized_826A62A0`
+- `0x826A75E8` -> `FM2_AudioSourceSetVolume_826A75E8`
+- `0x826A8628` -> `FM2_AudioVoiceApplyOutputMatrix_826A8628`
+
+Key behavior observed:
+
+- `FM2_ApuMixRenderCore_82697F08` calls `FM2_ApuMixBuildPanMatrix_8269E000` then `FM2_ApuMixAccumulateVoice_8269E8F0` for active voices.
+- `FM2_ApuMixSetBaseGain_8269DFE0` writes the scalar gain field at `+0x5C` (and a sync field at `+0x60`), which feeds matrix generation.
+- `FM2_ApuMixCoeffUpdateDelta_8269DD80` computes smoothing deltas using `+0x8C` and sets a short ramp window (`+0x88 = 0x40`) when change is above threshold.
+- `FM2_ApuMixAccumulateVoice_8269E8F0` applies source samples through per-channel coefficient matrices (`+0x2C..+0x40`) into the mix buffer.
+- Callers near `0x826A85E4` multiply requested volume by extra class/bus scalars (`obj+0x54->0xD4` and `obj+0x54->0x88->0x40`) before forwarding to set-base-gain path.
+
+Implication for overlay interpretation:
+
+- If the overlay tracks pre-mix source level or decoded PCM magnitude, it can stay "hot" while audible output is quieter; attenuation may be happening later via matrix coefficients and/or bus scalars in this chain.

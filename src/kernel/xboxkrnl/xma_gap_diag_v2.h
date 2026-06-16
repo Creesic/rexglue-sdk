@@ -28,6 +28,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <mutex>
@@ -363,7 +364,7 @@ inline void LogWrite(uint32_t addr, uint32_t old_val, uint32_t new_val,
     e.guest_tid = GetGuestTID();
     e.native_tid = GetNativeTID();
     e.wall_sec = WallSec();
-    strncpy_s(e.what, what, sizeof(e.what) - 1);
+    snprintf(e.what, sizeof(e.what) - 1, "%s", what);
 
     REXKRNL_ERROR(
         "FMOD_WRITE addr={:08X} what={} old={:08X} new={:08X} pc={:08X} gtid={} ntid={} t={:.3f}",

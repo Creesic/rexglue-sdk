@@ -1,6 +1,6 @@
 #include "fm2_init.h"
 
-DEFINE_REX_FUNC(sub_8269DD80) {
+DEFINE_REX_FUNC(FM2_ApuMixCoeffUpdateDelta_8269DD80) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	// lis r10,-32256
@@ -275,7 +275,7 @@ loc_8269DF3C:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8269DF48) {
+DEFINE_REX_FUNC(FM2_ApuMixCoeffIsIdentity_8269DF48) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	// lis r11,-32256
@@ -368,7 +368,7 @@ loc_8269DFD4:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8269DFE0) {
+DEFINE_REX_FUNC(FM2_ApuMixSetBaseGain_8269DFE0) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	// lis r10,-32253
@@ -391,7 +391,7 @@ DEFINE_REX_FUNC(sub_8269DFE0) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8269E000) {
+DEFINE_REX_FUNC(FM2_ApuMixBuildPanMatrix_8269E000) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	// lfs f13,92(r3)
@@ -1374,7 +1374,7 @@ loc_8269E664:
 	// stb r11,144(r3)
 	REX_STORE_U8(ctx.r3.u32 + 144, ctx.r11.u8);
 	// b 0x8269dd80
-	sub_8269DD80(ctx, base);
+	FM2_ApuMixCoeffUpdateDelta_8269DD80(ctx, base);
 	return;
 }
 
@@ -1423,11 +1423,11 @@ loc_8269E6A8:
 	temp.f32 = float(ctx.f1.f64);
 	REX_STORE_U32(ctx.r3.u32 + 140, temp.u32);
 	// b 0x8269dd80
-	sub_8269DD80(ctx, base);
+	FM2_ApuMixCoeffUpdateDelta_8269DD80(ctx, base);
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8269E6B0) {
+DEFINE_REX_FUNC(FM2_ApuMixSetOutputMatrix_8269E6B0) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	// cmplwi cr6,r4,0
@@ -1689,7 +1689,7 @@ loc_8269E840:
 	// stb r11,144(r3)
 	REX_STORE_U8(ctx.r3.u32 + 144, ctx.r11.u8);
 	// b 0x8269dd80
-	sub_8269DD80(ctx, base);
+	FM2_ApuMixCoeffUpdateDelta_8269DD80(ctx, base);
 	return;
 }
 
@@ -1792,7 +1792,7 @@ loc_8269E8E4:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8269E8F0) {
+DEFINE_REX_FUNC(FM2_ApuMixAccumulateVoice_8269E8F0) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -2576,7 +2576,7 @@ loc_8269ED70:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8269df48
 	ctx.lr = 0x8269EDA8;
-	sub_8269DF48(ctx, base);
+	FM2_ApuMixCoeffIsIdentity_8269DF48(ctx, base);
 	// cmpwi cr6,r3,0
 	ctx.cr6.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// bne cr6,0x8269f39c
@@ -14701,7 +14701,7 @@ loc_826A3E70:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_826A3E80) {
+DEFINE_REX_FUNC(FM2_FmodCodecReadPaged_826A3E80) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -15014,7 +15014,7 @@ loc_826A4098:
 	ctx.r4.u64 = ctx.r26.u64;
 	// bl 0x8268c670
 	ctx.lr = 0x826A40AC;
-	sub_8268C670(ctx, base);
+	FM2_FmodStreamRead_8268C670(ctx, base);
 	// mr r30,r3
 	ctx.r30.u64 = ctx.r3.u64;
 	// cmpwi cr6,r30,0
@@ -15171,7 +15171,7 @@ DEFINE_REX_FUNC(sub_826A41B0) {
 	ctx.r3.s64 = 0;
 loc_826A41C0:
 	// b 0x826a3e80
-	sub_826A3E80(ctx, base);
+	FM2_FmodCodecReadPaged_826A3E80(ctx, base);
 	return;
 }
 
@@ -19999,7 +19999,7 @@ loc_826A6290:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_826A62A0) {
+DEFINE_REX_FUNC(FM2_AudioVoiceSetVolumeQuantized_826A62A0) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	// mr r11,r3
@@ -22730,7 +22730,7 @@ loc_826A75D0:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_826A75E8) {
+DEFINE_REX_FUNC(FM2_AudioSourceSetVolume_826A75E8) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	// lis r10,-32256
@@ -25003,7 +25003,7 @@ DEFINE_REX_FUNC(sub_826A8580) {
 	// fmuls f1,f0,f13
 	ctx.f1.f64 = double(float(ctx.f0.f64 * ctx.f13.f64));
 	// b 0x826a75e8
-	sub_826A75E8(ctx, base);
+	FM2_AudioSourceSetVolume_826A75E8(ctx, base);
 	return;
 loc_826A85C4:
 	// lwz r10,712(r11)
@@ -25018,13 +25018,20 @@ loc_826A85D4:
 	// cmplwi cr6,r3,0
 	ctx.cr6.compare<uint32_t>(ctx.r3.u32, 0, ctx.xer);
 	// bne cr6,0x826a85e4
-	if (!ctx.cr6.eq) goto loc_826A85E4;
+	if (!ctx.cr6.eq) {
+		FM2_AudioVoiceSetVolumeScaled_826A85E4(ctx, base);
+		return;
+	}
 loc_826A85DC:
 	// li r3,36
 	ctx.r3.s64 = 36;
 	// blr 
 	return;
-loc_826A85E4:
+}
+
+DEFINE_REX_FUNC(FM2_AudioVoiceSetVolumeScaled_826A85E4) {
+	REX_FUNC_PROLOGUE();
+	PPCRegister temp{};
 	// lwz r11,84(r11)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r11.u32 + 84);
 	// lfs f0,212(r11)
@@ -25041,11 +25048,11 @@ loc_826A85E4:
 	// fmuls f1,f0,f13
 	ctx.f1.f64 = double(float(ctx.f0.f64 * ctx.f13.f64));
 	// b 0x826a62a0
-	sub_826A62A0(ctx, base);
+	FM2_AudioVoiceSetVolumeQuantized_826A62A0(ctx, base);
 	return;
 }
 
-DEFINE_REX_FUNC(FM2_StateGateForwardToDFE0) {
+DEFINE_REX_FUNC(FM2_StateGateForwardToDFE0_826A8600) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,92(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 92);
@@ -25067,11 +25074,11 @@ loc_826A8620:
 	// lwz r3,716(r3)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r3.u32 + 716);
 	// b 0x8269dfe0
-	sub_8269DFE0(ctx, base);
+	FM2_ApuMixSetBaseGain_8269DFE0(ctx, base);
 	return;
 }
 
-DEFINE_REX_FUNC(sub_826A8628) {
+DEFINE_REX_FUNC(FM2_AudioVoiceApplyOutputMatrix_826A8628) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -25156,7 +25163,7 @@ loc_826A8684:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 716);
 	// bl 0x8269e6b0
 	ctx.lr = 0x826A86C0;
-	sub_8269E6B0(ctx, base);
+	FM2_ApuMixSetOutputMatrix_8269E6B0(ctx, base);
 	// addi r1,r1,528
 	ctx.r1.s64 = ctx.r1.s64 + 528;
 	// lwz r12,-8(r1)
@@ -25324,7 +25331,7 @@ loc_826A87CC:
 	ctx.r4.s64 = ctx.r1.s64 + 80;
 	// bl 0x8269e6b0
 	ctx.lr = 0x826A87DC;
-	sub_8269E6B0(ctx, base);
+	FM2_ApuMixSetOutputMatrix_8269E6B0(ctx, base);
 loc_826A87DC:
 	// addi r1,r1,512
 	ctx.r1.s64 = ctx.r1.s64 + 512;

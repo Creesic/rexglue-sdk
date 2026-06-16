@@ -215,6 +215,20 @@ class XmaContext {
   }
   float last_peak_level() const { return last_peak_level_.load(std::memory_order_acquire); }
   float last_rms_level() const { return last_rms_level_.load(std::memory_order_acquire); }
+  float last_rms_ch0_level() const { return last_rms_ch0_level_.load(std::memory_order_acquire); }
+  float last_rms_ch1_level() const { return last_rms_ch1_level_.load(std::memory_order_acquire); }
+  float last_audible_peak_level() const {
+    return last_audible_peak_level_.load(std::memory_order_acquire);
+  }
+  float last_audible_rms_level() const {
+    return last_audible_rms_level_.load(std::memory_order_acquire);
+  }
+  float last_audible_rms_ch0_level() const {
+    return last_audible_rms_ch0_level_.load(std::memory_order_acquire);
+  }
+  float last_audible_rms_ch1_level() const {
+    return last_audible_rms_ch1_level_.load(std::memory_order_acquire);
+  }
 
   void set_is_allocated(bool is_allocated) {
     is_allocated_.store(is_allocated, std::memory_order_release);
@@ -273,6 +287,12 @@ class XmaContext {
   std::atomic<float> volume_ = 1.0f;
   std::atomic<float> last_peak_level_ = 0.0f;
   std::atomic<float> last_rms_level_ = 0.0f;
+  std::atomic<float> last_rms_ch0_level_ = 0.0f;
+  std::atomic<float> last_rms_ch1_level_ = 0.0f;
+  std::atomic<float> last_audible_peak_level_ = 0.0f;
+  std::atomic<float> last_audible_rms_level_ = 0.0f;
+  std::atomic<float> last_audible_rms_ch0_level_ = 0.0f;
+  std::atomic<float> last_audible_rms_ch1_level_ = 0.0f;
 
   // ffmpeg structures
   AVPacket* av_packet_ = nullptr;

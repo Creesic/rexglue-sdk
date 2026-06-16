@@ -301,3 +301,42 @@ Note:
 - Purpose: quantify how much real CPU time this hotspot consumes per second,
   and verify whether it is a meaningful optimization target versus wait-heavy
   scheduler/fence paths.
+
+## June 2 Load Trace Capture
+
+- Added a toggleable load-trace session in `FM2/src/fm2_hooks.cpp`:
+  - `--fm2_load_trace`
+  - `--fm2_load_trace_autostart_ms=0` keeps tracing manual (`0` disables autostart)
+  - `--fm2_load_trace_toggle_vk=49` for keyboard `1` (`0` disables the hotkey)
+  - `--fm2_load_trace_sample_limit=N` to bound sample lines per session
+  - The compact `F2` FPS overlay now shows `LT OFF`, `LT ARMED`, or `LT REC`
+    from the live trace state, so you can verify the feature is armed before
+    checking the log
+- The hotkey toggles a capture session on/off and writes:
+  - `FM2_LOAD_TRACE_START ...`
+  - bounded `FM2_LOAD_TRACE_PATH ...` samples from `FM2_PathBuilder_825CF298`
+  - bounded `FM2_LOAD_TRACE_READ ...` samples from:
+    - `FM2_BufferedFileReadAsyncAware`
+    - `FM2_BufferedFileRead`
+  - `FM2_LOAD_TRACE_SUMMARY ...` on stop
+- Session summary currently counts the main load-adjacent helpers:
+  - alloc/acquire paths (`0x823637F8`, `0x82363768`, `0x82367F60`, `0x82363538`)
+  - alloc grow/ensure paths (`0x821D03E8`, `0x821D0E10`, `0x821D1568`)
+  - string/path helpers (`0x821D24D8`, `0x821D25C0`, `0x82430C10`, `0x825CF298`)
+  - stream/keyed lookup (`0x824344C0`)
+  - buffered read entry points (`0x8243C140`, `0x8243C8D0`)
+  - producer wait sites (`0x823693F8`, `0x82369400`, `0x82369408`)
+- Current allocator naming / structure from Ghidra:
+  - `0x823637F8` is only a branch thunk into `0x82363768`
+  - `0x82363768` is `FM2_AllocPoolAcquireOrInit`: try `0x82367F60`, init pool on failure, retry once
+  - `0x82367F60` is `FM2_AllocPoolTryAcquire`: small-object pool fast path when enabled and `size <= 0x200`, otherwise fallback to `0x82417720`
+- Current load-trace summary also records allocator detail from `0x82367F60`:
+  - request byte total / max
+  - request size buckets: `<=32`, `33..64`, `65..128`, `129..512`, `>512`
+  - pool fast hits vs misses
+  - fallback allocator calls / hits / fails
+- Intended use:
+  - press keyboard `1` just before a loading screen begins
+  - press keyboard `1` again when gameplay resumes to stop and emit the session summary
+  - inspect `C:\temp\fm2-clean.log` for the `FM2_LOAD_TRACE_*` block and compare
+    session summaries between loads

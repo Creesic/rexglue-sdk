@@ -15,6 +15,7 @@
 #include <rex/memory/utils.h>
 #include <rex/ppc.h>
 #include <rex/cvar.h>
+#include <rex/logging.h>
 #include <rex/system/kernel_state.h>
 #include <rex/thread.h>
 
@@ -59,6 +60,26 @@ REXCVAR_DEFINE_UINT32(
 REXCVAR_DEFINE_BOOL(
     fm2_apu_mix_stats, false, "FM2",
     "Emit per-second call/timing counters for FM2_ApuMixRenderCore_82697F08");
+
+REXCVAR_DEFINE_BOOL(
+    fm2_load_trace, false, "FM2",
+    "Enable toggleable load-trace capture for loading-screen investigation");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_load_trace_toggle_vk, '1', "FM2",
+    "Virtual-key code used to toggle load-trace capture (default key 1, 0 disables)");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_load_trace_sample_limit, 16, "FM2",
+    "Maximum number of bounded load-trace sample lines per session");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_load_trace_autostart_ms, 0, "FM2",
+    "Automatically start a load-trace session this many milliseconds after boot (0 disables)");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_load_trace_overlay_state, 0, "FM2",
+    "Load-trace overlay state: 0=off, 1=armed, 2=recording");
 
 uint8_t* GuestBase() {
   auto* kernel_state = rex::system::kernel_state();
@@ -272,6 +293,16 @@ ProdGuardDiagState& ProdGuardDiag() {
 
 void LogLineProdGuard(const char* fmt, ...) {
   auto& d = ProdGuardDiag();
+  char line[2048];
+  va_list args;
+  va_start(args, fmt);
+  std::vsnprintf(line, sizeof(line), fmt, args);
+  va_end(args);
+
+  // Mirror through the main krnl logger so trace lines survive even if the
+  // ad-hoc stdio handle path collides with the app's file sink.
+  REXKRNL_ERROR("{}", line);
+
   std::lock_guard<std::mutex> lock(d.log_mutex);
   if (!d.log_file) {
     d.log_file = std::fopen("C:\\temp\\fm2-clean.log", "a");
@@ -279,10 +310,7 @@ void LogLineProdGuard(const char* fmt, ...) {
       return;
     }
   }
-  va_list args;
-  va_start(args, fmt);
-  std::vfprintf(d.log_file, fmt, args);
-  va_end(args);
+  std::fputs(line, d.log_file);
   std::fputc('\n', d.log_file);
   std::fflush(d.log_file);
 }
@@ -530,6 +558,290 @@ void MaybeEmitApuMixPerSec() {
       static_cast<unsigned long long>(avg_us), static_cast<unsigned long long>(max_us),
       inflight_delta, static_cast<unsigned long long>(unmatched_exit),
       static_cast<unsigned long long>(stack_overflow));
+}
+
+struct LoadTraceState {
+  std::atomic<uint32_t> active{0};
+  std::atomic<uint32_t> hotkey_down{0};
+  std::atomic<uint32_t> current_session{0};
+  std::atomic<uint32_t> next_session{0};
+  std::atomic<uint32_t> autostart_fired{0};
+  std::atomic<uint32_t> poll_init_logged{0};
+  std::atomic<uint64_t> boot_ns{0};
+  std::atomic<uint64_t> start_ns{0};
+  std::atomic<uint64_t> helper_637f8{0};
+  std::atomic<uint64_t> helper_63768{0};
+  std::atomic<uint64_t> helper_67f60{0};
+  std::atomic<uint64_t> helper_63538{0};
+  std::atomic<uint64_t> alloc_pool_req_bytes{0};
+  std::atomic<uint64_t> alloc_pool_req_max{0};
+  std::atomic<uint64_t> alloc_pool_req_le32{0};
+  std::atomic<uint64_t> alloc_pool_req_33_64{0};
+  std::atomic<uint64_t> alloc_pool_req_65_128{0};
+  std::atomic<uint64_t> alloc_pool_req_129_512{0};
+  std::atomic<uint64_t> alloc_pool_req_gt512{0};
+  std::atomic<uint64_t> alloc_pool_fast_hit{0};
+  std::atomic<uint64_t> alloc_pool_fast_miss{0};
+  std::atomic<uint64_t> alloc_pool_fallback_calls{0};
+  std::atomic<uint64_t> alloc_pool_fallback_hit{0};
+  std::atomic<uint64_t> alloc_pool_fallback_fail{0};
+  std::atomic<uint64_t> alloc_1d03e8{0};
+  std::atomic<uint64_t> alloc_1d0e10{0};
+  std::atomic<uint64_t> alloc_1d1568{0};
+  std::atomic<uint64_t> str_24d8{0};
+  std::atomic<uint64_t> str_25c0{0};
+  std::atomic<uint64_t> str_30c10{0};
+  std::atomic<uint64_t> path_5cf298{0};
+  std::atomic<uint64_t> gate_344c0_entry{0};
+  std::atomic<uint64_t> gate_344c0_match{0};
+  std::atomic<uint64_t> buffered_async{0};
+  std::atomic<uint64_t> buffered_sync{0};
+  std::atomic<uint64_t> prod_guard_wait{0};
+  std::atomic<uint64_t> prod_guard_timeout{0};
+  std::atomic<uint64_t> prod_guard_ret0{0};
+  std::atomic<uint64_t> path_samples{0};
+  std::atomic<uint64_t> read_samples{0};
+};
+
+LoadTraceState& LoadTrace() {
+  static LoadTraceState state;
+  return state;
+}
+
+void SetLoadTraceOverlayState(uint32_t state) {
+  char value[16];
+  std::snprintf(value, sizeof(value), "%u", state);
+  rex::cvar::SetFlagByName("fm2_load_trace_overlay_state", value);
+}
+
+void SyncLoadTraceOverlayState() {
+  const uint32_t state =
+      !REXCVAR_GET(fm2_load_trace) ? 0u : (LoadTrace().active.load(std::memory_order_relaxed) != 0u ? 2u : 1u);
+  SetLoadTraceOverlayState(state);
+}
+
+void ResetLoadTraceCounters() {
+  auto& d = LoadTrace();
+  d.helper_637f8.store(0, std::memory_order_relaxed);
+  d.helper_63768.store(0, std::memory_order_relaxed);
+  d.helper_67f60.store(0, std::memory_order_relaxed);
+  d.helper_63538.store(0, std::memory_order_relaxed);
+  d.alloc_pool_req_bytes.store(0, std::memory_order_relaxed);
+  d.alloc_pool_req_max.store(0, std::memory_order_relaxed);
+  d.alloc_pool_req_le32.store(0, std::memory_order_relaxed);
+  d.alloc_pool_req_33_64.store(0, std::memory_order_relaxed);
+  d.alloc_pool_req_65_128.store(0, std::memory_order_relaxed);
+  d.alloc_pool_req_129_512.store(0, std::memory_order_relaxed);
+  d.alloc_pool_req_gt512.store(0, std::memory_order_relaxed);
+  d.alloc_pool_fast_hit.store(0, std::memory_order_relaxed);
+  d.alloc_pool_fast_miss.store(0, std::memory_order_relaxed);
+  d.alloc_pool_fallback_calls.store(0, std::memory_order_relaxed);
+  d.alloc_pool_fallback_hit.store(0, std::memory_order_relaxed);
+  d.alloc_pool_fallback_fail.store(0, std::memory_order_relaxed);
+  d.alloc_1d03e8.store(0, std::memory_order_relaxed);
+  d.alloc_1d0e10.store(0, std::memory_order_relaxed);
+  d.alloc_1d1568.store(0, std::memory_order_relaxed);
+  d.str_24d8.store(0, std::memory_order_relaxed);
+  d.str_25c0.store(0, std::memory_order_relaxed);
+  d.str_30c10.store(0, std::memory_order_relaxed);
+  d.path_5cf298.store(0, std::memory_order_relaxed);
+  d.gate_344c0_entry.store(0, std::memory_order_relaxed);
+  d.gate_344c0_match.store(0, std::memory_order_relaxed);
+  d.buffered_async.store(0, std::memory_order_relaxed);
+  d.buffered_sync.store(0, std::memory_order_relaxed);
+  d.prod_guard_wait.store(0, std::memory_order_relaxed);
+  d.prod_guard_timeout.store(0, std::memory_order_relaxed);
+  d.prod_guard_ret0.store(0, std::memory_order_relaxed);
+  d.path_samples.store(0, std::memory_order_relaxed);
+  d.read_samples.store(0, std::memory_order_relaxed);
+}
+
+bool IsLoadTraceActive() {
+  return LoadTrace().active.load(std::memory_order_relaxed) != 0u;
+}
+
+void HitLoadTraceAllocPoolRequest(uint32_t size_bytes) {
+  auto& d = LoadTrace();
+  d.alloc_pool_req_bytes.fetch_add(size_bytes, std::memory_order_relaxed);
+  AtomicMaxU64(d.alloc_pool_req_max, size_bytes);
+  if (size_bytes <= 32u) {
+    d.alloc_pool_req_le32.fetch_add(1, std::memory_order_relaxed);
+  } else if (size_bytes <= 64u) {
+    d.alloc_pool_req_33_64.fetch_add(1, std::memory_order_relaxed);
+  } else if (size_bytes <= 128u) {
+    d.alloc_pool_req_65_128.fetch_add(1, std::memory_order_relaxed);
+  } else if (size_bytes <= 512u) {
+    d.alloc_pool_req_129_512.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    d.alloc_pool_req_gt512.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+void EmitLoadTraceSummary(uint32_t session, const char* reason) {
+  auto& d = LoadTrace();
+  const uint64_t start_ns = d.start_ns.load(std::memory_order_relaxed);
+  const uint64_t duration_ms = start_ns ? ((NowNs() - start_ns) / 1000000u) : 0u;
+  LogLineProdGuard(
+      "FM2_LOAD_TRACE_SUMMARY session=%u reason=%s dur_ms=%llu helper637f8=%llu helper63768=%llu "
+      "helper67f60=%llu helper63538=%llu pool_req_bytes=%llu pool_req_max=%llu "
+      "pool_sz_le32=%llu pool_sz_33_64=%llu pool_sz_65_128=%llu pool_sz_129_512=%llu "
+      "pool_sz_gt512=%llu pool_fast_hit=%llu pool_fast_miss=%llu pool_fallback=%llu "
+      "pool_fallback_hit=%llu pool_fallback_fail=%llu alloc03e8=%llu alloc0e10=%llu alloc1568=%llu "
+      "str24d8=%llu str25c0=%llu str30c10=%llu path5cf298=%llu gate344c0=%llu "
+      "gate344c0_match=%llu read_async=%llu read_sync=%llu prod_wait=%llu prod_timeout=%llu "
+      "prod_ret0=%llu path_samples=%llu read_samples=%llu",
+      session, reason ? reason : "stop", static_cast<unsigned long long>(duration_ms),
+      static_cast<unsigned long long>(d.helper_637f8.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.helper_63768.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.helper_67f60.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.helper_63538.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_req_bytes.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_req_max.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_req_le32.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_req_33_64.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_req_65_128.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_req_129_512.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_req_gt512.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_fast_hit.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_fast_miss.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_fallback_calls.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_fallback_hit.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_pool_fallback_fail.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_1d03e8.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_1d0e10.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.alloc_1d1568.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.str_24d8.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.str_25c0.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.str_30c10.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.path_5cf298.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.gate_344c0_entry.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.gate_344c0_match.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.buffered_async.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.buffered_sync.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.prod_guard_wait.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.prod_guard_timeout.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.prod_guard_ret0.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.path_samples.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(d.read_samples.load(std::memory_order_relaxed)));
+}
+
+void StopLoadTraceSession(const char* reason) {
+  auto& d = LoadTrace();
+  if (d.active.exchange(0, std::memory_order_relaxed) == 0u) {
+    return;
+  }
+  SyncLoadTraceOverlayState();
+  const uint32_t session = d.current_session.load(std::memory_order_relaxed);
+  EmitLoadTraceSummary(session, reason);
+  LogLineProdGuard("FM2_LOAD_TRACE_STOP session=%u reason=%s", session,
+                   reason ? reason : "stop");
+}
+
+void StartLoadTraceSession(const char* reason) {
+  auto& d = LoadTrace();
+  ResetLoadTraceCounters();
+  const uint32_t session = d.next_session.fetch_add(1, std::memory_order_relaxed) + 1u;
+  d.current_session.store(session, std::memory_order_relaxed);
+  d.start_ns.store(NowNs(), std::memory_order_relaxed);
+  d.active.store(1, std::memory_order_relaxed);
+  SyncLoadTraceOverlayState();
+  LogLineProdGuard("FM2_LOAD_TRACE_START session=%u reason=%s vk=%u autostart_ms=%u", session,
+                   reason ? reason : "start", REXCVAR_GET(fm2_load_trace_toggle_vk),
+                   REXCVAR_GET(fm2_load_trace_autostart_ms));
+}
+
+void MaybePollLoadTraceToggle() {
+  auto& d = LoadTrace();
+  const uint64_t now_ns = NowNs();
+  uint64_t expected_boot_ns = 0;
+  d.boot_ns.compare_exchange_strong(expected_boot_ns, now_ns, std::memory_order_relaxed);
+  if (d.poll_init_logged.exchange(1u, std::memory_order_relaxed) == 0u) {
+    LogLineProdGuard(
+        "FM2_LOAD_TRACE_POLL_INIT enabled=%u autostart_ms=%u vk=%u sample_limit=%u",
+        REXCVAR_GET(fm2_load_trace) ? 1u : 0u, REXCVAR_GET(fm2_load_trace_autostart_ms),
+        REXCVAR_GET(fm2_load_trace_toggle_vk), REXCVAR_GET(fm2_load_trace_sample_limit));
+  }
+  if (!REXCVAR_GET(fm2_load_trace)) {
+    SetLoadTraceOverlayState(0u);
+    d.hotkey_down.store(0, std::memory_order_relaxed);
+    d.autostart_fired.store(0, std::memory_order_relaxed);
+    if (d.active.load(std::memory_order_relaxed) != 0u) {
+      StopLoadTraceSession("disabled");
+    }
+    return;
+  }
+
+  if (d.active.load(std::memory_order_relaxed) == 0u) {
+    SetLoadTraceOverlayState(1u);
+  }
+
+  const uint32_t autostart_ms = REXCVAR_GET(fm2_load_trace_autostart_ms);
+  if (autostart_ms != 0u && d.active.load(std::memory_order_relaxed) == 0u &&
+      d.autostart_fired.load(std::memory_order_relaxed) == 0u) {
+    const uint64_t boot_ns = d.boot_ns.load(std::memory_order_relaxed);
+    const uint64_t elapsed_ms = boot_ns ? ((now_ns - boot_ns) / 1000000u) : 0u;
+    if (elapsed_ms >= autostart_ms) {
+      d.autostart_fired.store(1, std::memory_order_relaxed);
+      StartLoadTraceSession("autostart");
+      return;
+    }
+  }
+
+  const uint32_t vk = REXCVAR_GET(fm2_load_trace_toggle_vk);
+  if (vk == 0u) {
+    d.hotkey_down.store(0, std::memory_order_relaxed);
+    return;
+  }
+
+  const bool is_down = (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) != 0;
+  const uint32_t was_down = d.hotkey_down.exchange(is_down ? 1u : 0u, std::memory_order_relaxed);
+  if (!is_down || was_down != 0u) {
+    return;
+  }
+
+  if (d.active.load(std::memory_order_relaxed) != 0u) {
+    StopLoadTraceSession("toggle");
+  } else {
+    StartLoadTraceSession("toggle");
+  }
+}
+
+void HitLoadTraceCounter(std::atomic<uint64_t>& counter) {
+  MaybePollLoadTraceToggle();
+  if (!IsLoadTraceActive()) {
+    return;
+  }
+  counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+void MaybeLogLoadTracePathSample(uint32_t lr, uint32_t flag, uint32_t path_ptr) {
+  if (!IsLoadTraceActive()) {
+    return;
+  }
+  auto& d = LoadTrace();
+  const uint64_t sample_ix = d.path_samples.fetch_add(1, std::memory_order_relaxed);
+  if (sample_ix >= REXCVAR_GET(fm2_load_trace_sample_limit)) {
+    return;
+  }
+  char path[65];
+  SnapshotGuestCString(path_ptr, path);
+  LogLineProdGuard("FM2_LOAD_TRACE_PATH session=%u n=%llu lr=%08X flag=%u path=%s",
+                   d.current_session.load(std::memory_order_relaxed),
+                   static_cast<unsigned long long>(sample_ix + 1), lr, flag, path);
+}
+
+void MaybeLogLoadTraceReadSample(const char* site, uint32_t r3, uint32_t r4, uint32_t r5) {
+  if (!IsLoadTraceActive()) {
+    return;
+  }
+  auto& d = LoadTrace();
+  const uint64_t sample_ix = d.read_samples.fetch_add(1, std::memory_order_relaxed);
+  if (sample_ix >= REXCVAR_GET(fm2_load_trace_sample_limit)) {
+    return;
+  }
+  LogLineProdGuard("FM2_LOAD_TRACE_READ session=%u n=%llu site=%s r3=%08X r4=%08X r5=%08X",
+                   d.current_session.load(std::memory_order_relaxed),
+                   static_cast<unsigned long long>(sample_ix + 1), site, r3, r4, r5);
 }
 
 struct SigSiteDiagState {
@@ -1704,6 +2016,7 @@ void FM2HelperEntry637F8(PPCRegister& r3) {
   (void)r3;
   auto& d = SigDiag();
   HitSimple(d.h637f8_count);
+  HitLoadTraceCounter(LoadTrace().helper_637f8);
   MaybeBreakOnLoadPoint637F8();
 }
 
@@ -1984,6 +2297,7 @@ void FM2Gate82437310R148Result(PPCRegister& r11) {
 void FM2Gate824344C0Entry(PPCRegister& r3, PPCRegister& r4) {
   auto& d = SigDiag();
   HitSimple(d.d_344c0_entry);
+  HitLoadTraceCounter(LoadTrace().gate_344c0_entry);
   MaybeLog344C0Sample(r3.u32, r4.u32);
 }
 
@@ -2006,6 +2320,7 @@ void FM2Gate824344C0Match(PPCRegister& r26) {
   (void)r26;
   auto& d = SigDiag();
   HitSimple(d.d_344c0_match);
+  HitLoadTraceCounter(LoadTrace().gate_344c0_match);
 }
 
 void FM2AllocCallsite0E70(PPCRegister& r3) {
@@ -2035,6 +2350,7 @@ void FM2AllocCallsite8C98(PPCRegister& r3) {
 void FM2AllocPath1D03E8Entry(PPCRegister& r12, PPCRegister& r3) {
   auto& d = SigDiag();
   HitSimple(d.d_1d03e8_entry);
+  HitLoadTraceCounter(LoadTrace().alloc_1d03e8);
   d.d_1d03e8_last_lr.store(r12.u32, std::memory_order_relaxed);
   d.d_1d03e8_last_size.store(r3.u32, std::memory_order_relaxed);
   switch (r12.u32) {
@@ -2062,6 +2378,7 @@ void FM2AllocPath1D03E8Entry(PPCRegister& r12, PPCRegister& r3) {
 void FM2AllocGrowPath1D0E10Entry(PPCRegister& r12, PPCRegister& r4, PPCRegister& r5) {
   auto& d = SigDiag();
   HitSimple(d.d_1d0e10_entry);
+  HitLoadTraceCounter(LoadTrace().alloc_1d0e10);
   d.d_1d0e10_last_lr.store(r12.u32, std::memory_order_relaxed);
   d.d_1d0e10_last_req.store(r4.u32, std::memory_order_relaxed);
   d.d_1d0e10_last_copy.store(r5.u32, std::memory_order_relaxed);
@@ -2078,6 +2395,7 @@ void FM2AllocGrowPath1D0E10Entry(PPCRegister& r12, PPCRegister& r4, PPCRegister&
 void FM2AllocEnsurePath1D1568Entry(PPCRegister& r12, PPCRegister& r4, PPCRegister& r5) {
   auto& d = SigDiag();
   HitSimple(d.d_1d1568_entry);
+  HitLoadTraceCounter(LoadTrace().alloc_1d1568);
   d.d_1d1568_last_lr.store(r12.u32, std::memory_order_relaxed);
   d.d_1d1568_last_req.store(r4.u32, std::memory_order_relaxed);
   d.d_1d1568_last_flag.store(r5.u32 & 0xFFu, std::memory_order_relaxed);
@@ -2094,6 +2412,7 @@ void FM2AllocEnsurePath1D1568Entry(PPCRegister& r12, PPCRegister& r4, PPCRegiste
 void FM2StrCore25C0Entry(PPCRegister& r12) {
   auto& d = SigDiag();
   HitSimple(d.d_1d25c0_entry);
+  HitLoadTraceCounter(LoadTrace().str_25c0);
   d.d_1d25c0_last_lr.store(r12.u32, std::memory_order_relaxed);
   const uint64_t n = d.d_1d25c0_samples.fetch_add(1, std::memory_order_relaxed) + 1;
   if (n <= 64 && (n <= 16 || (n % 8) == 0)) {
@@ -2105,6 +2424,7 @@ void FM2StrCore25C0Entry(PPCRegister& r12) {
 void FM2StrCore24D8Entry(PPCRegister& r12) {
   auto& d = SigDiag();
   HitSimple(d.d_1d24d8_entry);
+  HitLoadTraceCounter(LoadTrace().str_24d8);
   d.d_1d24d8_last_lr.store(r12.u32, std::memory_order_relaxed);
   const uint64_t n = d.d_1d24d8_samples.fetch_add(1, std::memory_order_relaxed) + 1;
   if (n <= 64 && (n <= 16 || (n % 8) == 0)) {
@@ -2116,6 +2436,7 @@ void FM2StrCore24D8Entry(PPCRegister& r12) {
 void FM2StrCore30C10Entry(PPCRegister& r12) {
   auto& d = SigDiag();
   HitSimple(d.d_430c10_entry);
+  HitLoadTraceCounter(LoadTrace().str_30c10);
   d.d_430c10_last_lr.store(r12.u32, std::memory_order_relaxed);
   const uint64_t n = d.d_430c10_samples.fetch_add(1, std::memory_order_relaxed) + 1;
   if (n <= 64 && (n <= 16 || (n % 8) == 0)) {
@@ -2127,8 +2448,10 @@ void FM2StrCore30C10Entry(PPCRegister& r12) {
 void FM2PathBuilder5CF298Entry(PPCRegister& r12, PPCRegister& r4, PPCRegister& r5) {
   auto& d = SigDiag();
   HitSimple(d.d_5cf298_entry);
+  HitLoadTraceCounter(LoadTrace().path_5cf298);
   d.d_5cf298_last_lr.store(r12.u32, std::memory_order_relaxed);
   d.d_5cf298_last_flag.store(r5.u32 & 0xFFu, std::memory_order_relaxed);
+  MaybeLogLoadTracePathSample(r12.u32, r5.u32 & 0xFFu, r4.u32);
   const uint64_t n = d.d_5cf298_samples.fetch_add(1, std::memory_order_relaxed) + 1;
   if (n <= 40 && (n <= 16 || (n % 8) == 0)) {
     char path[65];
@@ -2137,6 +2460,16 @@ void FM2PathBuilder5CF298Entry(PPCRegister& r12, PPCRegister& r4, PPCRegister& r
             static_cast<unsigned long long>(n), static_cast<unsigned>(GetCurrentThreadId()), r12.u32,
             static_cast<unsigned>(r5.u32 & 0xFFu), path);
   }
+}
+
+void FM2BufferedFileReadAsyncAwareEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
+  HitLoadTraceCounter(LoadTrace().buffered_async);
+  MaybeLogLoadTraceReadSample("BufferedFileReadAsyncAware", r3.u32, r4.u32, r5.u32);
+}
+
+void FM2BufferedFileReadEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
+  HitLoadTraceCounter(LoadTrace().buffered_sync);
+  MaybeLogLoadTraceReadSample("BufferedFileRead", r3.u32, r4.u32, r5.u32);
 }
 
 void FM2FmodWorkerLoop825890F8(PPCRegister& r3) {
@@ -2263,6 +2596,7 @@ void FM2FmodReadCopy2At82693988(PPCRegister& r5) {
 
 void FM2FmodRenderCallback823EBF20(PPCRegister& r3) {
   (void)r3;
+  MaybePollLoadTraceToggle();
   auto& d = SigDiag();
   d.fmod_render_cb_hits.fetch_add(1, std::memory_order_relaxed);
   d.fmod_render_cb_last_tid.store(static_cast<uint32_t>(GetCurrentThreadId()),
@@ -2559,6 +2893,7 @@ void FM2Caller8235F3D8(PPCRegister& r3) {
 }
 
 void FM2ProducerProgressGuardWait823693F8() {
+  HitLoadTraceCounter(LoadTrace().prod_guard_wait);
   if (REXCVAR_GET(fm2_prod_guard_stats)) {
     auto& d = ProdGuardDiag();
     d.wait_ret1.fetch_add(1, std::memory_order_relaxed);
@@ -2809,6 +3144,7 @@ bool FM2ProducerWaitLoopShouldSpin82372A78(PPCRegister& need, PPCRegister& avail
 }
 
 void FM2ProducerProgressGuardTimeout82369400() {
+  HitLoadTraceCounter(LoadTrace().prod_guard_timeout);
   if (!REXCVAR_GET(fm2_prod_guard_stats)) {
     return;
   }
@@ -2831,6 +3167,7 @@ void FM2ProducerProgressGuardTimeoutDetail82369400(PPCRegister& lr, PPCRegister&
 }
 
 void FM2ProducerProgressGuardReturnZero82369408() {
+  HitLoadTraceCounter(LoadTrace().prod_guard_ret0);
   if (!REXCVAR_GET(fm2_prod_guard_stats)) {
     return;
   }
@@ -2840,6 +3177,7 @@ void FM2ProducerProgressGuardReturnZero82369408() {
 }
 
 void FM2ApuMixRenderEnter82697F08() {
+  MaybePollLoadTraceToggle();
   if (!REXCVAR_GET(fm2_apu_mix_stats)) {
     return;
   }
@@ -2908,6 +3246,7 @@ void FM2ApuMixRenderExitB826983C0() {
 void FM2HelperEntry63768(PPCRegister& r12) {
   auto& d = SigDiag();
   HitSimple(d.h63768_count);
+  HitLoadTraceCounter(LoadTrace().helper_63768);
   MaybeBreakOnLoadPointLR(r12.u32);
   switch (r12.u32) {
     case 0x821D0448u:
@@ -2932,14 +3271,45 @@ void FM2HelperEntry63768(PPCRegister& r12) {
   }
 }
 
-void FM2HelperEntry67F60(PPCRegister& r3) {
-  (void)r3;
+void FM2HelperEntry67F60(PPCRegister& r4) {
   auto& d = SigDiag();
   HitSimple(d.h67f60_count);
+  HitLoadTraceCounter(LoadTrace().helper_67f60);
+  if (IsLoadTraceActive()) {
+    HitLoadTraceAllocPoolRequest(r4.u32);
+  }
+}
+
+void FM2AllocPoolTryAcquirePoolResult82367FA8(PPCRegister& r30, PPCRegister& r31) {
+  (void)r30;
+  if (!IsLoadTraceActive()) {
+    return;
+  }
+  auto& d = LoadTrace();
+  if (r31.u32 != 0u) {
+    d.alloc_pool_fast_hit.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    d.alloc_pool_fast_miss.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+void FM2AllocPoolTryAcquireFallbackResult82368004(PPCRegister& r30, PPCRegister& r31) {
+  (void)r30;
+  if (!IsLoadTraceActive()) {
+    return;
+  }
+  auto& d = LoadTrace();
+  d.alloc_pool_fallback_calls.fetch_add(1, std::memory_order_relaxed);
+  if (r31.u32 != 0u) {
+    d.alloc_pool_fallback_hit.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    d.alloc_pool_fallback_fail.fetch_add(1, std::memory_order_relaxed);
+  }
 }
 
 void FM2HelperEntry63538(PPCRegister& r3) {
   (void)r3;
   auto& d = SigDiag();
   HitSimple(d.h63538_count);
+  HitLoadTraceCounter(LoadTrace().helper_63538);
 }

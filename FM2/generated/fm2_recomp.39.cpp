@@ -33995,7 +33995,7 @@ loc_8268C654:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8268C670) {
+DEFINE_REX_FUNC(FM2_FmodStreamRead_8268C670) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -49261,7 +49261,7 @@ loc_82692AD8:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82692AF0) {
+DEFINE_REX_FUNC(FM2_FmodXmaContextReinit_82692AF0) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -51464,7 +51464,7 @@ DEFINE_REX_FUNC(FM2_FmodReadCopy2_82693988) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_826939A8) {
+DEFINE_REX_FUNC(FM2_FmodCodecSeek_826939A8) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -51505,7 +51505,7 @@ loc_826939E0:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x82692af0
 	ctx.lr = 0x826939E8;
-	sub_82692AF0(ctx, base);
+	FM2_FmodXmaContextReinit_82692AF0(ctx, base);
 	// lwz r11,224(r30)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 224);
 	// li r28,0
@@ -51625,7 +51625,7 @@ loc_82693AB4:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8268c670
 	ctx.lr = 0x82693AC4;
-	sub_8268C670(ctx, base);
+	FM2_FmodStreamRead_8268C670(ctx, base);
 	// cmpwi cr6,r3,0
 	ctx.cr6.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// bne cr6,0x82693adc
@@ -51711,7 +51711,7 @@ DEFINE_REX_FUNC(sub_82693B30) {
 	ctx.r3.s64 = 0;
 loc_82693B40:
 	// b 0x826939a8
-	sub_826939A8(ctx, base);
+	FM2_FmodCodecSeek_826939A8(ctx, base);
 	return;
 }
 
@@ -53766,7 +53766,7 @@ loc_826949A4:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8268c670
 	ctx.lr = 0x826949B4;
-	sub_8268C670(ctx, base);
+	FM2_FmodStreamRead_8268C670(ctx, base);
 	// cmpwi cr6,r3,0
 	ctx.cr6.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// bne cr6,0x826949d4
@@ -55323,7 +55323,7 @@ loc_82695478:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82695480) {
+DEFINE_REX_FUNC(FM2_FmodCodecReadConvert_82695480) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -55404,7 +55404,7 @@ loc_826954C8:
 	if (ctx.r11.s32 == 0 || ctx.r11.u32 < 0u) ppc_trap(ctx, base, 0);
 	// bl 0x8268c670
 	ctx.lr = 0x82695510;
-	sub_8268C670(ctx, base);
+	FM2_FmodStreamRead_8268C670(ctx, base);
 	// mr r22,r3
 	ctx.r22.u64 = ctx.r3.u64;
 	// cmpwi cr6,r22,0
@@ -56295,7 +56295,7 @@ loc_82695B08:
 	ctx.r4.u64 = ctx.r29.u64;
 	// bl 0x826939a8
 	ctx.lr = 0x82695B84;
-	sub_826939A8(ctx, base);
+	FM2_FmodCodecSeek_826939A8(ctx, base);
 	// mr r3,r28
 	ctx.r3.u64 = ctx.r28.u64;
 	// addi r1,r1,448
@@ -56961,7 +56961,7 @@ DEFINE_REX_FUNC(sub_82696008) {
 	ctx.r3.s64 = 0;
 loc_82696018:
 	// b 0x82695480
-	sub_82695480(ctx, base);
+	FM2_FmodCodecReadConvert_82695480(ctx, base);
 	return;
 }
 
@@ -61676,7 +61676,7 @@ loc_82697FEC:
 	ctx.r5.u64 = REX_LOAD_U32(ctx.r28.u32 + 0);
 	// bl 0x8269e000
 	ctx.lr = 0x82698088;
-	sub_8269E000(ctx, base);
+	FM2_ApuMixBuildPanMatrix_8269E000(ctx, base);
 	// lwz r11,56(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// mr r27,r14
@@ -61714,7 +61714,7 @@ loc_826980BC:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8269df48
 	ctx.lr = 0x826980CC;
-	sub_8269DF48(ctx, base);
+	FM2_ApuMixCoeffIsIdentity_8269DF48(ctx, base);
 	// cmpwi cr6,r3,0
 	ctx.cr6.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// bne cr6,0x826980d8
@@ -61766,7 +61766,7 @@ loc_82698100:
 	if (!ctx.cr6.eq) goto loc_82698130;
 	// bl 0x8269db60
 	ctx.lr = 0x8269812C;
-	sub_8269DB60(ctx, base);
+	FM2_ApuMixCoeffSetIdentity_8269DB60(ctx, base);
 	// b 0x8269814c
 	goto loc_8269814C;
 loc_82698130:
@@ -61775,7 +61775,7 @@ loc_82698130:
 	ctx.f1.f64 = ctx.f30.f64;
 	// bl 0x8269dfe0
 	ctx.lr = 0x82698138;
-	sub_8269DFE0(ctx, base);
+	FM2_ApuMixSetBaseGain_8269DFE0(ctx, base);
 	// mr r6,r18
 	ctx.r6.u64 = ctx.r18.u64;
 	// lwz r5,0(r28)
@@ -61786,7 +61786,7 @@ loc_82698130:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8269e000
 	ctx.lr = 0x8269814C;
-	sub_8269E000(ctx, base);
+	FM2_ApuMixBuildPanMatrix_8269E000(ctx, base);
 loc_8269814C:
 	// lwz r11,0(r24)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r24.u32 + 0);
@@ -61851,7 +61851,7 @@ loc_826981A4:
 	ctx.r5.u64 = REX_LOAD_U32(ctx.r24.u32 + 0);
 	// bl 0x8269e8f0
 	ctx.lr = 0x826981C0;
-	sub_8269E8F0(ctx, base);
+	FM2_ApuMixAccumulateVoice_8269E8F0(ctx, base);
 	// b 0x826981e4
 	goto loc_826981E4;
 loc_826981C4:
@@ -74810,7 +74810,7 @@ loc_8269DB44:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8269DB60) {
+DEFINE_REX_FUNC(FM2_ApuMixCoeffSetIdentity_8269DB60) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	// mr r8,r3

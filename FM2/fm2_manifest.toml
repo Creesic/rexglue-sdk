@@ -58,7 +58,8 @@ longjmp_address = 0x82418210
 0x823e9bf0 = { name = "FM2_ReleaseObjectMinus8" }
 0x82680d58 = { name = "FM2_RangeCheckedCurveCallback" }
 0x8266d6f8 = { name = "FM2_Thunk_InvokeB2F8_DefaultZero" }
-0x826a8600 = { name = "FM2_StateGateForwardToDFE0" }
+0x826A85E4 = { name = "FM2_AudioVoiceSetVolumeScaled_826A85E4" }
+0x826A8600 = { name = "FM2_StateGateForwardToDFE0_826A8600" }
 0x8243f898 = { name = "FM2_ValidateFlagThenCallF810" }
 0x822544b0 = { name = "FM2_AtomicAddRef" }
 0x8243c140 = { name = "FM2_BufferedFileReadAsyncAware" }
@@ -97,6 +98,23 @@ longjmp_address = 0x82418210
 0x82375A40 = { name = "FM2_D3D_BeginCommandBufferBatch" }
 0x82375ED0 = { name = "FM2_D3D_EmitDirtyStateAndDrawList" }
 0x82376A58 = { name = "FM2_D3D_FinalizeCommandBufferBatch" }
+0x82509148 = { name = "FM2_Render_SceneSliceEntry" }
+0x8250D950 = { name = "FM2_Render_ViewTraversal" }
+0x825181A8 = { name = "FM2_Render_SubmitPassWrapper" }
+0x82518DC0 = { name = "FM2_Render_FramePipeline" }
+0x8251B620 = { name = "FM2_Render_BuildPassTemplateCommandBuffer" }
+0x8251BA08 = { name = "FM2_Render_FinalizeAndCloneCommandBuffer" }
+0x8251BC40 = { name = "FM2_Render_SubmitSortedObjectDrawLists" }
+0x8251C688 = { name = "FM2_Render_ObjectPassDrawTraversal" }
+0x8252FF00 = { name = "FM2_Render_ExecuteSortedDrawLists" }
+0x82531370 = { name = "FM2_Render_BuildObjectPassCommandBuffer" }
+0x82531DC0 = { name = "FM2_Render_CompileMissingPassBuffers" }
+0x825380B8 = { name = "FM2_Render_BuildDirectIndexedDrawBuffers" }
+0x82539650 = { name = "FM2_Render_InstanceHybridDrawPath" }
+0x8253A680 = { name = "FM2_Render_InstancePathWrapper" }
+0x825B8688 = { name = "FM2_Render_ScopedBatchFinalize" }
+0x825B8920 = { name = "FM2_Render_ScopedBatchBegin" }
+0x825B8A60 = { name = "FM2_Render_UiOrScreenDrawListSubmit" }
 0x82540160 = { name = "FM2_SpliceResultObjectsIntoList" }
 0x82551D08 = { name = "FM2_FindAndReplaceDelimitedTextRange" }
 0x82603BE0 = { name = "FM2_ReleaseOwnedChildObjects" }
@@ -118,8 +136,14 @@ longjmp_address = 0x82418210
 0x82430C10 = { name = "FM2_StrCore_ReplaceFill_82430C10" }
 0x825CF298 = { name = "FM2_PathBuilder_825CF298" }
 0x8220A4E8 = { name = "FM2_SignalGate_8220A4E8" }
+0x826776E0 = { name = "FM2_FmodStreamReadDispatch_826776E0" }
+0x8268C670 = { name = "FM2_FmodStreamRead_8268C670" }
 0x825890F8 = { name = "FM2_FmodWorkerLoop_825890F8" }
 0x826938E8 = { name = "FM2_FmodCodecRead_826938E8" }
+0x826939A8 = { name = "FM2_FmodCodecSeek_826939A8" }
+0x82692AF0 = { name = "FM2_FmodXmaContextReinit_82692AF0" }
+0x82695480 = { name = "FM2_FmodCodecReadConvert_82695480" }
+0x826A3E80 = { name = "FM2_FmodCodecReadPaged_826A3E80" }
 0x823EBF20 = { name = "FM2_FmodRenderCallback_823EBF20" }
 0x823E83C8 = { name = "FM2_FmodRenderDispatch_823E83C8" }
 0x8236C380 = { name = "FM2_FmodIrqDispatch_8236C380" }
@@ -133,6 +157,16 @@ longjmp_address = 0x82418210
 0x8236CB20 = { name = "FM2_FmodWrap_8236CB20" }
 0x82369340 = { name = "FM2_ProducerProgressGuard_82369340" }
 0x82697F08 = { name = "FM2_ApuMixRenderCore_82697F08" }
+0x8269DB60 = { name = "FM2_ApuMixCoeffSetIdentity_8269DB60" }
+0x8269DD80 = { name = "FM2_ApuMixCoeffUpdateDelta_8269DD80" }
+0x8269DF48 = { name = "FM2_ApuMixCoeffIsIdentity_8269DF48" }
+0x8269DFE0 = { name = "FM2_ApuMixSetBaseGain_8269DFE0" }
+0x8269E000 = { name = "FM2_ApuMixBuildPanMatrix_8269E000" }
+0x8269E6B0 = { name = "FM2_ApuMixSetOutputMatrix_8269E6B0" }
+0x8269E8F0 = { name = "FM2_ApuMixAccumulateVoice_8269E8F0" }
+0x826A62A0 = { name = "FM2_AudioVoiceSetVolumeQuantized_826A62A0" }
+0x826A75E8 = { name = "FM2_AudioSourceSetVolume_826A75E8" }
+0x826A8628 = { name = "FM2_AudioVoiceApplyOutputMatrix_826A8628" }
 0x82381D60 = { name = "FM2_FmodPumpThread_82381D60" }
 0x82693B18 = { name = "FM2_FmodDecodeThunk_82693B18" }
 0x82692CC8 = { name = "FM2_FmodFillControl_82692CC8" }
@@ -535,8 +569,20 @@ after_instruction = true
 [[entrypoint.midasm_hook]]
 address = 0x82367F60
 name = "FM2HelperEntry67F60"
-registers = ["r3"]
+registers = ["r4"]
 after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82367FA8
+name = "FM2AllocPoolTryAcquirePoolResult82367FA8"
+registers = ["r30", "r31"]
+after_instruction = true
+
+[[entrypoint.midasm_hook]]
+address = 0x82368004
+name = "FM2AllocPoolTryAcquireFallbackResult82368004"
+registers = ["r30", "r31"]
+after_instruction = true
 
 [[entrypoint.midasm_hook]]
 address = 0x82363538
@@ -597,6 +643,18 @@ address = 0x825CF298
 name = "FM2PathBuilder5CF298Entry"
 registers = ["r12", "r4", "r5"]
 after_instruction = true
+
+[[entrypoint.midasm_hook]]
+address = 0x8243C140
+name = "FM2BufferedFileReadAsyncAwareEntry"
+registers = ["r3", "r4", "r5"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8243C8D0
+name = "FM2BufferedFileReadEntry"
+registers = ["r3", "r4", "r5"]
+after_instruction = false
 
 [[entrypoint.midasm_hook]]
 address = 0x8259F358

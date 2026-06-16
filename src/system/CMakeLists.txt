@@ -31,6 +31,7 @@ set(REXSYSTEM_SOURCES
     xam/user_profile.cpp
 
     ppc_types.cpp
+    ../ppc/guest_pc_fiber.cpp
     elf_module.cpp
     entry_table.cpp
     export_resolver.cpp
@@ -53,6 +54,8 @@ set_target_properties(rexruntime PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
 
 target_include_directories(rexruntime PUBLIC
     $<BUILD_INTERFACE:${REXGLUE_ROOT}/include>
+    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+    $<BUILD_INTERFACE:${REXGLUE_ROOT}/thirdparty/imgui>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_include_directories(rexruntime PRIVATE

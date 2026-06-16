@@ -12,6 +12,7 @@
 #pragma once
 
 #include <rex/ui/imgui_dialog.h>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -45,6 +46,8 @@ struct AudioXmaContextInfo {
   float volume = 1.0f;
   float peak_level = 0.0f;
   float rms_level = 0.0f;
+  float audible_peak_level = 0.0f;
+  float audible_rms_level = 0.0f;
   uint8_t current_buffer = 0;
   uint8_t subframe_decode_count = 0;
   uint8_t output_buffer_block_count = 0;
@@ -52,6 +55,13 @@ struct AudioXmaContextInfo {
   uint8_t output_buffer_read_offset = 0;
   uint8_t sample_rate_id = 0;
   uint8_t loop_count = 0;
+  uint8_t output_buffer_padding = 0;
+  uint8_t loop_subframe_start = 0;
+  uint8_t loop_subframe_end = 0;
+  uint8_t loop_subframe_skip = 0;
+  uint8_t packet_metadata = 0;
+  uint16_t input_buffer_0_packet_count = 0;
+  uint16_t input_buffer_1_packet_count = 0;
   uint32_t guest_ptr = 0;
   uint32_t input_buffer_read_offset = 0;
   uint32_t input_buffer_0_ptr = 0;
@@ -60,10 +70,30 @@ struct AudioXmaContextInfo {
 };
 
 struct AudioVoicesSnapshot {
+  struct VpWorkerInfo {
+    uint32_t num_voices = 0;
+    uint32_t time_us = 0;
+  };
+
+  struct VpInfo {
+    uint32_t total_worker_time_us = 0;
+    uint32_t sweeps_per_second = 0;
+    uint32_t decode_iterations_per_second = 0;
+    std::array<VpWorkerInfo, 1> workers = {};
+  };
+
+  struct DspInfo {
+    uint32_t cycles = 0;
+  };
+
   bool valid = false;
   bool paused = false;
   uint32_t queued_frames = 0;
+  uint64_t render_callbacks_total = 0;
   bool xma_paused = false;
+  VpInfo vp = {};
+  DspInfo gp = {};
+  DspInfo ep = {};
   std::vector<AudioVoiceInfo> voices;
   std::vector<AudioXmaContextInfo> xma_contexts;
 };
@@ -73,8 +103,9 @@ struct AudioVoicesLayoutState {
   float window_width = 0.0f;
   float window_height = 0.0f;
   bool normalize_volume_panel = false;
-  bool ignore_persisted_controls = true;
+  bool ignore_persisted_controls = false;
   bool show_playing_contexts_only = false;
+  bool meter_use_audible = true;
   std::unordered_set<uint32_t> muted_contexts;
   std::unordered_set<uint64_t> muted_signatures;
   std::vector<uint32_t> tracked_volume_contexts;
@@ -119,6 +150,10 @@ class AudioVoicesDialog : public ImGuiDialog {
  private:
   void LoadLayoutStateOnce();
   void ApplyMutedLayoutState(const AudioVoicesSnapshot& snapshot);
+  void ClearHoverSoloOverride();
+  void ApplyPersistedMuteStateToSnapshot(const AudioVoicesSnapshot& snapshot);
+  void UpdateHoverSoloOverride(const AudioVoicesSnapshot& snapshot,
+                               const std::optional<uint32_t>& hovered_context);
   void SaveLayoutState(bool force);
   AudioVoicesLayoutState BuildLayoutState() const;
 
@@ -150,8 +185,31 @@ class AudioVoicesDialog : public ImGuiDialog {
   bool drag_mute_active_ = false;
   bool drag_mute_target_ = false;
   bool normalize_volume_panel_ = false;
-  bool ignore_persisted_controls_ = true;
+  bool ignore_persisted_controls_ = false;
   bool show_playing_contexts_only_ = false;
+  bool meter_use_audible_ = true;
+  bool hover_solo_enabled_ = true;
+  bool hover_solo_active_ = false;
+  std::optional<uint32_t> hover_solo_context_;
+  std::unordered_map<uint32_t, bool> hover_solo_saved_mute_states_;
+  std::vector<float> queue_depth_history_;
+  std::vector<float> callback_interval_history_ms_;
+  uint64_t last_render_callbacks_total_ = 0;
+  double last_render_callback_time_ = 0.0;
+  double last_metrics_sample_time_ = 0.0;
+  double last_metrics_smoothing_time_ = 0.0;
+  float render_interval_ema_ms_ = 0.0f;
+  float render_deviation_ms_ = 0.0f;
+  float smoothed_utilization_percent_ = 0.0f;
+  float smoothed_deviation_ms_ = 0.0f;
+  float smoothed_latency_ms_ = 0.0f;
+  float smoothed_pacing_interval_ms_ = 0.0f;
+  float smoothed_vp_total_us_ = 0.0f;
+  float smoothed_vp_sweeps_per_second_ = 0.0f;
+  float smoothed_vp_decode_iters_per_second_ = 0.0f;
+  float smoothed_gp_cycles_ = 0.0f;
+  float smoothed_ep_cycles_ = 0.0f;
+  bool smoothed_metrics_initialized_ = false;
   bool layout_state_loaded_ = false;
   bool pending_apply_mute_layout_ = false;
   bool layout_dirty_ = false;

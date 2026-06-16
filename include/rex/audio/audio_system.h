@@ -50,6 +50,7 @@ class AudioSystem : public system::IAudioSystem {
   struct DebugSnapshot {
     bool paused = false;
     uint32_t queued_frames = 0;
+    uint64_t render_callbacks_total = 0;
     std::array<DebugClientInfo, kMaximumClientCount> clients = {};
   };
 

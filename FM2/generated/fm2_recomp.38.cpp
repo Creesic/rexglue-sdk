@@ -60496,7 +60496,7 @@ loc_826776C0:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_826776E0) {
+DEFINE_REX_FUNC(FM2_FmodStreamReadDispatch_826776E0) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -60766,7 +60766,7 @@ loc_826778BC:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 56);
 	// bl 0x8268c670
 	ctx.lr = 0x826778C8;
-	sub_8268C670(ctx, base);
+	FM2_FmodStreamRead_8268C670(ctx, base);
 loc_826778C8:
 	// mr r27,r3
 	ctx.r27.u64 = ctx.r3.u64;

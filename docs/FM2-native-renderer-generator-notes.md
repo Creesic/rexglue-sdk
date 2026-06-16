@@ -1,0 +1,286 @@
+# FM2 Native Renderer And Generator Notes
+
+Date: 2026-06-16
+Branch context: `FM2_WIN_Plume`
+
+This note tracks the idea of using Plume for a title-native renderer path, with
+FM2 as the first prototype. It is meant to be updated as we learn durable facts.
+
+## Current Conclusion
+
+UnleashedRecomp has a native renderer, but not a universal Xbox 360 renderer.
+It hooks Sonic Unleashed's high-level game rendering layer and translates those
+game draw calls into Plume objects and commands.
+
+That model is promising for FM2 if FM2 has a similarly hookable high-level D3D
+or render-device layer. It does not remove the need to understand the title's
+rendering model. The reusable part is the workflow and shared renderer runtime,
+not a fully automatic conversion from arbitrary Xenos packets to native PC
+rendering.
+
+## What UnleashedRecomp Does
+
+Observed from `C:\Users\Tera\Documents\GitHub\UnleashedRecomp`:
+
+- Uses Plume as the host rendering hardware interface.
+- Defines game-facing objects such as `GuestDevice`, `GuestTexture`,
+  `GuestBuffer`, `GuestSurface`, `GuestShader`, and `GuestVertexDeclaration`.
+- Hooks high-level guest rendering functions:
+  - create device
+  - create texture/surface/vertex buffer/index buffer
+  - lock/unlock texture and buffers
+  - set render target/depth surface
+  - set texture/sampler/render state
+  - set shaders
+  - set stream source/indices
+  - draw primitive / draw indexed primitive / draw primitive UP
+  - present
+- Converts guest D3D-like state and formats into Plume state.
+- Queues commands to a host render thread, then flushes render state into Plume
+  command lists.
+- Uses `XenosRecomp` offline to build title-specific DXIL/SPIR-V shader cache
+  data from the title shader archive and patched XEX.
+- Adds title-specific fixes and special paths for MSAA resolves, copies,
+  post-processing, shader specialization, UI, movie rendering, and engine bugs.
+
+The important lesson is that it bypasses the original Xbox Vd/GPU path by
+intercepting a high-level game renderer API. It does not try to emulate every
+Xenos register and PM4 packet for every possible game.
+
+## FM2 Direction
+
+For FM2, the first milestone should be a Plume-backed native renderer prototype
+for FM2 specifically, not a multi-game generator.
+
+Desired initial shape:
+
+1. Identify FM2's high-level rendering abstraction.
+2. Hook a minimal set of FM2 rendering entrypoints.
+3. Define FM2 guest-facing renderer structs in host code.
+4. Translate FM2 render state/resource calls into Plume resources and commands.
+5. Create a minimal Plume device/swapchain path.
+6. Get a first visible frame or a controlled clear/present path.
+7. Expand to resources, shaders, draw calls, resolves, and UI.
+8. Only after the FM2 path works, extract common patterns into generator/runtime
+   infrastructure.
+
+Known FM2 render-related names already in this repo:
+
+- `0x82375A40 = FM2_D3D_BeginCommandBufferBatch`
+- `0x82375ED0 = FM2_D3D_EmitDirtyStateAndDrawList`
+- `0x82376A58 = FM2_D3D_FinalizeCommandBufferBatch`
+
+These are currently documented in `docs/FM2-ida-toml-function-notes.md` and
+listed in `FM2/fm2_manifest.toml`. They look like command-buffer emission
+functions, not necessarily the highest-level API boundary we want. They are a
+good starting landmark, but the native renderer hook layer may need to sit above
+them if FM2 has D3D-style create/set/draw wrappers.
+
+## 2026-06-16 FM2 IDA Survey
+
+IDA is connected to the FM2 `default.xex` image at base `0x82000000`.
+The initial caller walk started from the three known D3D command-buffer
+landmarks.
+
+### Low-Level Command Buffer Layer
+
+These functions are probably below the desired native-renderer boundary:
+
+- `0x82375A40 = FM2_D3D_BeginCommandBufferBatch`
+  - Sets up a D3D command-buffer batch, binds command-buffer ownership, clears
+    dirty masks, copies optional state-mask arrays, and may drain pending GPU
+    command work.
+- `0x82375ED0 = FM2_D3D_EmitDirtyStateAndDrawList`
+  - Emits dirty state and a draw-list command-buffer payload. Callers usually
+    pass a cached command-buffer pointer selected from a per-object/pass table.
+- `0x82376A58 = FM2_D3D_FinalizeCommandBufferBatch`
+  - Patches packet lengths, flushes/finalizes the command buffer, and writes
+    result status.
+
+For a Plume-native renderer, directly replacing this layer would still require
+understanding FM2's command-buffer encoding and a lot of Xenos-like state. It
+is useful as a trace boundary, but probably not the best first hook point.
+
+### Higher-Level Render Pipeline Candidates
+
+The IDA names corresponding to these addresses were applied and mirrored into
+`FM2/fm2_manifest.toml` on 2026-06-16.
+
+| Address | Working description | Evidence | Native renderer relevance | Confidence |
+| --- | --- | --- | --- | --- |
+| `0x82518DC0` | Main frame/pipeline orchestrator | Sets view/render state, prepares camera data, compiles command buffers, then submits multiple render passes through helpers. | Good for understanding frame pass order; probably too high for replacing draw execution directly. | Medium |
+| `0x825181A8` | Render pass submit wrapper | Stores a pass selector, calls a small setup helper, then calls `0x8252FF00`. | Good stable pass-boundary probe. | Medium |
+| `0x8252FF00` | Sorted draw-list executor | Enters a critical section, selects render buckets, updates per-object state through `0x825222B0` / `0x82522418`, then calls `FM2_D3D_EmitDirtyStateAndDrawList`. | Strong candidate for intercepting "replay cached draw work" by pass. | Medium-high |
+| `0x82531DC0` | Time-budgeted command-buffer compiler | Scans renderable lists for missing pass command buffers and calls `0x82531370` until an item/time budget is reached. | Strong candidate for replacing cached command-buffer construction with native draw metadata construction. | Medium-high |
+| `0x82531370` | Per-object/per-pass command-buffer builder | Starts a command-buffer batch, calls `0x8250F7C0` to emit draw work, finalizes, creates texture/fixup records, then clones command buffers into per-pass slots. | Very important. This may be the FM2 equivalent of "record native draw packet for this material/pass". | High |
+| `0x8250D950` | Higher-level scene/view traversal | Iterates a list of views or light modes, sets renderer interface state, calls `0x82509148`, then follow-up pass helpers. Contains string evidence around `LightMapOnly`. | Useful for pass naming and visual phase correlation, but likely above the hook layer. | Medium |
+| `0x82509148` | Compact scene render entry | Prepares view state, optionally initializes, refreshes lists, calls `0x82531DC0`, then calls `0x8252FF00`. | Good test hook for one full world-render slice. | Medium-high |
+| `0x8251B620` | Pass-template command-buffer setup | Switches on mode `0..10`, begins a batch, applies fixed render/depth states, marks dirty slots. | Useful for naming pass modes and reconstructing render-state templates. | Medium |
+| `0x8251BA08` | Command-buffer finalize-and-clone helper | Applies fixed render states, finalizes the active batch, then clones `dword_829F4454`. | Below ideal hook layer; useful for cached command-buffer lifecycle. | Medium |
+| `0x8251BC40` | Sorted object draw-list submit helper | Sorts up to 19 object slots by distance/score, updates object state, then emits selected draw-list entries. | Useful for object-order and transparency behavior. | Medium |
+| `0x8251C688` | Object/pass draw traversal | Chooses pass buckets from object flags and alpha state, updates per-object constants/material state, then emits several cached draw lists. | Strong candidate for object-level render semantics once pass names are known. | Medium-high |
+| `0x825380B8` | Direct indexed-draw command-buffer builder | Binds transforms/resources through a renderer interface, calls virtual draw methods, finalizes, then clones command buffers. | Very useful because it shows direct draw construction rather than only cached replay. | High |
+| `0x82539650` | Instance renderer / hybrid cached-or-direct draw path | Sorts visible instances, uploads texture/constants, then either emits cached draw lists or calls interface methods to draw indexed primitives directly. | Good Plume bridge template because both state setup and draw parameters are visible. | Medium-high |
+| `0x8253A680` | Instance renderer wrapper | Sets constants, prepares camera-dependent data, calls `0x82539650`, then follow-up helpers. | Useful for identifying one specialized render subsystem. | Medium |
+| `0x825B8920` | Scoped render-batch begin | Switches active device/context, selects a command buffer, begins a batch, and marks the object active. | Likely useful for UI/offscreen scoped rendering. | Medium |
+| `0x825B8688` | Scoped render-batch finalize | Releases current surfaces, finalizes the command buffer, restores previous context, and marks the object inactive. | Pair with `0x825B8920` for scoped/offscreen rendering. | Medium |
+| `0x825B8A60` | Screen-space or UI draw-list submit | Computes a 2D transform, uploads constants with `0x8236D958`, selects a command buffer, then emits it. | Candidate for a separate native UI/2D path. | Medium |
+
+### Initial Interpretation
+
+FM2 appears to split rendering into two phases:
+
+1. Build or refresh cached D3D command buffers for renderable/pass combinations.
+2. Execute those cached command buffers during sorted pass traversal.
+
+That is different from UnleashedRecomp's simpler-looking high-level D3D hook
+surface, but it may still be workable. The most promising FM2-native path is
+not to emulate the cached command-buffer bytes. Instead, use the command-buffer
+compiler functions as the place to build native Plume draw metadata, then use
+the pass-submit functions to execute that native metadata.
+
+The first practical Plume prototype should therefore focus on a narrow pass:
+
+1. Instrument `0x82509148`, `0x82531DC0`, `0x82531370`, and `0x8252FF00` with
+   lightweight logging.
+2. Correlate pass indices and cached draw-list slots with one RenderDoc capture.
+3. Pick one simple world pass or the `0x825380B8` direct-draw path.
+4. Mirror its vertex/index buffers, textures, constants, shaders, and draw
+   arguments into a host-side native draw packet.
+5. Replay that one packet through Plume while leaving the existing backend as
+   fallback.
+
+### Ghidra 90 Cross-Check
+
+Ghidra 90 is connected to the same `default.xex`, but for this FM2 render pass
+it is not currently giving a better caller read than IDA. It agrees with IDA on
+the straightforward low-level direct calls to `0x82375A40` and `0x82376A58`,
+but it only reports 10 callers to `0x82375ED0` where IDA reports 18.
+
+The main reason is function-boundary recovery. Ghidra currently truncates some
+large PPC functions at compiler save/prologue helper calls:
+
+- `0x82518DC0` is treated as a 5-instruction function ending after
+  `bl 0x824131A0`, so Ghidra misses the real frame-pipeline body and the direct
+  call to `0x82531DC0` at `0x825191C8`.
+- `0x82539650` is treated as a 5-instruction function ending after
+  `bl 0x82413170` / `bl 0x824144C8`, so Ghidra misses its real instance-render
+  body.
+- `0x8253A680` is not recognized as a function in the current Ghidra view, while
+  IDA decompiles it and sees the direct call to `0x82539650` at `0x8253A964`.
+
+Ghidra did confirm useful data/vtable references:
+
+- `0x82518DC0` is referenced from data at `0x820441D0` and `0x82045000`.
+- IDA also sees those and an additional data reference at `0x8218F858`.
+
+Conclusion: use IDA as the primary tool for this FM2 render-boundary survey,
+and use Ghidra 90 as a secondary cross-check for data/vtable references and
+simple direct xrefs. If we want Ghidra to help more here, the next step is to
+repair its PPC save/prologue helper handling or manually recreate the affected
+function bodies.
+
+## First FM2 Step
+
+The first step is not primarily loading the Unleashed XEX in IDA. The
+Unleashed source already gives us the useful pattern.
+
+The first step is an FM2 render-boundary survey:
+
+1. Load or focus the FM2 XEX in IDA.
+2. Start from the known FM2 D3D command-buffer functions above.
+3. Walk callers upward until we find stable title-level APIs for:
+   - device/context creation
+   - present/swap
+   - render target/depth target setup
+   - texture/surface/buffer creation
+   - texture/buffer lock/unlock or upload
+   - shader creation/binding
+   - vertex declaration/input layout setup
+   - render state/sampler state updates
+   - draw and draw indexed calls
+4. Separately inspect import callsites for Vd/display functions to understand
+   what path is still low-level.
+5. Name useful functions in IDA and mirror durable names into
+   `FM2/fm2_manifest.toml` and `docs/FM2-ida-toml-function-notes.md`.
+6. Build a hook-candidate table before writing renderer code.
+
+Loading the Unleashed XEX in IDA may still help later as a reference for how its
+source hook names map back to original game function shapes, but it is optional.
+For FM2 work, IDA time is better spent on FM2 first.
+
+## Hook Candidate Table Template
+
+Use this table while surveying FM2:
+
+| Address | Proposed name | Evidence | Inputs/outputs | Native renderer action | Confidence |
+| --- | --- | --- | --- | --- | --- |
+| `0x82375A40` | `FM2_D3D_BeginCommandBufferBatch` | Existing name; command batch setup | Unknown | Maybe below desired hook layer | Medium |
+| `0x82375ED0` | `FM2_D3D_EmitDirtyStateAndDrawList` | Existing name; emits dirty state/draw list | Unknown | Maybe below desired hook layer | Medium |
+| `0x82376A58` | `FM2_D3D_FinalizeCommandBufferBatch` | Existing name; finalizes command buffer | Unknown | Maybe below desired hook layer | Medium |
+| `0x82531370` | `FM2_Render_BuildObjectPassCommandBuffer` | Begins/finalizes a batch, emits pass draw work, creates texture fixups, clones command buffers. | Large render object pointer plus pass indices and device/context state. | Build native draw metadata for one object/pass. | High |
+| `0x8252FF00` | `FM2_Render_ExecuteSortedDrawLists` | Iterates sorted renderable arrays and emits cached command-buffer pointers. | Render world/list object, pass/layer selectors, view context. | Execute native draw metadata by pass. | Medium-high |
+| `0x82531DC0` | `FM2_Render_CompileMissingPassBuffers` | Time-budgeted scan for renderables missing cached command buffers; calls `0x82531370`. | Render world/list object, pass index, frame/view context. | Compile native packets lazily. | Medium-high |
+| `0x82518DC0` | `FM2_Render_FramePipeline` | Orchestrates the frame and multiple pass submits. | Frame renderer object. | Trace pass ordering and choose prototype slice. | Medium |
+
+Add new rows as IDA evidence accumulates.
+
+## Generator Vision
+
+After FM2, a generator workflow could become useful. The generator should be
+viewed as an assistant that produces a strong starting point, not a fully
+automatic renderer.
+
+Potential generated artifacts:
+
+- Hook candidate report from static analysis.
+- Guest struct layout guesses.
+- Function naming suggestions.
+- Hook table scaffold.
+- Plume resource wrapper scaffold.
+- Format/state conversion tables.
+- Shader-cache build rules.
+- Render-command queue skeleton.
+- Validation checklist and trace comparison harness.
+
+Likely manual work per title:
+
+- Confirming function boundaries and calling conventions.
+- Correcting guest struct layouts.
+- Handling engine-specific render paths and resource lifetime.
+- Fixing post-processing, UI, movie, resolve, and copy behavior.
+- Adding title-specific shader specializations.
+- Validating against captures.
+
+The reusable long-term architecture should be:
+
+- A shared Plume native renderer runtime.
+- A per-title native renderer layer.
+- A generator that creates per-title scaffolding from discovered evidence.
+- A fallback path through the existing Xenos backend when no safe native hook
+  boundary is available.
+
+## Risks
+
+- FM2 may not expose a clean high-level render API boundary.
+- The known FM2 D3D functions may already be too close to PM4 packet emission,
+  forcing more Xenos semantics into the native path.
+- Offline shader extraction may be different from Unleashed's `shader.ar`
+  workflow.
+- FM2 may rely on EDRAM/copy/resolve behavior that is easier to preserve in the
+  current Xenos backend than in a native renderer.
+- A generator can accelerate repeated work, but it cannot infer all title
+  semantics without captures, names, and manual validation.
+
+## Immediate Next Actions
+
+1. Do the FM2 render-boundary survey in IDA.
+2. Fill the hook candidate table in this document.
+3. Decide whether FM2 has a high-level enough hook layer for an Unleashed-style
+   renderer.
+4. If yes, design the smallest Plume prototype path:
+   - device/swapchain/present
+   - backbuffer clear
+   - one simple draw path
+5. If no, pivot to a Plume backend under the existing Xenos command processor
+   rather than a native FM2 renderer.

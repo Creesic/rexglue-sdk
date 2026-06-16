@@ -6,6 +6,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
+#include <string_view>
 
 #include <rex/platform.h>
 
@@ -44,6 +46,15 @@ class DynamicLibrary {
  private:
   void* handle_ = nullptr;
 };
+
+/// Platform shared-library file name for a recompiled module base name (no path).
+inline std::string SharedLibraryFileName(std::string_view base_name) {
+#if REX_PLATFORM_WIN32
+  return std::string(base_name) + ".dll";
+#else
+  return std::string("lib") + std::string(base_name) + ".so";
+#endif
+}
 
 namespace lib_names {
 

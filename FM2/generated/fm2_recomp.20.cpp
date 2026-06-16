@@ -14627,11 +14627,14 @@ DEFINE_REX_FUNC(sub_8243C130) {
 	return;
 }
 
+extern void FM2BufferedFileReadAsyncAwareEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5);
+
 DEFINE_REX_FUNC(FM2_BufferedFileReadAsyncAware) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
 	// mflr r12
+	FM2BufferedFileReadAsyncAwareEntry(ctx.r3, ctx.r4, ctx.r5);
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x82413194
 	ctx.lr = 0x8243C148;
@@ -15748,11 +15751,14 @@ loc_8243C8B4:
 	return;
 }
 
+extern void FM2BufferedFileReadEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5);
+
 DEFINE_REX_FUNC(FM2_BufferedFileRead) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
 	// mflr r12
+	FM2BufferedFileReadEntry(ctx.r3, ctx.r4, ctx.r5);
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x82413198
 	ctx.lr = 0x8243C8D8;
