@@ -36338,7 +36338,7 @@ loc_825B866C:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825B8688) {
+DEFINE_REX_FUNC(FM2_Render_ScopedBatchFinalize) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -36748,7 +36748,7 @@ DEFINE_REX_FUNC(sub_825B8918) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825B8920) {
+DEFINE_REX_FUNC(FM2_Render_ScopedBatchBegin) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -36931,7 +36931,7 @@ loc_825B8A10:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825B8A60) {
+DEFINE_REX_FUNC(FM2_Render_UiOrScreenDrawListSubmit) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	PPCVRegister vTemp{};

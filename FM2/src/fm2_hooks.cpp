@@ -1,4 +1,5 @@
 #include "generated/fm2_init.h"
+#include "native_renderer/fm2_native_renderer.h"
 
 #include <atomic>
 #include <chrono>
@@ -1948,6 +1949,36 @@ bool FM2FastForwardSplashTiming(PPCRegister& f1, PPCRegister& f2, PPCRegister& r
   }
 
   return false;
+}
+
+void FM2PlumeTraceBuildObjectPassEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5,
+                                       PPCRegister& r6, PPCRegister& r7, PPCRegister& r8,
+                                       PPCRegister& r9, PPCRegister& r10) {
+  fm2::native_renderer::RecordBuildObjectPassEntry({
+      r3.u32,
+      r4.u32,
+      r5.u32,
+      r6.u32,
+      r7.u32,
+      r8.u32,
+      r9.u32,
+      r10.u32,
+  });
+}
+
+void FM2PlumeTraceDirectIndexedDrawEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5,
+                                         PPCRegister& r6, PPCRegister& r7, PPCRegister& r8,
+                                         PPCRegister& r9, PPCRegister& r10) {
+  fm2::native_renderer::RecordDirectIndexedDrawEntry({
+      r3.u32,
+      r4.u32,
+      r5.u32,
+      r6.u32,
+      r7.u32,
+      r8.u32,
+      r9.u32,
+      r10.u32,
+  });
 }
 
 void FM2SigSiteA56C(PPCRegister& r3) {

@@ -52518,7 +52518,7 @@ DEFINE_REX_FUNC(sub_825090D0) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82509148) {
+DEFINE_REX_FUNC(FM2_Render_SceneSliceEntry) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -52592,7 +52592,7 @@ loc_825091AC:
 	ctx.r4.s64 = 0;
 	// bl 0x82531dc0
 	ctx.lr = 0x825091C8;
-	sub_82531DC0(ctx, base);
+	FM2_Render_CompileMissingPassBuffers(ctx, base);
 	// mr r8,r30
 	ctx.r8.u64 = ctx.r30.u64;
 	// li r7,1
@@ -52607,7 +52607,7 @@ loc_825091AC:
 	ctx.r5.s64 = 0;
 	// bl 0x8252ff00
 	ctx.lr = 0x825091E4;
-	sub_8252FF00(ctx, base);
+	FM2_Render_ExecuteSortedDrawLists(ctx, base);
 loc_825091E4:
 	// lwz r3,0(r29)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
@@ -63478,7 +63478,7 @@ loc_8250D940:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8250D950) {
+DEFINE_REX_FUNC(FM2_Render_ViewTraversal) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -64008,7 +64008,7 @@ loc_8250DCDC:
 	ctx.r5.u64 = ctx.r19.u64;
 	// bl 0x82509148
 	ctx.lr = 0x8250DCFC;
-	sub_82509148(ctx, base);
+	FM2_Render_SceneSliceEntry(ctx, base);
 	// mr r4,r30
 	ctx.r4.u64 = ctx.r30.u64;
 	// addi r3,r1,84

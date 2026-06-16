@@ -10741,7 +10741,7 @@ loc_8251818C:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825181A8) {
+DEFINE_REX_FUNC(FM2_Render_SubmitPassWrapper) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -10807,7 +10807,7 @@ DEFINE_REX_FUNC(sub_825181A8) {
 loc_82518218:
 	// bl 0x8252ff00
 	ctx.lr = 0x8251821C;
-	sub_8252FF00(ctx, base);
+	FM2_Render_ExecuteSortedDrawLists(ctx, base);
 loc_8251821C:
 	// addi r1,r1,128
 	ctx.r1.s64 = ctx.r1.s64 + 128;
@@ -12550,7 +12550,7 @@ loc_82518DB8:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82518DC0) {
+DEFINE_REX_FUNC(FM2_Render_FramePipeline) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -13141,7 +13141,7 @@ loc_82519190:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r11.u32 + 20);
 	// bl 0x82531dc0
 	ctx.lr = 0x825191CC;
-	sub_82531DC0(ctx, base);
+	FM2_Render_CompileMissingPassBuffers(ctx, base);
 loc_825191CC:
 	// lis r11,-32102
 	ctx.r11.s64 = -2103836672;
@@ -13191,7 +13191,7 @@ loc_825191FC:
 loc_82519220:
 	// bl 0x825181a8
 	ctx.lr = 0x82519224;
-	sub_825181A8(ctx, base);
+	FM2_Render_SubmitPassWrapper(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,7148(r30)
@@ -13213,7 +13213,7 @@ loc_82519220:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x825181a8
 	ctx.lr = 0x8251924C;
-	sub_825181A8(ctx, base);
+	FM2_Render_SubmitPassWrapper(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,7148(r30)
@@ -13293,7 +13293,7 @@ loc_825192AC:
 	ctx.r4.s64 = 1;
 	// bl 0x8253a680
 	ctx.lr = 0x825192E0;
-	sub_8253A680(ctx, base);
+	FM2_Render_InstancePathWrapper(ctx, base);
 loc_825192E0:
 	// lbz r10,280(r1)
 	ctx.r10.u64 = REX_LOAD_U8(ctx.r1.u32 + 280);
@@ -13356,7 +13356,7 @@ loc_82519328:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x825181a8
 	ctx.lr = 0x82519354;
-	sub_825181A8(ctx, base);
+	FM2_Render_SubmitPassWrapper(ctx, base);
 loc_82519354:
 	// lwz r11,0(r28)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r28.u32 + 0);
@@ -13424,7 +13424,7 @@ loc_82519354:
 loc_825193CC:
 	// bl 0x825181a8
 	ctx.lr = 0x825193D0;
-	sub_825181A8(ctx, base);
+	FM2_Render_SubmitPassWrapper(ctx, base);
 	// lwz r11,56(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// cmpwi cr6,r11,1
@@ -13536,7 +13536,7 @@ loc_82519470:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x825181a8
 	ctx.lr = 0x825194A0;
-	sub_825181A8(ctx, base);
+	FM2_Render_SubmitPassWrapper(ctx, base);
 loc_825194A0:
 	// lbz r11,280(r1)
 	ctx.r11.u64 = REX_LOAD_U8(ctx.r1.u32 + 280);
@@ -15021,7 +15021,7 @@ loc_82519E10:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8250d950
 	ctx.lr = 0x82519E94;
-	sub_8250D950(ctx, base);
+	FM2_Render_ViewTraversal(ctx, base);
 	// b 0x82519ea4
 	goto loc_82519EA4;
 loc_82519E98:
@@ -18666,7 +18666,7 @@ DEFINE_REX_FUNC(sub_8251B618) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8251B620) {
+DEFINE_REX_FUNC(FM2_Render_BuildPassTemplateCommandBuffer) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -19288,7 +19288,7 @@ loc_8251B9F0:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8251BA08) {
+DEFINE_REX_FUNC(FM2_Render_FinalizeAndCloneCommandBuffer) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -19627,7 +19627,7 @@ DEFINE_REX_FUNC(sub_8251BC20) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8251BC40) {
+DEFINE_REX_FUNC(FM2_Render_SubmitSortedObjectDrawLists) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -21160,7 +21160,7 @@ loc_8251C610:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8251C688) {
+DEFINE_REX_FUNC(FM2_Render_ObjectPassDrawTraversal) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -21850,7 +21850,7 @@ loc_8251CB08:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8251bc40
 	ctx.lr = 0x8251CB20;
-	sub_8251BC40(ctx, base);
+	FM2_Render_SubmitSortedObjectDrawLists(ctx, base);
 loc_8251CB20:
 	// addi r1,r1,208
 	ctx.r1.s64 = ctx.r1.s64 + 208;
@@ -26012,7 +26012,7 @@ loc_8251E658:
 	ctx.r3.s64 = ctx.r1.s64 + 128;
 	// bl 0x8251b620
 	ctx.lr = 0x8251E694;
-	sub_8251B620(ctx, base);
+	FM2_Render_BuildPassTemplateCommandBuffer(ctx, base);
 	// clrlwi. r11,r3,24
 	ctx.r11.u64 = ctx.r3.u32 & 0xFF;
 	ctx.cr0.compare<int32_t>(ctx.r11.s32, 0, ctx.xer);
@@ -26087,7 +26087,7 @@ loc_8251E708:
 	ctx.r3.s64 = ctx.r1.s64 + 128;
 	// bl 0x8251ba08
 	ctx.lr = 0x8251E718;
-	sub_8251BA08(ctx, base);
+	FM2_Render_FinalizeAndCloneCommandBuffer(ctx, base);
 loc_8251E718:
 	// addi r31,r31,1
 	ctx.r31.s64 = ctx.r31.s64 + 1;
@@ -26371,7 +26371,7 @@ loc_8251E8F4:
 	ctx.r3.s64 = ctx.r1.s64 + 128;
 	// bl 0x8251b620
 	ctx.lr = 0x8251E914;
-	sub_8251B620(ctx, base);
+	FM2_Render_BuildPassTemplateCommandBuffer(ctx, base);
 	// lwz r3,3404(r22)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r22.u32 + 3404);
 	// lwz r11,8(r3)
@@ -26420,7 +26420,7 @@ loc_8251E93C:
 	ctx.r3.s64 = ctx.r1.s64 + 128;
 	// bl 0x8251ba08
 	ctx.lr = 0x8251E96C;
-	sub_8251BA08(ctx, base);
+	FM2_Render_FinalizeAndCloneCommandBuffer(ctx, base);
 	// lwz r11,88(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 88);
 	// addi r4,r1,80
@@ -29253,7 +29253,7 @@ loc_8251FBE8:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8251c688
 	ctx.lr = 0x8251FC30;
-	sub_8251C688(ctx, base);
+	FM2_Render_ObjectPassDrawTraversal(ctx, base);
 loc_8251FC30:
 	// lbz r11,185(r20)
 	ctx.r11.u64 = REX_LOAD_U8(ctx.r20.u32 + 185);

@@ -830,6 +830,18 @@ name = "FM2AllocCallsite8C98"
 registers = ["r3"]
 after_instruction = false
 
+[[entrypoint.midasm_hook]]
+address = 0x82531370
+name = "FM2PlumeTraceBuildObjectPassEntry"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x825380B8
+name = "FM2PlumeTraceDirectIndexedDrawEntry"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
+after_instruction = false
+
 [entrypoint.rexcrt]
 ConvertThreadToFiber = 0x82754CD0
 ConvertFiberToThread = 0x82754D60
