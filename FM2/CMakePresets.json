@@ -91,7 +91,9 @@
     },
     {
       "cacheVariables": {
-        "CMAKE_PREFIX_PATH": "${sourceDir}/../out/install/win-amd64"
+        "CMAKE_PREFIX_PATH": "${sourceDir}/../out/install/win-amd64",
+        "CMAKE_CXX_FLAGS": "-march=x86-64-v3",
+        "CMAKE_C_FLAGS": "-march=x86-64-v3"
       },
       "hidden": true,
       "inherits": "windows-base",
