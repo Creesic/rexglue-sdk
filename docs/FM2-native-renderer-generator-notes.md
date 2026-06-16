@@ -284,3 +284,48 @@ The reusable long-term architecture should be:
    - one simple draw path
 5. If no, pivot to a Plume backend under the existing Xenos command processor
    rather than a native FM2 renderer.
+
+## June 16 Plume Integration Slice
+
+- Build mode:
+  - Branch: `FM2_WIN_Plume`
+  - Plume linked into FM2: yes. FM2 adds `../plume` as a CMake subdirectory on
+    Windows, links `plume`, `d3d12`, and `dxgi`, and defines `FM2_HAS_PLUME=1`.
+  - FM2 build command: `cmake --build --preset win-amd64-relwithdebinfo --target fm2`
+  - Verified result: build succeeds after the Plume device/swapchain path and
+    after the render-packet hook codegen.
+- Runtime modes:
+  - `fm2_plume_mode=xenos`: current backend only. This remains the default and
+    returns from native renderer initialization without creating Plume objects.
+  - `fm2_plume_mode=shadow`: initializes a Plume D3D12 interface/device/queue
+    while keeping the existing ReXGlue/Xenos renderer visible.
+  - `fm2_plume_mode=plume_clear`: disables ReXGlue graphics before runtime
+    setup, creates a Plume swapchain from the FM2 window, and issues a one-shot
+    clear/present when `fm2_plume_clear_on_init=true`. Initialization failure is
+    fatal in this mode so the title does not continue with no visible renderer.
+- Hook capture:
+  - `0x82531370` / `FM2_Render_BuildObjectPassCommandBuffer`:
+    - Hook adapter: `FM2PlumeTraceBuildObjectPassEntry`
+    - Captured registers: `r3` through `r10`
+    - Generated call site: `FM2/generated/fm2_recomp.28.cpp`
+    - Runtime observed count: not collected in this slice.
+    - First runtime sample: not collected in this slice.
+  - `0x825380B8` / `FM2_Render_BuildDirectIndexedDrawBuffers`:
+    - Hook adapter: `FM2PlumeTraceDirectIndexedDrawEntry`
+    - Captured registers: `r3` through `r10`
+    - Generated call site: `FM2/generated/fm2_recomp.28.cpp`
+    - Runtime observed count: not collected in this slice.
+    - First runtime sample: not collected in this slice.
+- Current cvars:
+  - `fm2_plume_mode`: `xenos`, `shadow`, or `plume_clear`
+  - `fm2_plume_clear_on_init`: clear/present during `plume_clear` setup
+  - `fm2_plume_trace_packets`: enables sampled packet logging
+  - `fm2_plume_trace_log_interval`: logs one packet sample every N captures
+- Next replay gate:
+  - Run FM2 in `shadow` mode with `fm2_plume_trace_packets=true` and collect the
+    first samples from both hooks.
+  - Pick the hook with stable visible arguments.
+  - Identify vertex/index buffer fields in IDA before attempting native draw
+    replay.
+  - Keep original Xenos draw enabled until a Plume debug draw presents from a
+    captured packet.
