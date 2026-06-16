@@ -14,7 +14,10 @@
 #if REX_PLATFORM_WIN32
 #include <rex/audio/xaudio2/xaudio2_audio_system.h>
 #endif
+#include <rex/logging.h>
 #include <rex/rex_app.h>
+
+#include "native_renderer/fm2_native_renderer.h"
 
 class Fm2App : public rex::ReXApp {
  public:
@@ -33,11 +36,22 @@ class Fm2App : public rex::ReXApp {
 #else
     config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
 #endif
+    if (!fm2::native_renderer::WantsReXGraphics()) {
+      config.graphics.reset();
+    }
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
-  // void OnPostSetup() override {}
+  void OnPostSetup() override {
+    if (!fm2::native_renderer::Initialize(window())) {
+      REXLOG_WARN(
+          "FM2 Plume native renderer skeleton failed to initialize; continuing "
+          "with normal startup");
+    }
+  }
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
-  // void OnShutdown() override {}
+  void OnShutdown() override {
+    fm2::native_renderer::Shutdown();
+  }
   void OnConfigurePaths(rex::PathConfig& paths) override {
     if (!paths.game_data_root.empty()) {
       return;

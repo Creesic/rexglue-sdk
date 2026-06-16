@@ -16,6 +16,7 @@ include(generated/rexglue.cmake)
 set(FM2_SOURCES
     src/main.cpp
     src/fm2_hooks.cpp
+    src/native_renderer/fm2_native_renderer.cpp
 )
 
 if(WIN32)
@@ -25,6 +26,17 @@ else()
 endif()
 
 rexglue_setup_target(fm2)
+
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../plume/CMakeLists.txt")
+    set(PLUME_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    if(NOT TARGET plume)
+        add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../plume" "${CMAKE_CURRENT_BINARY_DIR}/plume")
+    endif()
+    target_link_libraries(fm2 PRIVATE plume)
+    target_compile_definitions(fm2 PRIVATE FM2_HAS_PLUME=1)
+else()
+    target_compile_definitions(fm2 PRIVATE FM2_HAS_PLUME=0)
+endif()
 
 # Ensure FM2 sees generated SDK headers (for example rex/version.h) when
 # building against an in-tree SDK via generated/rexglue.cmake.
