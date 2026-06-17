@@ -414,6 +414,25 @@ The reusable long-term architecture should be:
     memory. IDA shows the low-level stream binder reads D3D resource object
     fields at `resource + 0x18` and `resource + 0x1C` for guest buffer base and
     byte size.
+  - The June 17 `fm2_011` run used `fm2_plume_trace_direct_buffer_bytes=64`
+    and confirmed buffer reads from the decoded D3D resources:
+    - `stream1`: `desc=41A47770 resource=2E12ECA0 stride=0x0C
+      gpu_base=B0C8C4C7 size_field=1012574A`. The low size bits match
+      `0x18746 * 0x0C + 2`; the top `0x10000000` bit is resource metadata.
+    - `rec_i=0 stream0`: `desc=2E691CA8 resource=2E0C7DC0 stride=0x20
+      gpu_base=B0DB2CD7 size_field=1000FD62`. The low size bits match
+      `0x07EB * 0x20 + 2`, so descriptor `w04` is a vertex count and `w08`
+      is stride.
+    - `rec_i=0 index`: `desc=2E691CB4 resource=2E0C7C40 index_type=1
+      gpu_base=B0DC2A34 byte_size=00004704`. Descriptor `w04=0x2382` is the
+      index count/capacity and `resource + 0x1C = w04 * 2`, so `w08=1` is a
+      16-bit index format.
+    - The index buffer byte dump starts as big-endian 16-bit values:
+      `0000 0001 0002 0003 0004 0005 ...`. This proves `segment + 0x04`
+      is a first-index value, not a byte offset.
+    - Stream0 byte dumps are 32-byte vertex records, but the bytes are not a
+      simple three-float position layout. The next missing piece is the vertex
+      declaration / shader input interpretation, not buffer addressing.
 - Current cvars:
   - `fm2_plume_mode`: `xenos`, `shadow`, or `plume_clear`
   - `fm2_plume_clear_on_init`: clear/present during `plume_clear` setup
@@ -449,10 +468,12 @@ The reusable long-term architecture should be:
   - `FM2_PLUME_DIRECT_BUFFER`: optional raw byte dump from the D3D resource
     guest buffer, controlled by `fm2_plume_trace_direct_buffer_bytes`.
 - Next replay gate:
-  - Decode the resource descriptors behind `record + 0x2C`, `record + 0x30`,
-    and `direct_render_ctx + 0x5B0`. The immediate goal is to map the captured
-    vertex stream and index resource pointers to guest buffer memory, stride,
-    format, and index type.
+  - Decode the vertex declaration / shader input layout used with this direct
+    draw path. Resource addressing is now good enough for a Plume packet, but
+    stream0 appears packed/compressed rather than simple float position data.
+  - Inspect slot `+0x28` and `+0x30` state setup, the data copied from
+    `direct_render_ctx + 0x4C` and `+0x6C`, and the current shader/vertex
+    declaration state installed before the direct draw.
   - A repeat run can raise `fm2_plume_trace_direct_decode_record_limit` if all
     31 records are needed:
     ```powershell
@@ -465,7 +486,9 @@ The reusable long-term architecture should be:
       --fm2_plume_trace_direct_decode_record_limit 31 `
       --fm2_plume_trace_direct_buffer_bytes 64
     ```
-  - Confirm whether `segment + 0x04` is first index or byte offset by comparing
-    it against the decoded index resource layout.
+  - For a first Plume debug packet, use the confirmed indexed draw arguments:
+    triangle list, 16-bit big-endian index data, `first_index = segment + 0x04`,
+    `index_count = segment + 0x06`, stream0 stride `0x20`, and stream1 stride
+    `0x0C`.
   - Keep original Xenos draw enabled until a Plume debug draw presents from a
     captured packet.
