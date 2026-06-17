@@ -20,6 +20,8 @@ inline constexpr uint32_t kDirectDrawSegmentStartOffset = 0x04u;
 inline constexpr uint32_t kDirectDrawSegmentIndexCountOffset = 0x06u;
 
 inline constexpr uint32_t kDirectDrawCtxBuiltOffset = 0x48u;
+inline constexpr uint32_t kDirectDrawCtxVertexShaderHandleOffset = 0x4Cu;
+inline constexpr uint32_t kDirectDrawCtxSlot28StateHandleOffset = 0x6Cu;
 inline constexpr uint32_t kDirectDrawCtxRecordBeginOffset = 0x5A4u;
 inline constexpr uint32_t kDirectDrawCtxRecordEndOffset = 0x5A8u;
 inline constexpr uint32_t kDirectDrawCtxStream1Offset = 0x5B0u;
@@ -29,6 +31,13 @@ inline constexpr uint32_t kDirectDrawResourceDescriptorSize = 0x0Cu;
 inline constexpr uint32_t kD3DResourceGpuBaseOffset = 0x18u;
 inline constexpr uint32_t kD3DResourceSizeOffset = 0x1Cu;
 inline constexpr uint32_t kD3DResourceDecodeSize = 0x20u;
+
+inline constexpr uint32_t kDirectDrawStateHandleResolvedObjectOffset = 0x48u;
+inline constexpr uint32_t kDirectDrawSlot28StateTableBaseOffset = 0x28u;
+inline constexpr uint32_t kDirectDrawSlot28StateTableOffsetField = 0x3Cu;
+inline constexpr uint32_t kDirectDrawVertexShaderTableBaseOffset = 0x368u;
+inline constexpr uint32_t kDirectDrawVertexShaderTableOffsetField = 0x37Cu;
+inline constexpr uint32_t kDirectDrawCompiledStateHeaderSize = 0x14u;
 
 constexpr uint32_t BoundedVectorCount(uint32_t begin, uint32_t end, uint32_t stride,
                                       uint32_t cap) {

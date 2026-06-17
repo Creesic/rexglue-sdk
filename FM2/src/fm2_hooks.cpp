@@ -101,6 +101,10 @@ REXCVAR_DEFINE_UINT32(
     fm2_plume_trace_direct_buffer_bytes, 0, "FM2",
     "When nonzero, dump up to this many bytes from each decoded direct-draw D3D resource buffer");
 
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_trace_direct_state_bytes, 0, "FM2",
+    "When nonzero, dump up to this many bytes from each decoded direct-draw shader/state object");
+
 std::atomic<uint64_t> g_plume_direct_decode_samples{0};
 
 uint8_t* GuestBase() {
@@ -1832,6 +1836,22 @@ uint8_t TryLoadU8(uint8_t* base, uint32_t addr) {
   return REX_LOAD_U8(addr);
 }
 
+uint32_t AddGuestOffsetOrZero(uint32_t address, uint32_t offset) {
+  const uint64_t target = uint64_t(address) + offset;
+  if (address == 0 || target > std::numeric_limits<uint32_t>::max()) {
+    return 0;
+  }
+  return static_cast<uint32_t>(target);
+}
+
+uint32_t TryLoadU32AtOffset(uint8_t* base, uint32_t address, uint32_t offset) {
+  const uint32_t target = AddGuestOffsetOrZero(address, offset);
+  if (target == 0) {
+    return 0;
+  }
+  return TryLoadU32(base, target);
+}
+
 void LogDirectDrawInterfaceSlots(uint8_t* base, uint64_t sample_number, uint32_t draw_iface) {
   if (!draw_iface || !GuestReadableRange(base, draw_iface, 4)) {
     LogLine("FM2_PLUME_DIRECT_IFACE n=%llu iface=%08X unreadable=1",
@@ -1892,6 +1912,68 @@ std::string SnapshotGuestBytes(uint8_t* base, uint32_t guest_address, uint32_t b
     out.push_back(kHex[byte & 0x0Fu]);
   }
   return out;
+}
+
+void LogDirectDrawStateBytes(uint8_t* base, uint64_t sample_number, const char* role,
+                             const char* kind, uint32_t address) {
+  uint32_t byte_count = REXCVAR_GET(fm2_plume_trace_direct_state_bytes);
+  if (byte_count == 0 || address == 0) {
+    return;
+  }
+  if (byte_count > 64u) {
+    byte_count = 64u;
+  }
+
+  const std::string bytes = SnapshotGuestBytes(base, address, byte_count);
+  if (bytes.empty()) {
+    LogLine(
+        "FM2_PLUME_DIRECT_STATE_BYTES n=%llu role=%s kind=%s addr=%08X "
+        "bytes=%u unreadable=1",
+        static_cast<unsigned long long>(sample_number), role, kind, address, byte_count);
+    return;
+  }
+
+  LogLine(
+      "FM2_PLUME_DIRECT_STATE_BYTES n=%llu role=%s kind=%s addr=%08X bytes=%u data=%s",
+      static_cast<unsigned long long>(sample_number), role, kind, address, byte_count,
+      bytes.c_str());
+}
+
+void LogDirectDrawStateObject(uint8_t* base, uint64_t sample_number, uint32_t direct_render_ctx,
+                              const char* role, uint32_t ctx_handle_offset,
+                              uint32_t table_base_offset, uint32_t table_offset_field) {
+  const uint32_t ctx_slot = AddGuestOffsetOrZero(direct_render_ctx, ctx_handle_offset);
+  const uint32_t handle = TryLoadU32(base, ctx_slot);
+  const uint32_t handle_vtable = TryLoadU32(base, handle);
+  const uint32_t resolved = TryLoadU32AtOffset(
+      base, handle, fm2nr::kDirectDrawStateHandleResolvedObjectOffset);
+  const uint32_t resolved_vtable = TryLoadU32(base, resolved);
+  const uint32_t table_rel = TryLoadU32AtOffset(base, resolved, table_offset_field);
+
+  uint32_t table = 0;
+  if (table_rel != 0) {
+    const uint32_t table_base = AddGuestOffsetOrZero(resolved, table_base_offset);
+    table = AddGuestOffsetOrZero(table_base, table_rel);
+  }
+
+  const uint32_t table_w00 = TryLoadU32AtOffset(base, table, 0x00u);
+  const uint32_t table_w04 = TryLoadU32AtOffset(base, table, 0x04u);
+  const uint32_t table_w08 = TryLoadU32AtOffset(base, table, 0x08u);
+  const uint32_t table_w0c = TryLoadU32AtOffset(base, table, 0x0Cu);
+  const uint32_t table_payload_bytes =
+      TryLoadU32AtOffset(base, table, fm2nr::kDirectDrawCompiledStateHeaderSize - 4u);
+
+  LogLine(
+      "FM2_PLUME_DIRECT_STATE n=%llu role=%s ctx_off=%04X ctx_slot=%08X handle=%08X "
+      "handle_vt=%08X resolved=%08X resolved_vt=%08X table_rel=%08X table=%08X "
+      "t00=%08X t04=%08X t08=%08X t0c=%08X payload_bytes=%08X",
+      static_cast<unsigned long long>(sample_number), role, ctx_handle_offset, ctx_slot,
+      handle, handle_vtable, resolved, resolved_vtable, table_rel, table, table_w00,
+      table_w04, table_w08, table_w0c, table_payload_bytes);
+
+  LogDirectDrawStateBytes(base, sample_number, role, "handle", handle);
+  LogDirectDrawStateBytes(base, sample_number, role, "resolved", resolved);
+  LogDirectDrawStateBytes(base, sample_number, role, "table", table);
 }
 
 void LogDirectDrawD3DResource(uint8_t* base, uint64_t sample_number, uint32_t record_index,
@@ -1993,6 +2075,14 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
       static_cast<unsigned>(built), record_begin, record_end, record_count, record_scan);
 
   LogDirectDrawInterfaceSlots(base, sample_ix + 1, draw_iface);
+  LogDirectDrawStateObject(base, sample_ix + 1, direct_render_ctx, "vertex_shader",
+                           fm2nr::kDirectDrawCtxVertexShaderHandleOffset,
+                           fm2nr::kDirectDrawVertexShaderTableBaseOffset,
+                           fm2nr::kDirectDrawVertexShaderTableOffsetField);
+  LogDirectDrawStateObject(base, sample_ix + 1, direct_render_ctx, "slot28_state",
+                           fm2nr::kDirectDrawCtxSlot28StateHandleOffset,
+                           fm2nr::kDirectDrawSlot28StateTableBaseOffset,
+                           fm2nr::kDirectDrawSlot28StateTableOffsetField);
   LogDirectDrawResourceDescriptor(base, sample_ix + 1, 0xFFFFFFFFu, "stream1",
                                   direct_render_ctx + fm2nr::kDirectDrawCtxStream1Offset);
   const uint32_t stream1_resource =

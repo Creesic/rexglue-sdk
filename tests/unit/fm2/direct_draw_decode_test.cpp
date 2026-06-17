@@ -29,6 +29,19 @@ TEST_CASE("FM2 direct draw descriptor offsets match IDA evidence", "[fm2][plume]
   CHECK(decode::kD3DResourceDecodeSize == 0x20u);
 }
 
+TEST_CASE("FM2 direct draw shader state offsets match IDA evidence", "[fm2][plume]") {
+  namespace decode = fm2::native_renderer;
+
+  CHECK(decode::kDirectDrawCtxVertexShaderHandleOffset == 0x4Cu);
+  CHECK(decode::kDirectDrawCtxSlot28StateHandleOffset == 0x6Cu);
+  CHECK(decode::kDirectDrawStateHandleResolvedObjectOffset == 0x48u);
+  CHECK(decode::kDirectDrawSlot28StateTableBaseOffset == 0x28u);
+  CHECK(decode::kDirectDrawSlot28StateTableOffsetField == 0x3Cu);
+  CHECK(decode::kDirectDrawVertexShaderTableBaseOffset == 0x368u);
+  CHECK(decode::kDirectDrawVertexShaderTableOffsetField == 0x37Cu);
+  CHECK(decode::kDirectDrawCompiledStateHeaderSize == 0x14u);
+}
+
 TEST_CASE("FM2 direct draw triangle segment count maps to primitive count", "[fm2][plume]") {
   using fm2::native_renderer::TriangleListPrimitiveCountFromIndexCount;
 
