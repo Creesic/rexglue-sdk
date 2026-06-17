@@ -369,6 +369,32 @@ The reusable long-term architecture should be:
   - The live/non-cached path inside `FM2_Render_InstanceHybridDrawPath` mirrors
     the same binds and final draw call, which raises confidence that this schema
     is the right first Plume replay boundary.
+- Runtime direct-draw decode check:
+  - The June 17 `fm2_009` shadow run produced direct-draw decode output in
+    `C:\temp\fm2-clean.log`. The split FM2 app logs carried the packet counters
+    and shutdown stats; hook `LogLine` output still goes to the temp log.
+  - Shutdown stats for that run were:
+    `build_object_pass=2051 direct_indexed_draw=1073 last_hook=82531370`.
+  - First decode sample:
+    `ctx=4029F8B0 iface=2E0162C0 built=0 rec_begin=41DFB830 rec_end=41DFBE7C rec_count=31 scan=4`.
+    Samples `2..8` used the same context, interface, and record vector with
+    `built=1`, confirming the direct builder flips the built/skip flag after
+    the first build pass.
+  - The record vector stride is confirmed as `0x34`:
+    `41DFB830`, `41DFB864`, `41DFB898`, `41DFB8CC`.
+  - First decoded records:
+    - `rec_i=0 rec=41DFB830 holder=2E6A1BA0 bind0=2E6A1BE8 index_res=2E6A1BF4 seg_begin=2E7ECA80 seg_end=2E7ECAB8 seg_count=7 start=0 index_count=4062 prim_count=1354`
+    - `rec_i=1 rec=41DFB864 holder=2E6A1AE0 bind0=2E6A1B28 index_res=2E6A1B34 seg_begin=2EDA2300 seg_end=2EDA2338 seg_count=7 start=0 index_count=4158 prim_count=1386`
+    - `rec_i=2 rec=41DFB898 holder=2E6A1D20 bind0=2E6A1D68 index_res=2E6A1D74 seg_begin=2EDA2380 seg_end=2EDA23B8 seg_count=7 start=0 index_count=3822 prim_count=1274`
+    - `rec_i=3 rec=41DFB8CC holder=2E6A1C60 bind0=2E6A1CA8 index_res=2E6A1CB4 seg_begin=2EDA23C0 seg_end=2EDA23F8 seg_count=7 start=0 index_count=4224 prim_count=1408`
+  - The decoded resource pointer pattern is stable: `bind0` is holder `+0x48`
+    and `index_res` is holder `+0x54`. This confirms the IDA read that
+    `record + 0x2C` and `record + 0x30` are resource pointers resolved from
+    the holder before binding through the draw interface.
+  - Segment counts and primitive counts are coherent. The first four records
+    each have `seg_count=7`, first segment index `0`, and
+    `prim_count = index_count / 3`, matching a triangle-list direct indexed
+    draw path.
 - Current cvars:
   - `fm2_plume_mode`: `xenos`, `shadow`, or `plume_clear`
   - `fm2_plume_clear_on_init`: clear/present during `plume_clear` setup
@@ -378,12 +404,18 @@ The reusable long-term architecture should be:
   - `fm2_plume_trace_direct_decode`: enables sampled guest-memory decoding for
     `FM2_Render_BuildDirectIndexedDrawBuffers`
   - `fm2_plume_trace_direct_decode_limit`: maximum decoded direct-draw samples
-    per process
+    per process. The June 17 `fm2_009` run used `8` and captured the transition
+    from `built=0` to repeated `built=1` samples.
   - `fm2_plume_trace_direct_decode_record_limit`: maximum direct-draw records
-    inspected per decoded sample
+    inspected per decoded sample. The June 17 `fm2_009` run used `4`, which was
+    enough to prove the record stride and holder/resource offsets.
 - Next replay gate:
-  - Run FM2 in `shadow` mode with `fm2_plume_trace_direct_decode=true` and
-    collect `FM2_PLUME_DIRECT_DECODE` / `FM2_PLUME_DIRECT_RECORD` lines:
+  - Decode the resource descriptors behind `record + 0x2C`, `record + 0x30`,
+    and `direct_render_ctx + 0x5B0`. The immediate goal is to map the captured
+    vertex stream and index resource pointers to guest buffer memory, stride,
+    format, and index type.
+  - A repeat run can raise `fm2_plume_trace_direct_decode_record_limit` if all
+    31 records are needed:
     ```powershell
     .\out\build\win-amd64-relwithdebinfo\fm2.exe `
       --fm2_plume_mode shadow `
@@ -391,10 +423,9 @@ The reusable long-term architecture should be:
       --fm2_plume_trace_log_interval 120 `
       --fm2_plume_trace_direct_decode `
       --fm2_plume_trace_direct_decode_limit 8 `
-      --fm2_plume_trace_direct_decode_record_limit 4
+      --fm2_plume_trace_direct_decode_record_limit 31
     ```
-  - Confirm which record fields are vertex stream, index buffer/resource,
-    material/shader state, and whether `segment + 0x04` is first index or byte
-    offset.
+  - Confirm whether `segment + 0x04` is first index or byte offset by comparing
+    it against the decoded index resource layout.
   - Keep original Xenos draw enabled until a Plume debug draw presents from a
     captured packet.
