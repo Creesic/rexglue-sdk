@@ -439,14 +439,18 @@ The reusable long-term architecture should be:
       `direct_render_ctx + 0x4C`, then calls the render-context vertex shader
       state setter.
     - Draw interface slot `+0x28` resolves the handle copied from
-      `direct_render_ctx + 0x6C`, then calls a sibling compiled shader/state
-      setter. Keep this named as `slot28_state` until the concrete resource
-      class is confirmed.
+      `direct_render_ctx + 0x6C`, then calls the render-context pixel shader
+      state setter. The June 17 state trace confirmed the resolved resource
+      type tag is `0x00100007`.
     - Both state paths retain the first dword of the source lock, then resolve
       the concrete state object through `handle + 0x48`.
+    - The resolved vertex shader resource type tag is `0x00100006`; its current
+      payload base is at `shader + 0x20` (`B0DB2260` in the June 17 run).
+    - The resolved pixel shader resource type tag is `0x00100007`; its current
+      payload base is at `shader + 0x18` (`B0DB21C0` in the June 17 run).
     - The vertex shader compiled-state table is addressed as
       `shader + 0x368 + *(shader + 0x37C)`.
-    - The slot28 compiled-state table is addressed as
+    - The pixel shader compiled-state table is addressed as
       `state + 0x28 + *(state + 0x3C)`.
 - Current cvars:
   - `fm2_plume_mode`: `xenos`, `shadow`, or `plume_clear`
@@ -467,6 +471,9 @@ The reusable long-term architecture should be:
   - `fm2_plume_trace_direct_state_bytes`: optional byte count, capped at 64,
     for dumping decoded state handle, resolved state object, and compiled-state
     table bytes for the direct draw shader/state slots.
+  - `fm2_plume_trace_direct_shader_bytes`: optional byte count, capped at 256,
+    for dumping decoded vertex/pixel shader payload bytes from resolved shader
+    resources.
 - Current direct decode output:
   - `FM2_PLUME_DIRECT_DECODE`: direct context, draw interface, built flag, and
     direct-record vector begin/end/count.
@@ -486,12 +493,16 @@ The reusable long-term architecture should be:
   - `FM2_PLUME_DIRECT_BUFFER`: optional raw byte dump from the D3D resource
     guest buffer, controlled by `fm2_plume_trace_direct_buffer_bytes`.
   - `FM2_PLUME_DIRECT_STATE`: direct shader/state handle snapshot for
-    `vertex_shader` and `slot28_state`, including the retained handle pointer,
+    `vertex_shader` and `pixel_shader`, including the retained handle pointer,
     `handle + 0x48` resolved object pointer, compiled-state table relative
     offset, table address, table header dwords, and payload byte count.
   - `FM2_PLUME_DIRECT_STATE_BYTES`: optional raw byte dump for each decoded
     state handle, resolved object, and compiled-state table, controlled by
     `fm2_plume_trace_direct_state_bytes`.
+  - `FM2_PLUME_DIRECT_SHADER`: optional raw byte dump for each decoded shader
+    payload, controlled by `fm2_plume_trace_direct_shader_bytes`. The vertex
+    shader dumps from resolved shader object `+0x20`; the pixel shader dumps
+    from resolved shader object `+0x18`.
 - Next replay gate:
   - Decode the vertex declaration / shader input layout used with this direct
     draw path. Resource addressing is now good enough for a Plume packet, but
@@ -510,7 +521,8 @@ The reusable long-term architecture should be:
       --fm2_plume_trace_direct_decode_limit 8 `
       --fm2_plume_trace_direct_decode_record_limit 31 `
       --fm2_plume_trace_direct_buffer_bytes 64 `
-      --fm2_plume_trace_direct_state_bytes 64
+      --fm2_plume_trace_direct_state_bytes 64 `
+      --fm2_plume_trace_direct_shader_bytes 256
     ```
   - For a first Plume debug packet, use the confirmed indexed draw arguments:
     triangle list, 16-bit big-endian index data, `first_index = segment + 0x04`,

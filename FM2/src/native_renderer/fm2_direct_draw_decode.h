@@ -33,6 +33,11 @@ inline constexpr uint32_t kD3DResourceSizeOffset = 0x1Cu;
 inline constexpr uint32_t kD3DResourceDecodeSize = 0x20u;
 
 inline constexpr uint32_t kDirectDrawStateHandleResolvedObjectOffset = 0x48u;
+inline constexpr uint32_t kDirectDrawVertexShaderTypeTag = 0x00100006u;
+inline constexpr uint32_t kDirectDrawPixelShaderTypeTag = 0x00100007u;
+inline constexpr uint32_t kDirectDrawPixelShaderPayloadGpuBaseOffset = 0x18u;
+inline constexpr uint32_t kDirectDrawVertexShaderPayloadGpuBaseOffset = 0x20u;
+inline constexpr uint32_t kDirectDrawShaderByteDumpMax = 256u;
 inline constexpr uint32_t kDirectDrawSlot28StateTableBaseOffset = 0x28u;
 inline constexpr uint32_t kDirectDrawSlot28StateTableOffsetField = 0x3Cu;
 inline constexpr uint32_t kDirectDrawVertexShaderTableBaseOffset = 0x368u;

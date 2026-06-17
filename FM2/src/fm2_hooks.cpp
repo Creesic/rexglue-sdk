@@ -105,6 +105,10 @@ REXCVAR_DEFINE_UINT32(
     fm2_plume_trace_direct_state_bytes, 0, "FM2",
     "When nonzero, dump up to this many bytes from each decoded direct-draw shader/state object");
 
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_trace_direct_shader_bytes, 0, "FM2",
+    "When nonzero, dump up to this many bytes from each decoded direct-draw shader payload");
+
 std::atomic<uint64_t> g_plume_direct_decode_samples{0};
 
 uint8_t* GuestBase() {
@@ -1939,6 +1943,66 @@ void LogDirectDrawStateBytes(uint8_t* base, uint64_t sample_number, const char* 
       bytes.c_str());
 }
 
+void LogDirectDrawShaderPayload(uint8_t* base, uint64_t sample_number, const char* role,
+                                uint32_t resolved) {
+  uint32_t byte_count = REXCVAR_GET(fm2_plume_trace_direct_shader_bytes);
+  if (byte_count == 0 || resolved == 0) {
+    return;
+  }
+  if (byte_count > fm2nr::kDirectDrawShaderByteDumpMax) {
+    byte_count = fm2nr::kDirectDrawShaderByteDumpMax;
+  }
+
+  const uint32_t shader_type = TryLoadU32(base, resolved);
+  uint32_t payload_offset = 0;
+  const char* payload_kind = "unknown";
+  if (shader_type == fm2nr::kDirectDrawVertexShaderTypeTag) {
+    payload_offset = fm2nr::kDirectDrawVertexShaderPayloadGpuBaseOffset;
+    payload_kind = "vertex_payload";
+  } else if (shader_type == fm2nr::kDirectDrawPixelShaderTypeTag) {
+    payload_offset = fm2nr::kDirectDrawPixelShaderPayloadGpuBaseOffset;
+    payload_kind = "pixel_payload";
+  } else {
+    LogLine(
+        "FM2_PLUME_DIRECT_SHADER n=%llu role=%s object=%08X type=%08X "
+        "unsupported_type=1",
+        static_cast<unsigned long long>(sample_number), role, resolved, shader_type);
+    return;
+  }
+
+  const uint32_t gpu_base = TryLoadU32AtOffset(base, resolved, payload_offset);
+  const uint32_t size_field = TryLoadU32AtOffset(base, resolved, payload_offset + 4u);
+  if (gpu_base == 0) {
+    LogLine(
+        "FM2_PLUME_DIRECT_SHADER n=%llu role=%s kind=%s object=%08X type=%08X "
+        "payload_off=%04X gpu_base=00000000 size_field=%08X empty=1",
+        static_cast<unsigned long long>(sample_number), role, payload_kind, resolved,
+        shader_type, payload_offset, size_field);
+    return;
+  }
+
+  uint32_t dump_count = byte_count;
+  if (size_field != 0 && dump_count > size_field) {
+    dump_count = size_field;
+  }
+
+  const std::string bytes = SnapshotGuestBytes(base, gpu_base, dump_count);
+  if (bytes.empty()) {
+    LogLine(
+        "FM2_PLUME_DIRECT_SHADER n=%llu role=%s kind=%s object=%08X type=%08X "
+        "payload_off=%04X gpu_base=%08X size_field=%08X bytes=%u unreadable=1",
+        static_cast<unsigned long long>(sample_number), role, payload_kind, resolved,
+        shader_type, payload_offset, gpu_base, size_field, dump_count);
+    return;
+  }
+
+  LogLine(
+      "FM2_PLUME_DIRECT_SHADER n=%llu role=%s kind=%s object=%08X type=%08X "
+      "payload_off=%04X gpu_base=%08X size_field=%08X bytes=%u data=%s",
+      static_cast<unsigned long long>(sample_number), role, payload_kind, resolved,
+      shader_type, payload_offset, gpu_base, size_field, dump_count, bytes.c_str());
+}
+
 void LogDirectDrawStateObject(uint8_t* base, uint64_t sample_number, uint32_t direct_render_ctx,
                               const char* role, uint32_t ctx_handle_offset,
                               uint32_t table_base_offset, uint32_t table_offset_field) {
@@ -1974,6 +2038,7 @@ void LogDirectDrawStateObject(uint8_t* base, uint64_t sample_number, uint32_t di
   LogDirectDrawStateBytes(base, sample_number, role, "handle", handle);
   LogDirectDrawStateBytes(base, sample_number, role, "resolved", resolved);
   LogDirectDrawStateBytes(base, sample_number, role, "table", table);
+  LogDirectDrawShaderPayload(base, sample_number, role, resolved);
 }
 
 void LogDirectDrawD3DResource(uint8_t* base, uint64_t sample_number, uint32_t record_index,
@@ -2079,7 +2144,7 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
                            fm2nr::kDirectDrawCtxVertexShaderHandleOffset,
                            fm2nr::kDirectDrawVertexShaderTableBaseOffset,
                            fm2nr::kDirectDrawVertexShaderTableOffsetField);
-  LogDirectDrawStateObject(base, sample_ix + 1, direct_render_ctx, "slot28_state",
+  LogDirectDrawStateObject(base, sample_ix + 1, direct_render_ctx, "pixel_shader",
                            fm2nr::kDirectDrawCtxSlot28StateHandleOffset,
                            fm2nr::kDirectDrawSlot28StateTableBaseOffset,
                            fm2nr::kDirectDrawSlot28StateTableOffsetField);

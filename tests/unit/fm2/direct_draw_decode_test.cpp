@@ -35,6 +35,11 @@ TEST_CASE("FM2 direct draw shader state offsets match IDA evidence", "[fm2][plum
   CHECK(decode::kDirectDrawCtxVertexShaderHandleOffset == 0x4Cu);
   CHECK(decode::kDirectDrawCtxSlot28StateHandleOffset == 0x6Cu);
   CHECK(decode::kDirectDrawStateHandleResolvedObjectOffset == 0x48u);
+  CHECK(decode::kDirectDrawVertexShaderTypeTag == 0x00100006u);
+  CHECK(decode::kDirectDrawPixelShaderTypeTag == 0x00100007u);
+  CHECK(decode::kDirectDrawPixelShaderPayloadGpuBaseOffset == 0x18u);
+  CHECK(decode::kDirectDrawVertexShaderPayloadGpuBaseOffset == 0x20u);
+  CHECK(decode::kDirectDrawShaderByteDumpMax == 256u);
   CHECK(decode::kDirectDrawSlot28StateTableBaseOffset == 0x28u);
   CHECK(decode::kDirectDrawSlot28StateTableOffsetField == 0x3Cu);
   CHECK(decode::kDirectDrawVertexShaderTableBaseOffset == 0x368u);
