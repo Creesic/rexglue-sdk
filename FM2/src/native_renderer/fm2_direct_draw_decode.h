@@ -26,6 +26,10 @@ inline constexpr uint32_t kDirectDrawCtxStream1Offset = 0x5B0u;
 
 inline constexpr uint32_t kDirectDrawResourceDescriptorSize = 0x0Cu;
 
+inline constexpr uint32_t kD3DResourceGpuBaseOffset = 0x18u;
+inline constexpr uint32_t kD3DResourceSizeOffset = 0x1Cu;
+inline constexpr uint32_t kD3DResourceDecodeSize = 0x20u;
+
 constexpr uint32_t BoundedVectorCount(uint32_t begin, uint32_t end, uint32_t stride,
                                       uint32_t cap) {
   if (begin == 0 || end <= begin || stride == 0) {

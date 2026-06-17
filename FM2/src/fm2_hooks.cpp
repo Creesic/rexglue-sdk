@@ -97,6 +97,10 @@ REXCVAR_DEFINE_UINT32(
     fm2_plume_trace_direct_decode_record_limit, 4, "FM2",
     "Maximum direct-draw records to inspect per decoded Plume sample");
 
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_trace_direct_buffer_bytes, 0, "FM2",
+    "When nonzero, dump up to this many bytes from each decoded direct-draw D3D resource buffer");
+
 std::atomic<uint64_t> g_plume_direct_decode_samples{0};
 
 uint8_t* GuestBase() {
@@ -1870,6 +1874,80 @@ void LogDirectDrawResourceDescriptor(uint8_t* base, uint64_t sample_number,
       TryLoadU32(base, descriptor + 0x08u), TryLoadU32(base, descriptor + 0x0Cu));
 }
 
+std::string SnapshotGuestBytes(uint8_t* base, uint32_t guest_address, uint32_t byte_count) {
+  static constexpr char kHex[] = "0123456789ABCDEF";
+
+  std::string out;
+  if (!base || byte_count == 0 || !GuestReadableRange(base, guest_address, byte_count)) {
+    return out;
+  }
+
+  out.reserve(byte_count * 3u);
+  for (uint32_t i = 0; i < byte_count; ++i) {
+    if (i != 0) {
+      out.push_back(' ');
+    }
+    const uint8_t byte = REX_LOAD_U8(guest_address + i);
+    out.push_back(kHex[byte >> 4]);
+    out.push_back(kHex[byte & 0x0Fu]);
+  }
+  return out;
+}
+
+void LogDirectDrawD3DResource(uint8_t* base, uint64_t sample_number, uint32_t record_index,
+                              const char* role, uint32_t resource, uint32_t descriptor_w04,
+                              uint32_t descriptor_w08) {
+  if (!resource || !GuestReadableRange(base, resource, fm2nr::kD3DResourceDecodeSize)) {
+    LogLine(
+        "FM2_PLUME_DIRECT_D3DRESOURCE n=%llu rec_i=%08X role=%s resource=%08X "
+        "unreadable=1 desc_w04=%08X desc_w08=%08X",
+        static_cast<unsigned long long>(sample_number), record_index, role, resource,
+        descriptor_w04, descriptor_w08);
+    return;
+  }
+
+  const uint32_t gpu_base =
+      TryLoadU32(base, resource + fm2nr::kD3DResourceGpuBaseOffset);
+  const uint32_t byte_size =
+      TryLoadU32(base, resource + fm2nr::kD3DResourceSizeOffset);
+  LogLine(
+      "FM2_PLUME_DIRECT_D3DRESOURCE n=%llu rec_i=%08X role=%s resource=%08X "
+      "r00=%08X r04=%08X r08=%08X r0c=%08X r10=%08X r14=%08X "
+      "gpu_base=%08X byte_size=%08X desc_w04=%08X desc_w08=%08X",
+      static_cast<unsigned long long>(sample_number), record_index, role, resource,
+      TryLoadU32(base, resource + 0x00u), TryLoadU32(base, resource + 0x04u),
+      TryLoadU32(base, resource + 0x08u), TryLoadU32(base, resource + 0x0Cu),
+      TryLoadU32(base, resource + 0x10u), TryLoadU32(base, resource + 0x14u), gpu_base,
+      byte_size, descriptor_w04, descriptor_w08);
+
+  uint32_t byte_count = REXCVAR_GET(fm2_plume_trace_direct_buffer_bytes);
+  if (byte_count == 0 || gpu_base == 0 || byte_size == 0) {
+    return;
+  }
+  if (byte_count > 64u) {
+    byte_count = 64u;
+  }
+  if (byte_count > byte_size) {
+    byte_count = byte_size;
+  }
+
+  const std::string bytes = SnapshotGuestBytes(base, gpu_base, byte_count);
+  if (bytes.empty()) {
+    LogLine(
+        "FM2_PLUME_DIRECT_BUFFER n=%llu rec_i=%08X role=%s resource=%08X "
+        "gpu_base=%08X bytes=%u unreadable=1",
+        static_cast<unsigned long long>(sample_number), record_index, role, resource,
+        gpu_base, byte_count);
+    return;
+  }
+
+  LogLine(
+      "FM2_PLUME_DIRECT_BUFFER n=%llu rec_i=%08X role=%s resource=%08X "
+      "gpu_base=%08X bytes=%u data=%s",
+      static_cast<unsigned long long>(sample_number), record_index, role, resource, gpu_base,
+      byte_count, bytes.c_str());
+}
+
 void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t draw_iface) {
   if (!REXCVAR_GET(fm2_plume_trace_direct_decode)) {
     return;
@@ -1917,6 +1995,14 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
   LogDirectDrawInterfaceSlots(base, sample_ix + 1, draw_iface);
   LogDirectDrawResourceDescriptor(base, sample_ix + 1, 0xFFFFFFFFu, "stream1",
                                   direct_render_ctx + fm2nr::kDirectDrawCtxStream1Offset);
+  const uint32_t stream1_resource =
+      TryLoadU32(base, direct_render_ctx + fm2nr::kDirectDrawCtxStream1Offset);
+  const uint32_t stream1_w04 =
+      TryLoadU32(base, direct_render_ctx + fm2nr::kDirectDrawCtxStream1Offset + 0x04u);
+  const uint32_t stream1_w08 =
+      TryLoadU32(base, direct_render_ctx + fm2nr::kDirectDrawCtxStream1Offset + 0x08u);
+  LogDirectDrawD3DResource(base, sample_ix + 1, 0xFFFFFFFFu, "stream1",
+                           stream1_resource, stream1_w04, stream1_w08);
 
   for (uint32_t record_index = 0; record_index < record_scan; ++record_index) {
     const uint32_t record = record_begin + record_index * fm2nr::kDirectDrawRecordStride;
@@ -1930,6 +2016,12 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
     const uint32_t bind0 = TryLoadU32(base, record + fm2nr::kDirectDrawRecordStream0Offset);
     const uint32_t index_resource =
         TryLoadU32(base, record + fm2nr::kDirectDrawRecordIndexResourceOffset);
+    const uint32_t stream0_resource = TryLoadU32(base, bind0 + 0x00u);
+    const uint32_t stream0_w04 = TryLoadU32(base, bind0 + 0x04u);
+    const uint32_t stream0_w08 = TryLoadU32(base, bind0 + 0x08u);
+    const uint32_t index_d3d_resource = TryLoadU32(base, index_resource + 0x00u);
+    const uint32_t index_w04 = TryLoadU32(base, index_resource + 0x04u);
+    const uint32_t index_w08 = TryLoadU32(base, index_resource + 0x08u);
     uint32_t segment_begin = 0;
     uint32_t segment_end = 0;
     uint32_t segment_count = 0;
@@ -1976,8 +2068,12 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
         first_segment, static_cast<unsigned>(first_start),
         static_cast<unsigned>(first_index_count), primitive_count);
     LogDirectDrawResourceDescriptor(base, sample_ix + 1, record_index, "stream0", bind0);
+    LogDirectDrawD3DResource(base, sample_ix + 1, record_index, "stream0",
+                             stream0_resource, stream0_w04, stream0_w08);
     LogDirectDrawResourceDescriptor(base, sample_ix + 1, record_index, "index",
                                     index_resource);
+    LogDirectDrawD3DResource(base, sample_ix + 1, record_index, "index",
+                             index_d3d_resource, index_w04, index_w08);
   }
 }
 

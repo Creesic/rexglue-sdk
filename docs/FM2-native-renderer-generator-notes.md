@@ -395,6 +395,25 @@ The reusable long-term architecture should be:
     each have `seg_count=7`, first segment index `0`, and
     `prim_count = index_count / 3`, matching a triangle-list direct indexed
     draw path.
+  - The June 17 `fm2_010` run decoded the direct draw-interface vtable:
+    `vtable=82108C88`, slot `+0x64=825B3220`, slot `+0x74=825B32C0`, and
+    slot `+0x80=825B3320`.
+    - Slot `+0x64` is stream binding. It consumes a 0x0C-byte descriptor:
+      `w00 = D3D resource object`, `w04 = descriptor-side count/size`, and
+      `w08 = stream stride`.
+    - Slot `+0x74` is index binding. It consumes the index descriptor's `w00`
+      D3D resource object.
+    - Slot `+0x80` is indexed draw. It maps primitive type through a table at
+      `0x82000B90` and forwards the start/primitive-count arguments to the
+      lower draw helper.
+  - Descriptor examples from `fm2_010`:
+    - `stream1`: `desc=418CFE20 w00=2EC4C100 w04=00018746 w08=0000000C`.
+    - `rec_i=0 stream0`: `desc=2E6A3B28 w00=2E0C7F60 w04=000007EB w08=00000020`.
+    - `rec_i=0 index`: `desc=2E6A3B34 w00=2E0C7C40 w04=00002382 w08=00000001`.
+  - The descriptor `w00` values are D3D resource objects, not raw vertex/index
+    memory. IDA shows the low-level stream binder reads D3D resource object
+    fields at `resource + 0x18` and `resource + 0x1C` for guest buffer base and
+    byte size.
 - Current cvars:
   - `fm2_plume_mode`: `xenos`, `shadow`, or `plume_clear`
   - `fm2_plume_clear_on_init`: clear/present during `plume_clear` setup
@@ -409,6 +428,8 @@ The reusable long-term architecture should be:
   - `fm2_plume_trace_direct_decode_record_limit`: maximum direct-draw records
     inspected per decoded sample. The June 17 `fm2_009` run used `4`, which was
     enough to prove the record stride and holder/resource offsets.
+  - `fm2_plume_trace_direct_buffer_bytes`: optional byte count, capped at 64,
+    for dumping the first bytes at each decoded D3D resource buffer base.
 - Current direct decode output:
   - `FM2_PLUME_DIRECT_DECODE`: direct context, draw interface, built flag, and
     direct-record vector begin/end/count.
@@ -423,6 +444,10 @@ The reusable long-term architecture should be:
     and `index`. The first pass logs `w00`, `w04`, `w08`, and adjacent `w0c`
     so we can infer which word is buffer base, size/stride/format, and index
     type before building a Plume packet.
+  - `FM2_PLUME_DIRECT_D3DRESOURCE`: D3D resource object fields, including the
+    guest buffer base at `resource + 0x18` and byte size at `resource + 0x1C`.
+  - `FM2_PLUME_DIRECT_BUFFER`: optional raw byte dump from the D3D resource
+    guest buffer, controlled by `fm2_plume_trace_direct_buffer_bytes`.
 - Next replay gate:
   - Decode the resource descriptors behind `record + 0x2C`, `record + 0x30`,
     and `direct_render_ctx + 0x5B0`. The immediate goal is to map the captured
@@ -437,7 +462,8 @@ The reusable long-term architecture should be:
       --fm2_plume_trace_log_interval 120 `
       --fm2_plume_trace_direct_decode `
       --fm2_plume_trace_direct_decode_limit 8 `
-      --fm2_plume_trace_direct_decode_record_limit 31
+      --fm2_plume_trace_direct_decode_record_limit 31 `
+      --fm2_plume_trace_direct_buffer_bytes 64
     ```
   - Confirm whether `segment + 0x04` is first index or byte offset by comparing
     it against the decoded index resource layout.

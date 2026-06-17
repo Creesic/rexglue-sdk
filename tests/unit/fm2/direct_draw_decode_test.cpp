@@ -24,6 +24,9 @@ TEST_CASE("FM2 direct draw descriptor offsets match IDA evidence", "[fm2][plume]
   CHECK(decode::kDirectDrawHolderIndexResourceOffset == 0x54u);
   CHECK(decode::kDirectDrawResourceDescriptorSize == 0x0Cu);
   CHECK(decode::kDirectDrawCtxStream1Offset == 0x5B0u);
+  CHECK(decode::kD3DResourceGpuBaseOffset == 0x18u);
+  CHECK(decode::kD3DResourceSizeOffset == 0x1Cu);
+  CHECK(decode::kD3DResourceDecodeSize == 0x20u);
 }
 
 TEST_CASE("FM2 direct draw triangle segment count maps to primitive count", "[fm2][plume]") {
