@@ -375,10 +375,24 @@ The reusable long-term architecture should be:
   - `fm2_plume_trace_packets`: enables sampled packet logging
   - `fm2_plume_trace_log_interval`: logs one packet sample every N captures
     and uses `1` for every captured packet
+  - `fm2_plume_trace_direct_decode`: enables sampled guest-memory decoding for
+    `FM2_Render_BuildDirectIndexedDrawBuffers`
+  - `fm2_plume_trace_direct_decode_limit`: maximum decoded direct-draw samples
+    per process
+  - `fm2_plume_trace_direct_decode_record_limit`: maximum direct-draw records
+    inspected per decoded sample
 - Next replay gate:
-  - Add a small runtime decoder for `FM2PlumeTraceDirectIndexedDrawEntry` that
-    samples `direct_render_ctx`, the first few direct-draw records, and their
-    first nonzero draw segments using the offsets above.
+  - Run FM2 in `shadow` mode with `fm2_plume_trace_direct_decode=true` and
+    collect `FM2_PLUME_DIRECT_DECODE` / `FM2_PLUME_DIRECT_RECORD` lines:
+    ```powershell
+    .\out\build\win-amd64-relwithdebinfo\fm2.exe `
+      --fm2_plume_mode shadow `
+      --fm2_plume_trace_packets `
+      --fm2_plume_trace_log_interval 120 `
+      --fm2_plume_trace_direct_decode `
+      --fm2_plume_trace_direct_decode_limit 8 `
+      --fm2_plume_trace_direct_decode_record_limit 4
+    ```
   - Confirm which record fields are vertex stream, index buffer/resource,
     material/shader state, and whether `segment + 0x04` is first index or byte
     offset.

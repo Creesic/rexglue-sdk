@@ -82,6 +82,20 @@ REXCVAR_DEFINE_UINT32(
     fm2_load_trace_overlay_state, 0, "FM2",
     "Load-trace overlay state: 0=off, 1=armed, 2=recording");
 
+REXCVAR_DEFINE_BOOL(
+    fm2_plume_trace_direct_decode, false, "FM2",
+    "Emit sampled FM2 Plume direct indexed-draw record/segment decode lines");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_trace_direct_decode_limit, 8, "FM2",
+    "Maximum FM2 Plume direct indexed-draw decode samples per process");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_trace_direct_decode_record_limit, 4, "FM2",
+    "Maximum direct-draw records to inspect per decoded Plume sample");
+
+std::atomic<uint64_t> g_plume_direct_decode_samples{0};
+
 uint8_t* GuestBase() {
   auto* kernel_state = rex::system::kernel_state();
   if (!kernel_state || !kernel_state->memory()) {
@@ -136,6 +150,20 @@ bool GuestReadableRange(uint8_t* base, uint32_t guest_address, uint32_t byte_cou
   return GuestReadableByte(base, guest_address) &&
          GuestReadableByte(base, static_cast<uint32_t>(last));
 }
+
+constexpr uint32_t BoundedVectorCount(uint32_t begin, uint32_t end, uint32_t stride,
+                                      uint32_t cap) {
+  if (begin == 0 || end <= begin || stride == 0) {
+    return 0;
+  }
+  const uint32_t count = (end - begin) / stride;
+  return count > cap ? cap : count;
+}
+
+static_assert(BoundedVectorCount(0x1000u, 0x1034u, 0x34u, 16u) == 1u);
+static_assert(BoundedVectorCount(0x1000u, 0x1000u, 0x34u, 16u) == 0u);
+static_assert(BoundedVectorCount(0x1034u, 0x1000u, 0x34u, 16u) == 0u);
+static_assert(BoundedVectorCount(0x1000u, 0x2000u, 0x34u, 2u) == 2u);
 
 void SnapshotGuestCString(uint32_t guest_address, char (&out)[65]) {
   std::fill(std::begin(out), std::end(out), '\0');
@@ -1797,11 +1825,116 @@ uint32_t TryLoadU32(uint8_t* base, uint32_t addr) {
   return REX_LOAD_U32(addr);
 }
 
+uint16_t TryLoadU16(uint8_t* base, uint32_t addr) {
+  if (!base || !GuestReadableRange(base, addr, 2)) {
+    return 0;
+  }
+  return REX_LOAD_U16(addr);
+}
+
 uint8_t TryLoadU8(uint8_t* base, uint32_t addr) {
   if (!base || !GuestReadableRange(base, addr, 1)) {
     return 0;
   }
   return REX_LOAD_U8(addr);
+}
+
+void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t draw_iface) {
+  if (!REXCVAR_GET(fm2_plume_trace_direct_decode)) {
+    return;
+  }
+
+  const uint32_t sample_limit = REXCVAR_GET(fm2_plume_trace_direct_decode_limit);
+  if (sample_limit == 0) {
+    return;
+  }
+
+  const uint64_t sample_ix =
+      g_plume_direct_decode_samples.fetch_add(1, std::memory_order_relaxed);
+  if (sample_ix >= sample_limit) {
+    return;
+  }
+
+  uint8_t* base = GuestBase();
+  if (!base || !GuestReadableRange(base, direct_render_ctx, 0x5AC)) {
+    LogLine("FM2_PLUME_DIRECT_DECODE n=%llu ctx=%08X iface=%08X invalid_ctx=1",
+            static_cast<unsigned long long>(sample_ix + 1), direct_render_ctx, draw_iface);
+    return;
+  }
+
+  constexpr uint32_t kRecordStride = 0x34;
+  constexpr uint32_t kSegmentStride = 0x08;
+  constexpr uint32_t kMaxDecodedRecords = 256;
+  constexpr uint32_t kMaxDecodedSegments = 1024;
+
+  const uint8_t built = TryLoadU8(base, direct_render_ctx + 0x48);
+  const uint32_t record_begin = TryLoadU32(base, direct_render_ctx + 0x5A4);
+  const uint32_t record_end = TryLoadU32(base, direct_render_ctx + 0x5A8);
+  const uint32_t record_count =
+      BoundedVectorCount(record_begin, record_end, kRecordStride, kMaxDecodedRecords);
+  uint32_t record_scan = REXCVAR_GET(fm2_plume_trace_direct_decode_record_limit);
+  if (record_scan > record_count) {
+    record_scan = record_count;
+  }
+
+  LogLine(
+      "FM2_PLUME_DIRECT_DECODE n=%llu ctx=%08X iface=%08X built=%u "
+      "rec_begin=%08X rec_end=%08X rec_count=%u scan=%u",
+      static_cast<unsigned long long>(sample_ix + 1), direct_render_ctx, draw_iface,
+      static_cast<unsigned>(built), record_begin, record_end, record_count, record_scan);
+
+  for (uint32_t record_index = 0; record_index < record_scan; ++record_index) {
+    const uint32_t record = record_begin + record_index * kRecordStride;
+    if (!GuestReadableRange(base, record, kRecordStride)) {
+      LogLine("FM2_PLUME_DIRECT_RECORD n=%llu rec_i=%u rec=%08X unreadable=1",
+              static_cast<unsigned long long>(sample_ix + 1), record_index, record);
+      continue;
+    }
+
+    const uint32_t holder = TryLoadU32(base, record + 0x28);
+    const uint32_t bind0 = TryLoadU32(base, record + 0x2C);
+    const uint32_t index_resource = TryLoadU32(base, record + 0x30);
+    uint32_t segment_begin = 0;
+    uint32_t segment_end = 0;
+    uint32_t segment_count = 0;
+    uint32_t first_segment_index = 0xFFFFFFFFu;
+    uint32_t first_segment = 0;
+    uint16_t first_start = 0;
+    uint16_t first_index_count = 0;
+
+    if (holder && GuestReadableRange(base, holder + 0x10, 8)) {
+      segment_begin = TryLoadU32(base, holder + 0x10);
+      segment_end = TryLoadU32(base, holder + 0x14);
+      segment_count =
+          BoundedVectorCount(segment_begin, segment_end, kSegmentStride, kMaxDecodedSegments);
+      const uint32_t segment_scan = segment_count < 4u ? segment_count : 4u;
+      for (uint32_t segment_index = 0; segment_index < segment_scan; ++segment_index) {
+        const uint32_t segment = segment_begin + segment_index * kSegmentStride;
+        if (!GuestReadableRange(base, segment, kSegmentStride)) {
+          continue;
+        }
+        const uint16_t index_count = TryLoadU16(base, segment + 0x06);
+        if (index_count == 0) {
+          continue;
+        }
+        first_segment_index = segment_index;
+        first_segment = segment;
+        first_start = TryLoadU16(base, segment + 0x04);
+        first_index_count = index_count;
+        break;
+      }
+    }
+
+    const uint32_t primitive_count = first_index_count / 3u;
+    LogLine(
+        "FM2_PLUME_DIRECT_RECORD n=%llu rec_i=%u rec=%08X holder=%08X "
+        "bind0=%08X index_res=%08X seg_begin=%08X seg_end=%08X seg_count=%u "
+        "first_seg_i=%08X first_seg=%08X start=%u index_count=%u prim_count=%u",
+        static_cast<unsigned long long>(sample_ix + 1), record_index, record, holder, bind0,
+        index_resource, segment_begin, segment_end, segment_count, first_segment_index,
+        first_segment, static_cast<unsigned>(first_start),
+        static_cast<unsigned>(first_index_count), primitive_count);
+  }
 }
 
 void MaybeLogProducerSample(const char* site, std::atomic<uint64_t>& samples, uint32_t obj) {
@@ -1979,6 +2112,7 @@ void FM2PlumeTraceDirectIndexedDrawEntry(PPCRegister& r3, PPCRegister& r4, PPCRe
       r9.u32,
       r10.u32,
   });
+  MaybeLogPlumeDirectIndexedDrawDecode(r3.u32, r4.u32);
 }
 
 void FM2SigSiteA56C(PPCRegister& r3) {
