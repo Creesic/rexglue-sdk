@@ -115,6 +115,7 @@ The IDA names corresponding to these addresses were applied and mirrored into
 | `0x82531370` | Per-object/per-pass command-buffer builder | Starts a command-buffer batch, calls `0x8250F7C0` to emit draw work, finalizes, creates texture/fixup records, then clones command buffers into per-pass slots. | Very important. This may be the FM2 equivalent of "record native draw packet for this material/pass". | High |
 | `0x8250D950` | Higher-level scene/view traversal | Iterates a list of views or light modes, sets renderer interface state, calls `0x82509148`, then follow-up pass helpers. Contains string evidence around `LightMapOnly`. | Useful for pass naming and visual phase correlation, but likely above the hook layer. | Medium |
 | `0x82509148` | Compact scene render entry | Prepares view state, optionally initializes, refreshes lists, calls `0x82531DC0`, then calls `0x8252FF00`. | Good test hook for one full world-render slice. | Medium-high |
+| `0x82537998` | Direct-draw record resource resolver | Iterates direct-draw records and resolves missing resource/model pointers via a skinned-model resource lock. | Useful precondition for decoding direct draw record `+0x28`, `+0x2C`, and `+0x30`. | Medium-high |
 | `0x8251B620` | Pass-template command-buffer setup | Switches on mode `0..10`, begins a batch, applies fixed render/depth states, marks dirty slots. | Useful for naming pass modes and reconstructing render-state templates. | Medium |
 | `0x8251BA08` | Command-buffer finalize-and-clone helper | Applies fixed render states, finalizes the active batch, then clones `dword_829F4454`. | Below ideal hook layer; useful for cached command-buffer lifecycle. | Medium |
 | `0x8251BC40` | Sorted object draw-list submit helper | Sorts up to 19 object slots by distance/score, updates object state, then emits selected draw-list entries. | Useful for object-order and transparency behavior. | Medium |
@@ -335,6 +336,39 @@ The reusable long-term architecture should be:
     - `r3`, `r4`, `r6`, `r7`, `r8`, `r9`, and `r10` were stable across the
       early and late direct-draw samples checked. `r5` changed, so it needs IDA
       field/caller decoding before treating it as a draw argument.
+- IDA direct-draw decode:
+  - `FM2_Render_BuildDirectIndexedDrawBuffers` consumes only `r3` and `r4`.
+    The runtime sample maps to `direct_render_ctx=4162EC50` and
+    `draw_iface=2E0162C0`. Hook registers `r5` through `r10` are live-register
+    residue at this boundary and should not be treated as function arguments.
+  - `direct_render_ctx + 0x48` is a built/skip flag. If set, the direct builder
+    returns without rebuilding cloned command buffers.
+  - `direct_render_ctx + 0x5A4` and `+0x5A8` are the begin/end pointers for a
+    vector of 0x34-byte direct-draw records. The observed builder count is
+    `(end - begin) / 0x34`.
+  - `FM2_Render_EnsureDirectDrawRecordResources` fills missing record resource
+    pointers. For each 0x34-byte record it resolves fields at:
+    - `record + 0x28`: resource/model holder pointer
+    - `record + 0x2C`: resource bound through `draw_iface` slot `+0x64` as
+      resource/stream slot `0`
+    - `record + 0x30`: resource bound through `draw_iface` slot `+0x74`, likely
+      the index buffer/resource
+  - The resource/model holder at `record + 0x28` has an indexed-draw segment
+    vector at holder `+0x10` / `+0x14`. Entries are 8 bytes, and the builder
+    checks at most four entries per record.
+  - Segment fields currently decoded:
+    - `segment + 0x04`: start/index offset passed to the draw call
+    - `segment + 0x06`: index count; zero skips the segment
+    - primitive type is passed as `4`, and primitive count is
+      `segment.index_count / 3`, matching a triangle-list path
+  - `direct_render_ctx + 0x5B0` is also bound through `draw_iface` slot `+0x64`
+    as resource/stream slot `1`.
+  - Clone output vectors live at `direct_render_ctx + 0x0C`, `+0x1C`, `+0x2C`,
+    and `+0x3C`; the direct builder stores one cloned command buffer per outer
+    draw record into the segment-index-selected output vector.
+  - The live/non-cached path inside `FM2_Render_InstanceHybridDrawPath` mirrors
+    the same binds and final draw call, which raises confidence that this schema
+    is the right first Plume replay boundary.
 - Current cvars:
   - `fm2_plume_mode`: `xenos`, `shadow`, or `plume_clear`
   - `fm2_plume_clear_on_init`: clear/present during `plume_clear` setup
@@ -342,11 +376,11 @@ The reusable long-term architecture should be:
   - `fm2_plume_trace_log_interval`: logs one packet sample every N captures
     and uses `1` for every captured packet
 - Next replay gate:
-  - Identify vertex/index buffer fields in IDA for
-    `FM2_Render_BuildDirectIndexedDrawBuffers` before attempting native draw
-    replay.
-  - Decode `r3=4162EC50`, `r4=2E0162C0`, and `r9=7038F950` as candidate
-    context/command-buffer pointers, and prove which field carries vertex
-    buffer, index buffer, primitive count, and shader/material state.
+  - Add a small runtime decoder for `FM2PlumeTraceDirectIndexedDrawEntry` that
+    samples `direct_render_ctx`, the first few direct-draw records, and their
+    first nonzero draw segments using the offsets above.
+  - Confirm which record fields are vertex stream, index buffer/resource,
+    material/shader state, and whether `segment + 0x04` is first index or byte
+    offset.
   - Keep original Xenos draw enabled until a Plume debug draw presents from a
     captured packet.

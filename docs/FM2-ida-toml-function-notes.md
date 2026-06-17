@@ -104,6 +104,9 @@ captures/logs confirm them.
 | `0x8252FF00` | `FM2_Render_ExecuteSortedDrawLists` | Iterates sorted renderable arrays, updates object state, and emits cached draw-list command buffers through `FM2_D3D_EmitDirtyStateAndDrawList`. |
 | `0x82531DC0` | `FM2_Render_CompileMissingPassBuffers` | Time-budgeted scan for renderables missing cached pass command buffers; calls `0x82531370`. |
 | `0x82531370` | `FM2_Render_BuildObjectPassCommandBuffer` | Begins/finalizes a command-buffer batch, emits pass draw work through `0x8250F7C0`, creates texture/fixup records, and clones command buffers. |
+| `0x82535C40` | `FM2_Render_DestroySkinnedModelResourceLock` | Destroys a skinned-model resource lock and releases the owned handle if present. |
+| `0x825372C8` | `FM2_Render_InitSkinnedModelResourceLock` | Initializes a `TResourceLock<TResourceHandle<CSkinnedModelResourceType, CSkinnedModelResource>, 0>` from a direct-draw record resource handle. |
+| `0x82537998` | `FM2_Render_EnsureDirectDrawRecordResources` | Iterates the direct-draw record vector and resolves missing record resource pointers at record `+0x28`, `+0x2C`, and `+0x30`. |
 | `0x82509148` | `FM2_Render_SceneSliceEntry` | Prepares a scene/view slice, calls the command-buffer compiler, then executes sorted draw lists. |
 | `0x8250D950` | `FM2_Render_ViewTraversal` | Higher-level scene/view traversal; iterates view or light-mode entries and calls `0x82509148`. |
 | `0x825380B8` | `FM2_Render_BuildDirectIndexedDrawBuffers` | Uses renderer-interface calls to bind resources and issue indexed primitive draws, then clones generated command buffers. |
