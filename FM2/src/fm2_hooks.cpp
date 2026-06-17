@@ -1,4 +1,5 @@
 #include "generated/fm2_init.h"
+#include "native_renderer/fm2_direct_draw_decode.h"
 #include "native_renderer/fm2_native_renderer.h"
 
 #include <atomic>
@@ -21,6 +22,8 @@
 #include <rex/thread.h>
 
 namespace {
+
+namespace fm2nr = fm2::native_renderer;
 
 REXCVAR_DEFINE_BOOL(
     fm2_break_before_load_637f8, false, "FM2",
@@ -150,20 +153,6 @@ bool GuestReadableRange(uint8_t* base, uint32_t guest_address, uint32_t byte_cou
   return GuestReadableByte(base, guest_address) &&
          GuestReadableByte(base, static_cast<uint32_t>(last));
 }
-
-constexpr uint32_t BoundedVectorCount(uint32_t begin, uint32_t end, uint32_t stride,
-                                      uint32_t cap) {
-  if (begin == 0 || end <= begin || stride == 0) {
-    return 0;
-  }
-  const uint32_t count = (end - begin) / stride;
-  return count > cap ? cap : count;
-}
-
-static_assert(BoundedVectorCount(0x1000u, 0x1034u, 0x34u, 16u) == 1u);
-static_assert(BoundedVectorCount(0x1000u, 0x1000u, 0x34u, 16u) == 0u);
-static_assert(BoundedVectorCount(0x1034u, 0x1000u, 0x34u, 16u) == 0u);
-static_assert(BoundedVectorCount(0x1000u, 0x2000u, 0x34u, 2u) == 2u);
 
 void SnapshotGuestCString(uint32_t guest_address, char (&out)[65]) {
   std::fill(std::begin(out), std::end(out), '\0');
@@ -1839,6 +1828,48 @@ uint8_t TryLoadU8(uint8_t* base, uint32_t addr) {
   return REX_LOAD_U8(addr);
 }
 
+void LogDirectDrawInterfaceSlots(uint8_t* base, uint64_t sample_number, uint32_t draw_iface) {
+  if (!draw_iface || !GuestReadableRange(base, draw_iface, 4)) {
+    LogLine("FM2_PLUME_DIRECT_IFACE n=%llu iface=%08X unreadable=1",
+            static_cast<unsigned long long>(sample_number), draw_iface);
+    return;
+  }
+
+  const uint32_t vtable = TryLoadU32(base, draw_iface);
+  if (!vtable || !GuestReadableRange(base, vtable + 0x80u, 4)) {
+    LogLine("FM2_PLUME_DIRECT_IFACE n=%llu iface=%08X vtable=%08X unreadable_slots=1",
+            static_cast<unsigned long long>(sample_number), draw_iface, vtable);
+    return;
+  }
+
+  LogLine(
+      "FM2_PLUME_DIRECT_IFACE n=%llu iface=%08X vtable=%08X "
+      "slot28=%08X slot30=%08X slot64=%08X slot74=%08X slot80=%08X",
+      static_cast<unsigned long long>(sample_number), draw_iface, vtable,
+      TryLoadU32(base, vtable + 0x28u), TryLoadU32(base, vtable + 0x30u),
+      TryLoadU32(base, vtable + 0x64u), TryLoadU32(base, vtable + 0x74u),
+      TryLoadU32(base, vtable + 0x80u));
+}
+
+void LogDirectDrawResourceDescriptor(uint8_t* base, uint64_t sample_number,
+                                     uint32_t record_index, const char* role,
+                                     uint32_t descriptor) {
+  if (!descriptor ||
+      !GuestReadableRange(base, descriptor, fm2nr::kDirectDrawResourceDescriptorSize)) {
+    LogLine(
+        "FM2_PLUME_DIRECT_RESOURCE n=%llu rec_i=%08X role=%s desc=%08X unreadable=1",
+        static_cast<unsigned long long>(sample_number), record_index, role, descriptor);
+    return;
+  }
+
+  LogLine(
+      "FM2_PLUME_DIRECT_RESOURCE n=%llu rec_i=%08X role=%s desc=%08X "
+      "w00=%08X w04=%08X w08=%08X w0c=%08X",
+      static_cast<unsigned long long>(sample_number), record_index, role, descriptor,
+      TryLoadU32(base, descriptor + 0x00u), TryLoadU32(base, descriptor + 0x04u),
+      TryLoadU32(base, descriptor + 0x08u), TryLoadU32(base, descriptor + 0x0Cu));
+}
+
 void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t draw_iface) {
   if (!REXCVAR_GET(fm2_plume_trace_direct_decode)) {
     return;
@@ -1862,16 +1893,16 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
     return;
   }
 
-  constexpr uint32_t kRecordStride = 0x34;
-  constexpr uint32_t kSegmentStride = 0x08;
   constexpr uint32_t kMaxDecodedRecords = 256;
   constexpr uint32_t kMaxDecodedSegments = 1024;
 
-  const uint8_t built = TryLoadU8(base, direct_render_ctx + 0x48);
-  const uint32_t record_begin = TryLoadU32(base, direct_render_ctx + 0x5A4);
-  const uint32_t record_end = TryLoadU32(base, direct_render_ctx + 0x5A8);
-  const uint32_t record_count =
-      BoundedVectorCount(record_begin, record_end, kRecordStride, kMaxDecodedRecords);
+  const uint8_t built = TryLoadU8(base, direct_render_ctx + fm2nr::kDirectDrawCtxBuiltOffset);
+  const uint32_t record_begin =
+      TryLoadU32(base, direct_render_ctx + fm2nr::kDirectDrawCtxRecordBeginOffset);
+  const uint32_t record_end =
+      TryLoadU32(base, direct_render_ctx + fm2nr::kDirectDrawCtxRecordEndOffset);
+  const uint32_t record_count = fm2nr::BoundedVectorCount(
+      record_begin, record_end, fm2nr::kDirectDrawRecordStride, kMaxDecodedRecords);
   uint32_t record_scan = REXCVAR_GET(fm2_plume_trace_direct_decode_record_limit);
   if (record_scan > record_count) {
     record_scan = record_count;
@@ -1883,17 +1914,22 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
       static_cast<unsigned long long>(sample_ix + 1), direct_render_ctx, draw_iface,
       static_cast<unsigned>(built), record_begin, record_end, record_count, record_scan);
 
+  LogDirectDrawInterfaceSlots(base, sample_ix + 1, draw_iface);
+  LogDirectDrawResourceDescriptor(base, sample_ix + 1, 0xFFFFFFFFu, "stream1",
+                                  direct_render_ctx + fm2nr::kDirectDrawCtxStream1Offset);
+
   for (uint32_t record_index = 0; record_index < record_scan; ++record_index) {
-    const uint32_t record = record_begin + record_index * kRecordStride;
-    if (!GuestReadableRange(base, record, kRecordStride)) {
+    const uint32_t record = record_begin + record_index * fm2nr::kDirectDrawRecordStride;
+    if (!GuestReadableRange(base, record, fm2nr::kDirectDrawRecordStride)) {
       LogLine("FM2_PLUME_DIRECT_RECORD n=%llu rec_i=%u rec=%08X unreadable=1",
               static_cast<unsigned long long>(sample_ix + 1), record_index, record);
       continue;
     }
 
-    const uint32_t holder = TryLoadU32(base, record + 0x28);
-    const uint32_t bind0 = TryLoadU32(base, record + 0x2C);
-    const uint32_t index_resource = TryLoadU32(base, record + 0x30);
+    const uint32_t holder = TryLoadU32(base, record + fm2nr::kDirectDrawRecordHolderOffset);
+    const uint32_t bind0 = TryLoadU32(base, record + fm2nr::kDirectDrawRecordStream0Offset);
+    const uint32_t index_resource =
+        TryLoadU32(base, record + fm2nr::kDirectDrawRecordIndexResourceOffset);
     uint32_t segment_begin = 0;
     uint32_t segment_end = 0;
     uint32_t segment_count = 0;
@@ -1902,30 +1938,35 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
     uint16_t first_start = 0;
     uint16_t first_index_count = 0;
 
-    if (holder && GuestReadableRange(base, holder + 0x10, 8)) {
-      segment_begin = TryLoadU32(base, holder + 0x10);
-      segment_end = TryLoadU32(base, holder + 0x14);
-      segment_count =
-          BoundedVectorCount(segment_begin, segment_end, kSegmentStride, kMaxDecodedSegments);
+    if (holder && GuestReadableRange(base, holder + fm2nr::kDirectDrawHolderSegmentBeginOffset,
+                                     8)) {
+      segment_begin =
+          TryLoadU32(base, holder + fm2nr::kDirectDrawHolderSegmentBeginOffset);
+      segment_end = TryLoadU32(base, holder + fm2nr::kDirectDrawHolderSegmentEndOffset);
+      segment_count = fm2nr::BoundedVectorCount(
+          segment_begin, segment_end, fm2nr::kDirectDrawSegmentStride, kMaxDecodedSegments);
       const uint32_t segment_scan = segment_count < 4u ? segment_count : 4u;
       for (uint32_t segment_index = 0; segment_index < segment_scan; ++segment_index) {
-        const uint32_t segment = segment_begin + segment_index * kSegmentStride;
-        if (!GuestReadableRange(base, segment, kSegmentStride)) {
+        const uint32_t segment =
+            segment_begin + segment_index * fm2nr::kDirectDrawSegmentStride;
+        if (!GuestReadableRange(base, segment, fm2nr::kDirectDrawSegmentStride)) {
           continue;
         }
-        const uint16_t index_count = TryLoadU16(base, segment + 0x06);
+        const uint16_t index_count =
+            TryLoadU16(base, segment + fm2nr::kDirectDrawSegmentIndexCountOffset);
         if (index_count == 0) {
           continue;
         }
         first_segment_index = segment_index;
         first_segment = segment;
-        first_start = TryLoadU16(base, segment + 0x04);
+        first_start = TryLoadU16(base, segment + fm2nr::kDirectDrawSegmentStartOffset);
         first_index_count = index_count;
         break;
       }
     }
 
-    const uint32_t primitive_count = first_index_count / 3u;
+    const uint32_t primitive_count =
+        fm2nr::TriangleListPrimitiveCountFromIndexCount(first_index_count);
     LogLine(
         "FM2_PLUME_DIRECT_RECORD n=%llu rec_i=%u rec=%08X holder=%08X "
         "bind0=%08X index_res=%08X seg_begin=%08X seg_end=%08X seg_count=%u "
@@ -1934,6 +1975,9 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
         index_resource, segment_begin, segment_end, segment_count, first_segment_index,
         first_segment, static_cast<unsigned>(first_start),
         static_cast<unsigned>(first_index_count), primitive_count);
+    LogDirectDrawResourceDescriptor(base, sample_ix + 1, record_index, "stream0", bind0);
+    LogDirectDrawResourceDescriptor(base, sample_ix + 1, record_index, "index",
+                                    index_resource);
   }
 }
 

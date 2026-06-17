@@ -13,6 +13,7 @@ add_executable(unit_tests
     codegen/template_registry_test.cpp
     ppc/import_function_test.cpp
     ppc/stack_test.cpp
+    fm2/direct_draw_decode_test.cpp
     system/guest_path_test.cpp
     system/function_dispatcher_test.cpp
     codegen/manifest_test.cpp
@@ -29,6 +30,7 @@ target_sources(unit_tests PRIVATE
 target_include_directories(unit_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/FM2/src
 )
 
 target_link_libraries(unit_tests PRIVATE

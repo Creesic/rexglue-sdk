@@ -409,6 +409,20 @@ The reusable long-term architecture should be:
   - `fm2_plume_trace_direct_decode_record_limit`: maximum direct-draw records
     inspected per decoded sample. The June 17 `fm2_009` run used `4`, which was
     enough to prove the record stride and holder/resource offsets.
+- Current direct decode output:
+  - `FM2_PLUME_DIRECT_DECODE`: direct context, draw interface, built flag, and
+    direct-record vector begin/end/count.
+  - `FM2_PLUME_DIRECT_IFACE`: draw-interface vtable plus slots `+0x28`,
+    `+0x30`, `+0x64`, `+0x74`, and `+0x80`. The important goal is to identify
+    the concrete virtual functions for state upload, stream binding, index
+    binding, and draw submission.
+  - `FM2_PLUME_DIRECT_RECORD`: record holder, stream0 descriptor pointer,
+    index descriptor pointer, segment vector, first nonzero segment, start,
+    index count, and triangle-list primitive count.
+  - `FM2_PLUME_DIRECT_RESOURCE`: raw descriptor dwords for `stream0`, `stream1`,
+    and `index`. The first pass logs `w00`, `w04`, `w08`, and adjacent `w0c`
+    so we can infer which word is buffer base, size/stride/format, and index
+    type before building a Plume packet.
 - Next replay gate:
   - Decode the resource descriptors behind `record + 0x2C`, `record + 0x30`,
     and `direct_render_ctx + 0x5B0`. The immediate goal is to map the captured
