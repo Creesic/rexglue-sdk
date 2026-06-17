@@ -94,13 +94,24 @@ void StoreLastArgs(uint32_t hook_address,
   g_last_args = args;
 }
 
+constexpr bool ShouldLogPacketSample(uint64_t count, uint32_t interval) {
+  return interval != 0 && count != 0 && ((count - 1) % interval) == 0;
+}
+
+static_assert(!ShouldLogPacketSample(0, 1));
+static_assert(!ShouldLogPacketSample(1, 0));
+static_assert(ShouldLogPacketSample(1, 1));
+static_assert(ShouldLogPacketSample(1, 120));
+static_assert(!ShouldLogPacketSample(2, 120));
+static_assert(ShouldLogPacketSample(121, 120));
+
 void MaybeLogPacket(const char* name, uint32_t hook_address, uint64_t count,
                     const fm2::native_renderer::GuestArgs& args) {
   if (!REXCVAR_GET(fm2_plume_trace_packets)) {
     return;
   }
   const uint32_t interval = REXCVAR_GET(fm2_plume_trace_log_interval);
-  if (interval == 0 || (count % interval) != 1) {
+  if (!ShouldLogPacketSample(count, interval)) {
     return;
   }
   REXLOG_INFO(
@@ -377,7 +388,12 @@ void Shutdown() {
   g_swapchain_ready.store(false, std::memory_order_relaxed);
 #endif
   if (was_initialized) {
-    REXLOG_INFO("FM2 Plume native renderer shut down");
+    REXLOG_INFO(
+        "FM2 Plume native renderer shut down build_object_pass={} "
+        "direct_indexed_draw={} last_hook={:08X}",
+        g_build_object_pass_entries.load(std::memory_order_relaxed),
+        g_direct_indexed_draw_entries.load(std::memory_order_relaxed),
+        g_last_hook_address.load(std::memory_order_relaxed));
   }
 }
 

@@ -299,10 +299,19 @@ The reusable long-term architecture should be:
     returns from native renderer initialization without creating Plume objects.
   - `fm2_plume_mode=shadow`: initializes a Plume D3D12 interface/device/queue
     while keeping the existing ReXGlue/Xenos renderer visible.
+    Runtime check on June 17 confirmed `FM2 Plume device initialized
+    backend=D3D12` and `FM2 Plume native renderer initialized mode=shadow`.
+    No `FM2_PLUME_*` packet samples were found in the checked logs from that
+    run. Follow-up found the trace sampling gate treated
+    `fm2_plume_trace_log_interval=1` as "log nothing" because it checked
+    `count % interval == 1`; the helper now logs count `1` and every
+    `1 + N` sample, so interval `1` logs every captured packet.
   - `fm2_plume_mode=plume_clear`: disables ReXGlue graphics before runtime
     setup, creates a Plume swapchain from the FM2 window, and issues a one-shot
     clear/present when `fm2_plume_clear_on_init=true`. Initialization failure is
     fatal in this mode so the title does not continue with no visible renderer.
+    Runtime check on June 17 confirmed this mode shows only the expected dark
+    Plume clear.
 - Hook capture:
   - `0x82531370` / `FM2_Render_BuildObjectPassCommandBuffer`:
     - Hook adapter: `FM2PlumeTraceBuildObjectPassEntry`
@@ -321,6 +330,7 @@ The reusable long-term architecture should be:
   - `fm2_plume_clear_on_init`: clear/present during `plume_clear` setup
   - `fm2_plume_trace_packets`: enables sampled packet logging
   - `fm2_plume_trace_log_interval`: logs one packet sample every N captures
+    and uses `1` for every captured packet
 - Next replay gate:
   - Run FM2 in `shadow` mode with `fm2_plume_trace_packets=true` and collect the
     first samples from both hooks.
