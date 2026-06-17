@@ -317,14 +317,24 @@ The reusable long-term architecture should be:
     - Hook adapter: `FM2PlumeTraceBuildObjectPassEntry`
     - Captured registers: `r3` through `r10`
     - Generated call site: `FM2/generated/fm2_recomp.28.cpp`
-    - Runtime observed count: not collected in this slice.
-    - First runtime sample: not collected in this slice.
+    - Runtime observed count: 4036 in the June 17 `fm2_008` shadow run.
+    - First runtime sample:
+      `r3=4169EF00 r4=BA5CDD14 r5=00000000 r6=00000000 r7=00000009 r8=00000002 r9=7038FA00 r10=2E5DA300`
+    - The paired second sample used the same `r3/r4/r5/r7/r8/r9/r10` values
+      with `r6=00000001`, so `r6` is likely a per-pass or per-eye sub-index at
+      this boundary.
   - `0x825380B8` / `FM2_Render_BuildDirectIndexedDrawBuffers`:
     - Hook adapter: `FM2PlumeTraceDirectIndexedDrawEntry`
     - Captured registers: `r3` through `r10`
     - Generated call site: `FM2/generated/fm2_recomp.28.cpp`
-    - Runtime observed count: not collected in this slice.
-    - First runtime sample: not collected in this slice.
+    - Runtime observed count: 1090 in the June 17 `fm2_008` shadow run.
+    - First runtime sample:
+      `r3=4162EC50 r4=2E0162C0 r5=829F4908 r6=00000014 r7=00000005 r8=0000007D r9=7038F950 r10=00000000`
+    - Late runtime sample:
+      `r3=4162EC50 r4=2E0162C0 r5=00000001 r6=00000014 r7=00000005 r8=0000007D r9=7038F950 r10=00000000`
+    - `r3`, `r4`, `r6`, `r7`, `r8`, `r9`, and `r10` were stable across the
+      early and late direct-draw samples checked. `r5` changed, so it needs IDA
+      field/caller decoding before treating it as a draw argument.
 - Current cvars:
   - `fm2_plume_mode`: `xenos`, `shadow`, or `plume_clear`
   - `fm2_plume_clear_on_init`: clear/present during `plume_clear` setup
@@ -332,10 +342,11 @@ The reusable long-term architecture should be:
   - `fm2_plume_trace_log_interval`: logs one packet sample every N captures
     and uses `1` for every captured packet
 - Next replay gate:
-  - Run FM2 in `shadow` mode with `fm2_plume_trace_packets=true` and collect the
-    first samples from both hooks.
-  - Pick the hook with stable visible arguments.
-  - Identify vertex/index buffer fields in IDA before attempting native draw
+  - Identify vertex/index buffer fields in IDA for
+    `FM2_Render_BuildDirectIndexedDrawBuffers` before attempting native draw
     replay.
+  - Decode `r3=4162EC50`, `r4=2E0162C0`, and `r9=7038F950` as candidate
+    context/command-buffer pointers, and prove which field carries vertex
+    buffer, index buffer, primitive count, and shader/material state.
   - Keep original Xenos draw enabled until a Plume debug draw presents from a
     captured packet.
