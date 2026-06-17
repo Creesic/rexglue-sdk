@@ -1954,13 +1954,14 @@ void LogDirectDrawShaderPayload(uint8_t* base, uint64_t sample_number, const cha
   }
 
   const uint32_t shader_type = TryLoadU32(base, resolved);
-  uint32_t payload_offset = 0;
+  const uint32_t payload_offset =
+      fm2nr::DirectDrawShaderPayloadGpuBaseOffsetForType(shader_type);
+  const uint32_t ucode_offset =
+      fm2nr::DirectDrawShaderPayloadUcodeOffsetForType(shader_type);
   const char* payload_kind = "unknown";
   if (shader_type == fm2nr::kDirectDrawVertexShaderTypeTag) {
-    payload_offset = fm2nr::kDirectDrawVertexShaderPayloadGpuBaseOffset;
     payload_kind = "vertex_payload";
   } else if (shader_type == fm2nr::kDirectDrawPixelShaderTypeTag) {
-    payload_offset = fm2nr::kDirectDrawPixelShaderPayloadGpuBaseOffset;
     payload_kind = "pixel_payload";
   } else {
     LogLine(
@@ -1972,35 +1973,95 @@ void LogDirectDrawShaderPayload(uint8_t* base, uint64_t sample_number, const cha
 
   const uint32_t gpu_base = TryLoadU32AtOffset(base, resolved, payload_offset);
   const uint32_t size_field = TryLoadU32AtOffset(base, resolved, payload_offset + 4u);
+  uint32_t known_payload_bytes = size_field;
+  if (shader_type == fm2nr::kDirectDrawPixelShaderTypeTag) {
+    const uint32_t pixel_payload_bytes = TryLoadU32AtOffset(
+        base, resolved, fm2nr::kDirectDrawPixelShaderPayloadByteCountOffset);
+    if (pixel_payload_bytes != 0) {
+      known_payload_bytes = pixel_payload_bytes;
+    }
+  }
+  const uint32_t ucode_base =
+      gpu_base != 0 ? AddGuestOffsetOrZero(gpu_base, ucode_offset) : 0;
+
+  LogLine(
+      "FM2_PLUME_DIRECT_SHADER_META n=%llu role=%s kind=%s object=%08X type=%08X "
+      "payload_off=%04X gpu_base=%08X size_field=%08X known_payload_bytes=%08X "
+      "ucode_off=%04X ucode_base=%08X "
+      "w18=%08X w1c=%08X w20=%08X w24=%08X w28=%08X w2c=%08X "
+      "w30=%08X w34=%08X w38=%08X w3c=%08X",
+      static_cast<unsigned long long>(sample_number), role, payload_kind, resolved,
+      shader_type, payload_offset, gpu_base, size_field, known_payload_bytes, ucode_offset,
+      ucode_base, TryLoadU32AtOffset(base, resolved, 0x18u),
+      TryLoadU32AtOffset(base, resolved, 0x1Cu),
+      TryLoadU32AtOffset(base, resolved, 0x20u),
+      TryLoadU32AtOffset(base, resolved, 0x24u),
+      TryLoadU32AtOffset(base, resolved, 0x28u),
+      TryLoadU32AtOffset(base, resolved, 0x2Cu),
+      TryLoadU32AtOffset(base, resolved, 0x30u),
+      TryLoadU32AtOffset(base, resolved, 0x34u),
+      TryLoadU32AtOffset(base, resolved, 0x38u),
+      TryLoadU32AtOffset(base, resolved, 0x3Cu));
+
   if (gpu_base == 0) {
     LogLine(
         "FM2_PLUME_DIRECT_SHADER n=%llu role=%s kind=%s object=%08X type=%08X "
-        "payload_off=%04X gpu_base=00000000 size_field=%08X empty=1",
+        "payload_off=%04X gpu_base=00000000 size_field=%08X known_payload_bytes=%08X "
+        "empty=1",
         static_cast<unsigned long long>(sample_number), role, payload_kind, resolved,
-        shader_type, payload_offset, size_field);
+        shader_type, payload_offset, size_field, known_payload_bytes);
     return;
   }
 
-  uint32_t dump_count = byte_count;
-  if (size_field != 0 && dump_count > size_field) {
-    dump_count = size_field;
-  }
+  const uint32_t dump_count =
+      fm2nr::BoundedShaderPayloadDumpByteCount(byte_count, known_payload_bytes);
 
   const std::string bytes = SnapshotGuestBytes(base, gpu_base, dump_count);
   if (bytes.empty()) {
     LogLine(
         "FM2_PLUME_DIRECT_SHADER n=%llu role=%s kind=%s object=%08X type=%08X "
-        "payload_off=%04X gpu_base=%08X size_field=%08X bytes=%u unreadable=1",
+        "payload_off=%04X gpu_base=%08X size_field=%08X known_payload_bytes=%08X "
+        "bytes=%u unreadable=1",
         static_cast<unsigned long long>(sample_number), role, payload_kind, resolved,
-        shader_type, payload_offset, gpu_base, size_field, dump_count);
+        shader_type, payload_offset, gpu_base, size_field, known_payload_bytes, dump_count);
     return;
   }
 
   LogLine(
       "FM2_PLUME_DIRECT_SHADER n=%llu role=%s kind=%s object=%08X type=%08X "
-      "payload_off=%04X gpu_base=%08X size_field=%08X bytes=%u data=%s",
+      "payload_off=%04X gpu_base=%08X size_field=%08X known_payload_bytes=%08X "
+      "bytes=%u data=%s",
       static_cast<unsigned long long>(sample_number), role, payload_kind, resolved,
-      shader_type, payload_offset, gpu_base, size_field, dump_count, bytes.c_str());
+      shader_type, payload_offset, gpu_base, size_field, known_payload_bytes, dump_count,
+      bytes.c_str());
+
+  const uint32_t ucode_dump_count =
+      fm2nr::BoundedShaderUcodeDumpByteCount(byte_count, known_payload_bytes, ucode_offset);
+  if (ucode_base == 0 || ucode_dump_count == 0) {
+    LogLine(
+        "FM2_PLUME_DIRECT_SHADER_UCODE n=%llu role=%s kind=%s object=%08X type=%08X "
+        "ucode_off=%04X ucode_base=%08X known_payload_bytes=%08X bytes=%u empty=1",
+        static_cast<unsigned long long>(sample_number), role, payload_kind, resolved,
+        shader_type, ucode_offset, ucode_base, known_payload_bytes, ucode_dump_count);
+    return;
+  }
+
+  const std::string ucode_bytes = SnapshotGuestBytes(base, ucode_base, ucode_dump_count);
+  if (ucode_bytes.empty()) {
+    LogLine(
+        "FM2_PLUME_DIRECT_SHADER_UCODE n=%llu role=%s kind=%s object=%08X type=%08X "
+        "ucode_off=%04X ucode_base=%08X known_payload_bytes=%08X bytes=%u unreadable=1",
+        static_cast<unsigned long long>(sample_number), role, payload_kind, resolved,
+        shader_type, ucode_offset, ucode_base, known_payload_bytes, ucode_dump_count);
+    return;
+  }
+
+  LogLine(
+      "FM2_PLUME_DIRECT_SHADER_UCODE n=%llu role=%s kind=%s object=%08X type=%08X "
+      "ucode_off=%04X ucode_base=%08X known_payload_bytes=%08X bytes=%u data=%s",
+      static_cast<unsigned long long>(sample_number), role, payload_kind, resolved,
+      shader_type, ucode_offset, ucode_base, known_payload_bytes, ucode_dump_count,
+      ucode_bytes.c_str());
 }
 
 void LogDirectDrawStateObject(uint8_t* base, uint64_t sample_number, uint32_t direct_render_ctx,

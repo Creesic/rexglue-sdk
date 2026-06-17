@@ -47,6 +47,47 @@ TEST_CASE("FM2 direct draw shader state offsets match IDA evidence", "[fm2][plum
   CHECK(decode::kDirectDrawCompiledStateHeaderSize == 0x14u);
 }
 
+TEST_CASE("FM2 direct draw shader payload layout matches runtime evidence",
+          "[fm2][plume]") {
+  namespace decode = fm2::native_renderer;
+
+  CHECK(decode::kDirectDrawVertexShaderPayloadUcodeOffset == 0x30u);
+  CHECK(decode::kDirectDrawPixelShaderPayloadUcodeOffset == 0x00u);
+  CHECK(decode::kDirectDrawPixelShaderPayloadByteCountOffset == 0x30u);
+
+  CHECK(decode::DirectDrawShaderPayloadGpuBaseOffsetForType(
+            decode::kDirectDrawVertexShaderTypeTag) ==
+        decode::kDirectDrawVertexShaderPayloadGpuBaseOffset);
+  CHECK(decode::DirectDrawShaderPayloadGpuBaseOffsetForType(
+            decode::kDirectDrawPixelShaderTypeTag) ==
+        decode::kDirectDrawPixelShaderPayloadGpuBaseOffset);
+  CHECK(decode::DirectDrawShaderPayloadGpuBaseOffsetForType(0xDEADBEEFu) == 0u);
+
+  CHECK(decode::DirectDrawShaderPayloadUcodeOffsetForType(
+            decode::kDirectDrawVertexShaderTypeTag) ==
+        decode::kDirectDrawVertexShaderPayloadUcodeOffset);
+  CHECK(decode::DirectDrawShaderPayloadUcodeOffsetForType(
+            decode::kDirectDrawPixelShaderTypeTag) ==
+        decode::kDirectDrawPixelShaderPayloadUcodeOffset);
+  CHECK(decode::DirectDrawShaderPayloadUcodeOffsetForType(0xDEADBEEFu) == 0u);
+}
+
+TEST_CASE("FM2 direct draw shader byte count bounds respect known payload sizes",
+          "[fm2][plume]") {
+  namespace decode = fm2::native_renderer;
+
+  CHECK(decode::BoundedShaderPayloadDumpByteCount(256u, 0u) == 256u);
+  CHECK(decode::BoundedShaderPayloadDumpByteCount(512u, 0u) ==
+        decode::kDirectDrawShaderByteDumpMax);
+  CHECK(decode::BoundedShaderPayloadDumpByteCount(256u, 0x90u) == 0x90u);
+  CHECK(decode::BoundedShaderPayloadDumpByteCount(0x40u, 0x90u) == 0x40u);
+
+  CHECK(decode::BoundedShaderUcodeDumpByteCount(256u, 0u, 0x30u) == 256u);
+  CHECK(decode::BoundedShaderUcodeDumpByteCount(256u, 0x90u, 0x00u) == 0x90u);
+  CHECK(decode::BoundedShaderUcodeDumpByteCount(256u, 0x90u, 0x30u) == 0x60u);
+  CHECK(decode::BoundedShaderUcodeDumpByteCount(256u, 0x20u, 0x30u) == 0u);
+}
+
 TEST_CASE("FM2 direct draw triangle segment count maps to primitive count", "[fm2][plume]") {
   using fm2::native_renderer::TriangleListPrimitiveCountFromIndexCount;
 

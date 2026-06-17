@@ -452,6 +452,29 @@ The reusable long-term architecture should be:
       `shader + 0x368 + *(shader + 0x37C)`.
     - The pixel shader compiled-state table is addressed as
       `state + 0x28 + *(state + 0x3C)`.
+  - The June 17 shader payload run showed that the raw payload pointer is not
+    always the exact microcode range:
+    - The first sampled vertex shader resolved object was `4021EDC0`, type
+      `0x00100006`, with payload base `B0BBEC20` at object `+0x20`.
+      The first `0x30` payload bytes were zero header/padding; apparent Xenos
+      control-flow microcode began at `B0BBEC50`.
+    - The first sampled pixel shader resolved object was `2E1494B0`, type
+      `0x00100007`, with payload base `B0BBEB80` at object `+0x18`.
+      The object field at `+0x30` was `0x90`, and the previous 256-byte dump
+      crossed into the vertex shader allocation at `B0BBEC20`. Pixel payload
+      dumps must therefore be capped by the object byte-count field before
+      hashing or disassembling.
+    - The current safe diagnostic path is to log raw payload bytes separately
+      from derived microcode bytes. Do not feed arbitrary 256-byte windows into
+      `Shader::AnalyzeUcode`; it follows control-flow instruction addresses and
+      needs a real microcode range.
+  - UnleashedRecomp shader cache pattern for comparison:
+    - `CreateShader` hashes `function[1] + function[2]` bytes from the guest
+      shader function pointer with `XXH3_64bits`.
+    - That hash is looked up in generated `shader/shader_cache.cpp`; Plume then
+      receives a host DXIL/SPIR-V shader from the generated cache.
+    - FM2 needs the equivalent guest shader byte range and hash before we can
+      map draws to generated host shaders in the same style.
 - Current cvars:
   - `fm2_plume_mode`: `xenos`, `shadow`, or `plume_clear`
   - `fm2_plume_clear_on_init`: clear/present during `plume_clear` setup
@@ -499,11 +522,23 @@ The reusable long-term architecture should be:
   - `FM2_PLUME_DIRECT_STATE_BYTES`: optional raw byte dump for each decoded
     state handle, resolved object, and compiled-state table, controlled by
     `fm2_plume_trace_direct_state_bytes`.
+  - `FM2_PLUME_DIRECT_SHADER_META`: shader payload metadata for each decoded
+    shader object, including payload pointer offset/base, known payload byte
+    count when one is known, derived microcode offset/base, and object fields
+    `+0x18` through `+0x3C`.
   - `FM2_PLUME_DIRECT_SHADER`: optional raw byte dump for each decoded shader
     payload, controlled by `fm2_plume_trace_direct_shader_bytes`. The vertex
     shader dumps from resolved shader object `+0x20`; the pixel shader dumps
-    from resolved shader object `+0x18`.
+    from resolved shader object `+0x18` and are capped by the observed pixel
+    payload byte-count field when present.
+  - `FM2_PLUME_DIRECT_SHADER_UCODE`: optional byte dump from the derived
+    microcode start. Vertex shaders currently use payload `+0x30`; pixel
+    shaders currently use payload `+0x00`.
 - Next replay gate:
+  - Decode the real shader byte ranges and hash them in an Unleashed-style
+    path. Pixel has a likely byte-count field at shader object `+0x30`; vertex
+    still needs its true byte count located before invoking the ReXGlue/Xenia
+    shader analyzer.
   - Decode the vertex declaration / shader input layout used with this direct
     draw path. Resource addressing is now good enough for a Plume packet, but
     stream0 appears packed/compressed rather than simple float position data.

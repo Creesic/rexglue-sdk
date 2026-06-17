@@ -37,6 +37,9 @@ inline constexpr uint32_t kDirectDrawVertexShaderTypeTag = 0x00100006u;
 inline constexpr uint32_t kDirectDrawPixelShaderTypeTag = 0x00100007u;
 inline constexpr uint32_t kDirectDrawPixelShaderPayloadGpuBaseOffset = 0x18u;
 inline constexpr uint32_t kDirectDrawVertexShaderPayloadGpuBaseOffset = 0x20u;
+inline constexpr uint32_t kDirectDrawPixelShaderPayloadUcodeOffset = 0x00u;
+inline constexpr uint32_t kDirectDrawVertexShaderPayloadUcodeOffset = 0x30u;
+inline constexpr uint32_t kDirectDrawPixelShaderPayloadByteCountOffset = 0x30u;
 inline constexpr uint32_t kDirectDrawShaderByteDumpMax = 256u;
 inline constexpr uint32_t kDirectDrawSlot28StateTableBaseOffset = 0x28u;
 inline constexpr uint32_t kDirectDrawSlot28StateTableOffsetField = 0x3Cu;
@@ -55,6 +58,57 @@ constexpr uint32_t BoundedVectorCount(uint32_t begin, uint32_t end, uint32_t str
 
 constexpr uint32_t TriangleListPrimitiveCountFromIndexCount(uint32_t index_count) {
   return index_count / 3u;
+}
+
+constexpr uint32_t DirectDrawShaderPayloadGpuBaseOffsetForType(uint32_t shader_type) {
+  switch (shader_type) {
+    case kDirectDrawVertexShaderTypeTag:
+      return kDirectDrawVertexShaderPayloadGpuBaseOffset;
+    case kDirectDrawPixelShaderTypeTag:
+      return kDirectDrawPixelShaderPayloadGpuBaseOffset;
+    default:
+      return 0;
+  }
+}
+
+constexpr uint32_t DirectDrawShaderPayloadUcodeOffsetForType(uint32_t shader_type) {
+  switch (shader_type) {
+    case kDirectDrawVertexShaderTypeTag:
+      return kDirectDrawVertexShaderPayloadUcodeOffset;
+    case kDirectDrawPixelShaderTypeTag:
+      return kDirectDrawPixelShaderPayloadUcodeOffset;
+    default:
+      return 0;
+  }
+}
+
+constexpr uint32_t BoundedShaderPayloadDumpByteCount(uint32_t requested_byte_count,
+                                                     uint32_t known_payload_byte_count) {
+  uint32_t byte_count = requested_byte_count;
+  if (byte_count > kDirectDrawShaderByteDumpMax) {
+    byte_count = kDirectDrawShaderByteDumpMax;
+  }
+  if (known_payload_byte_count != 0 && byte_count > known_payload_byte_count) {
+    byte_count = known_payload_byte_count;
+  }
+  return byte_count;
+}
+
+constexpr uint32_t BoundedShaderUcodeDumpByteCount(uint32_t requested_byte_count,
+                                                   uint32_t known_payload_byte_count,
+                                                   uint32_t ucode_payload_offset) {
+  uint32_t byte_count = requested_byte_count;
+  if (byte_count > kDirectDrawShaderByteDumpMax) {
+    byte_count = kDirectDrawShaderByteDumpMax;
+  }
+  if (known_payload_byte_count == 0) {
+    return byte_count;
+  }
+  if (known_payload_byte_count <= ucode_payload_offset) {
+    return 0;
+  }
+  const uint32_t known_ucode_byte_count = known_payload_byte_count - ucode_payload_offset;
+  return byte_count > known_ucode_byte_count ? known_ucode_byte_count : byte_count;
 }
 
 }  // namespace fm2::native_renderer
