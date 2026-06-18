@@ -23290,7 +23290,7 @@ DEFINE_REX_FUNC(sub_825B30E0) {
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// b 0x8236dd10
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	return;
 }
 
@@ -23299,7 +23299,7 @@ DEFINE_REX_FUNC(sub_825B30F0) {
 	// lwz r3,20(r3)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r3.u32 + 20);
 	// b 0x8236dd10
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	return;
 }
 
@@ -23310,7 +23310,7 @@ DEFINE_REX_FUNC(sub_825B30F8) {
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// b 0x8236e010
-	sub_8236E010(ctx, base);
+	FM2_RenderContext_SetVertexShaderState(ctx, base);
 	return;
 }
 
@@ -23319,7 +23319,7 @@ DEFINE_REX_FUNC(sub_825B3108) {
 	// lwz r3,20(r3)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r3.u32 + 20);
 	// b 0x8236e010
-	sub_8236E010(ctx, base);
+	FM2_RenderContext_SetVertexShaderState(ctx, base);
 	return;
 }
 
@@ -26040,7 +26040,7 @@ DEFINE_REX_FUNC(sub_825B4238) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 20);
 	// bl 0x8236dd10
 	ctx.lr = 0x825B4268;
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	// addi r3,r1,80
 	ctx.r3.s64 = ctx.r1.s64 + 80;
 	// bl 0x825eaa78
@@ -26106,7 +26106,7 @@ DEFINE_REX_FUNC(sub_825B42A8) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 20);
 	// bl 0x8236e010
 	ctx.lr = 0x825B42D8;
-	sub_8236E010(ctx, base);
+	FM2_RenderContext_SetVertexShaderState(ctx, base);
 	// addi r3,r1,80
 	ctx.r3.s64 = ctx.r1.s64 + 80;
 	// bl 0x82535be8

@@ -8746,10 +8746,10 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8236DC28, sub_8236DC28);
   registrar->SetFunction(0x8236DC80, sub_8236DC80);
   registrar->SetFunction(0x8236DCD8, sub_8236DCD8);
-  registrar->SetFunction(0x8236DD10, sub_8236DD10);
+  registrar->SetFunction(0x8236DD10, FM2_RenderContext_SetPixelShaderState);
   registrar->SetFunction(0x8236DED0, sub_8236DED0);
   registrar->SetFunction(0x8236DF18, sub_8236DF18);
-  registrar->SetFunction(0x8236E010, sub_8236E010);
+  registrar->SetFunction(0x8236E010, FM2_RenderContext_SetVertexShaderState);
   registrar->SetFunction(0x8236E1E0, sub_8236E1E0);
   registrar->SetFunction(0x8236E228, sub_8236E228);
   registrar->SetFunction(0x8236E240, sub_8236E240);
@@ -16741,7 +16741,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82535B08, sub_82535B08);
   registrar->SetFunction(0x82535B78, sub_82535B78);
   registrar->SetFunction(0x82535BE8, sub_82535BE8);
-  registrar->SetFunction(0x82535C40, sub_82535C40);
+  registrar->SetFunction(0x82535C40, FM2_Render_DestroySkinnedModelResourceLock);
   registrar->SetFunction(0x82535C98, sub_82535C98);
   registrar->SetFunction(0x82535D18, sub_82535D18);
   registrar->SetFunction(0x82535D70, sub_82535D70);
@@ -16755,7 +16755,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82536978, sub_82536978);
   registrar->SetFunction(0x82536D38, sub_82536D38);
   registrar->SetFunction(0x82537270, sub_82537270);
-  registrar->SetFunction(0x825372C8, sub_825372C8);
+  registrar->SetFunction(0x825372C8, FM2_Render_InitSkinnedModelResourceLock);
   registrar->SetFunction(0x82537320, sub_82537320);
   registrar->SetFunction(0x82537380, sub_82537380);
   registrar->SetFunction(0x825373E0, sub_825373E0);
@@ -16764,7 +16764,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82537538, sub_82537538);
   registrar->SetFunction(0x82537598, sub_82537598);
   registrar->SetFunction(0x825377E8, sub_825377E8);
-  registrar->SetFunction(0x82537998, sub_82537998);
+  registrar->SetFunction(0x82537998, FM2_Render_EnsureDirectDrawRecordResources);
   registrar->SetFunction(0x82537A68, sub_82537A68);
   registrar->SetFunction(0x825380B8, FM2_Render_BuildDirectIndexedDrawBuffers);
   registrar->SetFunction(0x82538468, sub_82538468);

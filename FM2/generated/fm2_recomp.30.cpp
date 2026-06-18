@@ -43873,7 +43873,7 @@ DEFINE_REX_FUNC(sub_8257B710) {
 	ctx.r3.s64 = ctx.r1.s64 + 160;
 	// bl 0x825372c8
 	ctx.lr = 0x8257B760;
-	sub_825372C8(ctx, base);
+	FM2_Render_InitSkinnedModelResourceLock(ctx, base);
 	// lwz r11,164(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 164);
 	// cntlzw r11,r11
@@ -44351,7 +44351,7 @@ loc_8257BA98:
 	ctx.r3.s64 = ctx.r1.s64 + 160;
 	// bl 0x82535c40
 	ctx.lr = 0x8257BAA0;
-	sub_82535C40(ctx, base);
+	FM2_Render_DestroySkinnedModelResourceLock(ctx, base);
 loc_8257BAA0:
 	// addi r1,r1,240
 	ctx.r1.s64 = ctx.r1.s64 + 240;

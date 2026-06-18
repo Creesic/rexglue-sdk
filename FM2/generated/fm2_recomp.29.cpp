@@ -27652,7 +27652,7 @@ loc_82559818:
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r11.u32 + 0);
 	// bl 0x8236e010
 	ctx.lr = 0x82559830;
-	sub_8236E010(ctx, base);
+	FM2_RenderContext_SetVertexShaderState(ctx, base);
 	// lwz r11,76(r16)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r16.u32 + 76);
 	// mr r3,r31
@@ -27661,7 +27661,7 @@ loc_82559818:
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r11.u32 + 0);
 	// bl 0x8236dd10
 	ctx.lr = 0x82559840;
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	// addi r18,r28,136
 	ctx.r18.s64 = ctx.r28.s64 + 136;
 	// lwz r10,16(r21)

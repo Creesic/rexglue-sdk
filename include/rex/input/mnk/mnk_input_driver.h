@@ -76,6 +76,7 @@ class MnkInputDriver final : public InputDriver,
 
   // Packet number incremented on state change
   uint32_t packet_number_ = 0;
+  uint16_t last_trace_buttons_ = 0;
 };
 
 }  // namespace rex::input::mnk

@@ -95,6 +95,8 @@ longjmp_address = 0x82418210
 0x8227D0B8 = { name = "FM2_QueueDeferredVFuncD4_ThreeQwordParams" }
 0x8234D348 = { name = "FM2_UpdateListEntriesAndNotifyManager" }
 0x8234D5A8 = { name = "FM2_TriggerMatchingListEntryActions" }
+0x8236DD10 = { name = "FM2_RenderContext_SetPixelShaderState" }
+0x8236E010 = { name = "FM2_RenderContext_SetVertexShaderState" }
 0x82375A40 = { name = "FM2_D3D_BeginCommandBufferBatch" }
 0x82375ED0 = { name = "FM2_D3D_EmitDirtyStateAndDrawList" }
 0x82376A58 = { name = "FM2_D3D_FinalizeCommandBufferBatch" }
@@ -843,6 +845,12 @@ after_instruction = false
 address = 0x825380B8
 name = "FM2PlumeTraceDirectIndexedDrawEntry"
 registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82375ED0
+name = "FM2PlumeTraceD3DDirtyStateEntry"
+registers = ["r3", "r4", "r5"]
 after_instruction = false
 
 [entrypoint.rexcrt]

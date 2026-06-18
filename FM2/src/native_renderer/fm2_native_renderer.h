@@ -1,5 +1,7 @@
 #pragma once
 
+#include "native_renderer/fm2_direct_draw_decode.h"
+
 #include <cstdint>
 
 namespace rex::ui {
@@ -32,13 +34,23 @@ struct Stats {
   bool swapchain_ready = false;
   uint64_t build_object_pass_entries = 0;
   uint64_t direct_indexed_draw_entries = 0;
+  uint64_t debug_replay_attempts = 0;
+  uint64_t debug_replay_submitted = 0;
+  uint64_t debug_replay_failed = 0;
   uint32_t last_hook_address = 0;
   GuestArgs last_args;
+};
+
+struct DirectDrawReplaySourceBytes {
+  const uint8_t* stream0 = nullptr;
+  const uint8_t* stream1 = nullptr;
+  const uint8_t* index = nullptr;
 };
 
 Mode GetMode();
 const char* GetModeName(Mode mode);
 bool WantsReXGraphics();
+bool WantsDirectDebugReplay();
 
 bool Initialize(rex::ui::Window* window);
 void Shutdown();
@@ -46,6 +58,8 @@ bool RenderClearOnce();
 
 void RecordBuildObjectPassEntry(const GuestArgs& args);
 void RecordDirectIndexedDrawEntry(const GuestArgs& args);
+bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
+                             const DirectDrawReplaySourceBytes& sources);
 Stats GetStatsSnapshot();
 
 }  // namespace fm2::native_renderer

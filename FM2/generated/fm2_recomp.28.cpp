@@ -16848,7 +16848,7 @@ loc_82535C28:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82535C40) {
+DEFINE_REX_FUNC(FM2_Render_DestroySkinnedModelResourceLock) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -20124,7 +20124,7 @@ DEFINE_REX_FUNC(sub_82537270) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825372C8) {
+DEFINE_REX_FUNC(FM2_Render_InitSkinnedModelResourceLock) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -21118,7 +21118,7 @@ loc_82537990:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82537998) {
+DEFINE_REX_FUNC(FM2_Render_EnsureDirectDrawRecordResources) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -21201,7 +21201,7 @@ loc_82537A1C:
 	ctx.r3.s64 = ctx.r1.s64 + 80;
 	// bl 0x825372c8
 	ctx.lr = 0x82537A28;
-	sub_825372C8(ctx, base);
+	FM2_Render_InitSkinnedModelResourceLock(ctx, base);
 	// lwz r11,116(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 116);
 	// addi r3,r1,80
@@ -21222,7 +21222,7 @@ loc_82537A1C:
 	REX_STORE_U32(ctx.r31.u32 + 48, ctx.r11.u32);
 	// bl 0x82535c40
 	ctx.lr = 0x82537A50;
-	sub_82535C40(ctx, base);
+	FM2_Render_DestroySkinnedModelResourceLock(ctx, base);
 loc_82537A50:
 	// addi r29,r29,1
 	ctx.r29.s64 = ctx.r29.s64 + 1;
@@ -22206,7 +22206,7 @@ DEFINE_REX_FUNC(FM2_Render_BuildDirectIndexedDrawBuffers) {
 	if (!ctx.cr0.eq) goto loc_82538458;
 	// bl 0x82537998
 	ctx.lr = 0x825380F4;
-	sub_82537998(ctx, base);
+	FM2_Render_EnsureDirectDrawRecordResources(ctx, base);
 	// bl 0x825b36a8
 	ctx.lr = 0x825380F8;
 	sub_825B36A8(ctx, base);
@@ -27859,7 +27859,7 @@ loc_8253A6F0:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x82537998
 	ctx.lr = 0x8253A708;
-	sub_82537998(ctx, base);
+	FM2_Render_EnsureDirectDrawRecordResources(ctx, base);
 	// addi r3,r1,176
 	ctx.r3.s64 = ctx.r1.s64 + 176;
 	// lwz r4,4(r30)

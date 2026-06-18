@@ -8681,7 +8681,7 @@ loc_827226B0:
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r31.u32 + 32);
 	// bl 0x8236e010
 	ctx.lr = 0x82722710;
-	sub_8236E010(ctx, base);
+	FM2_RenderContext_SetVertexShaderState(ctx, base);
 	// addi r1,r1,1168
 	ctx.r1.s64 = ctx.r1.s64 + 1168;
 	// b 0x824131f4
@@ -9100,7 +9100,7 @@ loc_82722904:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r11.u32 + 7148);
 	// bl 0x8236dd10
 	ctx.lr = 0x82722910;
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	// b 0x82722fc0
 	goto loc_82722FC0;
 loc_82722914:
@@ -9234,7 +9234,7 @@ loc_827229E4:
 loc_827229F8:
 	// bl 0x8236e010
 	ctx.lr = 0x827229FC;
-	sub_8236E010(ctx, base);
+	FM2_RenderContext_SetVertexShaderState(ctx, base);
 	// b 0x82722fc0
 	goto loc_82722FC0;
 loc_82722A00:
@@ -10399,7 +10399,7 @@ loc_8272311C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r28.u32 + 7148);
 	// bl 0x8236dd10
 	ctx.lr = 0x82723124;
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	// b 0x82723740
 	goto loc_82723740;
 loc_82723128:
@@ -10522,7 +10522,7 @@ loc_827231F0:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r28.u32 + 7148);
 	// bl 0x8236e010
 	ctx.lr = 0x827231F8;
-	sub_8236E010(ctx, base);
+	FM2_RenderContext_SetVertexShaderState(ctx, base);
 	// b 0x82723740
 	goto loc_82723740;
 loc_827231FC:
@@ -24828,7 +24828,7 @@ loc_82728D30:
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r11.u32 + 12);
 	// bl 0x8236dd10
 	ctx.lr = 0x82728D54;
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	// lwz r11,36(r24)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r24.u32 + 36);
 	// li r10,1
@@ -25139,7 +25139,7 @@ loc_82728F80:
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r11.u32 + 12);
 	// bl 0x8236e010
 	ctx.lr = 0x82728F90;
-	sub_8236E010(ctx, base);
+	FM2_RenderContext_SetVertexShaderState(ctx, base);
 	// lwz r11,40(r24)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r24.u32 + 40);
 	// cmplwi cr6,r11,0
@@ -26180,7 +26180,7 @@ loc_82729638:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 7148);
 	// bl 0x8236e010
 	ctx.lr = 0x82729678;
-	sub_8236E010(ctx, base);
+	FM2_RenderContext_SetVertexShaderState(ctx, base);
 loc_82729678:
 	// cmplwi cr6,r24,0
 	ctx.cr6.compare<uint32_t>(ctx.r24.u32, 0, ctx.xer);
@@ -26192,7 +26192,7 @@ loc_82729678:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 7148);
 	// bl 0x8236dd10
 	ctx.lr = 0x8272968C;
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 loc_8272968C:
 	// li r6,0
 	ctx.r6.s64 = 0;
@@ -28634,7 +28634,7 @@ loc_8272A5E0:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 7148);
 	// bl 0x8236dd10
 	ctx.lr = 0x8272A5EC;
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	// li r7,1
 	ctx.r7.s64 = 1;
 	// lwz r3,7148(r30)
@@ -28703,7 +28703,7 @@ loc_8272A65C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 7148);
 	// bl 0x8236dd10
 	ctx.lr = 0x8272A668;
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	// li r7,7
 	ctx.r7.s64 = 7;
 	// lwz r3,7148(r30)
@@ -28772,7 +28772,7 @@ loc_8272A6D8:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 7148);
 	// bl 0x8236dd10
 	ctx.lr = 0x8272A6E4;
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	// li r7,15
 	ctx.r7.s64 = 15;
 	// lwz r3,7148(r30)
@@ -28837,7 +28837,7 @@ loc_8272A74C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236dd10
 	ctx.lr = 0x8272A758;
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	// li r7,15
 	ctx.r7.s64 = 15;
 	// lwz r3,7148(r31)
@@ -29272,7 +29272,7 @@ loc_8272AA2C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r28.u32 + 7148);
 	// bl 0x8236e010
 	ctx.lr = 0x8272AA3C;
-	sub_8236E010(ctx, base);
+	FM2_RenderContext_SetVertexShaderState(ctx, base);
 	// addi r11,r30,12
 	ctx.r11.s64 = ctx.r30.s64 + 12;
 	// lwz r3,7148(r28)
@@ -29371,7 +29371,7 @@ loc_8272AAD4:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r11.u32 + 7148);
 	// bl 0x8236dd10
 	ctx.lr = 0x8272AAE4;
-	sub_8236DD10(ctx, base);
+	FM2_RenderContext_SetPixelShaderState(ctx, base);
 	// addi r1,r1,112
 	ctx.r1.s64 = ctx.r1.s64 + 112;
 	// lwz r12,-8(r1)
