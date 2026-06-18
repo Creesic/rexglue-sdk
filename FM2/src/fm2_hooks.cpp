@@ -3392,14 +3392,13 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
             stream0_view.element_bytes != 0 &&
             GuestReadableRange(base, stream0_view.upload_guest_base,
                                stream0_view.hash_bytes)) {
-          constexpr uint32_t kAutoTransformSampleVertices = 256u;
           const uint8_t* upload_bytes = reinterpret_cast<const uint8_t*>(
               REX_RAW_ADDR(stream0_view.upload_guest_base));
           const fm2nr::DirectDrawDebugReplayTransformSelection selection =
               fm2nr::SelectDirectDrawDebugReplayTransformCandidate(
                   upload_bytes, stream0_view.hash_bytes,
                   stream0_view.element_bytes, constants, 256u, interpretation,
-                  kAutoTransformSampleVertices);
+                  kDirectDrawPositionStatsMaxVertices);
           if (selection.valid) {
             replay_plan.transform = selection.transform;
             transform_source_log =

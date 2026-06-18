@@ -1073,6 +1073,22 @@ The reusable long-term architecture should be:
     (`nonDark=4784 avgLum=38.48`). Interpretation: at least this FM2 direct
     path batch is indexed triangle-strip geometry. Do not treat the current
     `prim_count=index_count/3` assumption as final native renderer semantics.
+  - Follow-up smokes on June 18 refined that interpretation. The replay now has
+    `fm2_plume_direct_replay_transform_source=auto`, which scores candidate VS
+    constants against stream0 and rejects zero-area or large-XY-outlier
+    projections. `fm2_plume_debug_replay_pipeline_topology=auto` carries the
+    segment-header-inferred topology into the Plume pipeline; the app log shows
+    `topology=2 plan_topology=2` for the sample-11/12 record-3 submissions.
+    Even with bounded/full-stream transform scoring, transformed sample-12
+    record-3 still rendered as a radial fan
+    (`C:\temp\fm2-plume-debug-replay-auto-transform-fullsample-skip11-rec3.png`),
+    while sample-11 record-3 with no accepted transform rendered a coherent
+    local-space object
+    (`C:\temp\fm2-plume-debug-replay-auto-transform-bounded-skip10-rec3.png`).
+    Current interpretation: the remaining artifact is probably index/topology
+    semantics, not just matrix selection. The next evidence step is to decode
+    the converted index stream for the segment, including restart values and
+    per-segment/subdraw boundaries, before changing the topology mapping again.
   - For a first Plume debug packet, use the confirmed buffer and draw
     arguments: 16-bit big-endian index data, `first_index = segment + 0x04`,
     `index_count = segment + 0x06`, stream0 stride `0x20`, stream1 stride
