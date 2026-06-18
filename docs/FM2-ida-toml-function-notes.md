@@ -112,6 +112,14 @@ captures/logs confirm them.
 | `0x825380B8` | `FM2_Render_BuildDirectIndexedDrawBuffers` | Uses renderer-interface calls to bind resources and issue indexed primitive draws, then clones generated command buffers. |
 | `0x82539650` | `FM2_Render_InstanceHybridDrawPath` | Sorts visible instances, uploads constants/textures, then either emits cached draw lists or directly calls indexed draw interface methods. |
 | `0x8253A680` | `FM2_Render_InstancePathWrapper` | Prepares camera/constants for the instance renderer and calls `0x82539650`. |
+| `0x8259F6F0` | `FM2_Render_InitPixelShaderResource` | Initializes a pixel shader resource object; sets the resource vtable, default id `-1`, and clears payload/state. |
+| `0x8259F750` | `FM2_Render_InitVertexShaderResource` | Initializes a vertex shader resource object; sets the resource vtable, default id `-1`, and clears payload/state. |
+| `0x8259FA90` | `FM2_Render_FindPixelShaderResourceById` | Searches the global pixel shader resource vector by integer id stored at resource `+0x44`. |
+| `0x8259FBA8` | `FM2_Render_FindVertexShaderResourceById` | Searches the global vertex shader resource vector by integer id stored at resource `+0x44`. |
+| `0x825A1608` | `FM2_Render_GetOrCreatePixelShaderResourceById` | Locked pixel shader cache get-or-create helper; allocates a `0x4C` resource, writes id at `+0x44`, marks `+0x31`, and pushes it into the global vector. |
+| `0x825A16E0` | `FM2_Render_GetOrCreateVertexShaderResourceById` | Vertex shader parallel to `0x825A1608`; same global-cache get-or-create pattern for vertex shader resources. |
+| `0x825A2158` | `FM2_Render_LoadPixelShaderResourceById` | Public wrapper for pixel shader id lookup/create; follows with the resource-manager load/wait call using `0x60000` flags/timeout. |
+| `0x825A21C8` | `FM2_Render_LoadVertexShaderResourceById` | Public wrapper for vertex shader id lookup/create; confirmed by caller `0x82537598` passing the resulting handle to a `TResourceLock<TResourceHandle<CVertexShaderResourceType, CVertexShaderResource>, 0>`. |
 | `0x825B8920` | `FM2_Render_ScopedBatchBegin` | Switches to a scoped command buffer/context and begins a batch. |
 | `0x825B8688` | `FM2_Render_ScopedBatchFinalize` | Finalizes scoped batch, releases current surfaces, and restores previous context. |
 | `0x825B8A60` | `FM2_Render_UiOrScreenDrawListSubmit` | Computes a 2D transform, uploads constants, then emits a selected draw-list command buffer. |
@@ -133,6 +141,28 @@ misses important direct calls including `0x82518DC0 -> 0x82531DC0` at
 `0x825191C8` and `0x8253A680 -> 0x82539650` at `0x8253A964`. It did confirm
 data/vtable refs to `0x82518DC0` at `0x820441D0` and `0x82045000`; IDA also sees
 those plus `0x8218F858`.
+
+June 18 Ghidra/IDA naming sync: IDA already has the render/direct-draw cluster
+above as real functions, and entry comments now describe the observed role of
+each function. Ghidra accepted names for the command-buffer batch functions,
+direct-draw resource resolver, object/pass compile and execute helpers, frame
+pipeline, instance renderer helpers, scoped batch finalizer, and UI/screen draw
+submit entry. `0x8253A680` was manually created as
+`FM2_Render_InstancePathWrapper`. Ghidra still cannot cleanly model
+`0x825380B8` or `0x825B8920` as standalone functions in the current analysis
+because they appear to overlap existing function bodies, and the newly created
+`0x825B8A60` body is truncated after the vector save prologue. Treat those
+Ghidra bodies as navigation labels only; use IDA as the authoritative view for
+their control flow.
+
+June 18 shader-resource cache follow-up: Ghidra cursor function
+`Function_825A1608` is the pixel shader resource get-or-create helper. IDA and
+Ghidra now name the pixel/vertex shader cache pair at `0x8259F6F0`,
+`0x8259F750`, `0x8259FA90`, `0x8259FBA8`, `0x825A1608`, `0x825A16E0`,
+`0x825A2158`, and `0x825A21C8`. The pixel/vertex split is based on the paired
+callers around `0x82537598`: `0x825A21C8` produces a handle later wrapped by
+`TResourceLock<TResourceHandle<CVertexShaderResourceType, CVertexShaderResource>, 0>`,
+so the parallel `0x825A1608` path is the pixel shader side.
 
 ---
 
