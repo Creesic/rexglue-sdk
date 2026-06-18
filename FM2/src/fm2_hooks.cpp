@@ -1983,23 +1983,26 @@ void LogDirectDrawShaderPayload(uint8_t* base, uint64_t sample_number, const cha
   }
   const uint32_t ucode_base =
       gpu_base != 0 ? AddGuestOffsetOrZero(gpu_base, ucode_offset) : 0;
+  const uint32_t w30 = TryLoadU32AtOffset(base, resolved, 0x30u);
+  const uint32_t w30_le = shader_type == fm2nr::kDirectDrawVertexShaderTypeTag
+                              ? fm2nr::DirectDrawLittleEndianValueFromGuestDword(w30)
+                              : 0u;
 
   LogLine(
       "FM2_PLUME_DIRECT_SHADER_META n=%llu role=%s kind=%s object=%08X type=%08X "
       "payload_off=%04X gpu_base=%08X size_field=%08X known_payload_bytes=%08X "
-      "ucode_off=%04X ucode_base=%08X "
+      "ucode_off=%04X ucode_base=%08X w30_le=%08X "
       "w18=%08X w1c=%08X w20=%08X w24=%08X w28=%08X w2c=%08X "
       "w30=%08X w34=%08X w38=%08X w3c=%08X",
       static_cast<unsigned long long>(sample_number), role, payload_kind, resolved,
       shader_type, payload_offset, gpu_base, size_field, known_payload_bytes, ucode_offset,
-      ucode_base, TryLoadU32AtOffset(base, resolved, 0x18u),
+      ucode_base, w30_le, TryLoadU32AtOffset(base, resolved, 0x18u),
       TryLoadU32AtOffset(base, resolved, 0x1Cu),
       TryLoadU32AtOffset(base, resolved, 0x20u),
       TryLoadU32AtOffset(base, resolved, 0x24u),
       TryLoadU32AtOffset(base, resolved, 0x28u),
       TryLoadU32AtOffset(base, resolved, 0x2Cu),
-      TryLoadU32AtOffset(base, resolved, 0x30u),
-      TryLoadU32AtOffset(base, resolved, 0x34u),
+      w30, TryLoadU32AtOffset(base, resolved, 0x34u),
       TryLoadU32AtOffset(base, resolved, 0x38u),
       TryLoadU32AtOffset(base, resolved, 0x3Cu));
 

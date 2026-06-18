@@ -40,7 +40,8 @@ inline constexpr uint32_t kDirectDrawVertexShaderPayloadGpuBaseOffset = 0x20u;
 inline constexpr uint32_t kDirectDrawPixelShaderPayloadUcodeOffset = 0x00u;
 inline constexpr uint32_t kDirectDrawVertexShaderPayloadUcodeOffset = 0x30u;
 inline constexpr uint32_t kDirectDrawPixelShaderPayloadByteCountOffset = 0x30u;
-inline constexpr uint32_t kDirectDrawShaderByteDumpMax = 256u;
+inline constexpr uint32_t kDirectDrawVertexShaderPayloadByteCountCandidateOffset = 0x30u;
+inline constexpr uint32_t kDirectDrawShaderByteDumpMax = 1024u;
 inline constexpr uint32_t kDirectDrawSlot28StateTableBaseOffset = 0x28u;
 inline constexpr uint32_t kDirectDrawSlot28StateTableOffsetField = 0x3Cu;
 inline constexpr uint32_t kDirectDrawVertexShaderTableBaseOffset = 0x368u;
@@ -80,6 +81,11 @@ constexpr uint32_t DirectDrawShaderPayloadUcodeOffsetForType(uint32_t shader_typ
     default:
       return 0;
   }
+}
+
+constexpr uint32_t DirectDrawLittleEndianValueFromGuestDword(uint32_t guest_dword) {
+  return ((guest_dword & 0x000000FFu) << 24) | ((guest_dword & 0x0000FF00u) << 8) |
+         ((guest_dword & 0x00FF0000u) >> 8) | ((guest_dword & 0xFF000000u) >> 24);
 }
 
 constexpr uint32_t BoundedShaderPayloadDumpByteCount(uint32_t requested_byte_count,

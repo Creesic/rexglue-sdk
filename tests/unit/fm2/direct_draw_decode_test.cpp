@@ -39,7 +39,7 @@ TEST_CASE("FM2 direct draw shader state offsets match IDA evidence", "[fm2][plum
   CHECK(decode::kDirectDrawPixelShaderTypeTag == 0x00100007u);
   CHECK(decode::kDirectDrawPixelShaderPayloadGpuBaseOffset == 0x18u);
   CHECK(decode::kDirectDrawVertexShaderPayloadGpuBaseOffset == 0x20u);
-  CHECK(decode::kDirectDrawShaderByteDumpMax == 256u);
+  CHECK(decode::kDirectDrawShaderByteDumpMax == 1024u);
   CHECK(decode::kDirectDrawSlot28StateTableBaseOffset == 0x28u);
   CHECK(decode::kDirectDrawSlot28StateTableOffsetField == 0x3Cu);
   CHECK(decode::kDirectDrawVertexShaderTableBaseOffset == 0x368u);
@@ -54,6 +54,8 @@ TEST_CASE("FM2 direct draw shader payload layout matches runtime evidence",
   CHECK(decode::kDirectDrawVertexShaderPayloadUcodeOffset == 0x30u);
   CHECK(decode::kDirectDrawPixelShaderPayloadUcodeOffset == 0x00u);
   CHECK(decode::kDirectDrawPixelShaderPayloadByteCountOffset == 0x30u);
+  CHECK(decode::kDirectDrawVertexShaderPayloadByteCountCandidateOffset == 0x30u);
+  CHECK(decode::kDirectDrawShaderByteDumpMax == 1024u);
 
   CHECK(decode::DirectDrawShaderPayloadGpuBaseOffsetForType(
             decode::kDirectDrawVertexShaderTypeTag) ==
@@ -70,6 +72,11 @@ TEST_CASE("FM2 direct draw shader payload layout matches runtime evidence",
             decode::kDirectDrawPixelShaderTypeTag) ==
         decode::kDirectDrawPixelShaderPayloadUcodeOffset);
   CHECK(decode::DirectDrawShaderPayloadUcodeOffsetForType(0xDEADBEEFu) == 0u);
+
+  CHECK(decode::DirectDrawLittleEndianValueFromGuestDword(0x08030000u) ==
+        0x00000308u);
+  CHECK(decode::DirectDrawLittleEndianValueFromGuestDword(0x00000000u) ==
+        0x00000000u);
 }
 
 TEST_CASE("FM2 direct draw shader byte count bounds respect known payload sizes",
@@ -77,12 +84,13 @@ TEST_CASE("FM2 direct draw shader byte count bounds respect known payload sizes"
   namespace decode = fm2::native_renderer;
 
   CHECK(decode::BoundedShaderPayloadDumpByteCount(256u, 0u) == 256u);
-  CHECK(decode::BoundedShaderPayloadDumpByteCount(512u, 0u) ==
+  CHECK(decode::BoundedShaderPayloadDumpByteCount(2048u, 0u) ==
         decode::kDirectDrawShaderByteDumpMax);
   CHECK(decode::BoundedShaderPayloadDumpByteCount(256u, 0x90u) == 0x90u);
   CHECK(decode::BoundedShaderPayloadDumpByteCount(0x40u, 0x90u) == 0x40u);
 
-  CHECK(decode::BoundedShaderUcodeDumpByteCount(256u, 0u, 0x30u) == 256u);
+  CHECK(decode::BoundedShaderUcodeDumpByteCount(2048u, 0u, 0x30u) ==
+        decode::kDirectDrawShaderByteDumpMax);
   CHECK(decode::BoundedShaderUcodeDumpByteCount(256u, 0x90u, 0x00u) == 0x90u);
   CHECK(decode::BoundedShaderUcodeDumpByteCount(256u, 0x90u, 0x30u) == 0x60u);
   CHECK(decode::BoundedShaderUcodeDumpByteCount(256u, 0x20u, 0x30u) == 0u);

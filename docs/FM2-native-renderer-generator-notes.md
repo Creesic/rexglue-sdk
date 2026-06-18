@@ -464,6 +464,13 @@ The reusable long-term architecture should be:
       crossed into the vertex shader allocation at `B0BBEC20`. Pixel payload
       dumps must therefore be capped by the object byte-count field before
       hashing or disassembling.
+    - A later run from the same first direct draw produced vertex shader object
+      `412B05D0` and pixel shader object `2E75F4B0`, with the same payload
+      bases. Pixel `known_payload_bytes=0x90` cleanly capped the dump. Vertex
+      object field `+0x30` read as guest-endian `0x08030000`; interpreted as
+      raw little-endian bytes this is `0x308`, a plausible vertex microcode
+      size candidate. Treat it as a candidate until a full dump confirms the
+      end boundary.
     - The current safe diagnostic path is to log raw payload bytes separately
       from derived microcode bytes. Do not feed arbitrary 256-byte windows into
       `Shader::AnalyzeUcode`; it follows control-flow instruction addresses and
@@ -494,9 +501,11 @@ The reusable long-term architecture should be:
   - `fm2_plume_trace_direct_state_bytes`: optional byte count, capped at 64,
     for dumping decoded state handle, resolved state object, and compiled-state
     table bytes for the direct draw shader/state slots.
-  - `fm2_plume_trace_direct_shader_bytes`: optional byte count, capped at 256,
+  - `fm2_plume_trace_direct_shader_bytes`: optional byte count, capped at 1024,
     for dumping decoded vertex/pixel shader payload bytes from resolved shader
     resources.
+    After the vertex-size candidate appeared, the diagnostic cap was raised to
+    1024 so one run can capture the suspected `0x308` vertex byte range.
 - Current direct decode output:
   - `FM2_PLUME_DIRECT_DECODE`: direct context, draw interface, built flag, and
     direct-record vector begin/end/count.
@@ -525,7 +534,8 @@ The reusable long-term architecture should be:
   - `FM2_PLUME_DIRECT_SHADER_META`: shader payload metadata for each decoded
     shader object, including payload pointer offset/base, known payload byte
     count when one is known, derived microcode offset/base, and object fields
-    `+0x18` through `+0x3C`.
+    `+0x18` through `+0x3C`. For vertex shader objects it also reports
+    `w30_le`, the object `+0x30` dword interpreted as raw little-endian bytes.
   - `FM2_PLUME_DIRECT_SHADER`: optional raw byte dump for each decoded shader
     payload, controlled by `fm2_plume_trace_direct_shader_bytes`. The vertex
     shader dumps from resolved shader object `+0x20`; the pixel shader dumps
@@ -557,7 +567,7 @@ The reusable long-term architecture should be:
       --fm2_plume_trace_direct_decode_record_limit 31 `
       --fm2_plume_trace_direct_buffer_bytes 64 `
       --fm2_plume_trace_direct_state_bytes 64 `
-      --fm2_plume_trace_direct_shader_bytes 256
+      --fm2_plume_trace_direct_shader_bytes 1024
     ```
   - For a first Plume debug packet, use the confirmed indexed draw arguments:
     triangle list, 16-bit big-endian index data, `first_index = segment + 0x04`,
