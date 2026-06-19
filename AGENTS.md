@@ -132,3 +132,35 @@ After rebuilding the SDK/runtime, make sure FM2 is using the fresh
 - Avoid sweeping reformatting or unrelated cleanup.
 - Third-party directories may have their own rules. Do not modify `thirdparty/`
   unless the task truly requires it.
+
+## Learned User Preferences
+
+- When renaming unnamed IDA functions, include explicit reasoning for each rename
+  decision in the session documentation.
+- Do not use automated heuristic/placeholder naming (e.g. `FM2_Helper_XXXX`,
+  `*_Caller`); every rename must be manual evidence-based decompile naming.
+- Log all IDA renames in a dated `docs/FM2-ida-renames-*.md` file and
+  cross-reference it from `docs/FM2-ida-toml-function-notes.md`.
+- When asked to work an IDA naming cluster, continue until all unnamed `sub_`
+  functions in that transitive closure are exhausted.
+- Cross-check repo docs and local Xbox 360 tech docs when naming unnamed IDA
+  functions from already-named `FM2_` caller context.
+
+## Learned Workspace Facts
+
+- FM2 IDA database is `default.xex.i64`; use the `user-IDA` MCP server for batch
+  renames and decompilation.
+- Xbox 360 tech docs live at `D:\Emulation\Xbox360techdocs` (not
+  `D:\Emulation\Xbox360 tech docs`).
+- IDA naming workflow: enumerate `sub_` callees of named `FM2_` functions,
+  decompile high-traffic clusters, name from decompiler behavior plus
+  caller context.
+- Primary repo docs for IDA naming:
+  `docs/FM2-ida-toml-function-notes.md`,
+  `docs/FM2-native-renderer-generator-notes.md`, `docs/FM2-performance-notes.md`,
+  and `docs/FM2-audio-fmod-decode-cadence.md`.
+- Render emit cluster BFS roots:
+  `FM2_Render_EmitPassDrawWork`, `FM2_D3D_EmitDirtyStateAndDrawList`,
+  `FM2_D3D_EmitDrawListStatePackets`, `FM2_D3D_EmitScissorRegionPackets`,
+  `FM2_D3D_EmitSurfaceResolvePackets`, `FM2_D3D_BeginCommandBufferBatch`, and
+  `FM2_D3D_FinalizeCommandBufferBatch`.

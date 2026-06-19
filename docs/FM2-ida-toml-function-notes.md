@@ -1,5 +1,12 @@
 # FM2 IDA TOML Function Notes
 
+June 18 follow-up pass: see `docs/FM2-ida-renames-2026-06-18.md` for **267**
+`sub_` → `FM2_` renames applied in IDA from named-function caller context (render/D3D
+cluster, allocator, audio, STL/EH). Batch 3 exhausts the **render emit cluster**
+(317-function BFS from 7 emit roots; 0 unnamed `sub_` remain in that closure).
+Batch 2+ add explicit per-rename reasoning; uses `D:\Emulation\Xbox360techdocs`
+where applicable.
+
 May 22 first-pass IDA naming pass for the functions and hook sites listed in
 `FM2/fm2_manifest.toml` / `FM2/fm2_config.toml`.
 
