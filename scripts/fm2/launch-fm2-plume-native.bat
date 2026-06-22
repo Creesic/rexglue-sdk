@@ -56,15 +56,23 @@ if exist "%SDK_DLL_BUILD%" (
 
 set "REX_MNK_MODE=1"
 
-rem Debug replay: intercept the first ready direct-draw plan each frame and
-rem render it into a separate side-by-side window using the diagnostic pipeline.
-rem The window shows raw mesh geometry (no textures, no shaders).
+rem Debug replay: intercept a direct-draw plan each frame and render it into a
+rem separate side-by-side window using the diagnostic pipeline (no textures).
 rem
-rem Transform modes (fm2_plume_debug_replay_transform_mode):
-rem   local            - raw vertex positions, clip space unmapped (likely garbage)
-rem   column_major_clip - try column-major MVP from VS float constants (try first)
-rem   row_major_clip    - try row-major MVP from VS float constants
-rem   row_major_clip_z_mid - row-major, D3D Z=[0,1] remapped to mid range
+rem fm2_plume_direct_replay_transform_source selects which VS float constant
+rem block is used as the camera matrix:
+rem   auto         - heuristic scan of register file (may miss)
+rem   c28          - register c28, known FM2 VP matrix slot (try first)
+rem   c0           - register c0
+rem   c36_mul_c28  - c36 * c28 combined transform
+rem
+rem fm2_plume_debug_replay_transform_mode tells the shader how to read the matrix:
+rem   column_major_clip  - column-major interpretation (try first)
+rem   row_major_clip     - row-major interpretation
+rem   row_major_clip_z_mid - row-major + D3D Z=[0,1] mid-range remap
+rem
+rem fm2_plume_debug_replay_limit: 0 = unlimited (window updates every frame)
+rem                                1 = freeze on first draw (single-shot diagnostic)
 rem
 rem To switch to the native-packet batch path instead, replace the debug_replay
 rem block below with:
@@ -74,8 +82,10 @@ rem   --fm2_plume_native_direct_draw_live_batch 1
 rem   --fm2_plume_native_direct_draw_live_batch_size 16
 set FM2_ARGS=--fm2_plume_mode shadow ^
  --fm2_plume_debug_replay 1 ^
+ --fm2_plume_debug_replay_limit 0 ^
  --fm2_plume_debug_replay_window ^
  --fm2_plume_debug_replay_side_by_side ^
+ --fm2_plume_direct_replay_transform_source c28 ^
  --fm2_plume_debug_replay_transform_mode column_major_clip ^
  --fm2_plume_wireframe ^
  --mnk_mode ^
