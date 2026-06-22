@@ -1,6 +1,6 @@
 # IDA Rename Scratchpad
 
-IDA_RENAME_LOOP: active
+IDA_RENAME_LOOP: done
 
 Goal: Continue renaming auto-generated IDA function names using evidence from decompilation, xrefs, strings, callers, callees, and constants.
 
@@ -10281,3 +10281,782 @@ Use snake_case.
 | 0x8261CEA0 | sub_8261CEA0 | Additional numpunct format slot; defer cluster. |
 | 0x8261B770 | sub_8261B770 | Core ostream write-with-locale helper; large shared callee. |
 | 0x8261C390 | sub_8261C390 | Circular-buffer finalize helper called from deferred binding path. |
+
+## Iteration 236
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8275F788 | sub_8275F788 | FM2_LocaleFacet_LockCriticalSection | 0.88 | Sole caller `FM2_LocaleStreambuf_AssignFromAndLockFacet`; forwards to `RtlEnterCriticalSection` on facet CS ptr. |
+| 0x8275F790 | sub_8275F790 | FM2_LocaleFacet_UnlockCriticalSection | 0.88 | Called from `FM2_Stl_Ostream_FlushAndUnlockFacet`; jump thunk to `RtlLeaveCriticalSection`. |
+| 0x8261D248 | sub_8261D248 | FM2_Lua_NumpunctFacet_FormatPointerToOstream | 0.91 | Numpunct vtable slot 1; `sprintf_s` with `"%p"`; writes via `FM2_Stl_Ostream_WriteFormattedStringWithLocale`. |
+| 0x8261D0B8 | sub_8261D0B8 | FM2_Lua_NumpunctFacet_FormatLongDoubleToOstream | 0.91 | Numpunct vtable slot 2; builds float spec with `'L'` modifier; formats long double then writes to ostream. |
+| 0x8261CD90 | sub_8261CD90 | FM2_Lua_NumpunctFacet_FormatLongIntegerToOstream | 0.90 | Numpunct vtable slot 6; integer printf spec with `'l'` modifier (`byte_8210F068`). |
+| 0x8261CE18 | sub_8261CE18 | FM2_Lua_NumpunctFacet_FormatLongLongIntegerToOstream | 0.90 | Numpunct vtable slot 5; integer printf spec with `'L'` modifier (`byte_8210F06C`). |
+| 0x8261CEA0 | sub_8261CEA0 | FM2_Lua_NumpunctFacet_FormatInt64IntegerToOstream | 0.89 | Numpunct vtable slot 4; integer printf spec with `'L'` modifier (`byte_8210F070`). |
+| 0x8261B770 | sub_8261B770 | FM2_Stl_Ostream_WriteFormattedStringWithLocale | 0.92 | Applies moneypunct grouping/padding rules; writes prefix/fill/body via ostream sentry helpers. |
+| 0x8261C390 | sub_8261C390 | FM2_BindingScript_MergeDeferredBufferIntoFrameAllocMap | 0.90 | Consumes deferred circular-buffer list; inserts default content-type nodes into frame-alloc map; pushes back to circular buffer. |
+| 0x8261A550 | sub_8261A550 | FM2_Lua_ImportBindingCustomEventsFromXml | 0.92 | Loads `"customevent"` material node; imports XML children with type/value; maps `xmlid` into hash table at `a1+60`. |
+| 0x8261A698 | sub_8261A698 | FM2_Lua_ImportBindingCustomFunctionsFromXml | 0.92 | Loads `"customfunction"` material node; same import pattern as custom events; maps into hash at `a1+72`. |
+| 0x8261C248 | sub_8261C248 | FM2_Lua_ImportBindingLogicTriggersFromXml | 0.91 | Imports `"logic"` XML triggers/results via `sub_8261A7E0`; collects result profile ids into vector per trigger node. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x8261C660 | sub_8261C660 | Numpunct bool formatter via vtable `+28`; defer bool/uint16 cluster. |
+| 0x8261C7A8 | sub_8261C7A8 | Numpunct uint16 formatter via vtable `+24`; defer with `8261C660`. |
+| 0x8261AA08 | sub_8261AA08 | Large post-import presentation finalize; defer dedicated pass. |
+| 0x8261A7E0 | sub_8261A7E0 | Logic trigger/result XML node importer; defer logic cluster. |
+| 0x8261DB18 | sub_8261DB18 | Variant-to-string serializer; large switch; defer dedicated pass. |
+
+## Iteration 237
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8261C660 | sub_8261C660 | FM2_Stl_Ostream_WriteBoolFalse | 0.91 | Variant serializer helper; numpunct facet vtable `+28` with bool `0`; flush/unlock pattern. |
+| 0x8261C7A8 | sub_8261C7A8 | FM2_Stl_Ostream_WriteChar | 0.90 | Numpunct facet vtable `+24`; writes `unsigned __int16` char via locale stream sentry. |
+| 0x8261C8D8 | sub_8261C8D8 | FM2_Stl_Ostream_WriteBool | 0.91 | Numpunct facet vtable `+28` with caller bool value; used for unsigned-char arrays in variant export. |
+| 0x8261CB38 | sub_8261CB38 | FM2_Stl_Ostream_WriteDouble | 0.91 | Numpunct facet vtable `+12` (`FormatDoubleToOstream`); formats `double` to ostream. |
+| 0x8261BA40 | sub_8261BA40 | FM2_Stl_Ostream_WriteAlignedByte | 0.89 | Writes single byte with ios field-width padding using fill char; clears width after. |
+| 0x8261BD70 | sub_8261BD70 | FM2_Stl_Ostream_WriteStringWithFieldWidth | 0.90 | Writes STL string body with left/right fill padding per ios width/fill. |
+| 0x8261DA90 | sub_8261DA90 | FM2_Stl_WideIostream_CtorWithBindingStreambuf | 0.90 | Builds wide iostream with `FM2_BindingScript_Streambuf_CtorWithOpenMode`; vtable `off_8210EF28`. |
+| 0x8261D2B8 | sub_8261D2B8 | FM2_BindingScript_PresentationLoader_Ctor | 0.91 | Presentation loader object ctor; vtable `off_8210F028`; font sentinel lists + three strings. |
+| 0x8261A7E0 | sub_8261A7E0 | FM2_Lua_ImportBindingLogicTriggerNodeFromXml | 0.92 | Parses logic trigger XML `name`/`xmlref`/`xmlrefactive`; assigns profile variants and child properties. |
+| 0x8261AA08 | sub_8261AA08 | FM2_BindingScript_FinalizePresentationUnitStringBindings | 0.91 | Post-load pass from `LoadPresentationXmlV2`; links unit-string subtrees and refreshes material passes. |
+| 0x8261AED8 | sub_8261AED8 | FM2_Lua_NumpunctFacet_FormatBoolToOstream | 0.90 | Numpunct vtable slot 8; uses moneypunct true/false strings; grouping/padding write path. |
+| 0x8261DB18 | sub_8261DB18 | FM2_BindingScript_FormatProfileVariantToOstream | 0.90 | Large variant-type switch; formats profile/binding values to ostream for XML export. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x826194C8 | sub_826194C8 | Numpunct facet dtor wrapper; defer with `sub_82619470` cluster. |
+| 0x82619468 | sub_82619468 | One-byte accessor; only xref from SQLite btree open (likely incidental). |
+| 0x827D47C8 | sub_827D47C8 | Render/material helper calling `8261AA08`; defer `0x827Dxxxx` pass. |
+
+## Iteration 238
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82619470 | sub_82619470 | FM2_Lua_NumpunctFacet_DestroyBody | 0.90 | Frees numpunct facet string buffers; resets vtable to `off_820423C0`. |
+| 0x826194C8 | sub_826194C8 | FM2_Lua_NumpunctFacet_Delete | 0.91 | Numpunct vtable slot 9; calls destroy body then optional `FM2_Memory_FreeSmallBlockOrNull`. |
+| 0x82619518 | sub_82619518 | FM2_Stl_String_CtorFromNestedCStrPtr | 0.85 | Copies C string from `*(a2+8)`; facet/locale string field ctor helper. |
+| 0x826195C0 | sub_826195C0 | FM2_Memory_GetOrInsertFrameAllocMapValue | 0.91 | Frame-alloc map lookup/insert at `a1+88`; used when exporting presentation `xmlref` attrs. |
+| 0x8261B170 | sub_8261B170 | FM2_Stl_Ostream_WriteLocaleFormattedNumericString | 0.90 | Core locale-aware numeric string writer; called from numpunct `FormatDouble`/`FormatLongDouble`. |
+| 0x8261BF38 | sub_8261BF38 | FM2_BindingScript_PresentationLoader_Dtor | 0.92 | Destroys presentation loader (`off_8210F028`); frees XML tree, hash lists, strings, font cache. |
+| 0x8261CA08 | sub_8261CA08 | FM2_Stl_Ostream_WriteInt | 0.90 | Numpunct facet vtable `+24` with `int` value; variant export integer path. |
+| 0x826206E8 | sub_826206E8 | FM2_Lua_SetStackTopRelative | 0.92 | Thin wrapper: `FM2_Lua_SetStackTop(*a1, -1 - a2)` from binding init/finalize paths. |
+| 0x826308E0 | sub_826308E0 | FM2_BindingScript_ClearDeferredPresentationXmlBuffers | 0.89 | Frees per-slot deferred XML pointer vectors and clears circular buffer at `a1+48`. |
+| 0x82630970 | sub_82630970 | FM2_BindingScript_DestroyDeferredPresentationXmlTree | 0.90 | Clears deferred buffers then frees root XML vector at `a1+36`. |
+| 0x827D2EE8 | sub_827D2EE8 | FM2_XgfSerializer_Ctor | 0.91 | Calls `PresentationLoader_Ctor` then sets `CForzaXGFSerializer` vftable and extra fields. |
+| 0x827D2F48 | sub_827D2F48 | FM2_BindingScript_PresentationLoader_Delete | 0.90 | Deletes extra string field then `PresentationLoader_Dtor`; optional heap free. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82619468 | sub_82619468 | Single-byte accessor; only SQLite xref — low confidence / incidental. |
+| 0x827D47C8 | sub_827D47C8 | Large XGF presentation import; defer dedicated pass. |
+| 0x827D76C8 | sub_827D76C8 | XML child navigator helper; defer with `0x827Dxxxx` cluster. |
+
+## Iteration 239
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x827D76C8 | sub_827D76C8 | FM2_XmlNavigator_WalkChildrenFindMatchingType | 0.91 | Walks XML child chain; calls `FM2_Profile_LookupCategoryChildListById` per node; returns first match index via `*a6`. Used from `FinalizePresentationUnitStringBindings`. |
+| 0x827E2140 | sub_827E2140 | FM2_Profile_LookupCategoryChildListById | 0.89 | Resolves profile category child list pointer from signed/unsigned category id; uses sorted dword lookup or category byte table. |
+| 0x827D7F78 | sub_827D7F78 | FM2_IntrusiveList_FreeSubtreeNodesRecursively | 0.90 | Post-order free of intrusive-list/RB-tree nodes skipping sentinels (`+17` flag); recursive on child pointers. |
+| 0x827D80F0 | sub_827D80F0 | FM2_IntrusiveList_ClearAndFreeAllNodes | 0.91 | Frees all nodes then reinitializes circular sentinel links; called from presentation loader dtor. |
+| 0x824FFBE8 | sub_824FFBE8 | FM2_Memory_FindOrInsertFrameAllocMapIterator | 0.90 | RB-tree lower-bound search/insert on frame-alloc map keyed by dword; used when exporting presentation `xmlref`. |
+| 0x824FF5B8 | sub_824FF5B8 | FM2_Memory_InsertFrameAllocMapRbTreeNode | 0.89 | Inserts new RB-tree node with key at `a5`; throws `map/set<T> too long` on overflow. |
+| 0x824FFE28 | sub_824FFE28 | FM2_IntrusiveList_EraseNodesEqualRangeByKey | 0.88 | Builds equal-range on RB-tree24 then erases node span; returns erased count. |
+| 0x826253C0 | sub_826253C0 | FM2_Lua_RegisterCColorToluaBindings | 0.93 | Registers `CColor` tolua module: `new`/`set`/`setColor`/`tostring`/`copy`/`.eq` and `r/g/b/a` property accessors. |
+| 0x82628DE0 | sub_82628DE0 | FM2_Lua_CColorToluaGcCollector | 0.92 | Tolua GC: frees CColor userdata block and pops stack. |
+| 0x82624998 | sub_82624998 | FM2_Lua_CColorSetRgbaFromStack | 0.92 | Lua `Color.set` binding; validates four number args + self; calls `sub_827EB1A0` to set RGBA. |
+| 0x8262B820 | sub_8262B820 | FM2_Lua_CMaterialGetAmbientColor | 0.91 | Material `ambient` getter; type-checks self; pushes `CColor` userdata from lazy ambient field. |
+| 0x827DD108 | sub_827DD108 | FM2_SceneGraph_GetNodeFromHandle | 0.88 | Returns `*(_DWORD*)a2`; sole behavior across binding export/import and scene-graph destroy paths. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x827D47C8 | sub_827D47C8 | Large XGF presentation import (~1080 B); needs dedicated pass. |
+| 0x827D5FD8 | sub_827D5FD8 | 8-byte `FM2_ComPtr_AssignRef` wrapper at `a1+272`. |
+| 0x824FFDF8 | sub_824FFDF8 | Thin wrapper forwarding to `FindOrInsertFrameAllocMapIterator` at `a1+72`. |
+| 0x82500290 | sub_82500290 | Thin wrapper to `EraseNodesEqualRangeByKey` at `a1+72`. |
+| 0x8262BB68 | sub_8262BB68 | `CLuaObjectMaterial` module registration; defer material property cluster. |
+| 0x8262AEA0 | sub_8262AEA0 | `CLuaTimeContext` module registration; defer time-context cluster. |
+| 0x82631DA8 | sub_82631DA8 | 4-byte thunk to `sub_82631C50`. |
+| 0x82632F40 | sub_82632F40 | Thin `FM2_Lua_SetStackTop(a1, -2)` after module registration. |
+
+## Iteration 240
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82624B60 | sub_82624B60 | FM2_Lua_CColorSetFromOtherColor | 0.93 | Registered as `setColor` in `FM2_Lua_RegisterCColorToluaBindings`; copies `const CColor` arg via `sub_827EB280`. |
+| 0x82624C70 | sub_82624C70 | FM2_Lua_CColorToString | 0.93 | Registered as `tostring`; error string `CLuaBindings::ColorToString`; formats via `sub_82635190`. |
+| 0x82624D38 | sub_82624D38 | FM2_Lua_CColorCopy | 0.92 | Registered as `copy`; calls `FM2_Lua_Color_Copy` and registers GC userdata. |
+| 0x82624DF8 | sub_82624DF8 | FM2_Lua_CColorEquals | 0.92 | Registered as `.eq`; compares two `CColor` via `sub_827EB040`; pushes bool. |
+| 0x82624F00 | sub_82624F00 | FM2_Lua_CColorGetRed | 0.94 | Property getter `r`; reads byte at offset 0; error `accessing variable 'r'`. |
+| 0x82624F78 | sub_82624F78 | FM2_Lua_CColorSetRed | 0.94 | Property setter `r`; writes via `sub_827EB060`. |
+| 0x82625030 | sub_82625030 | FM2_Lua_CColorGetGreen | 0.94 | Property getter `g`; reads byte at offset 1. |
+| 0x826250A8 | sub_826250A8 | FM2_Lua_CColorSetGreen | 0.94 | Property setter `g`; writes via `sub_827EB0B0`. |
+| 0x82625160 | sub_82625160 | FM2_Lua_CColorGetBlue | 0.94 | Property getter `b`; reads byte at offset 2. |
+| 0x826251D8 | sub_826251D8 | FM2_Lua_CColorSetBlue | 0.94 | Property setter `b`; writes via `sub_827EB100`. |
+| 0x82625290 | sub_82625290 | FM2_Lua_CColorGetAlpha | 0.94 | Property getter `a`; reads byte at offset 3. |
+| 0x82625308 | sub_82625308 | FM2_Lua_CColorSetAlpha | 0.94 | Property setter `a`; writes via `sub_827EB150`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x8262BB68 | sub_8262BB68 | `CLuaObjectMaterial` module registration; defer material property cluster. |
+| 0x8262AEA0 | sub_8262AEA0 | `CLuaTimeContext` module registration; defer time-context cluster. |
+| 0x82632F40 | sub_82632F40 | Thin `FM2_Lua_SetStackTop(a1, -2)` after module pop. |
+| 0x82631DA8 | sub_82631DA8 | 4-byte thunk to ambient-color lazy init. |
+| 0x82631C50 | sub_82631C50 | Lazy ambient CColor allocator; defer with material getters. |
+
+## Iteration 241
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8262BB68 | sub_8262BB68 | FM2_Lua_RegisterCLuaObjectMaterialToluaBindings | 0.93 | Registers `Material`/`CLuaObjectMaterial` module with specular/emissive/blend/culling/fill/shade/ambient/diffuse/specular color property accessors. |
+| 0x8262C838 | sub_8262C838 | FM2_Lua_CLuaObjectMaterialToluaGcCollector | 0.92 | Tolua GC for `CLuaObjectMaterial`; invokes vtable dtor then frees userdata block. |
+| 0x8262AFD0 | sub_8262AFD0 | FM2_Lua_CMaterialGetSpecularEnable | 0.93 | Property getter `specularEnable`; reads bool via `sub_82631740`. |
+| 0x8262B048 | sub_8262B048 | FM2_Lua_CMaterialSetSpecularEnable | 0.92 | Property setter `specularEnable`; bool from stack arg 2. |
+| 0x8262B100 | sub_8262B100 | FM2_Lua_CMaterialGetSpecularPower | 0.93 | Property getter `specularPower`; pushes float from `FM2_Helper_1770_2`. |
+| 0x8262B170 | sub_8262B170 | FM2_Lua_CMaterialSetSpecularPower | 0.92 | Property setter `specularPower`; writes float via `sub_82631970`. |
+| 0x8262B220 | sub_8262B220 | FM2_Lua_CMaterialGetEmissivePower | 0.93 | Property getter `emissivePower`; reads via `sub_826317C0`. |
+| 0x8262B290 | sub_8262B290 | FM2_Lua_CMaterialSetEmissivePower | 0.92 | Property setter `emissivePower`; writes via `sub_826319B0`. |
+| 0x8262B888 | sub_8262B888 | FM2_Lua_CMaterialSetAmbientColor | 0.92 | Property setter `ambient`; type-checks `CColor` arg; assigns via `FM2_Lua_SceneNode_GetChildByIndex`. |
+| 0x8262B938 | sub_8262B938 | FM2_Lua_CMaterialGetDiffuseColor | 0.92 | Property getter `diffuse`; pushes lazy `CColor` userdata. |
+| 0x8262B9A0 | sub_8262B9A0 | FM2_Lua_CMaterialSetDiffuseColor | 0.92 | Property setter `diffuse`; copies `CColor` via `sub_82631DB8`. |
+| 0x82631C50 | sub_82631C50 | FM2_Lua_CMaterialGetOrCreateAmbientColor | 0.90 | Lazy-inits ambient `CColor` at `a1+60` from material field `a1+52`; used by ambient getter thunk. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x8262BA50 | sub_8262BA50 | Specular color getter; defer with remaining material color accessors. |
+| 0x8262BAB8 | sub_8262BAB8 | Specular color setter; defer same cluster. |
+| 0x8262B340 | sub_8262B340 | `blendMode` getter; defer enum property cluster. |
+| 0x8262B3C0 | sub_8262B3C0 | `blendMode` setter; defer enum property cluster. |
+| 0x82631DA0 | sub_82631DA0 | 4-byte thunk to `sub_82631BA8` (diffuse lazy init). |
+| 0x82631DA8 | sub_82631DA8 | 4-byte thunk to ambient lazy init. |
+| 0x8262AEA0 | sub_8262AEA0 | `CLuaTimeContext` module registration; defer time-context cluster. |
+
+## Iteration 242
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8262BA50 | sub_8262BA50 | FM2_Lua_CMaterialGetSpecularColor | 0.92 | Property getter `specular`; pushes lazy `CColor` via `sub_82631DB0`. |
+| 0x8262BAB8 | sub_8262BAB8 | FM2_Lua_CMaterialSetSpecularColor | 0.92 | Property setter `specular`; type-checks `CColor`; assigns via `sub_82631E68`. |
+| 0x8262B340 | sub_8262B340 | FM2_Lua_CMaterialGetBlendMode | 0.93 | Property getter `blendMode`; reads dword enum via `sub_82631858`. |
+| 0x8262B3C0 | sub_8262B3C0 | FM2_Lua_CMaterialSetBlendMode | 0.92 | Property setter `blendMode`; writes via `sub_82631A30`. |
+| 0x8262B478 | sub_8262B478 | FM2_Lua_CMaterialGetCulling | 0.93 | Property getter `culling`; reads via `sub_826318E8`. |
+| 0x8262B4F8 | sub_8262B4F8 | FM2_Lua_CMaterialSetCulling | 0.92 | Property setter `culling`; writes via `sub_82631AB0`. |
+| 0x8262B5B0 | sub_8262B5B0 | FM2_Lua_CMaterialGetFillMode | 0.93 | Property getter `fillMode`; reads via `sub_826318A0`. |
+| 0x8262B630 | sub_8262B630 | FM2_Lua_CMaterialSetFillMode | 0.92 | Property setter `fillMode`; writes via `sub_82631A70`. |
+| 0x8262B6E8 | sub_8262B6E8 | FM2_Lua_CMaterialGetShadeType | 0.93 | Property getter `shadeType`; reads via `sub_82631810`. |
+| 0x8262B768 | sub_8262B768 | FM2_Lua_CMaterialSetShadeType | 0.92 | Property setter `shadeType`; writes via `sub_826319F0`. |
+| 0x8262AEA0 | sub_8262AEA0 | FM2_Lua_RegisterCLuaTimeContextToluaBindings | 0.93 | Registers `TimeContext`/`CLuaTimeContext` with paused/time props and play/pause/goToTime/tostring. |
+| 0x8262AE48 | sub_8262AE48 | FM2_Lua_CLuaTimeContextToluaGcCollector | 0.92 | Tolua GC for `CLuaTimeContext`; clears string field then frees userdata. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x8262AA20 | sub_8262AA20 | `paused` getter; defer with remaining TimeContext methods. |
+| 0x8262AA98 | sub_8262AA98 | `time` getter; defer TimeContext cluster. |
+| 0x8262AB08 | sub_8262AB08 | `tostring` method; defer TimeContext cluster. |
+| 0x8262ABD0 | sub_8262ABD0 | `play` method; defer TimeContext cluster. |
+| 0x82631BA8 | sub_82631BA8 | Lazy diffuse CColor init; defer color-field helper pass. |
+| 0x82631DB0 | sub_82631DB0 | 4-byte thunk to specular lazy-init. |
+| 0x82631DB8 | sub_82631DB8 | Diffuse color assign helper; defer with `82631BA8`. |
+
+## Iteration 243
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8262AA20 | sub_8262AA20 | FM2_Lua_CTimeContextGetPaused | 0.93 | Property getter `paused`; reads bool via `sub_82634888`. |
+| 0x8262AA98 | sub_8262AA98 | FM2_Lua_CTimeContextGetTime | 0.93 | Property getter `time`; pushes playback seconds from `FM2_CTimeContext_GetPlaybackTimeSeconds`. |
+| 0x8262AB08 | sub_8262AB08 | FM2_Lua_CTimeContextToString | 0.92 | Registered as `tostring`; formats via `FM2_Lua_CTimeContextFormatDescriptionString`. |
+| 0x8262ABD0 | sub_8262ABD0 | FM2_Lua_CTimeContextPlay | 0.92 | Registered as `play`; calls `sub_827E8E10` on bound node handle. |
+| 0x8262AC88 | sub_8262AC88 | FM2_Lua_CTimeContextPause | 0.92 | Registered as `pause`; calls `sub_827E8EB8`. |
+| 0x8262AD40 | sub_8262AD40 | FM2_Lua_CTimeContextGoToTime | 0.92 | Registered as `goToTime`; converts seconds to ms and calls `sub_827E8F88`. |
+| 0x82631BA8 | sub_82631BA8 | FM2_Lua_CMaterialGetOrCreateDiffuseColor | 0.91 | Lazy-inits diffuse `CColor` at `a1+56` from material field id 15. |
+| 0x82631CF8 | sub_82631CF8 | FM2_Lua_CMaterialGetOrCreateSpecularColor | 0.91 | Lazy-inits specular `CColor` at `a1+64` from material field id 23. |
+| 0x82631DB8 | sub_82631DB8 | FM2_Lua_CMaterialAssignDiffuseColor | 0.90 | Gets/creates diffuse color then copies source `CColor` via `sub_827EB280`. |
+| 0x82631E68 | sub_82631E68 | FM2_Lua_CMaterialAssignSpecularColor | 0.90 | Gets/creates specular color then copies source `CColor`. |
+| 0x826349F0 | sub_826349F0 | FM2_Lua_CTimeContextFormatDescriptionString | 0.91 | Builds `"TimeContext: time: ..."` string with paused TRUE/FALSE suffix. |
+| 0x82634938 | sub_82634938 | FM2_CTimeContext_GetPlaybackTimeSeconds | 0.90 | Reads XML node type 5 time value; scales by `0.001` to seconds. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82634888 | sub_82634888 | 8-byte forwarder to `FM2_Diag_LogEvent22`; thin paused-flag probe. |
+| 0x82634830 | sub_82634830 | 8-byte forwarder to `sub_827E8E10` (play backend). |
+| 0x82634838 | sub_82634838 | 8-byte forwarder to `sub_827E8EB8` (pause backend). |
+| 0x82634840 | sub_82634840 | Thin ms-conversion wrapper around `sub_827E8F88`. |
+| 0x826349E0 | sub_826349E0 | Clears string at `a1+8` on GC; defer with binding destroy cluster. |
+| 0x826347F8 | sub_826347F8 | Shared tolua GC stack-pop helper; thin wrapper. |
+| 0x82631DA0 | sub_82631DA0 | 4-byte thunk to diffuse lazy init. |
+| 0x82631DB0 | sub_82631DB0 | 4-byte thunk to specular lazy init. |
+
+## Iteration 244
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82627AD8 | sub_82627AD8 | FM2_Lua_RegisterCMatrixToluaBindings | 0.94 | Registers `Matrix`/`CMatrix` module with multiply/transpose/scale/translate/rotate and m11–m44 accessors. |
+| 0x82628BD0 | sub_82628BD0 | FM2_Lua_RegisterCRotationToluaBindings | 0.94 | Registers `Rotation`/`CRotation` with lookAt/add/subtract/scale and x/y/z properties. |
+| 0x8262A6F8 | sub_8262A6F8 | FM2_Lua_RegisterCVector3ToluaBindings | 0.94 | Registers `Vector`/`CVector3` with distance/dot/cross/normalize/transform methods. |
+| 0x8262D3D0 | sub_8262D3D0 | FM2_Lua_RegisterCLuaObjectNodeToluaBindings | 0.93 | Registers `Node`/`CLuaObjectNode` with position/rotation/scale/pivot and calcBBox methods. |
+| 0x8262C680 | sub_8262C680 | FM2_Lua_RegisterCLuaObjectTextToluaBindings | 0.93 | Registers `Text`/`CLuaObjectText` with textString/scroll/box/renderStyle/textColor properties. |
+| 0x8262C948 | sub_8262C948 | FM2_Lua_RegisterCLuaObjectModelToluaBindings | 0.92 | Registers `Model`/`CLuaObjectModel` extending `CLuaObjectNode`. |
+| 0x8262C8A0 | sub_8262C8A0 | FM2_Lua_RegisterCLuaObjectSceneToluaBindings | 0.92 | Registers `Scene`/`CLuaObjectScene` extending `CLuaObjectNode`. |
+| 0x8262D860 | sub_8262D860 | FM2_Lua_RegisterCLuaObjectEventToluaBindings | 0.92 | Registers `Event`/`CLuaObjectEvent` with `new`, `name`, and `target` properties. |
+| 0x8262F3E8 | sub_8262F3E8 | FM2_Lua_RegisterCLuaObjectElementToluaBindings | 0.93 | Registers `Element`/`CLuaObjectElement` with type/id/active/opacity/parent and get/find methods. |
+| 0x82630780 | sub_82630780 | FM2_Lua_RegisterCPresentationToluaBindings | 0.93 | Registers `Presentation`/`CPresentation` with root/runTime/scene and getByID methods. |
+| 0x82630240 | sub_82630240 | FM2_Lua_RegisterAkToluaBindings | 0.92 | Registers `ak` module with output/fireEvent/createElement/deleteElement bindings. |
+| 0x827E8E10 | sub_827E8E10 | FM2_CTimeContext_PlayTimeline | 0.90 | Resumes timeline: invalidates pass 22, sets pass flag 26; called from `FM2_Lua_CTimeContextPlay`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x827E8EB8 | sub_827E8EB8 | Pause timeline backend; defer paired pass with `827E8F88`. |
+| 0x827E8F88 | sub_827E8F88 | Go-to-time pass-flag backend; defer timeline cluster completion. |
+| 0x82634830 | sub_82634830 | 8-byte forwarder to `FM2_CTimeContext_PlayTimeline`. |
+| 0x82634838 | sub_82634838 | 8-byte forwarder to pause backend. |
+| 0x82634840 | sub_82634840 | Thin seconds-to-ms wrapper around go-to-time backend. |
+| 0x82634888 | sub_82634888 | 8-byte forwarder to `FM2_Diag_LogEvent22` paused probe. |
+| 0x82632F40 | sub_82632F40 | Thin `FM2_Lua_SetStackTop(a1, -2)` after module registration. |
+| 0x82634588 | sub_82634588 | Thin push C-string-or-nil helper; defer shared tolua utils pass. |
+
+## Iteration 245
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8262FA30 | sub_8262FA30 | FM2_Lua_RegisterAkClassGraphToluaBindings | 0.92 | Registers `akclassgraph` module with attach/detach/parent from `InitBindingObjectContext`. |
+| 0x8262FE30 | sub_8262FE30 | FM2_Lua_RegisterAkSceneGraphToluaBindings | 0.92 | Registers `akscenegraph` module with attach/detach/attachBefore. |
+| 0x827E8EB8 | sub_827E8EB8 | FM2_CTimeContext_PauseTimeline | 0.91 | Pauses timeline: invalidates pass 26 or seeks node 5; sets pass flag 22; pair of `FM2_CTimeContext_PlayTimeline`. |
+| 0x827E8F88 | sub_827E8F88 | FM2_CTimeContext_SetPassFlagFromPauseState | 0.89 | Sets pass flag 22 if playing else 26 based on `FM2_Diag_LogEventWithSubContext`; used from go-to-time path. |
+| 0x82634588 | sub_82634588 | FM2_Lua_PushCStringOrNil | 0.91 | Pushes C string via `FM2_Lua_PushLStringOrNil` or nil; shared by Color/Matrix/Vector/Rotation/TimeContext tostring. |
+| 0x82632A50 | sub_82632A50 | FM2_Lua_UnregisterToluaGcEntry | 0.90 | Clears `tolua_gc` registry entry for userdata pointer; called from GC collector epilogue. |
+| 0x82625568 | sub_82625568 | FM2_Lua_CMatrixNew | 0.93 | Registered as `Matrix.new`; allocates `D3DXMATRIX` and registers GC userdata. |
+| 0x826256F0 | sub_826256F0 | FM2_Lua_CMatrixMultiply | 0.93 | Registered as `multiply`; calls `FM2_Render_MultiplyGMatrix3DInPlaceSimd`. |
+| 0x826257F8 | sub_826257F8 | FM2_Lua_CMatrixTranspose | 0.92 | Registered as `transpose`; error string references `Transpose`. |
+| 0x826258B0 | sub_826258B0 | FM2_Lua_CMatrixIdentity | 0.92 | Registered as `identity`; resets matrix via `D3DXMATRIX` ctor. |
+| 0x82625968 | sub_82625968 | FM2_Lua_CMatrixToString | 0.93 | Registered as `tostring`; `CLuaBindings::MatrixToString` error string. |
+| 0x82628E28 | sub_82628E28 | FM2_Lua_CVector3New | 0.93 | Registered as `Vector.new`; allocates vector via `sub_827EB510`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82634830 | sub_82634830 | 8-byte forwarder to `FM2_CTimeContext_PlayTimeline`. |
+| 0x82634838 | sub_82634838 | 8-byte forwarder to `FM2_CTimeContext_PauseTimeline`. |
+| 0x82634840 | sub_82634840 | Thin ms-conversion wrapper; defers to pause-state pass-flag backend. |
+| 0x82634888 | sub_82634888 | 8-byte forwarder to `FM2_Diag_LogEvent22`. |
+| 0x826347F8 | sub_826347F8 | Thin GC epilogue: unregister + `SetStackTop(-2)`. |
+| 0x826349E0 | sub_826349E0 | Clears description string field on GC; defer destroy cluster. |
+| 0x82632F40 | sub_82632F40 | Thin `FM2_Lua_SetStackTop(a1, -2)`. |
+
+## Iteration 246
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82625FA0 | sub_82625FA0 | FM2_Lua_CMatrixSetFromConstMatrix | 0.92 | Registered as `set` (const-matrix overload); copies via `GMatrix3D::GMatrix3D`; falls back to float-component setter. |
+| 0x82626078 | sub_82626078 | FM2_Lua_CMatrixSetFromOtherMatrix | 0.93 | Registered as `setMatrix`; error `#ferror in function 'setMatrix'`. |
+| 0x82626170 | sub_82626170 | FM2_Lua_CMatrixCopy | 0.92 | Registered as `copy`; `CLuaBindings::MatrixCopy` error string. |
+| 0x82626230 | sub_82626230 | FM2_Lua_CMatrixScale | 0.93 | Registered as `scale`; takes xyz floats; `CLuaBindings::MatrixScale`. |
+| 0x826263D0 | sub_826263D0 | FM2_Lua_CMatrixTranslate | 0.93 | Registered as `translate`; `CLuaBindings::MatrixTranslate`. |
+| 0x82626570 | sub_82626570 | FM2_Lua_CMatrixRotate | 0.93 | Registered as `rotate`; `CLuaBindings::MatrixRotate`. |
+| 0x82626710 | sub_82626710 | FM2_Lua_CMatrixInvert | 0.92 | Registered as `invert`; `CLuaBindings::MatrixInvert`. |
+| 0x826267C8 | sub_826267C8 | FM2_Lua_CMatrixEquals | 0.92 | Registered as `equals`; `CLuaBindings::MatrixEquals`. |
+| 0x826268D0 | sub_826268D0 | FM2_Lua_CMatrixOperatorEquals | 0.92 | Registered as `.eq`; `operator==` error string. |
+| 0x82629120 | sub_82629120 | FM2_Lua_CVector3OperatorEquals | 0.92 | Registered as `.eq` in Vector module; compares via `sub_827EB610`. |
+| 0x82629FB8 | sub_82629FB8 | FM2_Lua_CVector3ToString | 0.93 | Registered as `tostring`; `CLuaBindings::VectorToString`. |
+| 0x82627EF0 | sub_82627EF0 | FM2_Lua_CRotationNew | 0.93 | Registered as `Rotation.new`; allocates via `sub_827EB358`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82625A30 | sub_82625A30 | Large 16-float component `set` implementation; defer dedicated pass. |
+| 0x826269D8 | sub_826269D8 | Matrix `_11` getter; defer m11–m44 accessor cluster. |
+| 0x82626A40 | sub_82626A40 | Matrix `_11` setter; defer accessor cluster. |
+| 0x82629228 | sub_82629228 | Vector `set` with xyz floats; defer vector method cluster. |
+| 0x82628450 | sub_82628450 | Rotation `tostring`; defer rotation method cluster. |
+| 0x82627FA8 | sub_82627FA8 | Rotation `.eq`; defer rotation method cluster. |
+
+## Iteration 247
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82629228 | sub_82629228 | FM2_Lua_CVector3SetFromComponents | 0.93 | Registered as `set`; takes xyz floats; `invalid 'self' in function 'Set'`. |
+| 0x826293A8 | sub_826293A8 | FM2_Lua_CVector3SetFromOtherVector | 0.92 | Registered as `setVector`; copies `const CVector3`. |
+| 0x826294B8 | sub_826294B8 | FM2_Lua_CVector3DistanceSquared | 0.93 | Registered as `distanceSquared`; `DistanceSquared` error string. |
+| 0x826295B8 | sub_826295B8 | FM2_Lua_CVector3Distance | 0.92 | Registered as `distance`; calls `point_to_line_distance3d`. |
+| 0x826296B8 | sub_826296B8 | FM2_Lua_CVector3LengthSquared | 0.93 | Registered as `lengthSquared`; `LengthSquared` error string. |
+| 0x82629780 | sub_82629780 | FM2_Lua_CVector3Length | 0.93 | Registered as `length`; `Length` error string. |
+| 0x82629848 | sub_82629848 | FM2_Lua_CVector3Dot | 0.93 | Registered as `dot`; `DotProduct` error string. |
+| 0x82629948 | sub_82629948 | FM2_Lua_CVector3Cross | 0.92 | Registered as `cross`; returns new `CVector3` userdata. |
+| 0x82629A58 | sub_82629A58 | FM2_Lua_CVector3Normalize | 0.92 | Registered as `normalize`; `Normalize` error string. |
+| 0x8262A4A8 | sub_8262A4A8 | FM2_Lua_CVector3Copy | 0.92 | Registered as `copy`; `CLuaBindings::VectorCopy`. |
+| 0x826280B0 | sub_826280B0 | FM2_Lua_CRotationSetFromComponents | 0.93 | Registered as `set`; xyz euler floats via `sub_827EB3F0`. |
+| 0x82628340 | sub_82628340 | FM2_Lua_CRotationLookAt | 0.92 | Registered as `lookAt`; takes `const CVector3` target. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82625A30 | sub_82625A30 | Large 16-float matrix `set`; defer matrix component setter pass. |
+| 0x826269D8 | sub_826269D8 | Matrix `_11` getter; defer m11–m44 accessor cluster. |
+| 0x82628230 | sub_82628230 | Rotation `setRotation`; defer with rotation equals/copy cluster. |
+| 0x82628450 | sub_82628450 | Rotation `tostring`; defer rotation method cluster. |
+| 0x82627FA8 | sub_82627FA8 | Rotation `.eq`; defer rotation method cluster. |
+
+## Iteration 248
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82625A30 | sub_82625A30 | FM2_Lua_CMatrixSetFromComponents | 0.93 | Registered as `set`; validates 16 floats on `CMatrix`; `CLuaBindings::MatrixSetData` / `#ferror in function 'set'`. |
+| 0x826269D8 | sub_826269D8 | FM2_Lua_CMatrixGetProperty_11 | 0.92 | Pushes `*userdata` m11; error `invalid 'self' in accessing variable '_11'`. |
+| 0x82626A40 | sub_82626A40 | FM2_Lua_CMatrixSetProperty_11 | 0.92 | Sets m11 from float arg; `_11` variable assignment error strings. |
+| 0x82626AE8 | sub_82626AE8 | FM2_Lua_CMatrixGetProperty_12 | 0.92 | Pushes matrix element at offset 4; `_12` accessor pattern. |
+| 0x82626B50 | sub_82626B50 | FM2_Lua_CMatrixSetProperty_12 | 0.92 | Sets matrix element at offset 4; `_12` setter pattern. |
+| 0x82626BF8 | sub_82626BF8 | FM2_Lua_CMatrixGetProperty_13 | 0.92 | Pushes matrix element at offset 8; `_13` accessor pattern. |
+| 0x82626C60 | sub_82626C60 | FM2_Lua_CMatrixSetProperty_13 | 0.92 | Sets matrix element at offset 8; `_13` setter pattern. |
+| 0x82628230 | sub_82628230 | FM2_Lua_CRotationSetRotation | 0.93 | Registered as `setRotation`; copies `const CRotation`; `SetRotation` error string. |
+| 0x82628450 | sub_82628450 | FM2_Lua_CRotationToString | 0.93 | Registered as `tostring`; `CLuaBindings::RotationToString` error string. |
+| 0x82627FA8 | sub_82627FA8 | FM2_Lua_CRotationOperatorEquals | 0.92 | Registered as `.eq`; compares two `CRotation`; `operator==` error string. |
+| 0x82628518 | sub_82628518 | FM2_Lua_CRotationAdd | 0.92 | Registered as `add`; takes `const CRotation`; `#ferror in function 'add'`. |
+| 0x82628628 | sub_82628628 | FM2_Lua_CRotationSubtract | 0.92 | Registered as `subtract`; takes `const CRotation`; `#ferror in function 'subtract'`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82628738 | sub_82628738 | Rotation `scale`; defer with equals/copy cluster. |
+| 0x82628838 | sub_82628838 | Rotation `equals`; defer rotation method cluster. |
+| 0x82628940 | sub_82628940 | Rotation `copy`; defer rotation method cluster. |
+| 0x82629B10 | sub_82629B10 | Vector3 `minVector`; defer vector method cluster. |
+| 0x82629C20 | sub_82629C20 | Vector3 `maxVector`; defer vector method cluster. |
+
+## Iteration 249
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82628738 | sub_82628738 | FM2_Lua_CRotationScale | 0.92 | Registered as `scale`; scales `CRotation` by float; `#ferror in function 'scale'`. |
+| 0x82628838 | sub_82628838 | FM2_Lua_CRotationEquals | 0.92 | Registered as `equals`; compares two `const CRotation`; `#ferror in function 'equals'`. |
+| 0x82628940 | sub_82628940 | FM2_Lua_CRotationCopy | 0.92 | Registered as `copy`; clones `CRotation` userdata with GC; `VectorCopy` error string. |
+| 0x82626D08 | sub_82626D08 | FM2_Lua_CMatrixGetProperty_14 | 0.92 | Pushes float at offset 12; error `invalid 'self' in accessing variable '_14'`. |
+| 0x82626D70 | sub_82626D70 | FM2_Lua_CMatrixSetProperty_14 | 0.92 | Sets float at offset 12; `_14` variable assignment errors. |
+| 0x82626E18 | sub_82626E18 | FM2_Lua_CMatrixGetProperty_21 | 0.92 | Pushes float at offset 16; error `invalid 'self' in accessing variable '_21'`. |
+| 0x82626E80 | sub_82626E80 | FM2_Lua_CMatrixSetProperty_21 | 0.92 | Sets float at offset 16; `_21` variable assignment errors. |
+| 0x82629B10 | sub_82629B10 | FM2_Lua_CVector3MinVector | 0.93 | Registered as `minVector`; component-wise min; `Minimize` / `#ferror in function 'minVector'`. |
+| 0x82629C20 | sub_82629C20 | FM2_Lua_CVector3MaxVector | 0.93 | Registered as `maxVector`; component-wise max; `Maximize` error string. |
+| 0x82629D30 | sub_82629D30 | FM2_Lua_CVector3Linear | 0.92 | Registered as `linear`; lerps two `CVector3` by float t; `InterpolateLinear` error string. |
+| 0x82629E80 | sub_82629E80 | FM2_Lua_CVector3Transform | 0.93 | Registered as `transform`; multiplies `CVector3` by `const CMatrix`; `Transform` error string. |
+| 0x8262A080 | sub_8262A080 | FM2_Lua_CVector3Add | 0.92 | Registered as `add`; adds `const CVector3`; `#ferror in function 'add'`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x8262A190 | sub_8262A190 | Vector3 `subtract`; defer with scale/equals cluster. |
+| 0x8262A2A0 | sub_8262A2A0 | Vector3 `scale`; defer vector method cluster. |
+| 0x8262A3A0 | sub_8262A3A0 | Vector3 `equals`; defer vector method cluster. |
+| 0x82626EE8 | sub_82626EE8 | Matrix `_22` getter; defer m22–m44 accessor cluster. |
+
+## Iteration 250
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8262A190 | sub_8262A190 | FM2_Lua_CVector3Subtract | 0.92 | Registered as `subtract`; subtracts `const CVector3`; `#ferror in function 'subtract'`. |
+| 0x8262A2A0 | sub_8262A2A0 | FM2_Lua_CVector3Scale | 0.92 | Registered as `scale`; scales `CVector3` by float; `VectorScale` error string. |
+| 0x8262A3A0 | sub_8262A3A0 | FM2_Lua_CVector3Equals | 0.92 | Registered as `equals`; compares two `CVector3`; `#ferror in function 'equals'`. |
+| 0x82626F28 | sub_82626F28 | FM2_Lua_CMatrixGetProperty_22 | 0.92 | Pushes float at offset 20; error `invalid 'self' in accessing variable '_22'`. |
+| 0x82626F90 | sub_82626F90 | FM2_Lua_CMatrixSetProperty_22 | 0.92 | Sets float at offset 20; `_22` variable assignment errors. |
+| 0x82627038 | sub_82627038 | FM2_Lua_CMatrixGetProperty_23 | 0.92 | Pushes float at offset 24; error `invalid 'self' in accessing variable '_23'`. |
+| 0x826270A0 | sub_826270A0 | FM2_Lua_CMatrixSetProperty_23 | 0.92 | Sets float at offset 24; `_23` variable assignment errors. |
+| 0x82627148 | sub_82627148 | FM2_Lua_CMatrixGetProperty_24 | 0.92 | Pushes float at offset 28; error `invalid 'self' in accessing variable '_24'`. |
+| 0x826271B0 | sub_826271B0 | FM2_Lua_CMatrixSetProperty_24 | 0.92 | Sets float at offset 28; `_24` variable assignment errors. |
+| 0x8262F760 | sub_8262F760 | FM2_Lua_CLuaObjectElementAttach | 0.93 | Registered in `akclassgraph`/`akscenegraph` as `attach`; two `CLuaObjectElement` args; calls `sub_82635510`. |
+| 0x8262F860 | sub_8262F860 | FM2_Lua_CLuaObjectElementDetach | 0.93 | Registered as `detach`; two `CLuaObjectElement` args; calls `sub_82635570`. |
+| 0x8262F960 | sub_8262F960 | FM2_Lua_CLuaObjectElementParent | 0.92 | Registered as `parent`; returns parent `CLuaObjectElement` userdata via `sub_826355D0`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82627258 | sub_82627258 | Matrix `_31` getter; defer m31–m44 accessor cluster. |
+| 0x82635510 | sub_82635510 | Scene-graph attach backend; defer helper cluster with `sub_82635570`. |
+
+## Iteration 251
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82627258 | sub_82627258 | FM2_Lua_CMatrixGetProperty_31 | 0.92 | Pushes float at offset 32; error `invalid 'self' in accessing variable '_31'`. |
+| 0x826272C0 | sub_826272C0 | FM2_Lua_CMatrixSetProperty_31 | 0.92 | Sets float at offset 32; `_31` variable assignment errors. |
+| 0x82627368 | sub_82627368 | FM2_Lua_CMatrixGetProperty_32 | 0.92 | Pushes float at offset 36; error `invalid 'self' in accessing variable '_32'`. |
+| 0x826273D0 | sub_826273D0 | FM2_Lua_CMatrixSetProperty_32 | 0.92 | Sets float at offset 36; `_32` variable assignment errors. |
+| 0x82627478 | sub_82627478 | FM2_Lua_CMatrixGetProperty_33 | 0.92 | Pushes float at offset 40; error `invalid 'self' in accessing variable '_33'`. |
+| 0x826274E0 | sub_826274E0 | FM2_Lua_CMatrixSetProperty_33 | 0.92 | Sets float at offset 40; `_33` variable assignment errors. |
+| 0x82627588 | sub_82627588 | FM2_Lua_CMatrixGetProperty_34 | 0.92 | Pushes float at offset 44; error `invalid 'self' in accessing variable '_34'`. |
+| 0x826275F0 | sub_826275F0 | FM2_Lua_CMatrixSetProperty_34 | 0.92 | Sets float at offset 44; `_34` variable assignment errors. |
+| 0x82627698 | sub_82627698 | FM2_Lua_CMatrixGetProperty_41 | 0.92 | Pushes float at offset 48; error `invalid 'self' in accessing variable '_41'`. |
+| 0x82627700 | sub_82627700 | FM2_Lua_CMatrixSetProperty_41 | 0.92 | Sets float at offset 48; `_41` variable assignment errors. |
+| 0x826277A8 | sub_826277A8 | FM2_Lua_CMatrixGetProperty_42 | 0.92 | Pushes float at offset 52; error `invalid 'self' in accessing variable '_42'`. |
+| 0x82627810 | sub_82627810 | FM2_Lua_CMatrixSetProperty_42 | 0.92 | Sets float at offset 52; `_42` variable assignment errors. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x826278B8 | sub_826278B8 | Matrix `_43` getter; defer _43/_44 accessor cluster. |
+| 0x82635510 | sub_82635510 | Scene-graph attach backend; no strings; defer with detach/parent helpers. |
+
+## Iteration 252
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x826278B8 | sub_826278B8 | FM2_Lua_CMatrixGetProperty_43 | 0.92 | Pushes float at offset 56; error `invalid 'self' in accessing variable '_43'`; registered in `FM2_Lua_RegisterCMatrixToluaBindings`. |
+| 0x82627920 | sub_82627920 | FM2_Lua_CMatrixSetProperty_43 | 0.92 | Sets float at offset 56; `_43` variable assignment errors. |
+| 0x826279C8 | sub_826279C8 | FM2_Lua_CMatrixGetProperty_44 | 0.92 | Pushes float at offset 60; error `invalid 'self' in accessing variable '_44'`. |
+| 0x82627A30 | sub_82627A30 | FM2_Lua_CMatrixSetProperty_44 | 0.92 | Sets float at offset 60; `_44` variable assignment errors. |
+| 0x82635510 | sub_82635510 | FM2_SceneGraph_AttachBindingElements | 0.91 | Sole callee from `FM2_Lua_CLuaObjectElementAttach`; extracts node ids at `+12`; calls `FM2_SceneGraph_LinkSubtreeBySlotSelector`. |
+| 0x82635570 | sub_82635570 | FM2_SceneGraph_DetachBindingElements | 0.91 | Sole callee from `FM2_Lua_CLuaObjectElementDetach`; calls `FM2_SceneGraph_DetachNodeIfParentMatches`. |
+| 0x826355D0 | sub_826355D0 | FM2_SceneGraph_GetParentBindingElement | 0.90 | Sole callee from `FM2_Lua_CLuaObjectElementParent`; lookup via `FM2_Render_LookupUnitStringChildIdBySlotSelector`. |
+| 0x8262FB10 | sub_8262FB10 | FM2_Lua_AkSceneGraphAttach | 0.93 | Registered as `attach` in `FM2_Lua_RegisterAkSceneGraphToluaBindings`; calls `FM2_SceneGraph_CompareNodeFields_0`. |
+| 0x8262FD10 | sub_8262FD10 | FM2_Lua_CLuaObjectElementAttachBefore | 0.93 | Registered as `attachBefore`; three `CLuaObjectElement` args; `#ferror in function 'attachBefore'`. |
+| 0x8260FDC0 | sub_8260FDC0 | FM2_SceneGraph_LinkSubtreeBySlotSelector | 0.90 | Wraps `FM2_Render_LinkUnitStringSubtreeBySlotSelector`; attach backend used by binding-element helpers. |
+| 0x8260FDF0 | sub_8260FDF0 | FM2_SceneGraph_DetachNodeIfParentMatches | 0.89 | Verifies parent id via `sub_827D6938`; detaches via `sub_827DD1D0`; detach backend. |
+| 0x8260FEF0 | sub_8260FEF0 | FM2_SceneGraph_GetBindingElementByChildSlot | 0.89 | Child slot lookup; returns `FM2_Lua_GetOrCreateObjectElementForBinding` on success. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x826356D8 | sub_826356D8 | `attachBefore` backend; defer with `FM2_SceneGraph_CompareNodeFields_0` misname cleanup. |
+| 0x82635618 | FM2_SceneGraph_CompareNodeFields_0 | Misnamed attach wrapper; defer dedicated misname-fix pass. |
+
+## Iteration 253
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82635618 | FM2_SceneGraph_CompareNodeFields_0 | FM2_SceneGraph_AttachBindingElementsFromAkLua | 0.91 | Misnamed; sole caller `FM2_Lua_AkSceneGraphAttach`; identical attach path via `FM2_SceneGraph_LinkSubtreeBySlotSelector`. |
+| 0x82635678 | FM2_SceneGraph_CompareNodeFields | FM2_SceneGraph_DetachBindingElementsFromAkLua | 0.91 | Misnamed; sole caller `sub_8262FC10`; calls `FM2_SceneGraph_DetachNodeIfParentMatches`. |
+| 0x826356D8 | sub_826356D8 | FM2_SceneGraph_AttachBindingElementsBefore | 0.90 | Sole caller `FM2_Lua_CLuaObjectElementAttachBefore`; optional sibling id `-1`; calls `FM2_SceneGraph_LinkOrInsertSubtreeBeforeSibling`. |
+| 0x8260FE50 | sub_8260FE50 | FM2_SceneGraph_LinkOrInsertSubtreeBeforeSibling | 0.89 | Insert-before-sibling attach; validates parent via `sub_827D6938`; `sub_827DD1A0` or `FM2_Render_LinkUnitStringSubtreeBySlotSelector`. |
+| 0x8262FC10 | sub_8262FC10 | FM2_Lua_AkSceneGraphDetach | 0.93 | Registered as `detach` in `FM2_Lua_RegisterAkSceneGraphToluaBindings`; `#ferror in function 'detach'`. |
+| 0x8262D958 | sub_8262D958 | FM2_Lua_CLuaObjectElementGetType | 0.92 | Property getter `type`; error `invalid 'self' in accessing variable 'type'`. |
+| 0x8262D9C8 | sub_8262D9C8 | FM2_Lua_CLuaObjectElementGetId | 0.92 | Property getter `id`; pushes controller id via `FM2_ProfileState_GetControllerIdAt12`. |
+| 0x8262DA48 | sub_8262DA48 | FM2_Lua_CLuaObjectElementGetActive | 0.92 | Property getter `active`; `FM2_Lua_GetBindingDeferredBoolFromXmlChain1`. |
+| 0x8262DAC0 | sub_8262DAC0 | FM2_Lua_CLuaObjectElementSetActive | 0.91 | Property setter `active`; dispatches `FM2_Lua_DispatchBindingDeferredMaterialPass1`. |
+| 0x8262DB78 | sub_8262DB78 | FM2_Lua_CLuaObjectElementGetGlobalActive | 0.92 | Property getter `globalactive`; recursive pass0 bool. |
+| 0x8262DBF0 | sub_8262DBF0 | FM2_Lua_CLuaObjectElementGetOpacity | 0.92 | Property getter `opacity`; `FM2_Lua_GetBindingDeferredFloatFromXmlChain11`. |
+| 0x8262DC60 | sub_8262DC60 | FM2_Lua_CLuaObjectElementSetOpacity | 0.91 | Property setter `opacity`; expects float arg; opacity variable assignment errors. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x8262DD10 | sub_8262DD10 | Element `parent` getter; defer with tostring/.eq cluster. |
+| 0x8262DD78 | sub_8262DD78 | Element `tostring`; defer method cluster. |
+
+## Iteration 254
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8262DD10 | sub_8262DD10 | FM2_Lua_CLuaObjectElementGetParent | 0.92 | Property getter `parent`; resolves via `FM2_Lua_ResolveBindingObjectFromDeferredTaskParams`. |
+| 0x8262DD78 | sub_8262DD78 | FM2_Lua_CLuaObjectElementToString | 0.93 | Registered as `tostring`; `ToString` / `FM2_Lua_FormatBindingProfileDiagnosticString`. |
+| 0x8262DE40 | sub_8262DE40 | FM2_Lua_CLuaObjectElementOperatorEquals | 0.92 | Registered as `.eq`; compares two `CLuaObjectElement`; `operator==` error string. |
+| 0x8262DF48 | sub_8262DF48 | FM2_Lua_CLuaObjectElementGet | 0.92 | Registered as `get`; `FM2_Lua_ReadBindingXmlPropertyWithTypeCheck`. |
+| 0x8262E018 | sub_8262E018 | FM2_Lua_CLuaObjectElementSet | 0.92 | Registered as `set`; `FM2_Lua_HandleBindingScriptMutationSkipTypePrefix`. |
+| 0x8262E0F0 | sub_8262E0F0 | FM2_Lua_CLuaObjectElementSetAsType | 0.92 | Registered as `setAsType`; type string arg; `HandleBindingScriptMutationWithTypeCoercion`. |
+| 0x8262E1F8 | sub_8262E1F8 | FM2_Lua_CLuaObjectElementGetNumChildren | 0.93 | Registered as `getNumChildren`; `FM2_Render_CountUnitStringTableChildren`. |
+| 0x8262E2D0 | sub_8262E2D0 | FM2_Lua_CLuaObjectElementGetChildByIndex | 0.92 | Registered as `getChildByIndex`; index float; `PushUnitStringChildObjectElementByIndex`. |
+| 0x8262E3E0 | sub_8262E3E0 | FM2_Lua_CLuaObjectElementGetChildWithValue | 0.92 | Registered as `getChildWithValue`; string key + variant stack index. |
+| 0x8262E4E0 | sub_8262E4E0 | FM2_Lua_CLuaObjectElementGetChildrenWithValue | 0.92 | Registered as `getChildrenWithValue`; multi-child variant match. |
+| 0x8262E5F8 | sub_8262E5F8 | FM2_Lua_CLuaObjectElementGetChildValuesFor | 0.92 | Registered as `getChildValuesFor`; `ForEachUnitStringChildReadXmlPropertyToCallback`. |
+| 0x8262E6F8 | sub_8262E6F8 | FM2_Lua_CLuaObjectElementGetTimeContext | 0.93 | Registered as `getTimeContext`; returns `CLuaTimeContext` userdata. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x8262E7C8 | sub_8262E7C8 | Element `clone`; defer with fireEvent/processEvent cluster. |
+| 0x8262E8E8 | sub_8262E8E8 | Element `fireEvent`; defer event-handler cluster. |
+
+## Iteration 255
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8262E7C8 | sub_8262E7C8 | FM2_Lua_CLuaObjectElementClone | 0.92 | Registered as `clone`; `DispatchRecursiveMaterialPassOnUnitSubtreeWithElements`. |
+| 0x8262E8E8 | sub_8262E8E8 | FM2_Lua_CLuaObjectElementFireEvent | 0.93 | Registered as `fireEvent`; `CLuaObjectEvent` arg; `DispatchBindingEventWithProfileFieldFromTask`. |
+| 0x8262E9E0 | sub_8262E9E0 | FM2_Lua_CLuaObjectElementProcessEvent | 0.92 | Registered as `processEvent`; `DispatchDeferredBindingEventFromTask`. |
+| 0x8262EAD8 | sub_8262EAD8 | FM2_Lua_CLuaObjectElementRegisterForEvent | 0.92 | `registerForEvent` overload with target element; `InvokeBindingScriptFromDeferredTaskParams`. |
+| 0x8262EC18 | sub_8262EC18 | FM2_Lua_CLuaObjectElementRegisterForEventByNumber | 0.92 | `registerForEvent` numeric overload; falls back to element overload; `InvokeBindingScriptByEventName`. |
+| 0x8262ED40 | sub_8262ED40 | FM2_Lua_CLuaObjectElementUnregisterForEvent | 0.92 | `unregisterForEvent` element overload; `DeactivateBindingEventByHashWithElementSlot`. |
+| 0x8262EE80 | sub_8262EE80 | FM2_Lua_CLuaObjectElementUnregisterForEventByNumber | 0.92 | `unregisterForEvent` numeric overload; `DeactivateBindingEventByEventName`. |
+| 0x8262EFA8 | sub_8262EFA8 | FM2_Lua_CLuaObjectElementRegisterForChange | 0.92 | Registered as `registerForChange`; `ActivateBindingScriptByNameWithElementSlot`. |
+| 0x8262F0E8 | sub_8262F0E8 | FM2_Lua_CLuaObjectElementUnregisterForChange | 0.92 | Registered as `unregisterForChange`; `DeactivateBindingScriptByNameWithElementSlot`. |
+| 0x8262F228 | sub_8262F228 | FM2_Lua_CLuaObjectElementGetCustomProperty | 0.92 | Registered as `get_customproperty`; `ReadBindingXmlPropertyByNameToStack`. |
+| 0x8262F2F8 | sub_8262F2F8 | FM2_Lua_CLuaObjectElementSetCustomProperty | 0.92 | Registered as `set_customproperty`; `ApplyBindingScriptMutationByVariantType`. |
+| 0x82630050 | sub_82630050 | FM2_Lua_AkFireEvent | 0.93 | Registered in `FM2_Lua_RegisterAkToluaBindings` as `fireEvent` on `CLuaObjectEvent`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x8262FF10 | sub_8262FF10 | Ak `output` handler; defer Ak module cluster. |
+| 0x82630100 | sub_82630100 | Ak `createElement`; defer Ak element lifecycle cluster. |
+
+## Iteration 256
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8262FF10 | sub_8262FF10 | FM2_Lua_AkOutput | 0.91 | Registered in `FM2_Lua_RegisterAkToluaBindings` as `output`; 10 stack args; calls `sub_82634C40`. |
+| 0x82630100 | sub_82630100 | FM2_Lua_AkCreateElement | 0.93 | Registered as `createElement`; type string; returns `CLuaObjectElement` via `sub_82634BC8`. |
+| 0x826301A8 | sub_826301A8 | FM2_Lua_AkDeleteElement | 0.92 | Registered as `deleteElement`; takes `CLuaObjectElement`; `#ferror in function 'deleteElement'`. |
+| 0x82630348 | sub_82630348 | FM2_Lua_CPresentationGetRoot | 0.92 | Property getter `root`; pushes `CElement` userdata. |
+| 0x826303B0 | sub_826303B0 | FM2_Lua_CPresentationToString | 0.93 | Registered as `tostring` on `CPresentation`; `ToString` error string. |
+| 0x82630478 | sub_82630478 | FM2_Lua_CPresentationGetRunTime | 0.92 | Property getter `runTime`; pushes float via `sub_82634E30`. |
+| 0x826304E8 | sub_826304E8 | FM2_Lua_CPresentationGetScene | 0.92 | Property getter `scene`; returns `CLuaObjectScene` userdata. |
+| 0x82630550 | sub_82630550 | FM2_Lua_CPresentationGetByID | 0.92 | Registered as `getByID`; numeric id; returns `CLuaObjectElement`. |
+| 0x82630668 | sub_82630668 | FM2_Lua_CPresentationGetById | 0.92 | Registered as `getById`; same backend as `getByID`; `#ferror in function 'getById'`. |
+| 0x8262C9F0 | sub_8262C9F0 | FM2_Lua_CLuaObjectNodeCalcBBox | 0.92 | Registered as `calcBBox`; two `CVector3` args; `CLuaObjectNode` binding. |
+| 0x8262CB30 | sub_8262CB30 | FM2_Lua_CLuaObjectNodeCalcBBoxSelf | 0.92 | Registered as `calcBBoxSelf`; self bbox variant on `CLuaObjectNode`. |
+| 0x8262D300 | sub_8262D300 | FM2_Lua_CLuaObjectNodeGetLastGlobalTransform | 0.92 | Property getter `lastGlobalTransform`; returns `CMatrix` userdata. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x8262D368 | sub_8262D368 | Node `localTransform` getter; defer with transform backend cluster. |
+| 0x82634BC8 | sub_82634BC8 | Ak create-element backend; no strings; defer helper cluster. |
+
+## Iteration 257
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8262CC70 | sub_8262CC70 | FM2_Lua_CLuaObjectNodeGetPosition | 0.92 | Property getter `position`; returns `CVector3` via `sub_82631640`. |
+| 0x8262CCD8 | sub_8262CCD8 | FM2_Lua_CLuaObjectNodeSetPosition | 0.91 | Property setter `position`; expects `CVector3`; calls `FM2_Lua_SceneNode_GetChildByIndex_0`. |
+| 0x8262CD88 | sub_8262CD88 | FM2_Lua_CLuaObjectNodeGetRotation | 0.92 | Property getter `rotation`; returns `CRotation` via `sub_82631648`. |
+| 0x8262CDF0 | sub_8262CDF0 | FM2_Lua_CLuaObjectNodeSetRotation | 0.91 | Property setter `rotation`; expects `CRotation`; calls `sub_82631488`. |
+| 0x8262CEA0 | sub_8262CEA0 | FM2_Lua_CLuaObjectNodeGetScale | 0.92 | Property getter `scale`; returns `CVector3` via `sub_82631650`. |
+| 0x8262CF08 | sub_8262CF08 | FM2_Lua_CLuaObjectNodeSetScale | 0.91 | Property setter `scale`; expects `CVector3`; calls `sub_826314E0`. |
+| 0x8262CFB8 | sub_8262CFB8 | FM2_Lua_CLuaObjectNodeGetPivot | 0.92 | Property getter `pivot`; returns `CVector3` via `sub_82631658`. |
+| 0x8262D020 | sub_8262D020 | FM2_Lua_CLuaObjectNodeSetPivot | 0.91 | Property setter `pivot`; expects `CVector3`; calls `sub_82631538`. |
+| 0x8262D0D0 | sub_8262D0D0 | FM2_Lua_CLuaObjectNodeGetPositionVelocity | 0.92 | Property getter `positionVelocity`; returns `CVector3` via `sub_82631660`. |
+| 0x8262D138 | sub_8262D138 | FM2_Lua_CLuaObjectNodeSetPositionVelocity | 0.91 | Property setter `positionVelocity`; expects `CVector3`; calls `sub_82631590`. |
+| 0x8262D1E8 | sub_8262D1E8 | FM2_Lua_CLuaObjectNodeGetRotationVelocity | 0.91 | Property getter `rotationVelocity`; returns `CRotation` via `FM2_Thunk_10`. |
+| 0x8262D250 | sub_8262D250 | FM2_Lua_CLuaObjectNodeSetRotationVelocity | 0.91 | Property setter `rotationVelocity`; expects `CRotation`; calls `sub_826315E8`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x8262D368 | sub_8262D368 | `localTransform` getter; defer with transform thunk cluster. |
+| 0x8262D5D0 | sub_8262D5D0 | `CLuaObjectEvent.new`; defer event binding cluster. |
+
+## Iteration 258
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8262D368 | sub_8262D368 | FM2_Lua_CLuaObjectNodeGetLocalTransform | 0.92 | Property getter `localTransform`; returns `CMatrix` via `sub_82631038`. |
+| 0x8262D5D0 | sub_8262D5D0 | FM2_Lua_CLuaObjectEventNew | 0.93 | Registered as `new` on `CLuaObjectEvent`; two string args; `#ferror in function 'new'`. |
+| 0x8262D6E0 | sub_8262D6E0 | FM2_Lua_CLuaObjectEventGetName | 0.92 | Property getter `name`; pushes C string via `sub_82633910`. |
+| 0x8262D750 | sub_8262D750 | FM2_Lua_CLuaObjectEventSetName | 0.91 | Property setter `name`; validates string arg; `_name` assignment errors. |
+| 0x8262D7F8 | sub_8262D7F8 | FM2_Lua_CLuaObjectEventGetTarget | 0.92 | Property getter `target`; returns `CLuaObjectElement` via `sub_82633828`. |
+| 0x82630D80 | sub_82630D80 | FM2_SceneNode_GetOrCacheGlobalTransformMatrix | 0.90 | Caches matrix at node `+80`; `GetOrBuildCachedMaterialWorldMatrix`; caller of lastGlobalTransform thunk. |
+| 0x82630E08 | sub_82630E08 | FM2_SceneNode_GetOrCacheLocalTransformMatrix | 0.90 | Caches matrix at node `+84`; `BuildMaterialLocalMatrixFromElementPasses`; localTransform backend. |
+| 0x82634BC8 | sub_82634BC8 | FM2_Lua_CreateBindingElementFromTypeName | 0.91 | Sole callee from `FM2_Lua_AkCreateElement`; XML type name → `GetOrCreateObjectElementForBinding`. |
+| 0x82634DF8 | sub_82634DF8 | FM2_Lua_GetPresentationRootElement | 0.90 | Sole callee from `FM2_Lua_CPresentationGetRoot`; `GetNodeFromHandle` on lap-tracker state. |
+| 0x82634E30 | sub_82634E30 | FM2_Lua_GetPresentationRunTimeSeconds | 0.90 | Sole callee from `FM2_Lua_CPresentationGetRunTime`; ms→seconds `* 0.001`. |
+| 0x82634E80 | sub_82634E80 | FM2_Lua_GetPresentationSceneElement | 0.90 | Sole callee from `FM2_Lua_CPresentationGetScene`; scene handle lookup via `sub_8260FAB8`. |
+| 0x82634EE0 | sub_82634EE0 | FM2_Lua_LookupPresentationElementById | 0.91 | Callee from `getByID`/`getById`; numeric id lookup via `sub_8260FAB8`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82631030 | sub_82631030 | Thin thunk to global-transform cache; defer vector-cache cluster. |
+| 0x82631040 | sub_82631040 | Position vector cache; defer with rotation/scale cache cluster. |
+
+## Iteration 259
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82631040 | sub_82631040 | FM2_SceneNode_GetOrCachePositionVector | 0.90 | Caches `CVector3` at node `+56`; binding slot 19; callers include `FM2_Lua_CLuaObjectNodeGetPosition`. |
+| 0x826310E8 | sub_826310E8 | FM2_SceneNode_GetOrCacheRotation | 0.90 | Caches `CRotation` at `+60`; slot 14; caller `FM2_Lua_CLuaObjectNodeGetRotation`. |
+| 0x82631190 | sub_82631190 | FM2_SceneNode_GetOrCacheScaleVector | 0.90 | Caches `CVector3` at `+64`; slot 16; caller `FM2_Lua_CLuaObjectNodeGetScale`. |
+| 0x82631238 | sub_82631238 | FM2_SceneNode_GetOrCachePivotVector | 0.90 | Caches `CVector3` at `+68`; slot 12; caller `FM2_Lua_CLuaObjectNodeGetPivot`. |
+| 0x826312E0 | sub_826312E0 | FM2_SceneNode_GetOrCachePositionVelocityVector | 0.90 | Caches `CVector3` at `+72`; slot 15; caller `FM2_Lua_CLuaObjectNodeGetPositionVelocity`. |
+| 0x82631388 | sub_82631388 | FM2_SceneNode_GetOrCacheRotationVelocity | 0.90 | Caches `CRotation` at `+76`; slot 18; used by rotationVelocity setter via `sub_826315E8`. |
+| 0x82631488 | sub_82631488 | FM2_SceneNode_AssignRotationFromUserdata | 0.91 | Sole callee from `FM2_Lua_CLuaObjectNodeSetRotation`; `InvokeElementCallbackWithVec128` on cached rotation. |
+| 0x826314E0 | sub_826314E0 | FM2_SceneNode_AssignScaleFromUserdata | 0.91 | Sole callee from `FM2_Lua_CLuaObjectNodeSetScale`; assigns cached scale vector. |
+| 0x82631538 | sub_82631538 | FM2_SceneNode_AssignPivotFromUserdata | 0.91 | Sole callee from `FM2_Lua_CLuaObjectNodeSetPivot`; assigns cached pivot vector. |
+| 0x82631590 | sub_82631590 | FM2_SceneNode_AssignPositionVelocityFromUserdata | 0.91 | Sole callee from `FM2_Lua_CLuaObjectNodeSetPositionVelocity`. |
+| 0x82630ED8 | sub_82630ED8 | FM2_SceneNode_SyncCachedVectorFromBindingProperty | 0.89 | Shared by all vector caches; `FindBindingByType` then writes xyz into cached userdata. |
+| 0x82634C40 | sub_82634C40 | FM2_Lua_DispatchAkOutputProfileFields | 0.90 | Sole callee from `FM2_Lua_AkOutput`; iterates stack slots calling `ForEachProfileIntVectorInvokeVtableMethod4`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x826315E8 | sub_826315E8 | Rotation-velocity setter; defer with remaining setter thunk cluster. |
+| 0x82631640 | sub_82631640 | Thin thunk to position cache; insufficient standalone evidence. |
+
+## Iteration 260
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82631430 | FM2_Lua_SceneNode_GetChildByIndex_0 | FM2_SceneNode_AssignPositionFromUserdata | 0.92 | Misname fix; sole callee from `FM2_Lua_CLuaObjectNodeSetPosition`; same pattern as other `Assign*FromUserdata` helpers. |
+| 0x826315E8 | sub_826315E8 | FM2_SceneNode_AssignRotationVelocityFromUserdata | 0.91 | Sole callee from `FM2_Lua_CLuaObjectNodeSetRotationVelocity`; caches rotation velocity then `InvokeElementCallbackWithVec128`. |
+| 0x8260FAB8 | sub_8260FAB8 | FM2_Lua_GetOrCreateBindingElementFromProfile | 0.90 | Thin wrapper: `GetOrCreateObjectElementForBinding(*(profile+20))`; used by presentation lookup, event target, scene element. |
+| 0x8260FCB0 | sub_8260FCB0 | FM2_SceneGraph_CreateBindingElementFromXmlTypeName | 0.91 | Backend of `FM2_Lua_CreateBindingElementFromTypeName`; `Xml_GetTypeHandleFromNameBuffer` + `GetMaterialNodeByDwordKeyAndNotify`. |
+| 0x82633828 | sub_82633828 | FM2_Lua_PushObjectEventTargetBindingElement | 0.89 | Sole backend for `FM2_Lua_CLuaObjectEventGetTarget`; resolves target id then `GetOrCreateBindingElementFromProfile`. |
+| 0x82633910 | sub_82633910 | FM2_Lua_GetObjectEventNameCString | 0.88 | Sole backend for `FM2_Lua_CLuaObjectEventGetName`; returns `std::string`-like name buffer as C string. |
+| 0x82632F40 | sub_82632F40 | FM2_Lua_PopToluaModuleStack | 0.90 | Wrapper `SetStackTop(-2)`; called twice after every tolua module registration. |
+| 0x826342D0 | sub_826342D0 | FM2_Lua_ToluaValidateBooleanArg | 0.91 | Type-check helper; fills error with `"boolean"`; used by `active`/`opacity` setters. |
+| 0x82633B98 | sub_82633B98 | FM2_Lua_GetStackSlotTruthyOrDefault | 0.90 | Reads stack slot via `IsStackSlotTruthy` or returns default; paired with boolean validator. |
+| 0x82631740 | sub_82631740 | FM2_Lua_CMaterialReadSpecularEnableField | 0.92 | Sole callee from `FM2_Lua_CMaterialGetSpecularEnable`; binding slot 18 bool via `XmlTree_ResolveIndexedChildChain_0`. |
+| 0x826317C0 | sub_826317C0 | FM2_Lua_CMaterialReadEmissivePowerField | 0.92 | Sole callee from `FM2_Lua_CMaterialGetEmissivePower`; binding slot 20 float. |
+| 0x82631810 | sub_82631810 | FM2_Lua_CMaterialReadShadeTypeField | 0.92 | Sole callee from `FM2_Lua_CMaterialGetShadeType`; binding slot 12 byte enum. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82631640 | j_FM2_SceneNode_GetOrCachePositionVector | 4-byte thunk; IDA already reflects target name. |
+| 0x82631970 | sub_82631970 | Material float writer cluster; defer with blend/cull/fill setters. |
+
+## Iteration 261
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82631858 | sub_82631858 | FM2_Lua_CMaterialReadBlendModeField | 0.92 | Sole callee from `FM2_Lua_CMaterialGetBlendMode`; binding slot 17 byte enum. |
+| 0x826318A0 | sub_826318A0 | FM2_Lua_CMaterialReadFillModeField | 0.92 | Sole callee from `FM2_Lua_CMaterialGetFillMode`; binding slot 21 byte enum. |
+| 0x826318E8 | sub_826318E8 | FM2_Lua_CMaterialReadCullingField | 0.92 | Sole callee from `FM2_Lua_CMaterialGetCulling`; binding slot 24 byte enum. |
+| 0x82631930 | sub_82631930 | FM2_Lua_CMaterialWriteSpecularEnableField | 0.91 | Sole callee from `FM2_Lua_CMaterialSetSpecularEnable`; slot 18 via `DispatchMaterialPassByNegativeSlot`. |
+| 0x82631970 | sub_82631970 | FM2_Lua_CMaterialWriteSpecularPowerField | 0.91 | Sole callee from `FM2_Lua_CMaterialSetSpecularPower`; slot 16 float via `ForEachResourceCacheByPassFlag`. |
+| 0x826319B0 | sub_826319B0 | FM2_Lua_CMaterialWriteEmissivePowerField | 0.91 | Sole callee from `FM2_Lua_CMaterialSetEmissivePower`; slot 20 float. |
+| 0x826319F0 | sub_826319F0 | FM2_Lua_CMaterialWriteShadeTypeField | 0.91 | Sole callee from `FM2_Lua_CMaterialSetShadeType`; slot 12 byte via `sub_827D6EE8`. |
+| 0x82631A30 | sub_82631A30 | FM2_Lua_CMaterialWriteBlendModeField | 0.91 | Sole callee from `FM2_Lua_CMaterialSetBlendMode`; slot 17 byte. |
+| 0x82631A70 | sub_82631A70 | FM2_Lua_CMaterialWriteFillModeField | 0.91 | Sole callee from `FM2_Lua_CMaterialSetFillMode`; slot 21 byte. |
+| 0x82631AB0 | sub_82631AB0 | FM2_Lua_CMaterialWriteCullingField | 0.91 | Sole callee from `FM2_Lua_CMaterialSetCulling`; slot 24 byte. |
+| 0x82631F90 | sub_82631F90 | FM2_Lua_CMaterialSyncBindingFieldNode | 0.89 | Shared by color lazy-init paths; `XmlNavigator_FindMatchingNode` with field slot id. |
+| 0x82631AF0 | sub_82631AF0 | FM2_Lua_InitElementAssetBindingObject | 0.88 | Called from `FM2_Lua_GetOrCreateObjectElementForBinding`; sets vtable `off_82113400` element/asset layout. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82631EC0 | sub_82631EC0 | Material binding dtor variant; defer until vtable/type cluster reviewed. |
+| 0x82631FF0 | sub_82631FF0 | Additional material float reader; defer next material pass. |
+
+## Iteration 262
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82631EC0 | sub_82631EC0 | FM2_Lua_DestroyCLuaObjectTextBindingObjectDtor | 0.91 | Vtable `off_821135A0`; frees `+23`; tail `FM2_Lua_DestroyElementAssetBindingObjectDtor`; paired with text binding ctor. |
+| 0x826323A8 | sub_826323A8 | FM2_Lua_DestroyCLuaObjectTextBindingObjectPlacementDelete | 0.90 | Placement-delete wrapper calling text binding dtor; optional `FM2_Memory_FreeSmallBlockOrNull`. |
+| 0x82632340 | sub_82632340 | FM2_Lua_CtorCLuaObjectTextBindingObject | 0.91 | Called from `FM2_Lua_GetOrCreateObjectElementForBinding`; sets vtable `off_821135A0` on scene-node element base. |
+| 0x82631FF0 | sub_82631FF0 | FM2_Lua_CLuaObjectTextReadHorzScrollField | 0.92 | Backend for `horzScroll` getter; binding slot 37 via `FM2_XmlTree_ResolveIndexedChildChain`. |
+| 0x82632040 | sub_82632040 | FM2_Lua_CLuaObjectTextReadVertScrollField | 0.92 | Backend for `vertScroll` getter; binding slot 32. |
+| 0x82632090 | sub_82632090 | FM2_Lua_CLuaObjectTextReadBoxWidthField | 0.92 | Backend for `boxWidth` getter; binding slot 22. |
+| 0x826320E0 | sub_826320E0 | FM2_Lua_CLuaObjectTextReadBoxHeightField | 0.92 | Backend for `boxHeight` getter; binding slot 39. |
+| 0x82632130 | sub_82632130 | FM2_Lua_CLuaObjectTextReadRenderStyleField | 0.92 | Backend for `renderStyle` getter; binding slot 29 byte enum. |
+| 0x82632178 | sub_82632178 | FM2_Lua_CLuaObjectTextReadTextTypeField | 0.92 | Backend for `textType` getter; binding slot 34 byte enum. |
+| 0x8262BE78 | sub_8262BE78 | FM2_Lua_CLuaObjectTextGetHorzScroll | 0.93 | Registered in `FM2_Lua_RegisterCLuaObjectTextToluaBindings` as `horzScroll` getter; error string names variable. |
+| 0x8262BF98 | sub_8262BF98 | FM2_Lua_CLuaObjectTextGetVertScroll | 0.93 | Registered as `vertScroll` getter in same registrar. |
+| 0x82631E2C | FM2_Lua_SceneNode_GetChildByIndex | FM2_Lua_CMaterialAssignAmbientColor | 0.92 | Misname fix; sole callee from `FM2_Lua_CMaterialSetAmbientColor`; copies `CColor` via `sub_827EB280`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x8262C0B8 | sub_8262C0B8 | `boxWidth` getter; defer with remaining CLuaObjectText getter/setter cluster. |
+| 0x82631F30 | sub_82631F30 | Text binding field writer via `sub_827D71D8`; defer with setter backends. |
+
+## Iteration 263
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x8262C0B8 | sub_8262C0B8 | FM2_Lua_CLuaObjectTextGetBoxWidth | 0.93 | Registered in `FM2_Lua_RegisterCLuaObjectTextToluaBindings`; error string `boxWidth`; calls `FM2_Lua_CLuaObjectTextReadBoxWidthField`. |
+| 0x8262C1D8 | sub_8262C1D8 | FM2_Lua_CLuaObjectTextGetBoxHeight | 0.93 | Registered as `boxHeight` getter; calls `FM2_Lua_CLuaObjectTextReadBoxHeightField`. |
+| 0x8262C2F8 | sub_8262C2F8 | FM2_Lua_CLuaObjectTextGetRenderStyle | 0.93 | Registered as `renderStyle` getter; calls `FM2_Lua_CLuaObjectTextReadRenderStyleField`. |
+| 0x8262C430 | sub_8262C430 | FM2_Lua_CLuaObjectTextGetTextType | 0.93 | Registered as `textType` getter; calls `FM2_Lua_CLuaObjectTextReadTextTypeField`. |
+| 0x8262BD60 | sub_8262BD60 | FM2_Lua_CLuaObjectTextGetTextString | 0.93 | Registered as `textString` getter; pushes C string from `sub_82632500`. |
+| 0x8262C568 | sub_8262C568 | FM2_Lua_CLuaObjectTextGetTextColor | 0.92 | Registered as `textColor` getter; lazy-inits `CColor` via `FM2_Lua_SceneNode_LazyInitCallback23_Thunk`. |
+| 0x8262BEE8 | sub_8262BEE8 | FM2_Lua_CLuaObjectTextSetHorzScroll | 0.92 | Registered as `horzScroll` setter; validates number; calls `sub_826321C0` (slot 37 write). |
+| 0x8262C008 | sub_8262C008 | FM2_Lua_CLuaObjectTextSetVertScroll | 0.92 | Registered as `vertScroll` setter; calls `sub_82632200` (slot 32 write). |
+| 0x8262C128 | sub_8262C128 | FM2_Lua_CLuaObjectTextSetBoxWidth | 0.92 | Registered as `boxWidth` setter; calls `sub_82632240` (slot 22 write). |
+| 0x8262C248 | sub_8262C248 | FM2_Lua_CLuaObjectTextSetBoxHeight | 0.92 | Registered as `boxHeight` setter; calls `sub_82632280` (slot 39 write). |
+| 0x8262C378 | sub_8262C378 | FM2_Lua_CLuaObjectTextSetRenderStyle | 0.92 | Registered as `renderStyle` setter; calls `sub_826322C0` (slot 29 byte write). |
+| 0x8262C4B0 | sub_8262C4B0 | FM2_Lua_CLuaObjectTextSetTextType | 0.92 | Registered as `textType` setter; calls `sub_82632300` (slot 34 byte write). |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x826321C0 | sub_826321C0 | `horzScroll` write backend; defer field-writer cluster (`sub_82632200`–`sub_82632300`). |
+| 0x82631F30 | sub_82631F30 | Vtable binding-field writer; defer with `textString`/`textColor` setter backends. |
+
+## Iteration 264
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x826321C0 | sub_826321C0 | FM2_Lua_CLuaObjectTextWriteHorzScrollField | 0.94 | Called from `FM2_Lua_CLuaObjectTextSetHorzScroll`; `FM2_Render_ForEachResourceCacheByPassFlag(..., 37, &value)` matches read slot 37. |
+| 0x82632200 | sub_82632200 | FM2_Lua_CLuaObjectTextWriteVertScrollField | 0.94 | Called from `FM2_Lua_CLuaObjectTextSetVertScroll`; pass-flag slot 32. |
+| 0x82632240 | sub_82632240 | FM2_Lua_CLuaObjectTextWriteBoxWidthField | 0.94 | Called from `FM2_Lua_CLuaObjectTextSetBoxWidth`; pass-flag slot 22. |
+| 0x82632280 | sub_82632280 | FM2_Lua_CLuaObjectTextWriteBoxHeightField | 0.94 | Called from `FM2_Lua_CLuaObjectTextSetBoxHeight`; pass-flag slot 39. |
+| 0x826322C0 | sub_826322C0 | FM2_Lua_CLuaObjectTextWriteRenderStyleField | 0.93 | Called from `FM2_Lua_CLuaObjectTextSetRenderStyle`; `sub_827D6EE8(..., 29, &byte)` matches read slot 29. |
+| 0x82632300 | sub_82632300 | FM2_Lua_CLuaObjectTextWriteTextTypeField | 0.93 | Called from `FM2_Lua_CLuaObjectTextSetTextType`; `sub_827D6EE8(..., 34, &byte)` matches read slot 34. |
+| 0x82632500 | sub_82632500 | FM2_Lua_CLuaObjectTextReadTextStringField | 0.93 | Called from `FM2_Lua_CLuaObjectTextGetTextString`; `FM2_Render_ProfileCategoryLookupRecursive(..., 30, ...)` returns C string. |
+| 0x82632580 | sub_82632580 | FM2_Lua_CLuaObjectTextWriteTextStringField | 0.93 | Called from `FM2_Lua_CLuaObjectTextSetTextString`; `FM2_Render_ForEachResourceCacheByPassFlagByte(..., 30, std::string)`. |
+| 0x826324A8 | sub_826324A8 | FM2_Lua_CLuaObjectTextAssignTextColor | 0.92 | Called from `FM2_Lua_CLuaObjectTextSetTextColor`; lazy-inits color object then `sub_827EB280` copy-assign. |
+| 0x8262BDD0 | sub_8262BDD0 | FM2_Lua_CLuaObjectTextSetTextString | 0.94 | Registered in `FM2_Lua_RegisterCLuaObjectTextToluaBindings`; error string `textString`; validates Lua string arg. |
+| 0x8262C5D0 | sub_8262C5D0 | FM2_Lua_CLuaObjectTextSetTextColor | 0.94 | Registered as `textColor` setter; validates `CColor` userdata; calls assign helper. |
+| 0x826323F8 | FM2_Lua_SceneNode_LazyInitCallback23 | FM2_Lua_CLuaObjectTextGetOrCreateTextColor | 0.91 | Misname fix: only xrefs from textColor getter/setter path; allocates/syncs binding field slot 23 at `a1+92`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82631F30 | sub_82631F30 | Generic binding-field writer via `FM2_XmlNavigator_FindMatchingNode` + `sub_827D71D8`; only data xref in vtable, needs slot-id table cross-check. |
+| 0x826324A0 | FM2_Lua_SceneNode_LazyInitCallback23_Thunk | Thunk rename deferred to keep iteration at 12 renames; pair with corrected getter name next pass. |
+
+## Iteration 265
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82631F30 | sub_82631F30 | FM2_Lua_CLuaObjectTextWriteBindingFieldNode | 0.92 | Vtable slot at `off_821135A0`; mirrors `FM2_Lua_CMaterialSyncBindingFieldNode` but writes via `sub_827D71D8` after `FM2_XmlNavigator_FindMatchingNode`. |
+| 0x826324A0 | FM2_Lua_SceneNode_LazyInitCallback23_Thunk | FM2_Lua_CLuaObjectTextGetOrCreateTextColor_Thunk | 0.93 | Thunk to renamed `FM2_Lua_CLuaObjectTextGetOrCreateTextColor`; sole caller from textColor getter. |
+| 0x82630C70 | sub_82630C70 | FM2_Lua_CLuaObjectNodeComputeBBoxHierarchy | 0.93 | Sole backend of `FM2_Lua_CLuaObjectNodeCalcBBox`; `sub_827DF7C8(..., includeChildren=1, ...)`. |
+| 0x82630CF8 | sub_82630CF8 | FM2_Lua_CLuaObjectNodeComputeBBoxLocal | 0.93 | Sole backend of `FM2_Lua_CLuaObjectNodeCalcBBoxSelf`; same path with `includeChildren=0`. |
+| 0x826347F8 | sub_826347F8 | FM2_Lua_UnregisterToluaGcEntryAndPopModule | 0.91 | Post-registration cleanup: `FM2_Lua_UnregisterToluaGcEntry` + `SetStackTop(-2)`; data xref in module registrar tables. |
+| 0x82634468 | sub_82634468 | FM2_Lua_ToluaValidateExpectedTypeAtStackSlot | 0.90 | Shared type-check helper used by many tolua accessors; wraps `FM2_Lua_ToluaMatchClassNameAtStackSlot` and fills error struct. |
+| 0x82633F30 | sub_82633F30 | FM2_Lua_ToluaMatchClassNameAtStackSlot | 0.90 | Compares stack slot metatable class name (and `const ` variant) against expected type string. |
+| 0x82633D20 | sub_82633D20 | FM2_Lua_FormatStackValueTypeName | 0.91 | Returns human-readable Lua type (`[no object]`, `table`, `class X`, userdata class) for stack slot; used by version/type introspection. |
+| 0x82634B80 | sub_82634B80 | FM2_Lua_CLuaObjectEventDispatchFireEventFromLuaArgs | 0.92 | Sole callee from `FM2_Lua_AkFireEvent`; dispatches binding event via `FM2_Lua_DispatchBindingEventWithDiagGateAndProfileField`. |
+| 0x826362E8 | sub_826362E8 | FM2_Lua_RegisterToluaMetatableIndexNewindexHandlers | 0.90 | Installs `__index`/`__newindex` lightuserdata handlers on module metatable during `FM2_Lua_ToluaOpenModuleTable`. |
+| 0x826357E8 | sub_826357E8 | FM2_Lua_ToluaMetatableIndexDispatch | 0.91 | Tolua `__index` handler; resolves `.get` table entries and falls back to CFunction/`__index` chain. |
+| 0x82635920 | sub_82635920 | FM2_Lua_ToluaMetatableNewindexDispatch | 0.91 | Tolua `__newindex` handler; routes `.set` table assignments or raw table write. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82636370 | sub_82636370 | Metatable index-handler identity check; thin helper, defer with remaining tolua metatable utilities. |
+
+## Iteration 266
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82636370 | sub_82636370 | FM2_Lua_IsToluaMetatableIndexHandler | 0.91 | Called from `FM2_Lua_ToluaOpenModuleTable`; compares `__index` slot against `FM2_Lua_ToluaMetatableIndexDispatch`. |
+| 0x826349E0 | sub_826349E0 | FM2_Lua_GcClearEmbeddedStringFieldAtOffset8 | 0.90 | Clears `std::string` at `a1+8` via `FM2_Stl_String_InitOrClear`; called from `FM2_Lua_DestroyBindingObjectAndScriptTree` and `FM2_Lua_CLuaTimeContextToluaGcCollector`. |
+| 0x82634FC0 | sub_82634FC0 | FM2_Lua_CVectorOrRotationAddInPlace | 0.93 | Sole backend of `FM2_Lua_CVector3Add` and `FM2_Lua_CRotationAdd`; `sub_827EB670` + `FM2_Render_InvokeElementCallbackWithVec128`. |
+| 0x82635008 | sub_82635008 | FM2_Lua_CVectorOrRotationSubtractInPlace | 0.93 | Sole backend of `FM2_Lua_CVector3Subtract` and `FM2_Lua_CRotationSubtract`; `sub_827EB6C8` subtract path. |
+| 0x82635050 | sub_82635050 | FM2_Lua_CVectorOrRotationScaleInPlace | 0.93 | Sole backend of `FM2_Lua_CVector3Scale` and `FM2_Lua_CRotationScale`; `sub_827EB720` scale path. |
+| 0x826350A0 | sub_826350A0 | FM2_Lua_CVectorOrRotationCopyToNewBuffer | 0.92 | Backend of `FM2_Lua_CVector3Copy`/`FM2_Lua_CRotationCopy`; logs deprecation via `FM2_Lua_LogDeprecatedCopyMethodNotice` with `"Vector:copy( )"`. |
+| 0x82635190 | sub_82635190 | FM2_Lua_FormatCColorDescriptionString | 0.94 | Sole backend of `FM2_Lua_CColorToString`; `snprintf` format `"Color: %d, %d, %d, %d"`. |
+| 0x82634F28 | sub_82634F28 | FM2_Lua_FormatCVector3DescriptionString | 0.94 | Sole backend of `FM2_Lua_CVector3ToString`; format string `"Vector: %1.6g, %1.6g, %1.6g"`. |
+| 0x82634B20 | sub_82634B20 | FM2_Lua_LogDeprecatedCopyMethodNotice | 0.93 | Emits `"NOTICE: The method %s is being deprecated..."` via profile vtable dispatch; shared by vector/matrix copy helpers. |
+| 0x826352F0 | sub_826352F0 | FM2_Lua_CMatrix3DCopyToNewBuffer | 0.92 | Sole backend of `FM2_Lua_CMatrixCopy`; allocates `GMatrix3D` copy after deprecation notice `"Matrix:copy( )"`. |
+| 0x82635240 | sub_82635240 | FM2_Lua_CMatrixAssignSixteenComponents | 0.93 | Sole callee from `FM2_Lua_CMatrixSetFromComponents`; copies 16 floats into matrix storage. |
+| 0x82635348 | sub_82635348 | FM2_Lua_CMatrixScaleInPlace | 0.92 | Sole backend of `FM2_Lua_CMatrixScale`; `FM2_Render_InitElementLinkKeyFromSimd` + `sub_827E3F08`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82635098 | sub_82635098 | 4-byte thunk forwarding to `sub_827EB610`; defer with equals-backend cluster. |
+| 0x82636050 | sub_82636050 | Binary-operator metamethod dispatcher (`.add`/etc.); defer with `sub_82635740` protected-call helpers. |
+
+## Iteration 267
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82636050 | sub_82636050 | FM2_Lua_ToluaDispatchBinaryOperatorMetamethod | 0.93 | Walks userdata `__index` chain for operator tag (`.add`/`.sub`/etc.); invokes CFunction; error `"Attempt to perform operation on an invalid operand"`. |
+| 0x82636150 | sub_82636150 | FM2_Lua_ToluaOperatorSub | 0.94 | Registered as `__sub` in `FM2_Lua_ToluaSetupConstMetatableMetamethods`; passes `".sub"` to dispatcher. |
+| 0x82636160 | sub_82636160 | FM2_Lua_ToluaOperatorMul | 0.94 | Registered as `__mul`; passes `".mul"`. |
+| 0x82636170 | sub_82636170 | FM2_Lua_ToluaOperatorDiv | 0.94 | Registered as `__div`; passes `".div"`. |
+| 0x82636180 | sub_82636180 | FM2_Lua_ToluaOperatorLessThan | 0.94 | Registered as `__lt`; passes `".lt"`. |
+| 0x82636190 | sub_82636190 | FM2_Lua_ToluaOperatorLessEqual | 0.94 | Registered as `__le`; passes `".le"`. |
+| 0x826361A0 | sub_826361A0 | FM2_Lua_ToluaOperatorEqual | 0.94 | Registered as `__eq`; passes `".eq"`. |
+| 0x82635740 | sub_82635740 | FM2_Lua_ToluaInvokeProtectedMetamethodCall | 0.90 | Called from const-metatable index/newindex fallbacks; `PushValueByType` + `InvokeProtectedCall32`. |
+| 0x826359E8 | sub_826359E8 | FM2_Lua_ToluaConstMetatableIndexDispatch | 0.92 | Installed as `__index` in `FM2_Lua_ToluaSetupConstMetatableMetamethods`; resolves `.get`/`.geti`/`get_customproperty`. |
+| 0x82635D08 | sub_82635D08 | FM2_Lua_ToluaConstMetatableNewindexDispatch | 0.92 | Installed as `__newindex`; routes `.set`/`.seti`/`set_customproperty`. |
+| 0x827EB610 | sub_827EB610 | FM2_Simd_Vec128NearEqualWithinEpsilon | 0.91 | Altivec `vsubfp`/`vcmpgtfp` epsilon compare; backend of `FM2_Lua_CVector3Equals` and `FM2_Lua_CRotationEquals`. |
+| 0x826350F8 | sub_826350F8 | FM2_Lua_FormatCRotationDescriptionString | 0.94 | Sole backend of `FM2_Lua_CRotationToString`; format `"Rotation: %1.6g, %1.6g, %1.6g"`. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82635098 | sub_82635098 | 4-byte thunk to renamed `FM2_Simd_Vec128NearEqualWithinEpsilon`; no standalone behavior. |
+| 0x82636148 | FM2_Lua_SceneNode_CallAddMethod | Misnamed `__add` handler (should pair with `FM2_Lua_ToluaOperator*`); defer misname fix to avoid overwriting without user review. |
+| 0x82634830 | sub_82634830 | 8-byte forwarder to `FM2_CTimeContext_PlayTimeline`; defer thin binding-wrapper cluster. |
+
+## Iteration 268
+
+| Address | Old Name | New Name | Confidence | Evidence |
+|---|---|---|---:|---|
+| 0x82636148 | FM2_Lua_SceneNode_CallAddMethod | FM2_Lua_ToluaOperatorAdd | 0.94 | Misname fix: registered as `__add` in `FM2_Lua_ToluaSetupConstMetatableMetamethods`; passes `".add"` to `FM2_Lua_ToluaDispatchBinaryOperatorMetamethod`. |
+| 0x82634830 | sub_82634830 | FM2_Lua_CTimeContextPlayFromBinding | 0.92 | Sole backend of `FM2_Lua_CTimeContextPlay`; calls `FM2_CTimeContext_PlayTimeline` on `*(binding+4)`. |
+| 0x82634838 | sub_82634838 | FM2_Lua_CTimeContextPauseFromBinding | 0.92 | Sole backend of `FM2_Lua_CTimeContextPause`; calls `FM2_CTimeContext_PauseTimeline`. |
+| 0x82634840 | sub_82634840 | FM2_Lua_CTimeContextGoToTimeFromBinding | 0.91 | Sole backend of `FM2_Lua_CTimeContextGoToTime`; converts seconds×1000 then `FM2_CTimeContext_SetPassFlagFromPauseState`. |
+| 0x82634888 | sub_82634888 | FM2_Lua_CTimeContextReadPausedFromBinding | 0.90 | Sole backend of `FM2_Lua_CTimeContextGetPaused` (`paused` property); queries via `FM2_Diag_LogEvent22` subcontext 22. |
+| 0x82635398 | sub_82635398 | FM2_Lua_CMatrixTranslateInPlace | 0.92 | Sole backend of `FM2_Lua_CMatrixTranslate`; `FM2_Render_InitElementLinkKeyFromSimd` + `sub_827E3E70`. |
+| 0x826353E8 | sub_826353E8 | FM2_Lua_CMatrixRotateInPlace | 0.92 | Sole backend of `FM2_Lua_CMatrixRotate`; axis constant 12 + `sub_827E4500` rotate multiply. |
+| 0x82635448 | sub_82635448 | FM2_Lua_CMatrixInvertInPlace | 0.91 | Sole backend of `FM2_Lua_CMatrixInvert`; calls `sub_827E4178` VMX128 matrix invert path. |
+| 0x82635478 | sub_82635478 | FM2_Lua_CMatrixEqualsCompare | 0.91 | Sole backend of `FM2_Lua_CMatrixEquals`; delegates to `sub_827E4348` with swapped operands. |
+| 0x82635488 | sub_82635488 | FM2_Lua_FormatCMatrixDescriptionString | 0.94 | Sole backend of `FM2_Lua_CMatrixToString`; `snprintf` format `"Matrix: %s"`. |
+| 0x82635FA0 | sub_82635FA0 | FM2_Lua_ToluaOperatorCall | 0.93 | Registered as `__call` in const metatable; resolves `.call` entry; error `"Attempt to call a non-callable object."`. |
+| 0x82636400 | sub_82636400 | FM2_Lua_ToluaMetatableTostringDispatch | 0.91 | Registered as `__tostring`; filters `CPresentation`/`CLuaObject`; falls back to `tostring` metamethod chain. |
+
+| Address | Old Name | Reason Skipped |
+|---|---|---|
+| 0x82635098 | j_FM2_Simd_Vec128NearEqualWithinEpsilon | Already renamed as jump thunk; no further action needed. |
+| 0x827E4178 | sub_827E4178 | Low-level VMX128 matrix invert; defer `sub_827E3*`/`sub_827E4*` shared math cluster. |

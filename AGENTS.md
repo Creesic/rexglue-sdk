@@ -155,34 +155,41 @@ After rebuilding the SDK/runtime, make sure FM2 is using the fresh
   the next manual pass without asking for extra confirmation first.
 - In the IDA rename loop, skip low-confidence candidates and record them in the
   scratchpad skipped table with reason; do not overwrite meaningful names.
+- When mapping UnleashedRecomp `video.cpp` hooks to FM2, continue until semantic
+  FM2 equivalents are documented; byte-signature scan alone is insufficient
+  across titles.
+- When the user asks to disable the IDA rename loop, stop immediately and do not
+  run further rename iterations.
 
 ## Learned Workspace Facts
 
-- FM2 IDA database is `default.xex.i64`; use the `user-IDA` MCP server for batch
-  renames and decompilation.
+- FM2 IDA database is `default.xex.i64`. Use `user-IDA` MCP for batch renames;
+  when FM2 and Sonic Unleashed are both open in IDA38, call `select_instance`
+  for FM2 on port 13337 or Unleashed on port 13338 before MCP operations.
 - Xbox 360 tech docs live at `D:\Emulation\Xbox360techdocs` (not
   `D:\Emulation\Xbox360 tech docs`).
 - IDA naming workflow: enumerate `sub_` callees of named `FM2_` functions,
   decompile high-traffic clusters, name from decompiler behavior plus
   caller context.
-- Primary repo docs for IDA naming:
-  `docs/FM2-ida-toml-function-notes.md`,
-  `docs/FM2-native-renderer-generator-notes.md`, `docs/FM2-performance-notes.md`,
-  and `docs/FM2-audio-fmod-decode-cadence.md`.
+- Primary repo docs for IDA naming and native-renderer hook mapping:
+  `docs/FM2-ida-toml-function-notes.md`, `docs/FM2-ida-renames-2026-06-22.md`
+  (UnleashedRecomp `video.cpp` cross-ref), `docs/FM2-native-renderer-generator-notes.md`,
+  `docs/FM2-performance-notes.md`, and `docs/FM2-audio-fmod-decode-cadence.md`.
 - Render emit cluster BFS roots:
   `FM2_Render_EmitPassDrawWork`, `FM2_D3D_EmitDirtyStateAndDrawList`,
   `FM2_D3D_EmitDrawListStatePackets`, `FM2_D3D_EmitScissorRegionPackets`,
   `FM2_D3D_EmitSurfaceResolvePackets`, `FM2_D3D_BeginCommandBufferBatch`, and
   `FM2_D3D_FinalizeCommandBufferBatch`.
-- IDA MCP Python rename scripts should use `ida_name.set_name(...,
-  ida_name.SN_CHECK)` with `ida_name.SN_FORCE` fallback; do not use
-  `idc.SN_FORCE`. `ida_name.set_name` returns boolean `True` on success (not
-  integer `0`).
-- IDA Python symbol lookup and free-name checks should use
-  `ida_name.get_name_ea(ida_idaapi.BADADDR, name)` (i.e. `0xFFFFFFFFFFFFFFFF`
-  when unused), not `get_name_ea(0, name)`.
-- IDA MCP scripts should iterate functions with `idautils.Functions()`, not
-  `ida_funcs.Functions()`.
+- IDA MCP Python: use `ida_name.set_name(..., ida_name.SN_CHECK)` with
+  `ida_name.SN_FORCE` fallback (returns bool, not `0`); symbol lookup via
+  `ida_name.get_name_ea(ida_idaapi.BADADDR, name)`; iterate with
+  `idautils.Functions()`, not `ida_funcs.Functions()`.
+- UnleashedRecomp↔FM2 D3D hook mapping: direct byte signatures do not match
+  across titles; map semantically from `UnleashedRecomp/UnleashedRecomp/gpu/video.cpp`
+  via decompile plus `D3DDevice_*` import xref tracing.
+- FM2 native-renderer hook boundary: `FM2_RenderContext_*` setters plus cached
+  command-buffer compilation; primary FM2-native first hook candidate is
+  `FM2_Render_BuildDirectIndexedDrawBuffers`.
 - Infrastructure `sub_` naming queue: run `scripts/ida_fm2_list_unnamed_sub_callees.py`
   with `--outside-emit` (writes `.cursor/hooks/state/unnamed-sub-callees.json`),
   then decompile high-caller-count candidates for manual passes. Pass artifacts

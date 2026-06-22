@@ -52,6 +52,12 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../plume/CMakeLists.txt")
         "fm2DebugReplayVert"
         "VSMain"
         OUTPUT_DIR "${FM2_PLUME_SHADER_OUTPUT_DIR}")
+    plume_compile_vertex_shader(
+        fm2
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/native_renderer/shaders/fm2_debug_replay_native28.vert.hlsl"
+        "fm2DebugReplayNative28Vert"
+        "VSMain"
+        OUTPUT_DIR "${FM2_PLUME_SHADER_OUTPUT_DIR}")
     plume_compile_pixel_shader(
         fm2
         "${CMAKE_CURRENT_SOURCE_DIR}/src/native_renderer/shaders/fm2_debug_replay.frag.hlsl"
@@ -61,6 +67,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../plume/CMakeLists.txt")
     add_custom_target(fm2_plume_debug_replay_shaders
         DEPENDS
             "${FM2_PLUME_SHADER_OUTPUT_DIR}/fm2DebugReplayVert.hlsl.dxil.h"
+            "${FM2_PLUME_SHADER_OUTPUT_DIR}/fm2DebugReplayNative28Vert.hlsl.dxil.h"
             "${FM2_PLUME_SHADER_OUTPUT_DIR}/fm2DebugReplayFrag.hlsl.dxil.h")
     add_dependencies(fm2 fm2_plume_debug_replay_shaders)
     target_link_libraries(fm2 PRIVATE plume d3d12 dxgi)

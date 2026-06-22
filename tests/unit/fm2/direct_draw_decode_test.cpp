@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "native_renderer/fm2_direct_draw_decode.h"
+#include "native_renderer/fm2_native_state.h"
 #include "native_renderer/fm2_shader_analysis.h"
 
 #include <array>
@@ -201,6 +202,51 @@ TEST_CASE("FM2 compare replay policy bypasses trace-only debug limits",
   CHECK_FALSE(decode::DirectDebugReplaySubmitLimitReached(2u, 1u, true));
   CHECK(decode::DirectDebugReplaySubmitLimitReached(2u, 1u, false));
   CHECK_FALSE(decode::DirectDebugReplaySubmitLimitReached(99u, 0u, false));
+}
+
+TEST_CASE("FM2 native direct draw policy bypasses trace-only debug limits",
+          "[fm2][plume]") {
+  namespace decode = fm2::native_renderer;
+
+  CHECK(decode::ShouldDecodeDirectDrawForPlumeSubmission(false, false, true));
+  CHECK(decode::ShouldDecodeDirectDrawForPlumeSubmission(false, true, false));
+  CHECK(decode::ShouldDecodeDirectDrawForPlumeSubmission(true, false, false));
+  CHECK_FALSE(
+      decode::ShouldDecodeDirectDrawForPlumeSubmission(false, false, false));
+
+  CHECK(decode::DirectPlumeSubmissionRecordScanCount(31u, 4u, false, true) ==
+        31u);
+  CHECK(decode::DirectPlumeSubmissionRecordScanCount(31u, 4u, true, false) ==
+        31u);
+  CHECK(decode::DirectPlumeSubmissionRecordScanCount(31u, 4u, false, false) ==
+        4u);
+  CHECK(decode::DirectPlumeSubmissionRecordScanCount(3u, 4u, false, false) ==
+        3u);
+
+  CHECK(decode::ShouldStopDirectPlumeRecordScanAfterNativeAttempt(true, false,
+                                                                  false));
+  CHECK_FALSE(
+      decode::ShouldStopDirectPlumeRecordScanAfterNativeAttempt(false, false,
+                                                                false));
+  CHECK_FALSE(
+      decode::ShouldStopDirectPlumeRecordScanAfterNativeAttempt(true, true,
+                                                                false));
+  CHECK_FALSE(
+      decode::ShouldStopDirectPlumeRecordScanAfterNativeAttempt(true, false,
+                                                                true));
+
+  CHECK(decode::NativeDirectDrawLiveBatchSize(0u) == 1u);
+  CHECK(decode::NativeDirectDrawLiveBatchSize(8u) == 8u);
+  CHECK_FALSE(decode::ShouldFlushNativeDirectDrawLiveBatch(0u, 8u));
+  CHECK_FALSE(decode::ShouldFlushNativeDirectDrawLiveBatch(7u, 8u));
+  CHECK(decode::ShouldFlushNativeDirectDrawLiveBatch(8u, 8u));
+  CHECK(decode::ShouldFlushNativeDirectDrawLiveBatch(1u, 0u));
+
+  CHECK(decode::ShouldPromoteDirectReplayToNativeLayout(true, false, false));
+  CHECK(decode::ShouldPromoteDirectReplayToNativeLayout(false, true, false));
+  CHECK_FALSE(
+      decode::ShouldPromoteDirectReplayToNativeLayout(false, true, true));
+  CHECK(decode::ShouldPromoteDirectReplayToNativeLayout(true, true, true));
 }
 
 TEST_CASE("FM2 direct debug replay topology names parse diagnostics",
@@ -691,6 +737,181 @@ TEST_CASE("FM2 direct draw debug replay plan maps packet to Plume draw contract"
   CHECK(plan.pixel_structural_ucode_hash == 0xE4D8250D9CEA5612ull);
   CHECK_FALSE(plan.has_vertex_structural_ucode);
   CHECK(plan.has_pixel_structural_ucode);
+}
+
+TEST_CASE("FM2 direct draw replay plan carries paired native state provenance",
+          "[fm2][plume]") {
+  namespace decode = fm2::native_renderer;
+
+  const auto stream1 = decode::BuildDirectDrawBufferViewSummary(
+      0xB09BF463u, 0x1012574Au, 0x18746u, 0x0Cu, false, true,
+      0x891376055F6CD53Aull);
+  const auto stream0 = decode::BuildDirectDrawBufferViewSummary(
+      0xB0BBF697u, 0x1000FD62u, 0x7EBu, 0x20u, false, true,
+      0x088CCFB61631658Cull);
+  const auto index = decode::BuildDirectDrawBufferViewSummary(
+      0xB0BCF3F4u, 0x00004704u, 0x2382u, 1u, true, true,
+      0x64270C4F8840C8FBull);
+  const auto vertex_shader = decode::BuildDirectDrawShaderKeySummary(
+      0xB0BBEC20u, 0x4ECu, true, 0x924D29737CD56BDCull, 0u, false, 0ull);
+  const auto pixel_shader = decode::BuildDirectDrawShaderKeySummary(
+      0xB0BBEB80u, 0x90u, true, 0x225917CA19FF2FA7ull, 0x84u, true,
+      0xE4D8250D9CEA5612ull);
+  const auto packet = decode::BuildDirectDrawIndexedPacketSummary(
+      0u, decode::DirectDrawReplayTopology::kTriangleStrip, 0u, 4062u,
+      stream0, stream1, index, vertex_shader, pixel_shader);
+
+  decode::NativeStateSnapshot snapshot;
+  snapshot.valid = true;
+  snapshot.sequence = 42u;
+  snapshot.render_context = 0x4004D100u;
+  snapshot.vertex_shader = {.valid = true,
+                            .sequence = 1u,
+                            .render_context = 0x4004D100u,
+                            .shader = 0x4181A600u};
+  snapshot.pixel_shader = {.valid = true,
+                           .sequence = 2u,
+                           .render_context = 0x4004D100u,
+                           .shader = 0x2E8F24B0u};
+  snapshot.streams[0] = {.valid = true,
+                         .sequence = 3u,
+                         .render_context = 0x4004D100u,
+                         .slot = 0u,
+                         .resource = 0xBACACA50u,
+                         .byte_offset = 0x10u,
+                         .stride_bytes = 0x10u,
+                         .dirty_mask = 0x20u};
+  snapshot.streams[1] = {.valid = true,
+                         .sequence = 4u,
+                         .render_context = 0x4004D100u,
+                         .slot = 1u,
+                         .resource = 0x2ECFFA80u,
+                         .byte_offset = 0u,
+                         .stride_bytes = 0x0Cu,
+                         .dirty_mask = 0x40u};
+  snapshot.index_buffer = {.valid = true,
+                           .sequence = 5u,
+                           .render_context = 0x4004D100u,
+                           .resource = 0xBACACAE0u};
+  snapshot.bound_surface = {.valid = true,
+                            .sequence = 6u,
+                            .render_context = 0x4004D100u,
+                            .surface = 0x2E049240u,
+                            .surface_arg = 2u};
+  snapshot.last_direct_draw = {.valid = true,
+                               .sequence = 7u,
+                               .direct_render_context = 0x42950010u,
+                               .draw_iface = 0x2E0162C0u};
+
+  const auto plan = decode::BuildDirectDrawDebugReplayPlan(packet, snapshot);
+
+  REQUIRE(plan.ready);
+  CHECK(plan.native_state.valid);
+  CHECK(plan.native_state.sequence == 42u);
+  CHECK(plan.native_state.render_context == 0x4004D100u);
+  CHECK(plan.native_state.direct_render_context == 0x42950010u);
+  CHECK(plan.native_state.draw_iface == 0x2E0162C0u);
+  CHECK(plan.native_state.vertex_shader == 0x4181A600u);
+  CHECK(plan.native_state.pixel_shader == 0x2E8F24B0u);
+  CHECK(plan.native_state.streams[0].valid);
+  CHECK(plan.native_state.streams[0].resource == 0xBACACA50u);
+  CHECK(plan.native_state.streams[0].byte_offset == 0x10u);
+  CHECK(plan.native_state.streams[0].stride_bytes == 0x10u);
+  CHECK(plan.native_state.streams[1].valid);
+  CHECK(plan.native_state.streams[1].resource == 0x2ECFFA80u);
+  CHECK(plan.native_state.index_resource == 0xBACACAE0u);
+  CHECK(plan.native_state.bound_surface == 0x2E049240u);
+  CHECK(plan.native_state.bound_surface_arg == 2u);
+
+  CHECK(plan.streams[0].guest_base == 0xB0BBF697u);
+  CHECK(plan.streams[0].stride == 0x20u);
+  CHECK(plan.streams[1].guest_base == 0xB09BF463u);
+  CHECK(plan.index.guest_base == 0xB0BCF3F4u);
+}
+
+TEST_CASE("FM2 direct draw replay can promote observed native 28 byte stream layout",
+          "[fm2][plume]") {
+  namespace decode = fm2::native_renderer;
+
+  const auto direct_stream0 = decode::BuildDirectDrawBufferViewSummary(
+      0xB0BBF697u, 0x1000FD62u, 0x7EBu, 0x20u, false, true,
+      0x088CCFB61631658Cull);
+  const auto direct_stream1 = decode::BuildDirectDrawBufferViewSummary(
+      0xB09BF463u, 0x1012574Au, 0x18746u, 0x0Cu, false, true,
+      0x891376055F6CD53Aull);
+  const auto direct_index = decode::BuildDirectDrawBufferViewSummary(
+      0xB0BCF3F4u, 0x00004704u, 0x2382u, 1u, true, true,
+      0x64270C4F8840C8FBull);
+  const auto vertex_shader = decode::BuildDirectDrawShaderKeySummary(
+      0xB0BBEC20u, 0x4ECu, true, 0x924D29737CD56BDCull, 0u, false, 0ull);
+  const auto pixel_shader = decode::BuildDirectDrawShaderKeySummary(
+      0xB0BBEB80u, 0x90u, true, 0x225917CA19FF2FA7ull, 0x84u, true,
+      0xE4D8250D9CEA5612ull);
+  const auto packet = decode::BuildDirectDrawIndexedPacketSummary(
+      0u, decode::DirectDrawReplayTopology::kTriangleStrip, 0u, 4062u,
+      direct_stream0, direct_stream1, direct_index, vertex_shader,
+      pixel_shader);
+
+  decode::NativeStateSnapshot snapshot;
+  snapshot.valid = true;
+  snapshot.sequence = 223189951u;
+  snapshot.render_context = 0x4004D100u;
+  snapshot.streams[0] = {.valid = true,
+                         .sequence = 3u,
+                         .render_context = 0x4004D100u,
+                         .slot = 0u,
+                         .resource = 0x2EF2A900u,
+                         .byte_offset = 0u,
+                         .stride_bytes = 28u,
+                         .dirty_mask = 1u};
+  snapshot.streams[1] = {.valid = true,
+                         .sequence = 4u,
+                         .render_context = 0x4004D100u,
+                         .slot = 1u,
+                         .resource = 0x2E660E40u,
+                         .byte_offset = 0u,
+                         .stride_bytes = 12u,
+                         .dirty_mask = 1u};
+  snapshot.index_buffer = {.valid = true,
+                           .sequence = 5u,
+                           .render_context = 0x4004D100u,
+                           .resource = 0x2E2867E0u};
+
+  const auto direct_plan =
+      decode::BuildDirectDrawDebugReplayPlan(packet, snapshot);
+  CHECK(decode::DirectDrawReplayPipelineLayoutForPlan(direct_plan) ==
+        decode::DirectDrawReplayPipelineLayout::kDebugRaw32Side12);
+  CHECK(decode::DirectDrawReplayNativeLayoutFromState(
+            direct_plan.native_state) ==
+        decode::DirectDrawReplayPipelineLayout::kNativePosition28Side12);
+
+  const auto native_stream0 = decode::BuildDirectDrawBufferViewSummary(
+      0xBA000010u, 0x00007000u, 0x400u, 28u, false, true,
+      0x1111222233334444ull);
+  const auto native_stream1 = decode::BuildDirectDrawBufferViewSummary(
+      0xBB000000u, 0x00003000u, 0x400u, 12u, false, true,
+      0x5555666677778888ull);
+  const auto native_index = decode::BuildDirectDrawBufferViewSummary(
+      0xBC000000u, 0x00002000u, 0x1000u, 1u, true, true,
+      0x9999AAAABBBBCCCCull);
+
+  const auto native_plan = decode::BuildDirectDrawNativeLayoutReplayPlan(
+      direct_plan, native_stream0, native_stream1, native_index);
+
+  REQUIRE(native_plan.ready);
+  CHECK(decode::DirectDrawReplayPipelineLayoutForPlan(native_plan) ==
+        decode::DirectDrawReplayPipelineLayout::kNativePosition28Side12);
+  CHECK(native_plan.streams[0].slot == 0u);
+  CHECK(native_plan.streams[0].stride == 28u);
+  CHECK(native_plan.streams[0].guest_base == 0xBA000010u);
+  CHECK(native_plan.streams[0].upload_guest_base == 0xBA000010u);
+  CHECK(native_plan.streams[0].upload_bytes == 0x7000u);
+  CHECK(native_plan.streams[1].slot == 1u);
+  CHECK(native_plan.streams[1].stride == 12u);
+  CHECK(native_plan.streams[1].hash == 0x5555666677778888ull);
+  CHECK(native_plan.index.guest_base == 0xBC000000u);
+  CHECK(native_plan.index.upload_endian ==
+        decode::DirectDrawReplayUploadEndian::kSwap16);
 }
 
 TEST_CASE("FM2 direct draw replay upload conversion swaps guest endian data",

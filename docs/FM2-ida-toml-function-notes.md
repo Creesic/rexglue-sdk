@@ -344,3 +344,70 @@ Key behavior observed:
 Implication for overlay interpretation:
 
 - If the overlay tracks pre-mix source level or decoded PCM magnitude, it can stay "hot" while audible output is quieter; attenuation may be happening later via matrix coefficients and/or bus scalars in this chain.
+
+## June 22 Update: Native Renderer Hook Surface Pass
+
+IDA was used to compare FM2's render path against the ReOdyssey/Unleashed native
+renderer pattern. The useful first hook boundary is the semantic render-context
+and command-buffer construction layer, not the lower PM4/D3D packet emitters.
+
+New manual IDA renames are logged in
+`docs/FM2-ida-renames-2026-06-22.md` and mirrored into
+`FM2/fm2_manifest.toml` for generated symbols.
+
+### UnleashedRecomp `video.cpp` back-map (June 22)
+
+Standalone summary: `docs/FM2-unleashed-video-hook-mapping-summary.md`.
+
+Worked backwards from `UnleashedRecomp/UnleashedRecomp/gpu/video.cpp`
+`GUEST_FUNCTION_HOOK` entries. Unleashed XEX functions are named `SWA_Video_*` in
+the Sonic Unleashed IDA database; FM2 analogues are commented/named in the FM2
+IDA database. Full cross-reference table:
+`docs/FM2-ida-renames-2026-06-22.md` (section "UnleashedRecomp video.cpp Hook
+Cross-Reference"). Key FM2 additions from that pass:
+
+- `0x82374190` = `FM2_D3D_CreatePresentBackbufferResources`
+- `0x824A52C0` = `FM2_D3D_InitGlobalDeviceSingleton`
+- `0x82502268` = `FM2_D3D_LazyInitPresentChainInit`
+- `0x825A22F0` = `FM2_D3D_CreateVertexBufferWrapper`
+- `0x825A2350` = `FM2_D3D_LockVertexBufferWrapper`
+- `0x825A2650` = `FM2_D3D_CreateTextureWrapper`
+- `0x825A2730` = `FM2_D3D_CreateIndexBufferWrapper`
+- `0x825A27D8` = `FM2_D3D_DeserializeAndLockIndexBuffer`
+- `0x825A2CC0` = `FM2_D3D_DeserializeAndUploadTextureSurfaces`
+- `0x82515E18` = `FM2_D3D_CreateDepthStencilSurfaceAndTexture`
+- `0x8259F008` = `FM2_D3D_CreateVertexDeclarationFromElements`
+- `0x825B2EF8` = `FM2_D3D_CacheSurfaceDescFields`
+- `0x8236E780` = `FM2_D3D_EmitScissorRegionPackets`
+- `0x8236EA60` / `0x8236EA90` = texture fetch bit setters (`SetTexture`)
+- `0x8236EF20` = `FM2_Render_SetClearColorByteAndDirtyFlag`
+- `0x82392090` = `FM2_D3D_GatherSurfaceMetadataForTextureCreate` (`LockTextureRect` runtime path)
+- `0x823764B0` = `FM2_Render_EmitDrawRangeCountPm4` (`DrawPrimitive` PM4 1407 vertex-range emit)
+- `0x82383718` = `FM2_D3D_EmitIndexedDrawPacket` (`DrawPrimitiveUP` memcpy-into-CB path)
+- `0x825B2F80` = `FM2_D3D_CacheSurfaceDescFieldsWithSubrect` (`GetSurfaceDesc` subrect variant)
+- `0x825303B8` = `FM2_Render_ApplyObjectPassSamplerAndDrawRange` (object-pass draw opcode 45)
+- `0x8272F650` = `FM2_Render_EmitIndexedTriangleFanDrawPm4` (triangle-fan blit helper, not main `DrawPrimitive`)
+- `0x8272FBA0` = `FM2_Render_BlitTiledRegionTriangleFanPm4` (`StretchRect`)
+- `0x8272AEB8` = `FM2_RenderResource_FillTextureSurfaceLayoutByFormat` (`D3DXFillTexture`)
+- `0x827BAAA8` = `FM2_D3D_CreateAndUploadVertexIndexBuffers`
+
+No FM2 analogue identified for Unleashed `MakePictureData` or `ScreenShaderInit`
+(Sonic-specific). `SetResolution` maps to `VdQueryVideoMode` inside
+`FM2_D3D_CreatePresentBackbufferResources`.
+
+Key hook candidates:
+
+- `0x825380B8` / `FM2_Render_BuildDirectIndexedDrawBuffers`: best first Plume
+  world-geometry hook. It exposes direct draw records, stream/index resource
+  binds, pass constants, bound surface, primitive type, start index, and
+  primitive count before the data becomes cloned command buffers.
+- `0x8236DD10`, `0x8236E010`, `0x82370E48`, `0x82370F68`, and `0x82371A30`:
+  render-context shader/resource/surface state mirror points.
+- `0x824F6520` / `FM2_D3D_LazyInitPresentChain` and `0x824F83D8` /
+  `FM2_D3D_TryPresentAndUpdateStatus`: initial present-chain hook points.
+- `0x82723750` / `FM2_Render_ExecuteBoundDrawPass` and `0x827221F0` /
+  `FM2_Render_DrawIndexedPrimitive`: cached draw-list follow-up once the direct
+  path is working.
+
+Conclusion: keep the current Plume replay path as instrumentation, but build the
+native renderer product path around these semantic hooks.

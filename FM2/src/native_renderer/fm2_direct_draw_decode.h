@@ -1,5 +1,7 @@
 #pragma once
 
+#include "native_renderer/fm2_native_state.h"
+
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -145,6 +147,44 @@ constexpr uint32_t DirectCompareReplayRecordScanCount(uint32_t record_count,
     return record_count;
   }
   return record_limit;
+}
+
+constexpr bool ShouldDecodeDirectDrawForPlumeSubmission(
+    bool trace_enabled, bool compare_enabled, bool native_direct_draw_enabled) {
+  return trace_enabled || compare_enabled || native_direct_draw_enabled;
+}
+
+constexpr uint32_t DirectPlumeSubmissionRecordScanCount(
+    uint32_t record_count, uint32_t record_limit, bool compare_enabled,
+    bool native_direct_draw_enabled) {
+  if (compare_enabled || native_direct_draw_enabled) {
+    return record_count;
+  }
+  return DirectCompareReplayRecordScanCount(record_count, record_limit);
+}
+
+constexpr bool ShouldStopDirectPlumeRecordScanAfterNativeAttempt(
+    bool native_direct_draw_enabled, bool compare_enabled,
+    bool native_live_batch_enabled) {
+  return native_direct_draw_enabled && !compare_enabled &&
+         !native_live_batch_enabled;
+}
+
+constexpr uint32_t NativeDirectDrawLiveBatchSize(uint32_t configured_size) {
+  return configured_size == 0 ? 1u : configured_size;
+}
+
+constexpr bool ShouldFlushNativeDirectDrawLiveBatch(
+    uint32_t queued_count, uint32_t configured_size) {
+  return queued_count != 0 &&
+         queued_count >= NativeDirectDrawLiveBatchSize(configured_size);
+}
+
+constexpr bool ShouldPromoteDirectReplayToNativeLayout(
+    bool compare_enabled, bool native_direct_draw_enabled,
+    bool native_live_batch_enabled) {
+  return compare_enabled ||
+         (native_direct_draw_enabled && !native_live_batch_enabled);
 }
 
 constexpr bool DirectDebugReplaySubmitLimitReached(uint64_t attempt,
@@ -805,6 +845,12 @@ enum class DirectDebugReplayPipelineTopology : uint8_t {
   kTriangleStrip,
 };
 
+enum class DirectDrawReplayPipelineLayout : uint8_t {
+  kUnsupported,
+  kDebugRaw32Side12,
+  kNativePosition28Side12,
+};
+
 constexpr DirectDebugReplayPipelineTopology
 ParseDirectDebugReplayPipelineTopology(std::string_view name) {
   if (name == "auto") {
@@ -939,6 +985,41 @@ struct DirectDrawReplayIndexedDraw {
   uint32_t start_instance = 0;
 };
 
+struct DirectDrawReplayNativeStreamBinding {
+  bool valid = false;
+  uint32_t slot = 0;
+  uint32_t resource = 0;
+  uint32_t byte_offset = 0;
+  uint32_t stride_bytes = 0;
+  uint32_t dirty_mask = 0;
+};
+
+struct DirectDrawReplayNativeStateSummary {
+  bool valid = false;
+  uint64_t sequence = 0;
+  uint32_t render_context = 0;
+  uint32_t direct_render_context = 0;
+  uint32_t draw_iface = 0;
+  uint32_t vertex_shader = 0;
+  uint32_t pixel_shader = 0;
+  DirectDrawReplayNativeStreamBinding streams[2];
+  uint32_t index_resource = 0;
+  uint32_t bound_surface = 0;
+  uint32_t bound_surface_arg = 0;
+};
+
+constexpr DirectDrawReplayPipelineLayout DirectDrawReplayNativeLayoutFromState(
+    const DirectDrawReplayNativeStateSummary& state) {
+  if (!state.valid || !state.streams[0].valid || !state.streams[1].valid) {
+    return DirectDrawReplayPipelineLayout::kUnsupported;
+  }
+  if (state.streams[0].slot == 0u && state.streams[0].stride_bytes == 28u &&
+      state.streams[1].slot == 1u && state.streams[1].stride_bytes == 12u) {
+    return DirectDrawReplayPipelineLayout::kNativePosition28Side12;
+  }
+  return DirectDrawReplayPipelineLayout::kUnsupported;
+}
+
 struct DirectDrawDebugReplayPlan {
   bool ready = false;
   DirectDrawReplayTopology topology = DirectDrawReplayTopology::kUnknown;
@@ -954,7 +1035,38 @@ struct DirectDrawDebugReplayPlan {
   uint64_t pixel_structural_ucode_hash = 0;
   bool has_vertex_structural_ucode = false;
   bool has_pixel_structural_ucode = false;
+  DirectDrawReplayNativeStateSummary native_state;
 };
+
+constexpr const char* DirectDrawReplayPipelineLayoutName(
+    DirectDrawReplayPipelineLayout layout) {
+  switch (layout) {
+    case DirectDrawReplayPipelineLayout::kDebugRaw32Side12:
+      return "debug_raw32_side12";
+    case DirectDrawReplayPipelineLayout::kNativePosition28Side12:
+      return "native_position28_side12";
+    case DirectDrawReplayPipelineLayout::kUnsupported:
+      break;
+  }
+  return "unsupported";
+}
+
+constexpr DirectDrawReplayPipelineLayout DirectDrawReplayPipelineLayoutForPlan(
+    const DirectDrawDebugReplayPlan& plan) {
+  if (!plan.ready || plan.stream_count != 2u || plan.streams[0].slot != 0u ||
+      plan.streams[1].slot != 1u) {
+    return DirectDrawReplayPipelineLayout::kUnsupported;
+  }
+  if (plan.streams[0].stride == 0x20u && plan.streams[1].stride == 0x0Cu) {
+    return DirectDrawReplayPipelineLayout::kDebugRaw32Side12;
+  }
+  if (plan.streams[0].stride == 28u && plan.streams[1].stride == 12u &&
+      DirectDrawReplayNativeLayoutFromState(plan.native_state) ==
+          DirectDrawReplayPipelineLayout::kNativePosition28Side12) {
+    return DirectDrawReplayPipelineLayout::kNativePosition28Side12;
+  }
+  return DirectDrawReplayPipelineLayout::kUnsupported;
+}
 
 constexpr DirectDrawBufferViewSummary BuildDirectDrawBufferViewSummary(
     uint32_t gpu_base, uint32_t raw_byte_size, uint32_t descriptor_count,
@@ -1627,6 +1739,61 @@ constexpr DirectDrawReplayIndexBuffer BuildDirectDrawReplayIndexBuffer(
   return out;
 }
 
+constexpr DirectDrawReplayNativeStreamBinding
+BuildDirectDrawReplayNativeStreamBinding(
+    const NativeStateVertexStreamBinding& binding) {
+  DirectDrawReplayNativeStreamBinding out;
+  if (!binding.valid || binding.slot >= 2u) {
+    return out;
+  }
+
+  out.valid = true;
+  out.slot = binding.slot;
+  out.resource = binding.resource;
+  out.byte_offset = binding.byte_offset;
+  out.stride_bytes = binding.stride_bytes;
+  out.dirty_mask = binding.dirty_mask;
+  return out;
+}
+
+constexpr DirectDrawReplayNativeStateSummary
+BuildDirectDrawReplayNativeStateSummary(
+    const NativeStateSnapshot& snapshot) {
+  DirectDrawReplayNativeStateSummary out;
+  if (!snapshot.valid) {
+    return out;
+  }
+
+  out.valid = true;
+  out.sequence = snapshot.sequence;
+  out.render_context = snapshot.render_context;
+  if (snapshot.last_direct_draw.valid) {
+    out.direct_render_context =
+        snapshot.last_direct_draw.direct_render_context;
+    out.draw_iface = snapshot.last_direct_draw.draw_iface;
+  }
+  if (snapshot.vertex_shader.valid) {
+    out.vertex_shader = snapshot.vertex_shader.shader;
+  }
+  if (snapshot.pixel_shader.valid) {
+    out.pixel_shader = snapshot.pixel_shader.shader;
+  }
+  for (const NativeStateVertexStreamBinding& stream : snapshot.streams) {
+    if (stream.valid && stream.slot < 2u) {
+      out.streams[stream.slot] =
+          BuildDirectDrawReplayNativeStreamBinding(stream);
+    }
+  }
+  if (snapshot.index_buffer.valid) {
+    out.index_resource = snapshot.index_buffer.resource;
+  }
+  if (snapshot.bound_surface.valid) {
+    out.bound_surface = snapshot.bound_surface.surface;
+    out.bound_surface_arg = snapshot.bound_surface.surface_arg;
+  }
+  return out;
+}
+
 constexpr DirectDrawDebugReplayPlan BuildDirectDrawDebugReplayPlan(
     const DirectDrawIndexedPacketSummary& packet) {
   DirectDrawDebugReplayPlan out;
@@ -1652,6 +1819,45 @@ constexpr DirectDrawDebugReplayPlan BuildDirectDrawDebugReplayPlan(
               out.index_format != DirectDrawReplayIndexFormat::kUnknown &&
               out.streams[0].stride != 0 && out.streams[1].stride != 0 &&
               out.index.upload_bytes != 0;
+  return out;
+}
+
+constexpr DirectDrawDebugReplayPlan BuildDirectDrawDebugReplayPlan(
+    const DirectDrawIndexedPacketSummary& packet,
+    const NativeStateSnapshot& snapshot) {
+  DirectDrawDebugReplayPlan out = BuildDirectDrawDebugReplayPlan(packet);
+  out.native_state = BuildDirectDrawReplayNativeStateSummary(snapshot);
+  return out;
+}
+
+constexpr DirectDrawDebugReplayPlan BuildDirectDrawNativeLayoutReplayPlan(
+    const DirectDrawDebugReplayPlan& base_plan,
+    const DirectDrawBufferViewSummary& native_stream0,
+    const DirectDrawBufferViewSummary& native_stream1,
+    const DirectDrawBufferViewSummary& native_index) {
+  DirectDrawDebugReplayPlan out = base_plan;
+  if (DirectDrawReplayNativeLayoutFromState(out.native_state) !=
+      DirectDrawReplayPipelineLayout::kNativePosition28Side12) {
+    out.ready = false;
+    return out;
+  }
+
+  out.stream_count = 2u;
+  out.streams[0] =
+      BuildDirectDrawReplayVertexStream(out.native_state.streams[0].slot,
+                                        native_stream0);
+  out.streams[1] =
+      BuildDirectDrawReplayVertexStream(out.native_state.streams[1].slot,
+                                        native_stream1);
+  out.index = BuildDirectDrawReplayIndexBuffer(native_index);
+  out.index_format =
+      DirectDrawReplayIndexFormatFromElementBytes(native_index.element_bytes);
+  out.ready = base_plan.ready && native_stream0.HasReplayableView() &&
+              native_stream1.HasReplayableView() &&
+              native_index.HasReplayableView() &&
+              out.index_format != DirectDrawReplayIndexFormat::kUnknown &&
+              DirectDrawReplayPipelineLayoutForPlan(out) ==
+                  DirectDrawReplayPipelineLayout::kNativePosition28Side12;
   return out;
 }
 

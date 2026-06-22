@@ -30,6 +30,7 @@
 #include <plume_render_interface.h>
 
 #include "shaders/fm2DebugReplayFrag.hlsl.dxil.h"
+#include "shaders/fm2DebugReplayNative28Vert.hlsl.dxil.h"
 #include "shaders/fm2DebugReplayVert.hlsl.dxil.h"
 
 namespace plume {
@@ -63,6 +64,11 @@ REXCVAR_DEFINE_BOOL(
     "pipeline.");
 
 REXCVAR_DEFINE_BOOL(
+    fm2_plume_native_direct_draw, false, "FM2",
+    "Submit ready FM2 direct indexed draw plans through the native Plume "
+    "direct-draw path.");
+
+REXCVAR_DEFINE_BOOL(
     fm2_plume_debug_replay_shadow_swapchain, false, "FM2",
     "Experimental: create a same-window Plume swapchain in shadow mode for "
     "debug replay while ReX graphics is still enabled.");
@@ -72,6 +78,19 @@ REXCVAR_DEFINE_BOOL(
     "Create a separate diagnostic Plume window for shadow-mode debug replay.");
 
 REXCVAR_DEFINE_BOOL(
+    fm2_plume_debug_replay_side_by_side, true, "FM2",
+    "Place the separate Plume debug replay window beside the FM2 game window.");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_debug_replay_window_gap, 24, "FM2",
+    "Pixel gap between the FM2 game window and the separate Plume replay window.");
+
+REXCVAR_DEFINE_BOOL(
+    fm2_plume_wireframe, false, "FM2",
+    "Render the FM2 Plume replay/native direct-draw comparison window in "
+    "wireframe mode.");
+
+REXCVAR_DEFINE_BOOL(
     fm2_plume_compare_window, false, "FM2",
     "Create a separate Plume comparison window in shadow mode and submit "
     "replayable native draws to it.");
@@ -79,6 +98,21 @@ REXCVAR_DEFINE_BOOL(
 REXCVAR_DEFINE_UINT32(
     fm2_plume_debug_replay_limit, 1, "FM2",
     "Maximum number of FM2 Plume diagnostic direct-draw replays to submit");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_native_direct_draw_limit, 1, "FM2",
+    "Maximum number of FM2 native Plume direct draws to submit; 0 disables the "
+    "limit.");
+
+REXCVAR_DEFINE_BOOL(
+    fm2_plume_native_direct_draw_live_batch, true, "FM2",
+    "When unlimited native direct draw submission is enabled, queue several "
+    "ready FM2 direct draw records and present them as one Plume frame.");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_native_direct_draw_live_batch_size, 16, "FM2",
+    "Number of queued FM2 native direct draw submissions to present together; "
+    "0 presents each accepted submission immediately.");
 
 REXCVAR_DEFINE_STRING(
     fm2_plume_debug_replay_transform_mode, "local", "FM2",
@@ -102,12 +136,22 @@ std::atomic<uint64_t> g_direct_indexed_draw_entries{0};
 std::atomic<uint64_t> g_debug_replay_attempts{0};
 std::atomic<uint64_t> g_debug_replay_submitted{0};
 std::atomic<uint64_t> g_debug_replay_failed{0};
+std::atomic<uint64_t> g_native_direct_draw_attempts{0};
+std::atomic<uint64_t> g_native_direct_draw_submitted{0};
+std::atomic<uint64_t> g_native_direct_draw_failed{0};
 std::atomic<uint32_t> g_last_hook_address{0};
 
 std::mutex g_last_args_mutex;
 fm2::native_renderer::GuestArgs g_last_args;
 
 #if FM2_HAS_PLUME && REX_PLATFORM_WIN32
+struct OwnedDirectReplaySubmission {
+  fm2::native_renderer::DirectDrawDebugReplayPlan plan;
+  std::vector<uint8_t> stream0;
+  std::vector<uint8_t> stream1;
+  std::vector<uint8_t> index;
+};
+
 struct PlumeState {
   std::unique_ptr<plume::RenderInterface> render_interface;
   std::unique_ptr<plume::RenderDevice> device;
@@ -125,7 +169,13 @@ struct PlumeState {
   std::unique_ptr<plume::RenderPipeline> debug_replay_pipeline;
   fm2::native_renderer::DirectDrawReplayTopology debug_replay_pipeline_topology =
       fm2::native_renderer::DirectDrawReplayTopology::kUnknown;
+  fm2::native_renderer::DirectDrawReplayPipelineLayout
+      debug_replay_pipeline_layout_kind =
+          fm2::native_renderer::DirectDrawReplayPipelineLayout::kUnsupported;
+  fm2::native_renderer::DebugReplayFillMode debug_replay_pipeline_fill_mode =
+      fm2::native_renderer::DebugReplayFillMode::kSolid;
   HWND debug_replay_window = nullptr;
+  std::vector<OwnedDirectReplaySubmission> native_direct_draw_pending;
 };
 
 std::mutex g_plume_mutex;
@@ -166,6 +216,8 @@ struct PreparedDirectDebugReplayDraw {
   fm2::native_renderer::DirectDrawDebugReplayPlan plan;
   fm2::native_renderer::DirectDrawReplayTopology effective_topology =
       fm2::native_renderer::DirectDrawReplayTopology::kUnknown;
+  fm2::native_renderer::DirectDrawReplayPipelineLayout layout =
+      fm2::native_renderer::DirectDrawReplayPipelineLayout::kUnsupported;
   plume::RenderFormat index_format = plume::RenderFormat::UNKNOWN;
   std::unique_ptr<plume::RenderBuffer> stream0_buffer;
   std::unique_ptr<plume::RenderBuffer> stream1_buffer;
@@ -264,7 +316,21 @@ void DestroyDebugReplayWindowLocked() {
   g_plume.debug_replay_window = nullptr;
 }
 
-bool CreateDebugReplayWindowLocked() {
+fm2::native_renderer::NativeWindowRect NativeWindowRectFromHwnd(HWND hwnd) {
+  if (!hwnd || IsWindow(hwnd) == FALSE) {
+    return {};
+  }
+  RECT rect = {};
+  if (GetWindowRect(hwnd, &rect) == FALSE) {
+    return {};
+  }
+  return {.x = rect.left,
+          .y = rect.top,
+          .width = rect.right - rect.left,
+          .height = rect.bottom - rect.top};
+}
+
+bool CreateDebugReplayWindowLocked(HWND host_window) {
   const wchar_t* title = REXCVAR_GET(fm2_plume_compare_window)
                              ? kCompareWindowTitle
                              : kDebugReplayWindowTitle;
@@ -289,9 +355,22 @@ bool CreateDebugReplayWindowLocked() {
 
   const int width = rect.right - rect.left;
   const int height = rect.bottom - rect.top;
+  int x = CW_USEDEFAULT;
+  int y = CW_USEDEFAULT;
+  fm2::native_renderer::NativeWindowRect host_rect = {};
+  if (REXCVAR_GET(fm2_plume_debug_replay_side_by_side)) {
+    host_rect = NativeWindowRectFromHwnd(host_window);
+    const fm2::native_renderer::NativeWindowRect companion_rect =
+        fm2::native_renderer::PlaceCompanionWindowBesideHost(
+            host_rect, width, height,
+            static_cast<int32_t>(
+                REXCVAR_GET(fm2_plume_debug_replay_window_gap)));
+    x = companion_rect.x;
+    y = companion_rect.y;
+  }
   g_plume.debug_replay_window = CreateWindowExW(
       kWindowExStyle, kDebugReplayWindowClassName, title,
-      kWindowStyle, CW_USEDEFAULT, CW_USEDEFAULT, width, height, nullptr,
+      kWindowStyle, x, y, width, height, nullptr,
       nullptr, GetModuleHandleW(nullptr), nullptr);
   if (!g_plume.debug_replay_window) {
     REXLOG_WARN("FM2 Plume failed to create debug replay window error={}",
@@ -301,16 +380,25 @@ bool CreateDebugReplayWindowLocked() {
 
   ShowWindow(g_plume.debug_replay_window, SW_SHOWNOACTIVATE);
   UpdateWindow(g_plume.debug_replay_window);
-  REXLOG_INFO("FM2 Plume debug replay window created hwnd={:p}",
-              static_cast<void*>(g_plume.debug_replay_window));
+  REXLOG_INFO(
+      "FM2 Plume debug replay window created hwnd={:p} x={} y={} size={}x{} "
+      "side_by_side={} host_x={} host_y={} host_size={}x{}",
+      static_cast<void*>(g_plume.debug_replay_window), x, y, width, height,
+      REXCVAR_GET(fm2_plume_debug_replay_side_by_side) ? 1u : 0u,
+      host_rect.x, host_rect.y, host_rect.width, host_rect.height);
   return true;
 }
 
 void ResetPlumeStateLocked() {
+  g_plume.native_direct_draw_pending.clear();
   DestroyDebugReplayWindowLocked();
   g_plume.debug_replay_pipeline.reset();
   g_plume.debug_replay_pipeline_topology =
       fm2::native_renderer::DirectDrawReplayTopology::kUnknown;
+  g_plume.debug_replay_pipeline_layout_kind =
+      fm2::native_renderer::DirectDrawReplayPipelineLayout::kUnsupported;
+  g_plume.debug_replay_pipeline_fill_mode =
+      fm2::native_renderer::DebugReplayFillMode::kSolid;
   g_plume.debug_replay_pixel_shader.reset();
   g_plume.debug_replay_vertex_shader.reset();
   g_plume.debug_replay_pipeline_layout.reset();
@@ -370,6 +458,28 @@ plume::RenderPrimitiveTopology ReplayTopologyToPlume(
   return plume::RenderPrimitiveTopology::TRIANGLE_LIST;
 }
 
+plume::RenderFillMode DebugReplayFillModeToPlume(
+    fm2::native_renderer::DebugReplayFillMode fill_mode) {
+  switch (fill_mode) {
+    case fm2::native_renderer::DebugReplayFillMode::kSolid:
+      return plume::RenderFillMode::SOLID;
+    case fm2::native_renderer::DebugReplayFillMode::kWireframe:
+      return plume::RenderFillMode::WIREFRAME;
+  }
+  return plume::RenderFillMode::SOLID;
+}
+
+const char* DebugReplayFillModeName(
+    fm2::native_renderer::DebugReplayFillMode fill_mode) {
+  switch (fill_mode) {
+    case fm2::native_renderer::DebugReplayFillMode::kSolid:
+      return "solid";
+    case fm2::native_renderer::DebugReplayFillMode::kWireframe:
+      return "wireframe";
+  }
+  return "solid";
+}
+
 uint32_t DebugReplayTransformModeValue() {
   const std::string mode = REXCVAR_GET(fm2_plume_debug_replay_transform_mode);
   if (mode == "row_major_clip") {
@@ -419,15 +529,29 @@ DebugReplayPushConstants BuildDebugReplayPushConstants(
 }
 
 bool EnsureDebugReplayPipelineLocked(
-    fm2::native_renderer::DirectDrawReplayTopology topology) {
+    fm2::native_renderer::DirectDrawReplayTopology topology,
+    fm2::native_renderer::DirectDrawReplayPipelineLayout layout) {
+  if (layout ==
+      fm2::native_renderer::DirectDrawReplayPipelineLayout::kUnsupported) {
+    return false;
+  }
+  const fm2::native_renderer::DebugReplayFillMode fill_mode =
+      fm2::native_renderer::DebugReplayFillModeForWireframe(
+          REXCVAR_GET(fm2_plume_wireframe));
   if (g_plume.debug_replay_pipeline &&
-      g_plume.debug_replay_pipeline_topology == topology) {
+      g_plume.debug_replay_pipeline_topology == topology &&
+      g_plume.debug_replay_pipeline_layout_kind == layout &&
+      g_plume.debug_replay_pipeline_fill_mode == fill_mode) {
     return true;
   }
   if (g_plume.debug_replay_pipeline) {
     g_plume.debug_replay_pipeline.reset();
     g_plume.debug_replay_pipeline_topology =
         fm2::native_renderer::DirectDrawReplayTopology::kUnknown;
+    g_plume.debug_replay_pipeline_layout_kind =
+        fm2::native_renderer::DirectDrawReplayPipelineLayout::kUnsupported;
+    g_plume.debug_replay_pipeline_fill_mode =
+        fm2::native_renderer::DebugReplayFillMode::kSolid;
   }
   if (!g_plume.render_interface || !g_plume.device) {
     return false;
@@ -454,9 +578,16 @@ bool EnsureDebugReplayPipelineLocked(
     return false;
   }
 
+  const unsigned char* vertex_shader_blob = fm2DebugReplayVertBlobDXIL;
+  size_t vertex_shader_blob_size = fm2DebugReplayVertBlobDXIL_size;
+  if (layout == fm2::native_renderer::DirectDrawReplayPipelineLayout::
+                    kNativePosition28Side12) {
+    vertex_shader_blob = fm2DebugReplayNative28VertBlobDXIL;
+    vertex_shader_blob_size = fm2DebugReplayNative28VertBlobDXIL_size;
+  }
+
   g_plume.debug_replay_vertex_shader = g_plume.device->createShader(
-      fm2DebugReplayVertBlobDXIL, fm2DebugReplayVertBlobDXIL_size, "VSMain",
-      shader_format);
+      vertex_shader_blob, vertex_shader_blob_size, "VSMain", shader_format);
   g_plume.debug_replay_pixel_shader = g_plume.device->createShader(
       fm2DebugReplayFragBlobDXIL, fm2DebugReplayFragBlobDXIL_size, "PSMain",
       shader_format);
@@ -470,20 +601,36 @@ bool EnsureDebugReplayPipelineLocked(
       plume::RenderInputSlot(1, 0x0Cu),
   };
   std::array<plume::RenderInputElement, 3> input_elements = {
-      plume::RenderInputElement("RAW", 0, 0, plume::RenderFormat::R32G32B32A32_UINT,
-                                0, 0),
-      plume::RenderInputElement("RAW", 1, 1, plume::RenderFormat::R32G32B32A32_UINT,
-                                0, 16),
-      plume::RenderInputElement("SIDE", 0, 2, plume::RenderFormat::R32G32B32_UINT,
-                                1, 0),
+      plume::RenderInputElement("RAW", 0, 0,
+                                plume::RenderFormat::R32G32B32A32_UINT, 0, 0),
+      plume::RenderInputElement("RAW", 1, 1,
+                                plume::RenderFormat::R32G32B32A32_UINT, 0, 16),
+      plume::RenderInputElement("SIDE", 0, 2,
+                                plume::RenderFormat::R32G32B32_UINT, 1, 0),
   };
+  uint32_t input_element_count = 3u;
+  if (layout == fm2::native_renderer::DirectDrawReplayPipelineLayout::
+                    kNativePosition28Side12) {
+    input_slots = {
+        plume::RenderInputSlot(0, 28u),
+        plume::RenderInputSlot(1, 12u),
+    };
+    input_elements = {
+        plume::RenderInputElement("NPOS", 0, 0,
+                                  plume::RenderFormat::R32G32B32_UINT, 0, 0),
+        plume::RenderInputElement("SIDE", 0, 1,
+                                  plume::RenderFormat::R32G32B32_UINT, 1, 0),
+        plume::RenderInputElement("UNUSED", 0, 0,
+                                  plume::RenderFormat::UNKNOWN, 0, 0),
+    };
+    input_element_count = 2u;
+  }
 
   plume::RenderGraphicsPipelineDesc pipeline_desc;
   pipeline_desc.inputSlots = input_slots.data();
   pipeline_desc.inputSlotsCount = static_cast<uint32_t>(input_slots.size());
   pipeline_desc.inputElements = input_elements.data();
-  pipeline_desc.inputElementsCount =
-      static_cast<uint32_t>(input_elements.size());
+  pipeline_desc.inputElementsCount = input_element_count;
   pipeline_desc.pipelineLayout = g_plume.debug_replay_pipeline_layout.get();
   pipeline_desc.vertexShader = g_plume.debug_replay_vertex_shader.get();
   pipeline_desc.pixelShader = g_plume.debug_replay_pixel_shader.get();
@@ -492,6 +639,7 @@ bool EnsureDebugReplayPipelineLocked(
   pipeline_desc.renderTargetCount = 1;
   pipeline_desc.primitiveTopology = ReplayTopologyToPlume(topology);
   pipeline_desc.cullMode = plume::RenderCullMode::NONE;
+  pipeline_desc.fillMode = DebugReplayFillModeToPlume(fill_mode);
 
   g_plume.debug_replay_pipeline =
       g_plume.device->createGraphicsPipeline(pipeline_desc);
@@ -501,8 +649,14 @@ bool EnsureDebugReplayPipelineLocked(
   }
 
   g_plume.debug_replay_pipeline_topology = topology;
-  REXLOG_INFO("FM2 Plume debug replay pipeline initialized topology={}",
-              static_cast<unsigned>(topology));
+  g_plume.debug_replay_pipeline_layout_kind = layout;
+  g_plume.debug_replay_pipeline_fill_mode = fill_mode;
+  REXLOG_INFO(
+      "FM2 Plume debug replay pipeline initialized topology={} layout={} "
+      "fill={}",
+      static_cast<unsigned>(topology),
+      fm2::native_renderer::DirectDrawReplayPipelineLayoutName(layout),
+      DebugReplayFillModeName(fill_mode));
   return true;
 }
 
@@ -663,8 +817,12 @@ bool CreateSwapchainLocked(rex::ui::Window* window) {
   return CreateSwapchainForNativeWindowLocked(render_window);
 }
 
-bool CreateDebugReplayWindowSwapchainLocked() {
-  if (!CreateDebugReplayWindowLocked()) {
+bool CreateDebugReplayWindowSwapchainLocked(rex::ui::Window* host_window) {
+  HWND host_hwnd = nullptr;
+  if (host_window) {
+    host_hwnd = static_cast<HWND>(host_window->GetNativeWindowHandle());
+  }
+  if (!CreateDebugReplayWindowLocked(host_hwnd)) {
     return false;
   }
   return CreateSwapchainForNativeWindowLocked(
@@ -752,20 +910,25 @@ bool RenderDirectDebugReplayLocked(
   }
   const fm2::native_renderer::DirectDrawReplayTopology effective_topology =
       EffectiveDebugReplayTopology(plan.topology);
+  const fm2::native_renderer::DirectDrawReplayPipelineLayout layout =
+      fm2::native_renderer::DirectDrawReplayPipelineLayoutForPlan(plan);
   if (effective_topology ==
           fm2::native_renderer::DirectDrawReplayTopology::kUnknown ||
-      plan.streams[0].stride != 0x20u || plan.streams[1].stride != 0x0Cu) {
+      layout == fm2::native_renderer::DirectDrawReplayPipelineLayout::
+                    kUnsupported) {
     REXLOG_WARN(
         "FM2 Plume debug replay skipped unsupported replay contract "
-        "topology={} s0_stride={} s1_stride={}",
-        static_cast<unsigned>(effective_topology), plan.streams[0].stride,
+        "topology={} layout={} s0_stride={} s1_stride={}",
+        static_cast<unsigned>(effective_topology),
+        fm2::native_renderer::DirectDrawReplayPipelineLayoutName(layout),
+        plan.streams[0].stride,
         plan.streams[1].stride);
     return false;
   }
   if (!g_plume.device || !g_plume.command_queue || !g_plume.command_list ||
       !g_plume.swapchain || !g_plume.acquire_semaphore || !g_plume.fence ||
       !ResizeSwapchainIfNeededLocked() ||
-      !EnsureDebugReplayPipelineLocked(effective_topology)) {
+      !EnsureDebugReplayPipelineLocked(effective_topology, layout)) {
     return false;
   }
 
@@ -874,8 +1037,8 @@ bool RenderDirectDebugReplayLocked(
       "index_base={:08X} index_upload_base={:08X} "
       "s0_bytes={} s1_bytes={} index_bytes={} "
       "s0_hash={:016X} s1_hash={:016X} index_hash={:016X} "
-      "topology={} plan_topology={} transform_valid={} transform_first={} "
-      "transform_mode={}",
+      "topology={} plan_topology={} layout={} transform_valid={} "
+      "transform_first={} transform_mode={}",
       presented, image_index, width, height, plan.draw.index_count,
       plan.streams[0].guest_base, plan.streams[0].upload_guest_base,
       plan.streams[1].guest_base, plan.streams[1].upload_guest_base,
@@ -883,15 +1046,16 @@ bool RenderDirectDebugReplayLocked(
       plan.streams[0].upload_bytes, plan.streams[1].upload_bytes,
       plan.index.upload_bytes, plan.streams[0].hash, plan.streams[1].hash,
       plan.index.hash, static_cast<unsigned>(effective_topology),
-      static_cast<unsigned>(plan.topology), plan.transform.valid ? 1u : 0u,
-      plan.transform.first_constant,
+      static_cast<unsigned>(plan.topology),
+      fm2::native_renderer::DirectDrawReplayPipelineLayoutName(layout),
+      plan.transform.valid ? 1u : 0u, plan.transform.first_constant,
       DebugReplayTransformModeName(push_constants.transform_mode));
   return presented;
 }
 
 bool RenderDirectDebugReplayBatchLocked(
     const fm2::native_renderer::DirectDrawReplaySubmission* submissions,
-    uint32_t submission_count) {
+    uint32_t submission_count, const char* submit_log_name) {
   if (!submissions || submission_count == 0 || !g_plume.device ||
       !g_plume.command_queue || !g_plume.command_list || !g_plume.swapchain ||
       !g_plume.acquire_semaphore || !g_plume.fence ||
@@ -902,8 +1066,12 @@ bool RenderDirectDebugReplayBatchLocked(
   std::vector<PreparedDirectDebugReplayDraw> draws;
   draws.reserve(submission_count);
   uint32_t skipped = 0;
+  uint32_t native_state_draws = 0;
+  uint32_t native_layout_draws = 0;
   fm2::native_renderer::DirectDrawReplayTopology batch_topology =
       fm2::native_renderer::DirectDrawReplayTopology::kUnknown;
+  fm2::native_renderer::DirectDrawReplayPipelineLayout batch_layout =
+      fm2::native_renderer::DirectDrawReplayPipelineLayout::kUnsupported;
 
   for (uint32_t i = 0; i < submission_count; ++i) {
     const auto& submission = submissions[i];
@@ -917,9 +1085,12 @@ bool RenderDirectDebugReplayBatchLocked(
 
     const fm2::native_renderer::DirectDrawReplayTopology effective_topology =
         EffectiveDebugReplayTopology(plan.topology);
+    const fm2::native_renderer::DirectDrawReplayPipelineLayout layout =
+        fm2::native_renderer::DirectDrawReplayPipelineLayoutForPlan(plan);
     if (effective_topology ==
             fm2::native_renderer::DirectDrawReplayTopology::kUnknown ||
-        plan.streams[0].stride != 0x20u || plan.streams[1].stride != 0x0Cu) {
+        layout == fm2::native_renderer::DirectDrawReplayPipelineLayout::
+                      kUnsupported) {
       ++skipped;
       continue;
     }
@@ -927,6 +1098,13 @@ bool RenderDirectDebugReplayBatchLocked(
         fm2::native_renderer::DirectDrawReplayTopology::kUnknown) {
       batch_topology = effective_topology;
     } else if (batch_topology != effective_topology) {
+      ++skipped;
+      continue;
+    }
+    if (batch_layout == fm2::native_renderer::DirectDrawReplayPipelineLayout::
+                            kUnsupported) {
+      batch_layout = layout;
+    } else if (batch_layout != layout) {
       ++skipped;
       continue;
     }
@@ -941,6 +1119,7 @@ bool RenderDirectDebugReplayBatchLocked(
     PreparedDirectDebugReplayDraw prepared;
     prepared.plan = plan;
     prepared.effective_topology = effective_topology;
+    prepared.layout = layout;
     prepared.index_format = index_format;
     prepared.stream0_buffer = CreateConvertedReplayBufferLocked(
         "FM2 compare stream0", sources.stream0, plan.streams[0].upload_bytes,
@@ -956,10 +1135,18 @@ bool RenderDirectDebugReplayBatchLocked(
       ++skipped;
       continue;
     }
+    if (plan.native_state.valid) {
+      ++native_state_draws;
+    }
+    if (layout == fm2::native_renderer::DirectDrawReplayPipelineLayout::
+                      kNativePosition28Side12) {
+      ++native_layout_draws;
+    }
     draws.push_back(std::move(prepared));
   }
 
-  if (draws.empty() || !EnsureDebugReplayPipelineLocked(batch_topology)) {
+  if (draws.empty() ||
+      !EnsureDebugReplayPipelineLocked(batch_topology, batch_layout)) {
     return false;
   }
 
@@ -1050,11 +1237,76 @@ bool RenderDirectDebugReplayBatchLocked(
   g_plume.command_queue->waitForCommandFence(g_plume.fence.get());
 
   REXLOG_INFO(
-      "FM2_PLUME_COMPARE_REPLAY_SUBMIT presented={} image={} size={}x{} "
-      "draws={} skipped={} topology={}",
+      "{} presented={} image={} size={}x{} "
+      "draws={} skipped={} native_state_draws={} native_layout_draws={} "
+      "topology={} layout={}",
+      submit_log_name ? submit_log_name : "FM2_PLUME_DEBUG_REPLAY_BATCH_SUBMIT",
       presented, image_index, width, height, draws.size(), skipped,
-      static_cast<unsigned>(batch_topology));
+      native_state_draws, native_layout_draws,
+      static_cast<unsigned>(batch_topology),
+      fm2::native_renderer::DirectDrawReplayPipelineLayoutName(batch_layout));
   return presented;
+}
+
+bool CopyReplaySourceBytes(const uint8_t* source, uint32_t byte_count,
+                           std::vector<uint8_t>& out) {
+  if (!source || byte_count == 0) {
+    return false;
+  }
+  out.assign(source, source + byte_count);
+  return true;
+}
+
+bool QueueNativeDirectDrawLocked(
+    const fm2::native_renderer::DirectDrawDebugReplayPlan& plan,
+    const fm2::native_renderer::DirectDrawReplaySourceBytes& sources) {
+  if (!plan.ready || plan.stream_count != 2u || !sources.stream0 ||
+      !sources.stream1 || !sources.index) {
+    return false;
+  }
+
+  OwnedDirectReplaySubmission pending;
+  pending.plan = plan;
+  if (!CopyReplaySourceBytes(sources.stream0, plan.streams[0].upload_bytes,
+                             pending.stream0) ||
+      !CopyReplaySourceBytes(sources.stream1, plan.streams[1].upload_bytes,
+                             pending.stream1) ||
+      !CopyReplaySourceBytes(sources.index, plan.index.upload_bytes,
+                             pending.index)) {
+    return false;
+  }
+
+  g_plume.native_direct_draw_pending.push_back(std::move(pending));
+  return true;
+}
+
+bool FlushNativeDirectDrawBatchLocked(const char* reason) {
+  if (g_plume.native_direct_draw_pending.empty()) {
+    return true;
+  }
+
+  std::vector<fm2::native_renderer::DirectDrawReplaySubmission> submissions;
+  submissions.reserve(g_plume.native_direct_draw_pending.size());
+  for (const OwnedDirectReplaySubmission& pending :
+       g_plume.native_direct_draw_pending) {
+    submissions.push_back({
+        pending.plan,
+        {
+            pending.stream0.data(),
+            pending.stream1.data(),
+            pending.index.data(),
+        },
+    });
+  }
+
+  const uint32_t queued_count = static_cast<uint32_t>(submissions.size());
+  const bool submitted = RenderDirectDebugReplayBatchLocked(
+      submissions.data(), queued_count, "FM2_PLUME_NATIVE_LIVE_BATCH_SUBMIT");
+  REXLOG_INFO(
+      "FM2_PLUME_NATIVE_LIVE_BATCH_RESULT reason={} queued={} submitted={}",
+      reason ? reason : "unknown", queued_count, submitted ? 1u : 0u);
+  g_plume.native_direct_draw_pending.clear();
+  return submitted;
 }
 #endif
 
@@ -1087,6 +1339,21 @@ bool WantsDirectDebugReplay() {
          REXCVAR_GET(fm2_plume_compare_window);
 }
 
+bool WantsNativeDirectDraw() {
+  if (!REXCVAR_GET(fm2_plume_native_direct_draw)) {
+    return false;
+  }
+  const uint32_t limit = REXCVAR_GET(fm2_plume_native_direct_draw_limit);
+  return limit == 0 ||
+         g_native_direct_draw_attempts.load(std::memory_order_relaxed) < limit;
+}
+
+bool WantsNativeDirectDrawLiveBatch() {
+  return REXCVAR_GET(fm2_plume_native_direct_draw) &&
+         REXCVAR_GET(fm2_plume_native_direct_draw_live_batch) &&
+         REXCVAR_GET(fm2_plume_native_direct_draw_limit) == 0;
+}
+
 bool WantsCompareWindow() {
   return REXCVAR_GET(fm2_plume_compare_window);
 }
@@ -1109,11 +1376,13 @@ bool Initialize(rex::ui::Window* window) {
     return mode != Mode::kPlumeClear;
   }
 
+  const bool wants_direct_plume_submission =
+      WantsDirectDebugReplay() || WantsNativeDirectDraw();
   const bool wants_debug_replay_swapchain =
-      mode == Mode::kShadow && WantsDirectDebugReplay() &&
+      mode == Mode::kShadow && wants_direct_plume_submission &&
       REXCVAR_GET(fm2_plume_debug_replay_shadow_swapchain);
   const bool wants_debug_replay_window =
-      mode == Mode::kShadow && WantsDirectDebugReplay() &&
+      mode == Mode::kShadow && wants_direct_plume_submission &&
       (REXCVAR_GET(fm2_plume_debug_replay_window) || WantsCompareWindow());
   if (mode == Mode::kPlumeClear) {
     if (!CreateSwapchainLocked(window)) {
@@ -1121,7 +1390,7 @@ bool Initialize(rex::ui::Window* window) {
       return false;
     }
   } else if (wants_debug_replay_window) {
-    if (!CreateDebugReplayWindowSwapchainLocked()) {
+    if (!CreateDebugReplayWindowSwapchainLocked(window)) {
       REXLOG_WARN(
           "FM2 Plume shadow debug replay could not create diagnostic window "
           "swapchain; continuing without debug replay");
@@ -1161,6 +1430,9 @@ void Shutdown() {
 #if FM2_HAS_PLUME && REX_PLATFORM_WIN32
   {
     std::scoped_lock lock(g_plume_mutex);
+    if (!g_plume.native_direct_draw_pending.empty()) {
+      FlushNativeDirectDrawBatchLocked("shutdown");
+    }
     ResetPlumeStateLocked();
   }
 #else
@@ -1172,12 +1444,17 @@ void Shutdown() {
     REXLOG_INFO(
         "FM2 Plume native renderer shut down build_object_pass={} "
         "direct_indexed_draw={} debug_replay_attempts={} "
-        "debug_replay_submitted={} debug_replay_failed={} last_hook={:08X}",
+        "debug_replay_submitted={} debug_replay_failed={} "
+        "native_direct_draw_attempts={} native_direct_draw_submitted={} "
+        "native_direct_draw_failed={} last_hook={:08X}",
         g_build_object_pass_entries.load(std::memory_order_relaxed),
         g_direct_indexed_draw_entries.load(std::memory_order_relaxed),
         g_debug_replay_attempts.load(std::memory_order_relaxed),
         g_debug_replay_submitted.load(std::memory_order_relaxed),
         g_debug_replay_failed.load(std::memory_order_relaxed),
+        g_native_direct_draw_attempts.load(std::memory_order_relaxed),
+        g_native_direct_draw_submitted.load(std::memory_order_relaxed),
+        g_native_direct_draw_failed.load(std::memory_order_relaxed),
         g_last_hook_address.load(std::memory_order_relaxed));
   }
 }
@@ -1255,6 +1532,88 @@ bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
 #endif
 }
 
+bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
+                            const DirectDrawReplaySourceBytes& sources) {
+  if (!REXCVAR_GET(fm2_plume_native_direct_draw)) {
+    return false;
+  }
+
+  const uint64_t attempt =
+      g_native_direct_draw_attempts.fetch_add(1, std::memory_order_relaxed) +
+      1;
+  const uint32_t limit = REXCVAR_GET(fm2_plume_native_direct_draw_limit);
+  if (DirectDebugReplaySubmitLimitReached(attempt, limit, false)) {
+    return false;
+  }
+
+  const Mode mode = GetMode();
+  if (mode != Mode::kPlumeClear && mode != Mode::kShadow) {
+    g_native_direct_draw_failed.fetch_add(1, std::memory_order_relaxed);
+    REXLOG_WARN(
+        "FM2 Plume native direct draw requires fm2_plume_mode=shadow or "
+        "plume_clear; current mode={}",
+        GetModeName(mode));
+    return false;
+  }
+  if (!plan.ready) {
+    g_native_direct_draw_failed.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+
+#if FM2_HAS_PLUME && REX_PLATFORM_WIN32
+  bool accepted = false;
+  bool queued = false;
+  bool flushed = false;
+  uint32_t pending_count = 0;
+  {
+    std::scoped_lock lock(g_plume_mutex);
+    if (WantsNativeDirectDrawLiveBatch()) {
+      queued = QueueNativeDirectDrawLocked(plan, sources);
+      if (queued) {
+        pending_count =
+            static_cast<uint32_t>(g_plume.native_direct_draw_pending.size());
+        if (ShouldFlushNativeDirectDrawLiveBatch(
+                pending_count,
+                REXCVAR_GET(fm2_plume_native_direct_draw_live_batch_size))) {
+          flushed = true;
+          accepted = FlushNativeDirectDrawBatchLocked("batch_size");
+          pending_count =
+              static_cast<uint32_t>(g_plume.native_direct_draw_pending.size());
+        } else {
+          accepted = true;
+        }
+      }
+    } else {
+      accepted = RenderDirectDebugReplayLocked(plan, sources);
+    }
+  }
+  if (accepted) {
+    g_native_direct_draw_submitted.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_native_direct_draw_failed.fetch_add(1, std::memory_order_relaxed);
+  }
+  REXLOG_INFO(
+      "FM2_PLUME_NATIVE_DIRECT_DRAW_SUBMIT attempt={} submitted={} "
+      "queued={} flushed={} pending={} live_batch={} "
+      "mode={} topology={} layout={} index_count={} native_state={} "
+      "transform_valid={}",
+      attempt, accepted ? 1u : 0u, queued ? 1u : 0u, flushed ? 1u : 0u,
+      pending_count, WantsNativeDirectDrawLiveBatch() ? 1u : 0u,
+      GetModeName(mode),
+      static_cast<unsigned>(plan.topology),
+      DirectDrawReplayPipelineLayoutName(
+          DirectDrawReplayPipelineLayoutForPlan(plan)),
+      plan.draw.index_count, plan.native_state.valid ? 1u : 0u,
+      plan.transform.valid ? 1u : 0u);
+  return accepted;
+#else
+  (void)sources;
+  g_native_direct_draw_failed.fetch_add(1, std::memory_order_relaxed);
+  REXLOG_WARN("FM2 Plume native direct draw requested without Plume support");
+  return false;
+#endif
+}
+
 bool SubmitDirectDebugReplayBatch(const DirectDrawReplaySubmission* submissions,
                                   uint32_t submission_count) {
   if (!WantsCompareWindow() || !submissions || submission_count == 0) {
@@ -1278,7 +1637,8 @@ bool SubmitDirectDebugReplayBatch(const DirectDrawReplaySubmission* submissions,
   bool submitted = false;
   {
     std::scoped_lock lock(g_plume_mutex);
-    submitted = RenderDirectDebugReplayBatchLocked(submissions, submission_count);
+    submitted = RenderDirectDebugReplayBatchLocked(
+        submissions, submission_count, "FM2_PLUME_COMPARE_REPLAY_SUBMIT");
   }
   if (submitted) {
     g_debug_replay_submitted.fetch_add(submission_count,
@@ -1311,6 +1671,12 @@ Stats GetStatsSnapshot() {
       g_debug_replay_submitted.load(std::memory_order_relaxed);
   out.debug_replay_failed =
       g_debug_replay_failed.load(std::memory_order_relaxed);
+  out.native_direct_draw_attempts =
+      g_native_direct_draw_attempts.load(std::memory_order_relaxed);
+  out.native_direct_draw_submitted =
+      g_native_direct_draw_submitted.load(std::memory_order_relaxed);
+  out.native_direct_draw_failed =
+      g_native_direct_draw_failed.load(std::memory_order_relaxed);
   out.last_hook_address = g_last_hook_address.load(std::memory_order_relaxed);
   {
     std::scoped_lock lock(g_last_args_mutex);

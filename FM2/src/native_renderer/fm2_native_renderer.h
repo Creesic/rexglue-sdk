@@ -16,6 +16,43 @@ enum class Mode : uint8_t {
   kPlumeClear,
 };
 
+enum class DebugReplayFillMode : uint8_t {
+  kSolid,
+  kWireframe,
+};
+
+struct NativeWindowRect {
+  int32_t x = 0;
+  int32_t y = 0;
+  int32_t width = 0;
+  int32_t height = 0;
+};
+
+constexpr bool IsValidNativeWindowRect(const NativeWindowRect& rect) {
+  return rect.width > 0 && rect.height > 0;
+}
+
+constexpr NativeWindowRect PlaceCompanionWindowBesideHost(
+    const NativeWindowRect& host, int32_t companion_width,
+    int32_t companion_height, int32_t gap) {
+  if (!IsValidNativeWindowRect(host)) {
+    return {.x = gap,
+            .y = gap,
+            .width = companion_width,
+            .height = companion_height};
+  }
+  return {.x = host.x + host.width + gap,
+          .y = host.y,
+          .width = companion_width,
+          .height = companion_height};
+}
+
+constexpr DebugReplayFillMode DebugReplayFillModeForWireframe(
+    bool wireframe_enabled) {
+  return wireframe_enabled ? DebugReplayFillMode::kWireframe
+                           : DebugReplayFillMode::kSolid;
+}
+
 struct GuestArgs {
   uint32_t r3 = 0;
   uint32_t r4 = 0;
@@ -37,6 +74,9 @@ struct Stats {
   uint64_t debug_replay_attempts = 0;
   uint64_t debug_replay_submitted = 0;
   uint64_t debug_replay_failed = 0;
+  uint64_t native_direct_draw_attempts = 0;
+  uint64_t native_direct_draw_submitted = 0;
+  uint64_t native_direct_draw_failed = 0;
   uint32_t last_hook_address = 0;
   GuestArgs last_args;
 };
@@ -51,6 +91,8 @@ Mode GetMode();
 const char* GetModeName(Mode mode);
 bool WantsReXGraphics();
 bool WantsDirectDebugReplay();
+bool WantsNativeDirectDraw();
+bool WantsNativeDirectDrawLiveBatch();
 bool WantsCompareWindow();
 
 bool Initialize(rex::ui::Window* window);
@@ -61,6 +103,8 @@ void RecordBuildObjectPassEntry(const GuestArgs& args);
 void RecordDirectIndexedDrawEntry(const GuestArgs& args);
 bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
                              const DirectDrawReplaySourceBytes& sources);
+bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
+                            const DirectDrawReplaySourceBytes& sources);
 struct DirectDrawReplaySubmission {
   DirectDrawDebugReplayPlan plan;
   DirectDrawReplaySourceBytes sources;

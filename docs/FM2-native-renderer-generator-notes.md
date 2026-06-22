@@ -1524,3 +1524,327 @@ Next implementation target:
    once per original frame.
 3. Throttle or split compare-window diagnostic logging so long gameplay runs do
    not balloon `C:\temp\fm2-clean.log`.
+
+### 2026-06-22 Replay Plan Native-State Provenance Slice
+
+The first part of the next target is now implemented. Each direct debug replay
+plan can now carry the paired native pipeline snapshot captured by
+`SnapshotNativeStateForDirectDraw`.
+
+Important distinction:
+
+- The plan now contains native resource provenance.
+- The Plume draw still uses the direct debug replay buffers and debug shaders.
+  This avoids pretending the output is fully native when the captured native
+  stream layout does not match the current debug shader input contract.
+
+Replay plan additions:
+
+- `DirectDrawReplayNativeStateSummary`
+- `DirectDrawReplayNativeStreamBinding`
+- `DirectDrawDebugReplayPlan::native_state`
+- `BuildDirectDrawDebugReplayPlan(packet, snapshot)`
+
+Native fields carried per plan:
+
+- Paired render context and recorder sequence.
+- Direct render context and draw-interface pointer.
+- Vertex shader object pointer.
+- Pixel shader object pointer.
+- Stream 0 and stream 1 resource pointer, byte offset, stride, and dirty mask.
+- Index-buffer resource pointer.
+- Bound surface pointer and surface argument.
+
+Runtime wiring:
+
+- `MaybeLogPlumeDirectIndexedDrawDecode` now captures
+  `SnapshotNativeStateForDirectDraw(direct_render_ctx)` once per direct draw
+  decode and passes it into each record's replay plan.
+- Each record with a valid snapshot emits:
+  `FM2_PLUME_DIRECT_REPLAY_NATIVE_STATE`.
+- The Plume compare batch submit log now reports `native_state_draws`, so the
+  app log can prove the comparison window received replay plans with native
+  state attached.
+
+Observed runtime behavior:
+
+- Gameplay smoke reached a draw where every submitted comparison draw had native
+  state attached:
+  - `FM2_PLUME_COMPARE_REPLAY_SUBMIT presented=true image=... size=960x540 draws=31 skipped=0 native_state_draws=31 topology=2`
+- `C:\temp\fm2-clean.log` showed concrete paired resource provenance:
+  - `FM2_PLUME_DIRECT_REPLAY_NATIVE_STATE n=642 rec_i=0000000B ctx=4004D100 seq=223189951 direct_ctx=4209B700 iface=2E0162C0 vs=42099650 ps=2EEA54B0 s0_valid=1 s0_res=2EF2A900 s0_offset=0 s0_stride=28 s0_dirty=00000001 s1_valid=1 s1_res=2E660E40 s1_offset=0 s1_stride=12 s1_dirty=00000001 ib=2E2867E0 surf=2E049240 surf_arg=0`
+
+Current limitation:
+
+- The captured native stream 0 stride in the smoke was `28`, while the current
+  debug replay Plume pipeline is hard-coded for stream 0 stride `0x20` and
+  stream 1 stride `0x0C`. That confirms the native-state path is exposing real
+  FM2 pipeline data, but the debug shader/input layout is not a valid consumer
+  for all native stream layouts.
+
+Verification:
+
+- Red test was confirmed first: `direct_draw_decode_test.cpp` failed to compile
+  because `BuildDirectDrawDebugReplayPlan(packet, snapshot)` did not exist.
+- `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests` passed.
+- `unit_tests.exe "[fm2][plume]"` passed with 542 assertions in 46 test cases.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed from
+  `FM2/` with the existing `fopen`/`getenv` deprecation warnings in
+  `fm2_hooks.cpp`.
+- Gameplay smoke via `scripts/fm2/Invoke-FM2GameplaySmoke.ps1` used:
+  `--fm2_plume_mode shadow --fm2_plume_compare_window --mnk_mode`.
+- The smoke reached gameplay input successfully:
+  `Space tap result: ok=40 failed=0`, and app input verification reported
+  `keyDown=40 keyUp=40 aDown=36`.
+
+Next implementation target:
+
+1. Decode native stream/index D3DResource objects from the stored native resource
+   pointers into explicit guest base, byte size, format, and byte-range metadata.
+2. Add a native input-layout/shader path that can consume stream 0 stride `28`
+   and other observed FM2 layouts instead of forcing the debug replay
+   `0x20/0x0C` contract.
+3. Promote vertex/pixel shader object pointers into a shader cache key that can
+   select or generate a Plume shader for the native path.
+
+### 2026-06-22 Native 28/12 Compare Layout Slice
+
+The first native input-layout promotion is now implemented for the observed FM2
+stream contract:
+
+- Stream 0 slot `0`, stride `28`, position at byte offset `0`.
+- Stream 1 slot `1`, stride `12`.
+- Index format still comes from the direct-record index descriptor for now.
+
+Added renderer pieces:
+
+- `DirectDrawReplayPipelineLayout`
+- `DirectDrawReplayPipelineLayoutForPlan`
+- `DirectDrawReplayNativeLayoutFromState`
+- `BuildDirectDrawNativeLayoutReplayPlan`
+- `FM2/src/native_renderer/shaders/fm2_debug_replay_native28.vert.hlsl`
+
+Runtime behavior:
+
+- Direct replay plans still start as the old debug replay contract
+  `debug_raw32_side12`.
+- Compare mode now attempts a native promotion when the paired native snapshot
+  reports `stream0 stride=28` and `stream1 stride=12`.
+- The hook decodes the native stream/index D3DResource pointers into guest base,
+  upload base, byte range, descriptor count, and hash metadata.
+- If all three native buffers are readable and hashable, the compare submission
+  uses the native buffer sources and `native_position28_side12` Plume pipeline.
+- If native promotion is unsupported or unreadable, the old direct debug replay
+  path remains the fallback.
+
+Verification:
+
+- Red test was confirmed first: `direct_draw_decode_test.cpp` failed to compile
+  on missing layout/promotion helpers.
+- `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests`
+  passed.
+- `unit_tests.exe "[fm2][plume]"` passed with 556 assertions in 47 test cases.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` regenerated
+  and embedded `fm2DebugReplayNative28Vert` DXIL/SPIR-V, then linked `fm2.exe`.
+- Gameplay smoke via `scripts/fm2/Invoke-FM2GameplaySmoke.ps1` used:
+  `--fm2_plume_mode shadow --fm2_plume_compare_window --mnk_mode`.
+- The smoke reached gameplay input successfully:
+  `Space tap result: ok=40 failed=0`, and app input verification reported
+  `keyDown=40 keyUp=40 aDown=36`.
+- FM2 app logs showed both pipeline variants during the run:
+  - `FM2 Plume debug replay pipeline initialized topology=2 layout=debug_raw32_side12`
+  - `FM2 Plume debug replay pipeline initialized topology=2 layout=native_position28_side12`
+- The compare window then presented native-layout batches:
+  - `FM2_PLUME_COMPARE_REPLAY_SUBMIT presented=true image=... size=960x540 draws=31 skipped=0 native_state_draws=31 native_layout_draws=31 topology=2 layout=native_position28_side12`
+- `C:\temp\fm2-clean.log` showed native resource decode and promotion:
+  - `FM2_PLUME_NATIVE_D3DRESOURCE n=631 rec_i=00000000 role=native_stream0 resource=2E61E140 gpu_base=A9E192C3 upload_base=A9E192C0 byte_size=1003D862 readable_bytes=0003D862 byte_offset=0 stride_or_format=28 descriptor_count=9000 view_bytes=0003D860 hash_bytes=0003D860 hash_ok=1 hash=5AC6954F6A62573B index=0`
+  - `FM2_PLUME_NATIVE_REPLAY_PLAN n=631 rec_i=00000000 ready=1 layout=native_position28_side12 s0_base=A9E192C3 s0_upload_base=A9E192C0 s0_stride=28 s0_bytes=0003D860 s1_base=B09BF463 s1_upload_base=B09BF460 s1_stride=12 s1_bytes=00125748 index_base=A9E56B68 index_upload_base=A9E56B68 index_bytes=00007D00`
+
+Current limitation:
+
+- This is still a diagnostic native-layout shader, not generated FM2 shader
+  translation. It consumes native stream bytes with a layout that matches the
+  captured state, but it does not yet execute FM2's vertex/pixel shader logic.
+
+Next implementation target:
+
+1. Promote vertex/pixel shader object pointers into a stable shader-cache key.
+2. Decode enough vertex declaration/fetch metadata to map native stream elements
+   beyond the assumed position-at-offset-0 case.
+3. Start generating or selecting Plume shaders from the captured FM2 shader
+   payloads instead of using diagnostic visualization shaders.
+
+### 2026-06-22 IDA Hook Surface Pivot
+
+After comparing with `ReOdyssey` and `UnleashedRecomp`, the FM2 Plume path
+should pivot from diagnostic replay toward the same physical pattern those
+projects use:
+
+```text
+FM2 render call -> replacement hook -> native Plume state/resources -> Plume draw/present
+```
+
+IDA hook-surface pass result:
+
+- `FM2_Render_BuildDirectIndexedDrawBuffers` (`0x825380B8`) is the best first
+  product hook. It consumes `direct_render_ctx` and `draw_iface`, resolves direct
+  draw records, binds surface/state, binds resource slots through draw-interface
+  methods, issues indexed draw calls, finalizes batches, and stores clones.
+- The direct indexed path exposes exactly the data the current diagnostic replay
+  had to rediscover indirectly: stream resources, index resource, pass constants,
+  surface, primitive type, start index, and primitive count.
+- Render-context setters/binders should become the Plume state mirror:
+  `FM2_RenderContext_SetPixelShaderState`,
+  `FM2_RenderContext_SetVertexShaderState`,
+  `FM2_RenderContext_BindVertexStream`,
+  `FM2_RenderContext_BindIndexBuffer`, and
+  `FM2_RenderContext_SetBoundSurface`.
+- Present should start at `FM2_D3D_LazyInitPresentChain` and
+  `FM2_D3D_TryPresentAndUpdateStatus`.
+- Cached draw lists should come after direct indexed draw, using
+  `FM2_Render_ExecuteBoundDrawPass`, `FM2_Render_WalkAndDispatchPm4DrawList`,
+  and `FM2_Render_DrawIndexedPrimitive`.
+- Low-level emitters such as `FM2_D3D_EmitDirtyStateAndDrawList`,
+  `FM2_D3D_EmitDrawListStatePackets`, and
+  `FM2_D3D_EmitSurfaceResolvePackets` remain useful diagnostics/fallbacks, but
+  they are not the desired first product hook layer.
+
+New IDA names from this pass are logged in
+`docs/FM2-ida-renames-2026-06-22.md` and mirrored into
+`FM2/fm2_manifest.toml`.
+
+Immediate implementation target:
+
+1. Keep the existing compare window for validation.
+2. Add a Plume native state mirror fed by the render-context setters/binders.
+3. Hook `FM2_Render_BuildDirectIndexedDrawBuffers` to submit one real native
+   Plume draw alongside or instead of the command-buffer clone path.
+4. Use `FM2_D3D_TryPresentAndUpdateStatus` as the first frame-present bridge
+   once native draws are visible.
+
+### 2026-06-22 Native Direct Draw Submission Boundary
+
+The first product-path boundary is now separated from diagnostic debug replay.
+The implementation still reuses the proven Plume direct replay upload/draw
+primitive internally, but the hook and renderer now expose a distinct native
+direct-draw path:
+
+- `fm2_plume_native_direct_draw` enables native direct indexed draw submission.
+- `fm2_plume_native_direct_draw_limit` defaults to `1`; `0` disables the limit.
+- `WantsNativeDirectDraw()` keeps the `0x825380B8` direct-draw decoder active
+  even when `fm2_plume_trace_direct_decode` and compare mode are disabled.
+- `SubmitNativeDirectDraw()` tracks its own attempts/submitted/failed counters
+  in `fm2::native_renderer::Stats`.
+- Runtime log markers:
+  - `FM2_PLUME_NATIVE_DIRECT_DRAW_SUBMIT`
+  - `FM2_PLUME_NATIVE_DIRECT_DRAW_RESULT`
+
+Hook behavior:
+
+- `MaybeLogPlumeDirectIndexedDrawDecode()` now uses
+  `ShouldDecodeDirectDrawForPlumeSubmission(trace, compare, native_direct)`.
+- Native direct draw scans all direct records while enabled, matching compare
+  replay, so it can find the first ready native-layout record instead of being
+  capped by trace-only decode limits.
+- The native-layout promotion path is shared by compare replay and native direct
+  draw. If the paired native state reports stream 0 stride `28`, stream 1 stride
+  `12`, and a readable native index resource, the submission uses
+  `native_position28_side12`.
+- If native promotion is not ready, the submission path falls back to the
+  existing direct replay plan shape for now.
+
+Verification from this slice:
+
+- Red test confirmed first: `unit_tests` failed to compile on missing
+  `ShouldDecodeDirectDrawForPlumeSubmission` and
+  `DirectPlumeSubmissionRecordScanCount`.
+- `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests`
+  passed after implementation.
+- `unit_tests.exe "[fm2][plume]"` passed with 567 assertions in 48 test cases.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` linked
+  `fm2.exe`; the build still reports the existing `fopen`/`getenv`
+  deprecation warnings in `FM2/src/fm2_hooks.cpp`.
+- Gameplay smoke with `--fm2_plume_mode shadow`,
+  `--fm2_plume_native_direct_draw`, `--fm2_plume_native_direct_draw_limit 1`,
+  `--fm2_plume_debug_replay_window`, and `--mnk_mode` reached gameplay input,
+  submitted through the new native-direct API, and captured a non-dark Plume
+  replay window:
+  `C:\temp\fm2-native-direct-smoke.png`.
+- Smoke log evidence:
+  - `FM2_PLUME_NATIVE_DIRECT_DRAW_RESULT n=1 rec_i=00000000 submitted=1 mode=shadow layout=debug_raw32_side12`
+  - `FM2_PLUME_NATIVE_DIRECT_DRAW_SUBMIT attempt=1 submitted=1 mode=shadow topology=2 layout=debug_raw32_side12 index_count=4062 native_state=1 transform_valid=1`
+  - `FM2_PLUME_DIRECT_REPLAY_NATIVE_STATE ... s0_stride=16 ... s1_stride=12 ...`
+
+Current limitation:
+
+- This is a native draw submission boundary, not yet a full FM2 native renderer.
+  It still relies on the diagnostic replay shader/pipeline machinery beneath
+  `RenderDirectDebugReplayLocked`.
+- The first submitted smoke record used the fallback `debug_raw32_side12`
+  replay layout because its paired native stream 0 state reported stride `16`,
+  not the `28` expected by the current `native_position28_side12` promotion.
+- The next replacement step is to split `RenderDirectDebugReplayLocked` into a
+  renderer-neutral native direct draw executor, then move from diagnostic
+  shaders to shader-cache keys derived from the FM2 vertex/pixel shader objects.
+
+### 2026-06-22 Side-by-side Plume Wireframe Comparison
+
+The Plume replay/comparison window can now be launched beside the original FM2
+window and rendered in rasterizer wireframe mode.
+
+New runtime switches:
+
+- `--fm2_plume_debug_replay_side_by_side` places the separate Plume replay
+  window to the right of the FM2 game window.
+- `--fm2_plume_debug_replay_window_gap <pixels>` controls the gap; default is
+  `24`.
+- `--fm2_plume_wireframe` builds the Plume replay pipeline with wireframe fill.
+
+Plume API/backend changes:
+
+- `RenderGraphicsPipelineDesc` now has `fillMode`.
+- D3D12 maps `RenderFillMode::WIREFRAME` to `D3D12_FILL_MODE_WIREFRAME`.
+- Vulkan maps `RenderFillMode::WIREFRAME` to `VK_POLYGON_MODE_LINE`.
+- Metal carries the fill mode through `MetalRenderState` and binds
+  `MTL::TriangleFillModeLines`.
+
+Useful launch modes:
+
+```powershell
+# Live side-by-side wireframe snapshots. This submits repeatedly.
+--fm2_plume_mode shadow --fm2_plume_native_direct_draw `
+--fm2_plume_native_direct_draw_limit 0 --fm2_plume_debug_replay_window `
+--fm2_plume_debug_replay_side_by_side --fm2_plume_wireframe --mnk_mode
+
+# Stable first visible wireframe draw for inspection/capture.
+--fm2_plume_mode shadow --fm2_plume_native_direct_draw `
+--fm2_plume_native_direct_draw_limit 1 --fm2_plume_debug_replay_window `
+--fm2_plume_debug_replay_side_by_side --fm2_plume_wireframe --mnk_mode
+```
+
+Verification:
+
+- `unit_tests.exe "[fm2][plume]"` passed with 577 assertions in 50 test cases.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` rebuilt
+  Plume D3D12/Vulkan and linked `fm2.exe`.
+- Broad root `install` was not used as proof because it currently stops in PPC
+  test codegen with `--bin-dir is required`; FM2 builds Plume directly as a
+  subdirectory.
+- Live smoke with `--fm2_plume_native_direct_draw_limit 0` showed repeated
+  successful native direct draw submissions and `fill=wireframe`.
+- Stable smoke with `--fm2_plume_native_direct_draw_limit 1` captured visible
+  wireframe geometry at `C:\temp\fm2-plume-wireframe-limit1.png`.
+- Placement log from the stable run:
+  `FM2 Plume debug replay window created hwnd=0x15e116a x=1450 y=130 size=976x579 side_by_side=1 host_x=130 host_y=130 host_size=1296x759`
+- Pipeline/submission log from the stable run:
+  `FM2 Plume debug replay pipeline initialized topology=2 layout=debug_raw32_side12 fill=wireframe`
+  and
+  `FM2_PLUME_NATIVE_DIRECT_DRAW_SUBMIT attempt=1 submitted=1 mode=shadow topology=2 layout=debug_raw32_side12 index_count=4062 native_state=1 transform_valid=1`
+
+Current limitation:
+
+- The live side-by-side path still clears and presents one submitted direct draw
+  at a time. It is useful for proving Plume is receiving live geometry, but it
+  is not yet a composed native frame next to the original game frame.
+- The stable `limit=1` mode is the best current visual inspection mode for the
+  first visible wireframe draw.

@@ -3039,6 +3039,68 @@ fm2nr::DirectDrawBufferViewSummary LogDirectDrawD3DResource(
   return view;
 }
 
+fm2nr::DirectDrawBufferViewSummary LogNativeReplayD3DResource(
+    uint8_t* base, uint64_t sample_number, uint32_t record_index,
+    const char* role, uint32_t resource, uint32_t byte_offset,
+    uint32_t stride_or_format, bool index_buffer) {
+  if (!resource ||
+      !GuestReadableRange(base, resource, fm2nr::kD3DResourceDecodeSize)) {
+    LogLine(
+        "FM2_PLUME_NATIVE_D3DRESOURCE n=%llu rec_i=%08X role=%s "
+        "resource=%08X unreadable=1 byte_offset=%u stride_or_format=%u "
+        "index=%u",
+        static_cast<unsigned long long>(sample_number), record_index, role,
+        resource, byte_offset, stride_or_format, index_buffer ? 1u : 0u);
+    return {};
+  }
+
+  const uint32_t gpu_base =
+      TryLoadU32(base, resource + fm2nr::kD3DResourceGpuBaseOffset);
+  const uint32_t byte_size =
+      TryLoadU32(base, resource + fm2nr::kD3DResourceSizeOffset);
+  const uint32_t readable_bytes =
+      fm2nr::DirectDrawResourceReadableByteCount(byte_size);
+  const uint32_t element_bytes =
+      index_buffer ? fm2nr::DirectDrawIndexElementByteCount(stride_or_format)
+                   : stride_or_format;
+  if (gpu_base == 0 || element_bytes == 0 || byte_offset >= readable_bytes) {
+    LogLine(
+        "FM2_PLUME_NATIVE_D3DRESOURCE n=%llu rec_i=%08X role=%s "
+        "resource=%08X gpu_base=%08X byte_size=%08X readable_bytes=%08X "
+        "byte_offset=%u stride_or_format=%u element_bytes=%u invalid_view=1",
+        static_cast<unsigned long long>(sample_number), record_index, role,
+        resource, gpu_base, byte_size, readable_bytes, byte_offset,
+        stride_or_format, element_bytes);
+    return {};
+  }
+
+  const uint32_t upload_base = AddGuestOffsetOrZero(gpu_base, byte_offset);
+  const uint32_t upload_bytes = readable_bytes - byte_offset;
+  const uint32_t descriptor_count = upload_bytes / element_bytes;
+  fm2nr::DirectDrawBufferViewSummary view =
+      fm2nr::BuildDirectDrawBufferViewSummary(
+          upload_base, upload_bytes, descriptor_count, stride_or_format,
+          index_buffer, false, 0);
+  uint64_t buffer_hash = 0;
+  const bool buffer_hash_ok =
+      HashGuestReadableRange(base, view.upload_guest_base, view.hash_bytes,
+                             buffer_hash);
+  view.hash_ok = buffer_hash_ok;
+  view.hash = buffer_hash;
+
+  LogLine(
+      "FM2_PLUME_NATIVE_D3DRESOURCE n=%llu rec_i=%08X role=%s resource=%08X "
+      "gpu_base=%08X upload_base=%08X byte_size=%08X readable_bytes=%08X "
+      "byte_offset=%u stride_or_format=%u descriptor_count=%u view_bytes=%08X "
+      "hash_bytes=%08X hash_ok=%u hash=%016llX index=%u",
+      static_cast<unsigned long long>(sample_number), record_index, role,
+      resource, gpu_base, view.upload_guest_base, byte_size, readable_bytes,
+      byte_offset, stride_or_format, descriptor_count, view.view_bytes,
+      view.hash_bytes, buffer_hash_ok ? 1u : 0u,
+      static_cast<unsigned long long>(buffer_hash), index_buffer ? 1u : 0u);
+  return view;
+}
+
 void MaybeArmPlumeD3DDirtyStateAfterDirectTrace() {
   const uint32_t sample_limit =
       REXCVAR_GET(fm2_plume_trace_render_context_after_direct_limit);
@@ -3237,8 +3299,11 @@ void LogD3DCommandContextFetchGroups(uint8_t* base, uint64_t sample_number,
 void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t draw_iface) {
   const bool trace_direct_decode = REXCVAR_GET(fm2_plume_trace_direct_decode);
   const bool compare_replay = fm2::native_renderer::WantsCompareWindow();
-  if (!fm2nr::ShouldDecodeDirectDrawForCompareReplay(trace_direct_decode,
-                                                     compare_replay)) {
+  const bool native_direct_draw = fm2::native_renderer::WantsNativeDirectDraw();
+  const bool native_direct_draw_live_batch =
+      fm2::native_renderer::WantsNativeDirectDrawLiveBatch();
+  if (!fm2nr::ShouldDecodeDirectDrawForPlumeSubmission(
+          trace_direct_decode, compare_replay, native_direct_draw)) {
     return;
   }
 
@@ -3252,7 +3317,7 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
     trace_sample = fm2nr::ShouldTraceDirectDrawSample(
         sample_ix, sample_skip, sample_limit);
   }
-  if (!trace_sample && !compare_replay) {
+  if (!trace_sample && !compare_replay && !native_direct_draw) {
     return;
   }
 
@@ -3262,6 +3327,8 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
             static_cast<unsigned long long>(sample_ix + 1), direct_render_ctx, draw_iface);
     return;
   }
+  const fm2nr::NativeStateSnapshot native_snapshot =
+      fm2nr::SnapshotNativeStateForDirectDraw(direct_render_ctx);
 
   constexpr uint32_t kMaxDecodedRecords = 256;
   constexpr uint32_t kMaxDecodedSegments = 1024;
@@ -3273,12 +3340,9 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
       TryLoadU32(base, direct_render_ctx + fm2nr::kDirectDrawCtxRecordEndOffset);
   const uint32_t record_count = fm2nr::BoundedVectorCount(
       record_begin, record_end, fm2nr::kDirectDrawRecordStride, kMaxDecodedRecords);
-  uint32_t record_scan = REXCVAR_GET(fm2_plume_trace_direct_decode_record_limit);
-  if (compare_replay) {
-    record_scan = fm2nr::DirectCompareReplayRecordScanCount(record_count, 0u);
-  } else if (record_scan > record_count) {
-    record_scan = record_count;
-  }
+  const uint32_t record_scan = fm2nr::DirectPlumeSubmissionRecordScanCount(
+      record_count, REXCVAR_GET(fm2_plume_trace_direct_decode_record_limit),
+      compare_replay, native_direct_draw);
 
   LogLine(
       "FM2_PLUME_DIRECT_DECODE n=%llu ctx=%08X iface=%08X built=%u "
@@ -3435,7 +3499,7 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
         static_cast<unsigned long long>(packet.vertex_shader.payload_hash),
         static_cast<unsigned long long>(packet.pixel_shader.payload_hash));
     fm2nr::DirectDrawDebugReplayPlan replay_plan =
-        fm2nr::BuildDirectDrawDebugReplayPlan(packet);
+        fm2nr::BuildDirectDrawDebugReplayPlan(packet, native_snapshot);
     const std::string transform_source =
         REXCVAR_GET(fm2_plume_direct_replay_transform_source);
     std::string transform_source_log = transform_source;
@@ -3530,20 +3594,112 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
         static_cast<unsigned long long>(replay_plan.pixel_payload_hash),
         replay_plan.has_vertex_structural_ucode ? 1u : 0u,
         replay_plan.has_pixel_structural_ucode ? 1u : 0u);
+    const auto& native = replay_plan.native_state;
+    if (native.valid) {
+      LogLine(
+          "FM2_PLUME_DIRECT_REPLAY_NATIVE_STATE n=%llu rec_i=%08X "
+          "ctx=%08X seq=%llu direct_ctx=%08X iface=%08X "
+          "vs=%08X ps=%08X s0_valid=%u s0_res=%08X s0_offset=%u "
+          "s0_stride=%u s0_dirty=%08X s1_valid=%u s1_res=%08X "
+          "s1_offset=%u s1_stride=%u s1_dirty=%08X ib=%08X "
+          "surf=%08X surf_arg=%u",
+          static_cast<unsigned long long>(sample_ix + 1), record_index,
+          native.render_context,
+          static_cast<unsigned long long>(native.sequence),
+          native.direct_render_context, native.draw_iface,
+          native.vertex_shader, native.pixel_shader,
+          native.streams[0].valid ? 1u : 0u, native.streams[0].resource,
+          native.streams[0].byte_offset, native.streams[0].stride_bytes,
+          native.streams[0].dirty_mask, native.streams[1].valid ? 1u : 0u,
+          native.streams[1].resource, native.streams[1].byte_offset,
+          native.streams[1].stride_bytes, native.streams[1].dirty_mask,
+          native.index_resource, native.bound_surface,
+          native.bound_surface_arg);
+    }
     RememberDirectReplayPlan(sample_ix + 1, record_index, replay_plan);
-    if (compare_replay && replay_plan.ready) {
-      compare_submissions.push_back({replay_plan,
-                                     {
-                                         reinterpret_cast<const uint8_t*>(
-                                             REX_RAW_ADDR(replay_plan.streams[0]
-                                                              .upload_guest_base)),
-                                         reinterpret_cast<const uint8_t*>(
-                                             REX_RAW_ADDR(replay_plan.streams[1]
-                                                              .upload_guest_base)),
-                                         reinterpret_cast<const uint8_t*>(
-                                             REX_RAW_ADDR(replay_plan.index
-                                                              .upload_guest_base)),
-                                     }});
+    fm2nr::DirectDrawDebugReplayPlan submission_plan = replay_plan;
+    fm2nr::DirectDrawReplaySourceBytes submission_sources = {
+        reinterpret_cast<const uint8_t*>(
+            REX_RAW_ADDR(replay_plan.streams[0].upload_guest_base)),
+        reinterpret_cast<const uint8_t*>(
+            REX_RAW_ADDR(replay_plan.streams[1].upload_guest_base)),
+        reinterpret_cast<const uint8_t*>(
+            REX_RAW_ADDR(replay_plan.index.upload_guest_base)),
+    };
+    if (fm2nr::ShouldPromoteDirectReplayToNativeLayout(
+            compare_replay, native_direct_draw,
+            native_direct_draw_live_batch) &&
+        replay_plan.ready &&
+        fm2nr::DirectDrawReplayNativeLayoutFromState(native) ==
+            fm2nr::DirectDrawReplayPipelineLayout::kNativePosition28Side12) {
+      const fm2nr::DirectDrawBufferViewSummary native_stream0 =
+          LogNativeReplayD3DResource(
+              base, sample_ix + 1, record_index, "native_stream0",
+              native.streams[0].resource, native.streams[0].byte_offset,
+              native.streams[0].stride_bytes, false);
+      const fm2nr::DirectDrawBufferViewSummary native_stream1 =
+          LogNativeReplayD3DResource(
+              base, sample_ix + 1, record_index, "native_stream1",
+              native.streams[1].resource, native.streams[1].byte_offset,
+              native.streams[1].stride_bytes, false);
+      const fm2nr::DirectDrawBufferViewSummary native_index =
+          LogNativeReplayD3DResource(
+              base, sample_ix + 1, record_index, "native_index",
+              native.index_resource, 0u, index_view.descriptor_stride_or_format,
+              true);
+      const fm2nr::DirectDrawDebugReplayPlan native_plan =
+          fm2nr::BuildDirectDrawNativeLayoutReplayPlan(
+              replay_plan, native_stream0, native_stream1, native_index);
+      LogLine(
+          "FM2_PLUME_NATIVE_REPLAY_PLAN n=%llu rec_i=%08X ready=%u "
+          "layout=%s s0_base=%08X s0_upload_base=%08X s0_stride=%u "
+          "s0_bytes=%08X s1_base=%08X s1_upload_base=%08X s1_stride=%u "
+          "s1_bytes=%08X index_base=%08X index_upload_base=%08X "
+          "index_bytes=%08X",
+          static_cast<unsigned long long>(sample_ix + 1), record_index,
+          native_plan.ready ? 1u : 0u,
+          fm2nr::DirectDrawReplayPipelineLayoutName(
+              fm2nr::DirectDrawReplayPipelineLayoutForPlan(native_plan)),
+          native_plan.streams[0].guest_base,
+          native_plan.streams[0].upload_guest_base,
+          native_plan.streams[0].stride, native_plan.streams[0].upload_bytes,
+          native_plan.streams[1].guest_base,
+          native_plan.streams[1].upload_guest_base,
+          native_plan.streams[1].stride, native_plan.streams[1].upload_bytes,
+          native_plan.index.guest_base, native_plan.index.upload_guest_base,
+          native_plan.index.upload_bytes);
+      if (native_plan.ready) {
+        submission_plan = native_plan;
+        submission_sources = {
+            reinterpret_cast<const uint8_t*>(
+                REX_RAW_ADDR(native_plan.streams[0].upload_guest_base)),
+            reinterpret_cast<const uint8_t*>(
+                REX_RAW_ADDR(native_plan.streams[1].upload_guest_base)),
+            reinterpret_cast<const uint8_t*>(
+                REX_RAW_ADDR(native_plan.index.upload_guest_base)),
+        };
+      }
+    }
+    if (compare_replay && submission_plan.ready) {
+      compare_submissions.push_back({submission_plan, submission_sources});
+    } else if (native_direct_draw && submission_plan.ready &&
+        fm2nr::ShouldSubmitDirectDebugReplayRecord(
+            record_index, REXCVAR_GET(fm2_plume_direct_replay_record_index))) {
+      const bool submitted = fm2::native_renderer::SubmitNativeDirectDraw(
+          submission_plan, submission_sources);
+      LogLine(
+          "FM2_PLUME_NATIVE_DIRECT_DRAW_RESULT n=%llu rec_i=%08X "
+          "submitted=%u mode=%s layout=%s",
+          static_cast<unsigned long long>(sample_ix + 1), record_index,
+          submitted ? 1u : 0u,
+          fm2::native_renderer::GetModeName(fm2::native_renderer::GetMode()),
+          fm2nr::DirectDrawReplayPipelineLayoutName(
+              fm2nr::DirectDrawReplayPipelineLayoutForPlan(submission_plan)));
+      if (fm2nr::ShouldStopDirectPlumeRecordScanAfterNativeAttempt(
+              native_direct_draw, compare_replay,
+              native_direct_draw_live_batch)) {
+        break;
+      }
     } else if (replay_plan.ready &&
         fm2::native_renderer::WantsDirectDebugReplay() &&
         fm2nr::ShouldSubmitDirectDebugReplayRecord(

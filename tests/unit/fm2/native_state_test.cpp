@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "native_renderer/fm2_native_renderer.h"
 #include "native_renderer/fm2_native_state.h"
 
 TEST_CASE("FM2 native state recorder keeps render context state snapshots",
@@ -141,4 +142,41 @@ TEST_CASE("FM2 native state recorder ignores invalid stream slots",
        snapshot.streams) {
     CHECK_FALSE(stream.valid);
   }
+}
+
+TEST_CASE("FM2 Plume companion window policy places it beside the host",
+          "[fm2][plume]") {
+  namespace fm2nr = fm2::native_renderer;
+
+  const fm2nr::NativeWindowRect host = {
+      .x = 100,
+      .y = 80,
+      .width = 1280,
+      .height = 720,
+  };
+  const fm2nr::NativeWindowRect placed =
+      fm2nr::PlaceCompanionWindowBesideHost(host, 960, 540, 24);
+
+  CHECK(placed.x == 1404);
+  CHECK(placed.y == 80);
+  CHECK(placed.width == 960);
+  CHECK(placed.height == 540);
+
+  const fm2nr::NativeWindowRect invalid = {};
+  const fm2nr::NativeWindowRect fallback =
+      fm2nr::PlaceCompanionWindowBesideHost(invalid, 960, 540, 24);
+  CHECK(fallback.x == 24);
+  CHECK(fallback.y == 24);
+  CHECK(fallback.width == 960);
+  CHECK(fallback.height == 540);
+}
+
+TEST_CASE("FM2 Plume wireframe policy maps to render fill mode",
+          "[fm2][plume]") {
+  namespace fm2nr = fm2::native_renderer;
+
+  CHECK(fm2nr::DebugReplayFillModeForWireframe(false) ==
+        fm2nr::DebugReplayFillMode::kSolid);
+  CHECK(fm2nr::DebugReplayFillModeForWireframe(true) ==
+        fm2nr::DebugReplayFillMode::kWireframe);
 }
