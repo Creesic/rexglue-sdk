@@ -15225,7 +15225,7 @@ loc_8220F1B0:
 	ctx.r3.u64 = ctx.r25.u64;
 	// bl 0x8225d260
 	ctx.lr = 0x8220F1B8;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// bl 0x8226b8c0
 	ctx.lr = 0x8220F1BC;
 	sub_8226B8C0(ctx, base);
@@ -16034,7 +16034,7 @@ loc_8220F728:
 	ctx.r3.u64 = ctx.r24.u64;
 	// bl 0x8225d260
 	ctx.lr = 0x8220F740;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 loc_8220F740:
 	// li r31,0
 	ctx.r31.s64 = 0;

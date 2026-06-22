@@ -3642,7 +3642,7 @@ loc_8253025C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8250f7c0
 	ctx.lr = 0x825302E4;
-	sub_8250F7C0(ctx, base);
+	FM2_Render_EmitPassDrawWork(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,0(r28)
@@ -3671,7 +3671,7 @@ loc_825302F4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8250f7c0
 	ctx.lr = 0x82530318;
-	sub_8250F7C0(ctx, base);
+	FM2_Render_EmitPassDrawWork(ctx, base);
 loc_82530318:
 	// mr r3,r24
 	ctx.r3.u64 = ctx.r24.u64;
@@ -6395,7 +6395,7 @@ loc_82531558:
 	ctx.r4.u64 = ctx.r31.u64;
 	// bl 0x8250f7c0
 	ctx.lr = 0x825315A8;
-	sub_8250F7C0(ctx, base);
+	FM2_Render_EmitPassDrawWork(ctx, base);
 	// mr r28,r3
 	ctx.r28.u64 = ctx.r3.u64;
 	// mr r4,r31
@@ -6424,7 +6424,7 @@ loc_825315B8:
 	ctx.r3.u64 = ctx.r27.u64;
 	// bl 0x8250f7c0
 	ctx.lr = 0x825315DC;
-	sub_8250F7C0(ctx, base);
+	FM2_Render_EmitPassDrawWork(ctx, base);
 	// mr r31,r3
 	ctx.r31.u64 = ctx.r3.u64;
 	// b 0x82531610
@@ -6450,7 +6450,7 @@ loc_825315E4:
 	ctx.r3.u64 = ctx.r27.u64;
 	// bl 0x8250f7c0
 	ctx.lr = 0x8253160C;
-	sub_8250F7C0(ctx, base);
+	FM2_Render_EmitPassDrawWork(ctx, base);
 	// mr r28,r3
 	ctx.r28.u64 = ctx.r3.u64;
 loc_82531610:

@@ -19479,7 +19479,7 @@ DEFINE_REX_FUNC(sub_827B7DE0) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_827B7E70) {
+DEFINE_REX_FUNC(FM2_MovieRenderer_RegisterAndInitShaders) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -19512,7 +19512,7 @@ DEFINE_REX_FUNC(sub_827B7E70) {
 	sub_827B98B0(ctx, base);
 	// bl 0x827b89f0
 	ctx.lr = 0x827B7EA4;
-	sub_827B89F0(ctx, base);
+	FM2_MovieRenderer_InitShaderResourceGlobals(ctx, base);
 	// addi r1,r1,96
 	ctx.r1.s64 = ctx.r1.s64 + 96;
 	// lwz r12,-8(r1)
@@ -21347,7 +21347,7 @@ DEFINE_REX_FUNC(sub_827B89A0) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_827B89F0) {
+DEFINE_REX_FUNC(FM2_MovieRenderer_InitShaderResourceGlobals) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -21360,13 +21360,13 @@ DEFINE_REX_FUNC(sub_827B89F0) {
 	ctx.r1.u32 = ea;
 	// bl 0x827bc5e0
 	ctx.lr = 0x827B8A00;
-	sub_827BC5E0(ctx, base);
+	FM2_MovieRenderer_InitMovieShaderResources(ctx, base);
 	// bl 0x827bb788
 	ctx.lr = 0x827B8A04;
 	sub_827BB788(ctx, base);
 	// bl 0x827ba780
 	ctx.lr = 0x827B8A08;
-	sub_827BA780(ctx, base);
+	FM2_MovieRenderer_InitScreenShaderResources(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// addi r1,r1,96
@@ -25337,7 +25337,7 @@ loc_827BA340:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_827BA350) {
+DEFINE_REX_FUNC(FM2_MovieRenderer_SetupScreenDrawPass) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -25520,7 +25520,7 @@ loc_827BA3A4:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236ef88
 	ctx.lr = 0x827BA484;
-	sub_8236EF88(ctx, base);
+	FM2_Render_SetClearFlagsAndDirtyBit(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,7148(r31)
@@ -25970,7 +25970,7 @@ loc_827BA738:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_827BA780) {
+DEFINE_REX_FUNC(FM2_MovieRenderer_InitScreenShaderResources) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -30117,7 +30117,7 @@ DEFINE_REX_FUNC(sub_827BC280) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_827BC2D0) {
+DEFINE_REX_FUNC(FM2_MovieRenderer_SetupMoviePreRenderPass) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -30517,7 +30517,7 @@ loc_827BC4D8:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236ef88
 	ctx.lr = 0x827BC58C;
-	sub_8236EF88(ctx, base);
+	FM2_Render_SetClearFlagsAndDirtyBit(ctx, base);
 	// addi r1,r1,224
 	ctx.r1.s64 = ctx.r1.s64 + 224;
 	// b 0x824131f8
@@ -30571,7 +30571,7 @@ loc_827BC5B4:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_827BC5E0) {
+DEFINE_REX_FUNC(FM2_MovieRenderer_InitMovieShaderResources) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12

@@ -65982,7 +65982,7 @@ loc_822888DC:
 	else {
 	}
 	ctx.lr = 0x822888F4;
-	sub_8229E198(ctx, base);
+	FM2_MovieRenderer_EnqueuePlaylistEntry(ctx, base);
 loc_822888F4:
 	// lwz r11,1920(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 1920);

@@ -2338,7 +2338,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8225CC88, sub_8225CC88);
   registrar->SetFunction(0x8225D1B0, sub_8225D1B0);
   registrar->SetFunction(0x8225D1F8, sub_8225D1F8);
-  registrar->SetFunction(0x8225D260, sub_8225D260);
+  registrar->SetFunction(0x8225D260, FM2_RenderAdapter_SwitchPresentationMode);
   registrar->SetFunction(0x8225D498, sub_8225D498);
   registrar->SetFunction(0x8225D808, sub_8225D808);
   registrar->SetFunction(0x8225D870, sub_8225D870);
@@ -3906,7 +3906,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8229DD50, sub_8229DD50);
   registrar->SetFunction(0x8229DDE0, sub_8229DDE0);
   registrar->SetFunction(0x8229DEA0, sub_8229DEA0);
-  registrar->SetFunction(0x8229E198, sub_8229E198);
+  registrar->SetFunction(0x8229E198, FM2_MovieRenderer_EnqueuePlaylistEntry);
   registrar->SetFunction(0x8229E228, sub_8229E228);
   registrar->SetFunction(0x8229E278, sub_8229E278);
   registrar->SetFunction(0x8229E2D0, sub_8229E2D0);
@@ -8783,7 +8783,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8236EF10, sub_8236EF10);
   registrar->SetFunction(0x8236EF20, FM2_Render_SetClearColorByteAndDirtyFlag);
   registrar->SetFunction(0x8236EF58, sub_8236EF58);
-  registrar->SetFunction(0x8236EF88, sub_8236EF88);
+  registrar->SetFunction(0x8236EF88, FM2_Render_SetClearFlagsAndDirtyBit);
   registrar->SetFunction(0x8236EFA8, sub_8236EFA8);
   registrar->SetFunction(0x8236EFB8, sub_8236EFB8);
   registrar->SetFunction(0x8236F058, sub_8236F058);
@@ -8983,7 +8983,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82371188, sub_82371188);
   registrar->SetFunction(0x82371250, sub_82371250);
   registrar->SetFunction(0x82371348, sub_82371348);
-  registrar->SetFunction(0x823715B0, sub_823715B0);
+  registrar->SetFunction(0x823715B0, FM2_RenderContext_SetViewportModeAndApply);
   registrar->SetFunction(0x823715C0, sub_823715C0);
   registrar->SetFunction(0x82371640, sub_82371640);
   registrar->SetFunction(0x82371660, sub_82371660);
@@ -9107,9 +9107,9 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82378940, sub_82378940);
   registrar->SetFunction(0x823789D0, sub_823789D0);
   registrar->SetFunction(0x82378AB0, sub_82378AB0);
-  registrar->SetFunction(0x82378D58, sub_82378D58);
+  registrar->SetFunction(0x82378D58, FM2_GpuKick_ComputeScalerViewportRects);
   registrar->SetFunction(0x82378E80, sub_82378E80);
-  registrar->SetFunction(0x82378EF8, sub_82378EF8);
+  registrar->SetFunction(0x82378EF8, FM2_GpuKick_NotifyScalerViewportRects);
   registrar->SetFunction(0x82378F58, sub_82378F58);
   registrar->SetFunction(0x82378FF0, sub_82378FF0);
   registrar->SetFunction(0x823790F0, sub_823790F0);
@@ -9122,7 +9122,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82379BC0, sub_82379BC0);
   registrar->SetFunction(0x8237A040, sub_8237A040);
   registrar->SetFunction(0x8237A320, sub_8237A320);
-  registrar->SetFunction(0x8237A888, sub_8237A888);
+  registrar->SetFunction(0x8237A888, FM2_GpuKick_SubmitVdScalerCommandBuffer);
   registrar->SetFunction(0x8237AA58, sub_8237AA58);
   registrar->SetFunction(0x8237AAD8, sub_8237AAD8);
   registrar->SetFunction(0x8237AB08, sub_8237AB08);
@@ -9150,7 +9150,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8237CBD8, sub_8237CBD8);
   registrar->SetFunction(0x8237CCF0, sub_8237CCF0);
   registrar->SetFunction(0x8237D080, sub_8237D080);
-  registrar->SetFunction(0x8237D158, sub_8237D158);
+  registrar->SetFunction(0x8237D158, FM2_AudioMix_SubmitPendingOutputBody);
   registrar->SetFunction(0x8237DF50, sub_8237DF50);
   registrar->SetFunction(0x8237DF68, sub_8237DF68);
   registrar->SetFunction(0x8237DFD8, sub_8237DFD8);
@@ -9192,7 +9192,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x823822F0, sub_823822F0);
   registrar->SetFunction(0x823823A8, sub_823823A8);
   registrar->SetFunction(0x82382590, FM2_D3D_EmitSurfaceResolvePackets);
-  registrar->SetFunction(0x82382928, sub_82382928);
+  registrar->SetFunction(0x82382928, FM2_D3D_CountLeadingDirtyBits);
   registrar->SetFunction(0x823829E8, sub_823829E8);
   registrar->SetFunction(0x82382B68, sub_82382B68);
   registrar->SetFunction(0x82382CC8, sub_82382CC8);
@@ -9236,9 +9236,9 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82387138, sub_82387138);
   registrar->SetFunction(0x823876D0, sub_823876D0);
   registrar->SetFunction(0x823876D8, sub_823876D8);
-  registrar->SetFunction(0x82387B08, sub_82387B08);
+  registrar->SetFunction(0x82387B08, FM2_D3D_CreateTextureFromSurfaceLevel);
   registrar->SetFunction(0x82388338, sub_82388338);
-  registrar->SetFunction(0x823883C0, sub_823883C0);
+  registrar->SetFunction(0x823883C0, FM2_D3D_CreateTextureFromSurfaceLevelAuto);
   registrar->SetFunction(0x82388420, sub_82388420);
   registrar->SetFunction(0x82388498, sub_82388498);
   registrar->SetFunction(0x82388530, sub_82388530);
@@ -9278,7 +9278,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8238C680, sub_8238C680);
   registrar->SetFunction(0x8238CB98, sub_8238CB98);
   registrar->SetFunction(0x8238CCC0, sub_8238CCC0);
-  registrar->SetFunction(0x8238CEF0, sub_8238CEF0);
+  registrar->SetFunction(0x8238CEF0, FM2_Image_ParseDDSFromMemory);
   registrar->SetFunction(0x8238D390, sub_8238D390);
   registrar->SetFunction(0x8238D860, sub_8238D860);
   registrar->SetFunction(0x8238D8C0, sub_8238D8C0);
@@ -16229,7 +16229,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8250F6A8, sub_8250F6A8);
   registrar->SetFunction(0x8250F708, sub_8250F708);
   registrar->SetFunction(0x8250F758, sub_8250F758);
-  registrar->SetFunction(0x8250F7C0, sub_8250F7C0);
+  registrar->SetFunction(0x8250F7C0, FM2_Render_EmitPassDrawWork);
   registrar->SetFunction(0x8250FB78, sub_8250FB78);
   registrar->SetFunction(0x8250FBD8, sub_8250FBD8);
   registrar->SetFunction(0x8250FC30, sub_8250FC30);
@@ -18662,7 +18662,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x825A2528, sub_825A2528);
   registrar->SetFunction(0x825A2538, sub_825A2538);
   registrar->SetFunction(0x825A25B0, sub_825A25B0);
-  registrar->SetFunction(0x825A25F8, sub_825A25F8);
+  registrar->SetFunction(0x825A25F8, FM2_D3D_CreateTextureFromMemoryBuffer);
   registrar->SetFunction(0x825A2650, FM2_D3D_CreateTextureWrapper);
   registrar->SetFunction(0x825A26D0, sub_825A26D0);
   registrar->SetFunction(0x825A26E8, sub_825A26E8);
@@ -28560,7 +28560,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x827B7520, sub_827B7520);
   registrar->SetFunction(0x827B7B50, sub_827B7B50);
   registrar->SetFunction(0x827B7DE0, sub_827B7DE0);
-  registrar->SetFunction(0x827B7E70, sub_827B7E70);
+  registrar->SetFunction(0x827B7E70, FM2_MovieRenderer_RegisterAndInitShaders);
   registrar->SetFunction(0x827B7EB8, sub_827B7EB8);
   registrar->SetFunction(0x827B80C8, sub_827B80C8);
   registrar->SetFunction(0x827B80D0, sub_827B80D0);
@@ -28606,7 +28606,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x827B8928, sub_827B8928);
   registrar->SetFunction(0x827B8948, sub_827B8948);
   registrar->SetFunction(0x827B89A0, sub_827B89A0);
-  registrar->SetFunction(0x827B89F0, sub_827B89F0);
+  registrar->SetFunction(0x827B89F0, FM2_MovieRenderer_InitShaderResourceGlobals);
   registrar->SetFunction(0x827B8A20, sub_827B8A20);
   registrar->SetFunction(0x827B8A70, sub_827B8A70);
   registrar->SetFunction(0x827B8AC0, sub_827B8AC0);
@@ -28649,9 +28649,9 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x827B9E98, sub_827B9E98);
   registrar->SetFunction(0x827BA268, sub_827BA268);
   registrar->SetFunction(0x827BA2D8, sub_827BA2D8);
-  registrar->SetFunction(0x827BA350, sub_827BA350);
+  registrar->SetFunction(0x827BA350, FM2_MovieRenderer_SetupScreenDrawPass);
   registrar->SetFunction(0x827BA718, sub_827BA718);
-  registrar->SetFunction(0x827BA780, sub_827BA780);
+  registrar->SetFunction(0x827BA780, FM2_MovieRenderer_InitScreenShaderResources);
   registrar->SetFunction(0x827BA7E8, sub_827BA7E8);
   registrar->SetFunction(0x827BA800, sub_827BA800);
   registrar->SetFunction(0x827BA860, sub_827BA860);
@@ -28697,9 +28697,9 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x827BBD30, sub_827BBD30);
   registrar->SetFunction(0x827BC238, sub_827BC238);
   registrar->SetFunction(0x827BC280, sub_827BC280);
-  registrar->SetFunction(0x827BC2D0, sub_827BC2D0);
+  registrar->SetFunction(0x827BC2D0, FM2_MovieRenderer_SetupMoviePreRenderPass);
   registrar->SetFunction(0x827BC598, sub_827BC598);
-  registrar->SetFunction(0x827BC5E0, sub_827BC5E0);
+  registrar->SetFunction(0x827BC5E0, FM2_MovieRenderer_InitMovieShaderResources);
   registrar->SetFunction(0x827BC648, sub_827BC648);
   registrar->SetFunction(0x827BC668, sub_827BC668);
   registrar->SetFunction(0x827BC678, sub_827BC678);

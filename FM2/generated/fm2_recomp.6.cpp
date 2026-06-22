@@ -37069,7 +37069,7 @@ loc_8229E188:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8229E198) {
+DEFINE_REX_FUNC(FM2_MovieRenderer_EnqueuePlaylistEntry) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12

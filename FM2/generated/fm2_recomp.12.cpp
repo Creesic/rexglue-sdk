@@ -37020,7 +37020,7 @@ loc_8236C9B4:
 	REX_STORE_U32(ctx.r30.u32 + 48, ctx.r11.u32);
 	// bl 0x8237a888
 	ctx.lr = 0x8236CA60;
-	sub_8237A888(ctx, base);
+	FM2_GpuKick_SubmitVdScalerCommandBuffer(ctx, base);
 loc_8236CA60:
 	// mr r4,r23
 	ctx.r4.u64 = ctx.r23.u64;
@@ -41829,9 +41829,12 @@ loc_8236EA54:
 	return;
 }
 
+extern void FM2PlumeTraceTextureFetchLow(PPCRegister& r3, PPCRegister& r4);
+
 DEFINE_REX_FUNC(FM2_RenderContext_SetTextureFetchBitsLow) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10440(r3)
+	FM2PlumeTraceTextureFetchLow(ctx.r3, ctx.r4);
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10440);
 	// rlwimi r4,r11,0,0,28
 	ctx.r4.u64 = (__builtin_rotateleft64(ctx.r11.u32 | (ctx.r11.u64 << 32), 0) & 0xFFFFFFF8) | (ctx.r4.u64 & 0xFFFFFFFF00000007);
@@ -41857,9 +41860,12 @@ DEFINE_REX_FUNC(sub_8236EA80) {
 	return;
 }
 
+extern void FM2PlumeTraceTextureFetchMid(PPCRegister& r3, PPCRegister& r4);
+
 DEFINE_REX_FUNC(FM2_RenderContext_SetTextureFetchBitsMid) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10440(r3)
+	FM2PlumeTraceTextureFetchMid(ctx.r3, ctx.r4);
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10440);
 	// rlwimi r11,r4,3,21,28
 	ctx.r11.u64 = (__builtin_rotateleft64(ctx.r4.u32 | (ctx.r4.u64 << 32), 3) & 0x7F8) | (ctx.r11.u64 & 0xFFFFFFFFFFFFF807);
@@ -42508,10 +42514,13 @@ DEFINE_REX_FUNC(sub_8236EF10) {
 	return;
 }
 
+extern void FM2PlumeTraceClearColor(PPCRegister& r3, PPCRegister& r4);
+
 DEFINE_REX_FUNC(FM2_Render_SetClearColorByteAndDirtyFlag) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	// clrldi r11,r4,32
+	FM2PlumeTraceClearColor(ctx.r3, ctx.r4);
 	ctx.r11.u64 = ctx.r4.u64 & 0xFFFFFFFF;
 	// std r11,-16(r1)
 	REX_STORE_U64(ctx.r1.u32 + -16, ctx.r11.u64);
@@ -42573,9 +42582,12 @@ DEFINE_REX_FUNC(sub_8236EF58) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236EF88) {
+extern void FM2PlumeTraceClearFlags(PPCRegister& r3, PPCRegister& r4);
+
+DEFINE_REX_FUNC(FM2_Render_SetClearFlagsAndDirtyBit) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10428(r3)
+	FM2PlumeTraceClearFlags(ctx.r3, ctx.r4);
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10428);
 	// rlwimi r4,r11,0,0,28
 	ctx.r4.u64 = (__builtin_rotateleft64(ctx.r11.u32 | (ctx.r11.u64 << 32), 0) & 0xFFFFFFF8) | (ctx.r4.u64 & 0xFFFFFFFF00000007);
@@ -48337,9 +48349,12 @@ loc_82371590:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_823715B0) {
+extern void FM2PlumeTraceViewportMode(PPCRegister& r3, PPCRegister& r4);
+
+DEFINE_REX_FUNC(FM2_RenderContext_SetViewportModeAndApply) {
 	REX_FUNC_PROLOGUE();
 	// mr r11,r4
+	FM2PlumeTraceViewportMode(ctx.r3, ctx.r4);
 	ctx.r11.u64 = ctx.r4.u64;
 	// addi r4,r3,12396
 	ctx.r4.s64 = ctx.r3.s64 + 12396;
@@ -59296,7 +59311,7 @@ loc_82375FD4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82375FF4;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82375FF4:
 	// rlwinm r11,r30,0,15,19
 	ctx.r11.u64 = __builtin_rotateleft64(ctx.r30.u32 | (ctx.r30.u64 << 32), 0) & 0x1F000;
@@ -59314,7 +59329,7 @@ loc_82375FF4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82376014;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82376014:
 	// lis r12,0
 	ctx.r12.s64 = 0;
@@ -59338,7 +59353,7 @@ loc_82376014:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82376040;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82376040:
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
@@ -59360,7 +59375,7 @@ loc_82376040:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82376068;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82376068:
 	// std r24,16(r31)
 	REX_STORE_U64(ctx.r31.u32 + 16, ctx.r24.u64);
@@ -59405,7 +59420,7 @@ loc_8237608C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x823760B8;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_823760B8:
 	// std r24,24(r31)
 	REX_STORE_U64(ctx.r31.u32 + 24, ctx.r24.u64);
@@ -59430,7 +59445,7 @@ loc_823760BC:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x823760E4;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_823760E4:
 	// li r12,255
 	ctx.r12.s64 = 255;
@@ -59452,7 +59467,7 @@ loc_823760E4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237610C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_8237610C:
 	// li r12,63
 	ctx.r12.s64 = 63;
@@ -59492,7 +59507,7 @@ loc_8237612C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82376154;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82376154:
 	// std r24,32(r31)
 	REX_STORE_U64(ctx.r31.u32 + 32, ctx.r24.u64);
@@ -66075,7 +66090,7 @@ loc_82378D4C:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82378D58) {
+DEFINE_REX_FUNC(FM2_GpuKick_ComputeScalerViewportRects) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -66302,7 +66317,7 @@ loc_82378ED8:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82378EF8) {
+DEFINE_REX_FUNC(FM2_GpuKick_NotifyScalerViewportRects) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -66324,7 +66339,7 @@ DEFINE_REX_FUNC(sub_82378EF8) {
 	ctx.r29.u64 = ctx.r5.u64;
 	// bl 0x82378d58
 	ctx.lr = 0x82378F18;
-	sub_82378D58(ctx, base);
+	FM2_GpuKick_ComputeScalerViewportRects(ctx, base);
 	// lwz r11,21164(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 21164);
 	// addi r3,r1,152
@@ -70226,7 +70241,7 @@ loc_8237A878:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8237A888) {
+DEFINE_REX_FUNC(FM2_GpuKick_SubmitVdScalerCommandBuffer) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -70248,7 +70263,7 @@ DEFINE_REX_FUNC(sub_8237A888) {
 	ctx.r29.u64 = ctx.r5.u64;
 	// bl 0x82378d58
 	ctx.lr = 0x8237A8A8;
-	sub_82378D58(ctx, base);
+	FM2_GpuKick_ComputeScalerViewportRects(ctx, base);
 	// lwz r11,136(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 136);
 	// lwz r6,128(r1)
@@ -70542,7 +70557,7 @@ loc_8237AAA0:
 	REX_STORE_U8(ctx.r31.u32 + 10814, ctx.r11.u8);
 	// bl 0x82378ef8
 	ctx.lr = 0x8237AAD0;
-	sub_82378EF8(ctx, base);
+	FM2_GpuKick_NotifyScalerViewportRects(ctx, base);
 	// addi r1,r1,128
 	ctx.r1.s64 = ctx.r1.s64 + 128;
 	// b 0x824131f8

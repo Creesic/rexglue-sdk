@@ -26502,7 +26502,7 @@ loc_82729860:
 	REX_STORE_U32(ctx.r1.u32 + 140, ctx.r11.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x827298A8;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 loc_827298A8:
 	// li r4,1
 	ctx.r4.s64 = 1;
@@ -42139,7 +42139,7 @@ loc_827301F4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730218;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// ld r11,16(r31)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r31.u32 + 16);
 	// rldicr r11,r11,0,51
@@ -42165,7 +42165,7 @@ loc_82730224:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730248;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-2
 	ctx.r12.s64 = -131072;
 	// ld r11,16(r31)
@@ -42201,7 +42201,7 @@ loc_8273025C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8273028C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-1
 	ctx.r12.s64 = -65536;
 	// ld r11,16(r31)
@@ -42237,7 +42237,7 @@ loc_827302A4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x827302D0;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
 	// ld r11,16(r31)
@@ -42279,7 +42279,7 @@ loc_827302E8:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730320;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
 	// ld r11,24(r31)
@@ -42315,7 +42315,7 @@ loc_82730338:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730364;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// ld r11,32(r31)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r31.u32 + 32);
 	// rldicr r11,r11,0,25
@@ -43289,7 +43289,7 @@ loc_827309A0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x827309C0;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_827309C0:
 	// rlwinm r11,r30,0,15,19
 	ctx.r11.u64 = __builtin_rotateleft64(ctx.r30.u32 | (ctx.r30.u64 << 32), 0) & 0x1F000;
@@ -43307,7 +43307,7 @@ loc_827309C0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x827309E0;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_827309E0:
 	// lis r12,0
 	ctx.r12.s64 = 0;
@@ -43331,7 +43331,7 @@ loc_827309E0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730A0C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730A0C:
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
@@ -43353,7 +43353,7 @@ loc_82730A0C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730A34;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730A34:
 	// std r26,16(r31)
 	REX_STORE_U64(ctx.r31.u32 + 16, ctx.r26.u64);
@@ -43398,7 +43398,7 @@ loc_82730A58:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730A84;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730A84:
 	// std r26,24(r31)
 	REX_STORE_U64(ctx.r31.u32 + 24, ctx.r26.u64);
@@ -43423,7 +43423,7 @@ loc_82730A88:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730AB0;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730AB0:
 	// li r12,255
 	ctx.r12.s64 = 255;
@@ -43445,7 +43445,7 @@ loc_82730AB0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730AD8;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730AD8:
 	// li r12,63
 	ctx.r12.s64 = 63;
@@ -43485,7 +43485,7 @@ loc_82730AF8:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730B20;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730B20:
 	// std r26,32(r31)
 	REX_STORE_U64(ctx.r31.u32 + 32, ctx.r26.u64);
@@ -44094,7 +44094,7 @@ loc_82730EDC:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730EFC;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730EFC:
 	// rlwinm r11,r30,0,15,19
 	ctx.r11.u64 = __builtin_rotateleft64(ctx.r30.u32 | (ctx.r30.u64 << 32), 0) & 0x1F000;
@@ -44112,7 +44112,7 @@ loc_82730EFC:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730F1C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730F1C:
 	// lis r12,0
 	ctx.r12.s64 = 0;
@@ -44136,7 +44136,7 @@ loc_82730F1C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730F48;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730F48:
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
@@ -44158,7 +44158,7 @@ loc_82730F48:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730F70;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730F70:
 	// std r19,16(r31)
 	REX_STORE_U64(ctx.r31.u32 + 16, ctx.r19.u64);
@@ -44203,7 +44203,7 @@ loc_82730F94:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730FC0;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730FC0:
 	// std r19,24(r31)
 	REX_STORE_U64(ctx.r31.u32 + 24, ctx.r19.u64);
@@ -44228,7 +44228,7 @@ loc_82730FC4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82730FEC;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82730FEC:
 	// li r12,255
 	ctx.r12.s64 = 255;
@@ -44250,7 +44250,7 @@ loc_82730FEC:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731014;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731014:
 	// li r12,63
 	ctx.r12.s64 = 63;
@@ -44290,7 +44290,7 @@ loc_82731034:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8273105C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_8273105C:
 	// std r19,32(r31)
 	REX_STORE_U64(ctx.r31.u32 + 32, ctx.r19.u64);
@@ -44940,7 +44940,7 @@ loc_82731468:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731488;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731488:
 	// rlwinm r11,r30,0,15,19
 	ctx.r11.u64 = __builtin_rotateleft64(ctx.r30.u32 | (ctx.r30.u64 << 32), 0) & 0x1F000;
@@ -44958,7 +44958,7 @@ loc_82731488:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x827314A8;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_827314A8:
 	// lis r12,0
 	ctx.r12.s64 = 0;
@@ -44982,7 +44982,7 @@ loc_827314A8:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x827314D4;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_827314D4:
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
@@ -45004,7 +45004,7 @@ loc_827314D4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x827314FC;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_827314FC:
 	// std r26,16(r31)
 	REX_STORE_U64(ctx.r31.u32 + 16, ctx.r26.u64);
@@ -45049,7 +45049,7 @@ loc_82731520:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8273154C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_8273154C:
 	// std r26,24(r31)
 	REX_STORE_U64(ctx.r31.u32 + 24, ctx.r26.u64);
@@ -45074,7 +45074,7 @@ loc_82731550:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731578;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731578:
 	// li r12,255
 	ctx.r12.s64 = 255;
@@ -45096,7 +45096,7 @@ loc_82731578:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x827315A0;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_827315A0:
 	// li r12,63
 	ctx.r12.s64 = 63;
@@ -45136,7 +45136,7 @@ loc_827315C0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x827315E8;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_827315E8:
 	// std r26,32(r31)
 	REX_STORE_U64(ctx.r31.u32 + 32, ctx.r26.u64);
@@ -45533,7 +45533,7 @@ loc_8273185C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8273187C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_8273187C:
 	// rlwinm r11,r30,0,15,19
 	ctx.r11.u64 = __builtin_rotateleft64(ctx.r30.u32 | (ctx.r30.u64 << 32), 0) & 0x1F000;
@@ -45551,7 +45551,7 @@ loc_8273187C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8273189C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_8273189C:
 	// lis r12,0
 	ctx.r12.s64 = 0;
@@ -45575,7 +45575,7 @@ loc_8273189C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x827318C8;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_827318C8:
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
@@ -45597,7 +45597,7 @@ loc_827318C8:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x827318F0;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_827318F0:
 	// std r26,16(r31)
 	REX_STORE_U64(ctx.r31.u32 + 16, ctx.r26.u64);
@@ -45642,7 +45642,7 @@ loc_82731914:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731940;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731940:
 	// std r26,24(r31)
 	REX_STORE_U64(ctx.r31.u32 + 24, ctx.r26.u64);
@@ -45667,7 +45667,7 @@ loc_82731944:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8273196C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_8273196C:
 	// li r12,255
 	ctx.r12.s64 = 255;
@@ -45689,7 +45689,7 @@ loc_8273196C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731994;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731994:
 	// li r12,63
 	ctx.r12.s64 = 63;
@@ -45729,7 +45729,7 @@ loc_827319B4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x827319DC;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_827319DC:
 	// std r26,32(r31)
 	REX_STORE_U64(ctx.r31.u32 + 32, ctx.r26.u64);
@@ -46355,7 +46355,7 @@ loc_82731DFC:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731E1C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731E1C:
 	// rlwinm r11,r30,0,15,19
 	ctx.r11.u64 = __builtin_rotateleft64(ctx.r30.u32 | (ctx.r30.u64 << 32), 0) & 0x1F000;
@@ -46373,7 +46373,7 @@ loc_82731E1C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731E3C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731E3C:
 	// lis r12,0
 	ctx.r12.s64 = 0;
@@ -46397,7 +46397,7 @@ loc_82731E3C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731E68;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731E68:
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
@@ -46419,7 +46419,7 @@ loc_82731E68:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731E90;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731E90:
 	// std r26,16(r31)
 	REX_STORE_U64(ctx.r31.u32 + 16, ctx.r26.u64);
@@ -46464,7 +46464,7 @@ loc_82731EB4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731EE0;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731EE0:
 	// std r26,24(r31)
 	REX_STORE_U64(ctx.r31.u32 + 24, ctx.r26.u64);
@@ -46489,7 +46489,7 @@ loc_82731EE4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731F0C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731F0C:
 	// li r12,255
 	ctx.r12.s64 = 255;
@@ -46511,7 +46511,7 @@ loc_82731F0C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731F34;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731F34:
 	// li r12,63
 	ctx.r12.s64 = 63;
@@ -46551,7 +46551,7 @@ loc_82731F54:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x82731F7C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 loc_82731F7C:
 	// std r26,32(r31)
 	REX_STORE_U64(ctx.r31.u32 + 32, ctx.r26.u64);
@@ -48129,7 +48129,7 @@ loc_82732A14:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8237d158
 	ctx.lr = 0x82732A44;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 	// b 0x82732a74
 	goto loc_82732A74;
 loc_82732A48:
@@ -48156,7 +48156,7 @@ loc_82732A48:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8237d158
 	ctx.lr = 0x82732A74;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 loc_82732A74:
 	// lwz r11,12468(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 12468);

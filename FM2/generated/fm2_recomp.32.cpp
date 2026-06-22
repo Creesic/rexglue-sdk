@@ -8905,7 +8905,7 @@ DEFINE_REX_FUNC(sub_825ACFB0) {
 	sub_825AC6B0(ctx, base);
 	// bl 0x827b7e70
 	ctx.lr = 0x825ACFCC;
-	sub_827B7E70(ctx, base);
+	FM2_MovieRenderer_RegisterAndInitShaders(ctx, base);
 	// lis r10,-32096
 	ctx.r10.s64 = -2103443456;
 	// lwz r11,4196(r10)
@@ -10552,7 +10552,7 @@ DEFINE_REX_FUNC(sub_825AD9D0) {
 	REX_STORE_U32(ctx.r1.u32 + 140, ctx.r11.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825ADAD4;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 	// lis r4,-2048
 	ctx.r4.s64 = -134217728;
 	// lwz r3,84(r31)
@@ -10580,7 +10580,7 @@ DEFINE_REX_FUNC(sub_825AD9D0) {
 	ctx.r4.u64 = ctx.r4.u64 | 512;
 	// bl 0x8237d158
 	ctx.lr = 0x825ADB08;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 	// addi r1,r1,256
 	ctx.r1.s64 = ctx.r1.s64 + 256;
 	// lfd f31,-96(r1)
@@ -10694,7 +10694,7 @@ loc_825ADB94:
 	ctx.r4.s64 = 20;
 	// bl 0x8237d158
 	ctx.lr = 0x825ADBCC;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 	// clrlwi. r11,r29,24
 	ctx.r11.u64 = ctx.r29.u32 & 0xFF;
 	ctx.cr0.compare<int32_t>(ctx.r11.s32, 0, ctx.xer);
@@ -10730,7 +10730,7 @@ loc_825ADB94:
 	ctx.r4.s64 = 512;
 	// bl 0x8237d158
 	ctx.lr = 0x825ADC0C;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 loc_825ADC0C:
 	// clrlwi. r11,r29,24
 	ctx.r11.u64 = ctx.r29.u32 & 0xFF;
@@ -10816,7 +10816,7 @@ loc_825ADC50:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r30.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825ADC94;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 	// addi r10,r1,112
 	ctx.r10.s64 = ctx.r1.s64 + 112;
 	// li r9,0
@@ -10842,7 +10842,7 @@ loc_825ADC50:
 	ctx.r4.u64 = ctx.r25.u64 | 4160749568;
 	// bl 0x8237d158
 	ctx.lr = 0x825ADCC4;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 	// b 0x825ade0c
 	goto loc_825ADE0C;
 loc_825ADCC8:
@@ -10854,7 +10854,7 @@ loc_825ADCC8:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r30.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825ADCD8;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 	// b 0x825ade0c
 	goto loc_825ADE0C;
 loc_825ADCDC:
@@ -10956,7 +10956,7 @@ loc_825ADD3C:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r30.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825ADD98;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 	// addi r10,r1,112
 	ctx.r10.s64 = ctx.r1.s64 + 112;
 	// li r9,0
@@ -10982,7 +10982,7 @@ loc_825ADD3C:
 	ctx.r4.u64 = ctx.r25.u64 | 4160749568;
 	// bl 0x8237d158
 	ctx.lr = 0x825ADDC8;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 	// b 0x825adddc
 	goto loc_825ADDDC;
 loc_825ADDCC:
@@ -10994,7 +10994,7 @@ loc_825ADDCC:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r30.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825ADDDC;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 loc_825ADDDC:
 	// addic. r28,r28,-1
 	ctx.xer.ca = ctx.r28.u32 > 0;
@@ -14882,7 +14882,7 @@ loc_825AF740:
 	ctx.r4.u64 = ctx.r4.u64 | 256;
 	// bl 0x8237d158
 	ctx.lr = 0x825AF830;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 	// b 0x825af844
 	goto loc_825AF844;
 loc_825AF834:
@@ -14894,7 +14894,7 @@ loc_825AF834:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r22.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825AF844;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 loc_825AF844:
 	// mr r4,r18
 	ctx.r4.u64 = ctx.r18.u64;
@@ -26637,7 +26637,7 @@ loc_825B4620:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r11.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825B4670;
-	sub_8237D158(ctx, base);
+	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
 	// addi r3,r1,112
 	ctx.r3.s64 = ctx.r1.s64 + 112;
 	// bl 0x8224b048

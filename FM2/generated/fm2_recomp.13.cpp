@@ -644,7 +644,7 @@ loc_8237BD9C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BDC0;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// ld r11,16(r31)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r31.u32 + 16);
 	// rldicr r11,r11,0,51
@@ -670,7 +670,7 @@ loc_8237BDCC:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BDF0;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-2
 	ctx.r12.s64 = -131072;
 	// ld r11,16(r31)
@@ -706,7 +706,7 @@ loc_8237BE04:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BE34;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-1
 	ctx.r12.s64 = -65536;
 	// ld r11,16(r31)
@@ -742,7 +742,7 @@ loc_8237BE4C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BE78;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
 	// ld r11,16(r31)
@@ -784,7 +784,7 @@ loc_8237BE90:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BEC8;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
 	// ld r11,24(r31)
@@ -820,7 +820,7 @@ loc_8237BEE0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BF0C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// ld r11,32(r31)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r31.u32 + 32);
 	// rldicr r11,r11,0,25
@@ -3620,7 +3620,7 @@ loc_8237D134:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8237D158) {
+DEFINE_REX_FUNC(FM2_AudioMix_SubmitPendingOutputBody) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -4279,7 +4279,7 @@ loc_8237D5DC:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D600;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// ld r11,16(r31)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r31.u32 + 16);
 	// rldicr r11,r11,0,51
@@ -4305,7 +4305,7 @@ loc_8237D60C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D630;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-2
 	ctx.r12.s64 = -131072;
 	// ld r11,16(r31)
@@ -4341,7 +4341,7 @@ loc_8237D644:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D674;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-1
 	ctx.r12.s64 = -65536;
 	// ld r11,16(r31)
@@ -4377,7 +4377,7 @@ loc_8237D68C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D6B8;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
 	// ld r11,16(r31)
@@ -4419,7 +4419,7 @@ loc_8237D6D0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D708;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
 	// ld r11,24(r31)
@@ -4455,7 +4455,7 @@ loc_8237D720:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D74C;
-	sub_82382928(ctx, base);
+	FM2_D3D_CountLeadingDirtyBits(ctx, base);
 	// ld r11,32(r31)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r31.u32 + 32);
 	// rldicr r11,r11,0,25
@@ -17228,7 +17228,7 @@ loc_82382914:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82382928) {
+DEFINE_REX_FUNC(FM2_D3D_CountLeadingDirtyBits) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -29195,7 +29195,7 @@ loc_82387AFC:
 	goto loc_82387AB0;
 }
 
-DEFINE_REX_FUNC(sub_82387B08) {
+DEFINE_REX_FUNC(FM2_D3D_CreateTextureFromSurfaceLevel) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -30423,7 +30423,7 @@ DEFINE_REX_FUNC(sub_82388338) {
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r31.u32);
 	// bl 0x82387b08
 	ctx.lr = 0x823883A4;
-	sub_82387B08(ctx, base);
+	FM2_D3D_CreateTextureFromSurfaceLevel(ctx, base);
 	// addi r1,r1,176
 	ctx.r1.s64 = ctx.r1.s64 + 176;
 	// lwz r12,-8(r1)
@@ -30438,7 +30438,7 @@ DEFINE_REX_FUNC(sub_82388338) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_823883C0) {
+DEFINE_REX_FUNC(FM2_D3D_CreateTextureFromSurfaceLevelAuto) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -30547,7 +30547,7 @@ DEFINE_REX_FUNC(sub_82388420) {
 	REX_STORE_U32(ctx.r1.u32 + 84, ctx.r31.u32);
 	// bl 0x82387b08
 	ctx.lr = 0x82388480;
-	sub_82387B08(ctx, base);
+	FM2_D3D_CreateTextureFromSurfaceLevel(ctx, base);
 	// addi r1,r1,176
 	ctx.r1.s64 = ctx.r1.s64 + 176;
 	// lwz r12,-8(r1)
@@ -41135,7 +41135,7 @@ loc_8238CDE4:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8238CEF0) {
+DEFINE_REX_FUNC(FM2_Image_ParseDDSFromMemory) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -43829,7 +43829,7 @@ loc_8238E1A4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8238cef0
 	ctx.lr = 0x8238E1B4;
-	sub_8238CEF0(ctx, base);
+	FM2_Image_ParseDDSFromMemory(ctx, base);
 	// b 0x8238e22c
 	goto loc_8238E22C;
 loc_8238E1B8:

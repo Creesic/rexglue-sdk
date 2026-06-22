@@ -40714,7 +40714,7 @@ loc_8225D248:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8225D260) {
+DEFINE_REX_FUNC(FM2_RenderAdapter_SwitchPresentationMode) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -41600,7 +41600,7 @@ DEFINE_REX_FUNC(sub_8225D808) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8225d260
 	ctx.lr = 0x8225D83C;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 loc_8225D83C:
 	// lwz r3,112(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 112);
@@ -58391,7 +58391,7 @@ loc_822646D0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8225d260
 	ctx.lr = 0x82264710;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 loc_82264710:
 	// addi r1,r1,128
 	ctx.r1.s64 = ctx.r1.s64 + 128;
@@ -60036,7 +60036,7 @@ DEFINE_REX_FUNC(sub_82265180) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8225d260
 	ctx.lr = 0x822651C0;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// mr r3,r31
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8225d808

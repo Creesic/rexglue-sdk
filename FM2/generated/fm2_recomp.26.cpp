@@ -11835,10 +11835,13 @@ loc_824F8384:
 	return;
 }
 
+extern void FM2PlumeTracePresent(PPCRegister& r3);
+
 DEFINE_REX_FUNC(FM2_D3D_TryPresentAndUpdateStatus) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
+	FM2PlumeTracePresent(ctx.r3);
 	ctx.r12.u64 = ctx.lr;
 	// stw r12,-8(r1)
 	REX_STORE_U32(ctx.r1.u32 + -8, ctx.r12.u32);
@@ -50445,7 +50448,7 @@ loc_8250832C:
 	ctx.r4.u64 = ctx.r29.u64;
 	// bl 0x8250f7c0
 	ctx.lr = 0x825083A8;
-	sub_8250F7C0(ctx, base);
+	FM2_Render_EmitPassDrawWork(ctx, base);
 	// li r5,2
 	ctx.r5.s64 = 2;
 	// mr r4,r29
@@ -50480,7 +50483,7 @@ loc_825083C4:
 	ctx.r3.u64 = ctx.r20.u64;
 	// bl 0x8250f7c0
 	ctx.lr = 0x825083E4;
-	sub_8250F7C0(ctx, base);
+	FM2_Render_EmitPassDrawWork(ctx, base);
 loc_825083E4:
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
@@ -68169,10 +68172,13 @@ loc_8250F790:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8250F7C0) {
+extern void FM2PlumeTracePassDrawWork(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegister& r7, PPCRegister& r8, PPCRegister& r9, PPCRegister& r10);
+
+DEFINE_REX_FUNC(FM2_Render_EmitPassDrawWork) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
+	FM2PlumeTracePassDrawWork(ctx.r3, ctx.r4, ctx.r5, ctx.r6, ctx.r7, ctx.r8, ctx.r9, ctx.r10);
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x82413190
 	ctx.lr = 0x8250F7C8;

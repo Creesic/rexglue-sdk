@@ -69809,7 +69809,7 @@ loc_822EFC54:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
 	// bl 0x8225d260
 	ctx.lr = 0x822EFC74;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x82211e18
@@ -69899,7 +69899,7 @@ loc_822EFCE4:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
 	// bl 0x8225d260
 	ctx.lr = 0x822EFD04;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x82211e18
@@ -69989,7 +69989,7 @@ loc_822EFD74:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
 	// bl 0x8225d260
 	ctx.lr = 0x822EFD94;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x82211e18
@@ -70079,7 +70079,7 @@ loc_822EFE04:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
 	// bl 0x8225d260
 	ctx.lr = 0x822EFE24;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x82211e18
@@ -70169,7 +70169,7 @@ loc_822EFE94:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
 	// bl 0x8225d260
 	ctx.lr = 0x822EFEB4;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x82211e18
@@ -70259,7 +70259,7 @@ loc_822EFF24:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
 	// bl 0x8225d260
 	ctx.lr = 0x822EFF44;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x82211e18
@@ -70349,7 +70349,7 @@ loc_822EFFB4:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
 	// bl 0x8225d260
 	ctx.lr = 0x822EFFD4;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x82211e18
@@ -70439,7 +70439,7 @@ loc_822F0044:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
 	// bl 0x8225d260
 	ctx.lr = 0x822F0064;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x82211e18
@@ -70529,7 +70529,7 @@ loc_822F00D4:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
 	// bl 0x8225d260
 	ctx.lr = 0x822F00F4;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x82211e18
@@ -70619,7 +70619,7 @@ loc_822F0164:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r29.u32 + 0);
 	// bl 0x8225d260
 	ctx.lr = 0x822F0184;
-	sub_8225D260(ctx, base);
+	FM2_RenderAdapter_SwitchPresentationMode(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x82211e18

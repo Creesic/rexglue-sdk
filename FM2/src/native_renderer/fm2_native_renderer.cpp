@@ -834,7 +834,7 @@ bool CreateDebugReplayWindowSwapchainLocked(rex::ui::Window* host_window) {
 }
 
 plume::RenderColor ReplayClearColorLocked() {
-  constexpr plume::RenderColor kDefault(0.0f, 0.02f, 0.04f, 1.0f);
+  const plume::RenderColor kDefault(0.0f, 0.02f, 0.04f, 1.0f);
   const fm2::native_renderer::NativeStateSnapshot snapshot =
       fm2::native_renderer::SnapshotLastNativeState();
   if (!snapshot.clear.valid) {
