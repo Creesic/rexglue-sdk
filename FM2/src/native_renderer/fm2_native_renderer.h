@@ -21,6 +21,19 @@ enum class DebugReplayFillMode : uint8_t {
   kWireframe,
 };
 
+inline constexpr uint32_t kFM2RenderBuildObjectPassCommandBufferAddress =
+    0x82531370u;
+inline constexpr uint32_t kFM2RenderBuildDirectIndexedDrawBuffersAddress =
+    0x825380B8u;
+inline constexpr uint32_t kFM2RenderInstanceHybridDrawPathAddress =
+    0x82539650u;
+inline constexpr uint32_t kFM2PlumeLiveDirectDrawHookAddress =
+    kFM2RenderInstanceHybridDrawPathAddress;
+
+constexpr bool IsFM2PlumeLiveDirectDrawHookAddress(uint32_t address) {
+  return address == kFM2PlumeLiveDirectDrawHookAddress;
+}
+
 struct NativeWindowRect {
   int32_t x = 0;
   int32_t y = 0;
@@ -71,6 +84,7 @@ struct Stats {
   bool swapchain_ready = false;
   uint64_t build_object_pass_entries = 0;
   uint64_t direct_indexed_draw_entries = 0;
+  uint64_t instance_hybrid_draw_entries = 0;
   uint64_t debug_replay_attempts = 0;
   uint64_t debug_replay_submitted = 0;
   uint64_t debug_replay_failed = 0;
@@ -101,6 +115,7 @@ bool RenderClearOnce();
 
 void RecordBuildObjectPassEntry(const GuestArgs& args);
 void RecordDirectIndexedDrawEntry(const GuestArgs& args);
+void RecordInstanceHybridDrawEntry(const GuestArgs& args);
 bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
                              const DirectDrawReplaySourceBytes& sources);
 bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,

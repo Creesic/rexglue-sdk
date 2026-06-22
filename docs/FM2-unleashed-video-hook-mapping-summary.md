@@ -42,7 +42,7 @@ different game-specific layers. Mapping must follow **semantic behavior**.
 | Relatively flat D3D device API hooks | Render-context setters (`FM2_RenderContext_*`) plus cached command-buffer compilation |
 | Host hooks individual `DrawIndexedPrimitive` calls | Primary world geometry often flows through `FM2_Render_BuildDirectIndexedDrawBuffers` before PM4 emit |
 | `LockTextureRect` allocates guest heap memory | Texture lock goes through `D3DSurface_LockRect` in create/upload paths |
-| `SetResolution` writes device `[46]`/`[47]` at runtime | `VdQueryVideoMode` during present backbuffer setup only |
+| `SetResolution` writes device `[46]`/`[47]` at runtime | Scaler PM4 via `FM2_GpuKick_ComputeScalerViewportRects` + `SubmitVdScalerCommandBuffer`; init via `VdQueryVideoMode` |
 
 ## Full hook cross-reference
 
@@ -82,13 +82,13 @@ different game-specific layers. Mapping must follow **semantic behavior**.
 | `DrawPrimitive` | `SWA_Video_DrawPrimitive` | `0x82BE5900` | `FM2_Render_DrawIndexedPrimitive` + `FM2_Render_EmitDrawRangeCountPm4` (PM4 `1407`); blit helper: `FM2_Render_EmitIndexedTriangleFanDrawPm4` | `0x827221F0` / `0x823764B0` / `0x8272F650` |
 | `DrawPrimitiveUP` | `SWA_Video_DrawPrimitiveUP` | `0x82BE52F8` | `FM2_D3D_EmitIndexedDrawPacket` (memcpy vertex ring → CB) | `0x82383718` |
 | `StretchRect` | `SWA_Video_StretchRect` | `0x82BF6400` | `FM2_Render_BlitTiledRegionTriangleFanPm4` | `0x8272FBA0` |
-| `Clear` | `SWA_Video_Clear` | `0x82BFE4C8` | **Partial:** `FM2_Render_SetClearColorByteAndDirtyFlag` + `FM2_Render_LiverySectionClearColorAndDraw` | `0x8236EF20` / `0x825D5A70` |
+| `Clear` | `SWA_Video_Clear` | `0x82BFE4C8` | **Layered:** color `FM2_Render_SetClearColorByteAndDirtyFlag` + flags `FM2_Render_SetClearFlagsAndDirtyBit` + Z/stencil `D3D::SetTileAndDepthClear`; PM4 via `FM2_D3D_CountLeadingDirtyBits` inside `FM2_D3D_EmitDirtyStateAndDrawList` | `0x8236EF20` / `0x8236EF88` / `0x8237CBD8` / `0x82382928` |
 | `D3DXFillTexture` | `SWA_Video_D3DXFillTexture` | `0x82C003B8` | `FM2_RenderResource_FillTextureSurfaceLayoutByFormat` | `0x8272AEB8` |
 | `D3DXFillVolumeTexture` | `SWA_Video_D3DXFillVolumeTexture` | `0x82C00910` | Same fill helper via volume mip setup | `0x8272AEB8` |
 | `DestructResource` | `SWA_Video_DestructResource` | `0x82BE6210` | `FM2_D3D_ReleaseGpuResourceRef` | `0x8237ED10` |
-| `MakePictureData` | — | `0x82E43FC8` | **No FM2 analogue** (Sonic picture/atlas loader) | — |
-| `SetResolution` | — | `0x82E9EE38` | `VdQueryVideoMode` inside `FM2_D3D_CreatePresentBackbufferResources` only | `0x82374190` |
-| `ScreenShaderInit` | — | `0x82AE2BF8` | **No FM2 analogue**; closest: `FM2_RenderAdapter_InitPresentationVtables_ClearState` | `0x824EA598` |
+| `MakePictureData` | — | `0x82E43FC8` | `FM2_D3D_CreateTextureFromMemoryBuffer` → `FM2_D3D_CreateTextureFromSurfaceLevel` → `FM2_Image_ParseDDSFromMemory` | `0x825A25F8` / `0x82387B08` / `0x8238CEF0` |
+| `SetResolution` | — | `0x82E9EE38` | **Runtime:** `FM2_GpuKick_ComputeScalerViewportRects` + `FM2_GpuKick_SubmitVdScalerCommandBuffer`; **init:** `FM2_D3D_CreatePresentBackbufferResources` | `0x82378D58` / `0x8237A888` / `0x82374190` |
+| `ScreenShaderInit` | — | `0x82AE2BF8` | `FM2_MovieRenderer_InitScreenShaderResources` + `FM2_MovieRenderer_InitMovieShaderResources` (Bink movie VS/PS/decl globals) | `0x827BA780` / `0x827BC5E0` |
 | FM2-only direct draw | — | — | `FM2_Render_BuildDirectIndexedDrawBuffers` | `0x825380B8` |
 
 ## Corrections from the second mapping pass
@@ -184,14 +184,95 @@ Shared raw lock thunk `FM2_D3D_LockGpuBufferRaw` (`0x8236A0B0`) tails into
 Treat PM4 emitters as **diagnostics or phase-2 fallback**, not the primary Plume
 product boundary.
 
-## Open gaps
+## Open gaps — resolved (IDA37 pass, 2026-06-22)
 
-| Hook | Status | Next search direction |
+Investigation used **user-IDA37** MCP (FM2 `default.xex.i64`, port 13337). IDA38
+timed out during this pass.
+
+### `Clear` (`SWA_Video_Clear` `0x82BFE4C8`)
+
+FM2 has **no `D3DDevice_Clear` import**. Clear is a three-part state write followed by
+generic D3D dirty-state PM4 emission.
+
+**State writers (game / D3D runtime):**
+
+| Address | Name | Render-ctx fields | Dirty bit |
+| --- | --- | --- | --- |
+| `0x8236EF20` | `FM2_Render_SetClearColorByteAndDirtyFlag` | Clear color float at `+0x2884` (`10372`) | `+0x10` bit `0x8000000` |
+| `0x8236EF88` | `FM2_Render_SetClearFlagsAndDirtyBit` | 3-bit clear mask at `+0x28BC` (`10428`) | `+0x10` bit `0x200` |
+| `0x8237CBD8` | `D3D::SetTileAndDepthClear` | Z/stencil pack at `+0x29A8` / `+0x29AC` | `+0x20` bits `0x300` |
+
+**PM4 emit (standalone clear packet path found):**
+
+| Address | Name | Role |
 | --- | --- | --- |
-| `Clear` (full D3D clear) | Partial only | PM4 clear packet emitters; `D3DDevice_Clear` import xrefs |
-| `MakePictureData` | Sonic-specific | No FM2 analogue expected |
-| `ScreenShaderInit` | Sonic movie shaders | FM2 presentation init is unrelated |
-| `SetResolution` | Init-time only | No runtime `ResolutionScale` equivalent found |
+| `0x82382928` | `FM2_D3D_CountLeadingDirtyBits` | Writes PM4 TYPE-0 register bursts from dirty shadow dwords |
+| `0x82375ED0` | `FM2_D3D_EmitDirtyStateAndDrawList` | Primary orchestrator during draw-list submit |
+| `0x8237D158` | `FM2_AudioMix_SubmitPendingOutputBody` | Dedicated flush: calls `SetTileAndDepthClear` then runs the same `CountLeadingDirtyBits` sweeps |
+
+`CountLeadingDirtyBits` clear register groups (verified from `SubmitPendingOutputBody` disasm,
+mirrored in `EmitDirtyStateAndDrawList`):
+
+| PM4 base | Shadow offset | Clear component |
+| --- | --- | --- |
+| `0x2100` | render-ctx `+0x284C` (`10316`) | Color (includes `+0x2884` float) |
+| `0x2200` | render-ctx `+0x28B4` (`10420`) | Clear flags / raster-related state |
+| `0x2280` | render-ctx `+0x28E4` (`10468`) | Z/stencil tile clear (after `SetTileAndDepthClear`) |
+
+High-level callers that set color/flags then reach PM4 emit: `FM2_Render_FramePipeline`,
+`FM2_Render_LiverySectionClearColorAndDraw`, `FM2_MovieRenderer_SetupMoviePreRenderPass`,
+`FM2_MovieRenderer_SetupScreenDrawPass`.
+
+`FM2_D3D_ResetAllShaderAndSurfaceState` (`0x82369610`) is **not** a framebuffer clear.
+
+### `MakePictureData` (`0x82E43FC8`)
+
+High-confidence analogue is the in-memory texture create path, not a Sonic-specific
+picture/atlas helper:
+
+```
+FM2_D3D_CreateTextureFromMemoryBuffer (0x825A25F8)
+  → FM2_D3D_CreateTextureFromSurfaceLevelAuto (0x823883C0)
+    → FM2_D3D_CreateTextureFromSurfaceLevel (0x82387B08)
+      → FM2_D3D_CreateTextureFromSurfaceLevelBodyE (0x8238E098)
+        → FM2_Image_ParseDDSFromMemory (0x8238CEF0)  [DDS path]
+```
+
+File-path variant `sub_825A3310` reads `.dds`/`.xpr` from disk then calls
+`FM2_D3D_CreateTextureFromSurfaceLevel` with a loaded buffer — asset loader, not the
+raw-memory hook boundary.
+
+### `ScreenShaderInit` (`0x82AE2BF8`)
+
+FM2 movie renderer (Bink `.bik`, not custom HLSL) has a direct structural match:
+lazy-create VS/PS GPU blocks + vertex declaration into globals, then bind in draw pass.
+
+| Address | Name | Globals | Role |
+| --- | --- | --- | --- |
+| `0x827BA780` | `FM2_MovieRenderer_InitScreenShaderResources` | `dword_82A48288/8C/90` | Screen shader init (decl + VS + PS) |
+| `0x827BC5E0` | `FM2_MovieRenderer_InitMovieShaderResources` | `dword_82A482D8/DC/E0` | Movie pre-render shader init |
+| `0x827B89F0` | `FM2_MovieRenderer_InitShaderResourceGlobals` | — | Init chain calling both shader inits |
+| `0x827B7E70` | `FM2_MovieRenderer_RegisterAndInitShaders` | — | CRT static init → shader globals |
+| `0x827BA350` | `FM2_MovieRenderer_SetupScreenDrawPass` | `82A48288/8C/90` | Binds screen shaders + viewport + clear |
+| `0x827BC2D0` | `FM2_MovieRenderer_SetupMoviePreRenderPass` | `82A482D8/DC/E0` | Binds movie shaders + matrices + clear |
+
+`FM2_RenderAdapter_InitPresentationVtables_ClearState` (`0x824EA598`) is presentation
+vtable init, **not** movie screen-shader init.
+
+### `SetResolution` (`0x82E9EE38`)
+
+Unleashed writes `device[46]`/`device[47]` at runtime with `Config::ResolutionScale`.
+FM2 has no byte-identical hook but a scaler/viewport PM4 path:
+
+| Address | Name | Role |
+| --- | --- | --- |
+| `0x82378D58` | `FM2_GpuKick_ComputeScalerViewportRects` | Computes scaler viewport rects from CB state |
+| `0x8237A888` | `FM2_GpuKick_SubmitVdScalerCommandBuffer` | `VdInitializeScalerCommandBuffer` PM4 emit |
+| `0x82378EF8` | `FM2_GpuKick_NotifyScalerViewportRects` | `VdCallGraphicsNotificationRoutines` after rect compute |
+| `0x8236C948` | `FM2_GpuKick_SubmitDrawSetupPm4Bundle` | Present kick: calls scaler submit when flag bit 4 set |
+| `0x8236CB28` | `FM2_GpuCommandBuffer_BuildAndSubmit` | `D3DDevice_SetScalerParameters` + `VdSwap` on present |
+| `0x82374190` | `FM2_D3D_CreatePresentBackbufferResources` | Init-time `VdQueryVideoMode` + scaler setup |
+| `0x8225D260` | `FM2_RenderAdapter_SwitchPresentationMode` | Presentation mode switch (multiscreen etc.) |
 
 ## Recommended hook order for Plume native renderer
 
@@ -239,8 +320,9 @@ product boundary.
 | FM2 `default.xex` | 13337 | `D:\Emulation\Games_Xbox_360\Forza2\default.xex.i64` |
 | Sonic Unleashed `default.xex` | 13338 | `D:\Emulation\Games_Xbox_360\Sonic_Unleashed\...\default.xex.i64` |
 
-Use IDA38 MCP `select_instance` before cross-database work. FM2 renames and
-Unleashed cross-ref comments were applied via the `user-IDA38` MCP server.
+Use **user-IDA37** for FM2 work (port 13337). Use **user-IDA38** for Sonic
+Unleashed cross-database work (port 13338). Gap-pass renames and Unleashed
+cross-ref comments were applied via **user-IDA37** on 2026-06-22.
 
 ## Manifest symbols burned
 
@@ -252,18 +334,23 @@ Key addresses added to `FM2/fm2_manifest.toml` during this work include:
 `0x8236A0F8`, `0x8236A2B8`, `0x82392090`, `0x823764B0`, `0x82383718`,
 `0x825303B8`, `0x8272F650`, `0x8272FBA0`, `0x8272AEB8`, `0x827BAAA8`.
 
+Gap-pass additions (IDA37):
+
+`0x8225D260`, `0x8229E198`, `0x8236EF88`, `0x82378D58`, `0x82378EF8`,
+`0x8237A888`, `0x823883C0`, `0x8238CEF0`, `0x82387B08`, `0x825A25F8`,
+`0x827B7E70`, `0x827B89F0`, `0x827BA350`, `0x827BA780`, `0x827BC2D0`,
+`0x827BC5E0`.
+
 ## Coverage estimate
 
-~40 of 43 Unleashed `video.cpp` hooks have a documented FM2 semantic analogue.
-Some mappings are multi-function or field-based (buffer desc reads holder fields
-rather than a separate export). Three hooks remain without FM2 equivalents
-(`MakePictureData`, `ScreenShaderInit`, runtime `SetResolution`); `Clear` is
-partial only.
+All 43 Unleashed `video.cpp` hooks now have a documented FM2 semantic analogue.
+`Clear` is layered across three state setters plus `FM2_D3D_CountLeadingDirtyBits` PM4
+emit (no `D3DDevice_Clear` import). `SetResolution` has no byte-identical runtime scale
+write but a scaler PM4 path.
 
 ## Next steps
 
-1. Search FM2 for full `Clear` PM4 emit path (beyond clear-color byte setter).
-2. Burn confirmed hook points into `FM2/src/fm2_hooks.cpp` per
+1. Burn confirmed hook points into `FM2/src/fm2_hooks.cpp` per
    `docs/FM2-native-renderer-generator-notes.md`.
-3. Optionally correct misleading SWA IDA names where hook EAs land inside D3D
+2. Optionally correct misleading SWA IDA names where hook EAs land inside D3D
    runtime internals rather than clean game wrapper entry points.

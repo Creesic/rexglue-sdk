@@ -3768,7 +3768,7 @@ loc_825303A8:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825303B8) {
+DEFINE_REX_FUNC(FM2_Render_ApplyObjectPassSamplerAndDrawRange) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -4314,7 +4314,7 @@ loc_82530718:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x823764b0
 	ctx.lr = 0x825307A0;
-	sub_823764B0(ctx, base);
+	FM2_Render_EmitDrawRangeCountPm4(ctx, base);
 	// mr r11,r3
 	ctx.r11.u64 = ctx.r3.u64;
 	// lwz r9,84(r1)
@@ -5557,7 +5557,7 @@ loc_82530F88:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82530FC8) {
+DEFINE_REX_FUNC(FM2_Render_DispatchObjectPassDrawOpcode) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -5650,7 +5650,7 @@ loc_82531058:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x825303b8
 	ctx.lr = 0x82531070;
-	sub_825303B8(ctx, base);
+	FM2_Render_ApplyObjectPassSamplerAndDrawRange(ctx, base);
 loc_82531070:
 	// lhz r11,0(r31)
 	ctx.r11.u64 = REX_LOAD_U16(ctx.r31.u32 + 0);
@@ -5781,7 +5781,7 @@ loc_82531120:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x823764b0
 	ctx.lr = 0x82531158;
-	sub_823764B0(ctx, base);
+	FM2_Render_EmitDrawRangeCountPm4(ctx, base);
 	// lis r11,-32097
 	ctx.r11.s64 = -2103508992;
 	// addi r7,r11,18592
@@ -5888,7 +5888,7 @@ loc_82531200:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82531210) {
+DEFINE_REX_FUNC(FM2_Render_WalkObjectPassDrawPacketStream) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -6015,7 +6015,7 @@ loc_825312B4:
 	REX_STORE_U32(ctx.r1.u32 + 84, ctx.r31.u32);
 	// bl 0x82530fc8
 	ctx.lr = 0x825312FC;
-	sub_82530FC8(ctx, base);
+	FM2_Render_DispatchObjectPassDrawOpcode(ctx, base);
 	// cmpwi r3,0
 	ctx.cr0.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// bne 0x825312b4
@@ -6027,7 +6027,7 @@ loc_825312B4:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82531310) {
+DEFINE_REX_FUNC(FM2_Render_PrepareAndWalkObjectPassDrawPackets) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -6047,7 +6047,7 @@ DEFINE_REX_FUNC(sub_82531310) {
 	ctx.r29.u64 = ctx.r5.u64;
 	// bl 0x82522748
 	ctx.lr = 0x8253132C;
-	sub_82522748(ctx, base);
+	FM2_Render_PrepareObjectPassTlsState(ctx, base);
 	// bl 0x82728640
 	ctx.lr = 0x82531330;
 	sub_82728640(ctx, base);
@@ -6073,7 +6073,7 @@ DEFINE_REX_FUNC(sub_82531310) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82531210
 	ctx.lr = 0x82531364;
-	sub_82531210(ctx, base);
+	FM2_Render_WalkObjectPassDrawPacketStream(ctx, base);
 	// addi r1,r1,112
 	ctx.r1.s64 = ctx.r1.s64 + 112;
 	// b 0x824131fc
@@ -6458,7 +6458,7 @@ loc_82531610:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x823764b0
 	ctx.lr = 0x82531618;
-	sub_823764B0(ctx, base);
+	FM2_Render_EmitDrawRangeCountPm4(ctx, base);
 	// mr r26,r3
 	ctx.r26.u64 = ctx.r3.u64;
 	// mr r3,r29
@@ -8180,7 +8180,7 @@ loc_82532158:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82371a30
 	ctx.lr = 0x825321D8;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// addi r4,r1,192
 	ctx.r4.s64 = ctx.r1.s64 + 192;
 	// mr r3,r31
@@ -8395,7 +8395,7 @@ loc_82532324:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82371a30
 	ctx.lr = 0x8253235C;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// addi r4,r1,192
 	ctx.r4.s64 = ctx.r1.s64 + 192;
 	// mr r3,r31
@@ -8492,7 +8492,7 @@ loc_825323F4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82371a30
 	ctx.lr = 0x82532410;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// addi r4,r1,192
 	ctx.r4.s64 = ctx.r1.s64 + 192;
 	// mr r3,r31
@@ -8657,7 +8657,7 @@ loc_825324C0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82371a30
 	ctx.lr = 0x82532534;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// bl 0x825b36a8
 	ctx.lr = 0x82532538;
 	sub_825B36A8(ctx, base);
@@ -15206,7 +15206,7 @@ DEFINE_REX_FUNC(sub_82535190) {
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
 	// bl 0x825a22f0
 	ctx.lr = 0x825351C4;
-	sub_825A22F0(ctx, base);
+	FM2_D3D_CreateVertexBufferWrapper(ctx, base);
 	// li r6,0
 	ctx.r6.s64 = 0;
 	// lwz r3,0(r27)
@@ -20554,7 +20554,7 @@ loc_82537590:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82537598) {
+DEFINE_REX_FUNC(FM2_Render_CreateCrowdSpriteVertexDeclaration) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -22165,14 +22165,11 @@ loc_82538084:
 	return;
 }
 
-extern void FM2PlumeTraceDirectIndexedDrawEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegister& r7, PPCRegister& r8, PPCRegister& r9, PPCRegister& r10);
-
 DEFINE_REX_FUNC(FM2_Render_BuildDirectIndexedDrawBuffers) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
 	// mflr r12
-	FM2PlumeTraceDirectIndexedDrawEntry(ctx.r3, ctx.r4, ctx.r5, ctx.r6, ctx.r7, ctx.r8, ctx.r9, ctx.r10);
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x82413170
 	ctx.lr = 0x825380C0;
@@ -22432,7 +22429,7 @@ loc_8253825C:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x82371a30
 	ctx.lr = 0x82538288;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// addi r4,r1,144
 	ctx.r4.s64 = ctx.r1.s64 + 144;
 	// mr r3,r27
@@ -22679,7 +22676,7 @@ loc_82538414:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x82371a30
 	ctx.lr = 0x82538440;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// bl 0x825b36a8
 	ctx.lr = 0x82538444;
 	sub_825B36A8(ctx, base);
@@ -25402,11 +25399,14 @@ loc_82539638:
 	return;
 }
 
+extern void FM2PlumeTraceInstanceHybridDrawEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegister& r7, PPCRegister& r8, PPCRegister& r9, PPCRegister& r10);
+
 DEFINE_REX_FUNC(FM2_Render_InstanceHybridDrawPath) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
 	// mflr r12
+	FM2PlumeTraceInstanceHybridDrawEntry(ctx.r3, ctx.r4, ctx.r5, ctx.r6, ctx.r7, ctx.r8, ctx.r9, ctx.r10);
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x82413170
 	ctx.lr = 0x82539658;
@@ -29712,7 +29712,7 @@ loc_8253B384:
 	ctx.r3.u64 = ctx.r28.u64 + ctx.r11.u64;
 	// bl 0x825a22f0
 	ctx.lr = 0x8253B394;
-	sub_825A22F0(ctx, base);
+	FM2_D3D_CreateVertexBufferWrapper(ctx, base);
 	// lwz r11,4(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
 	// cmplwi r11,0
@@ -33411,7 +33411,7 @@ loc_8253CC78:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82537598
 	ctx.lr = 0x8253CCB0;
-	sub_82537598(ctx, base);
+	FM2_Render_CreateCrowdSpriteVertexDeclaration(ctx, base);
 	// lwz r11,1444(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 1444);
 	// cmplwi r11,0

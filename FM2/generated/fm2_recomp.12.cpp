@@ -29089,7 +29089,7 @@ loc_82369648:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82371a30
 	ctx.lr = 0x82369674;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 loc_82369674:
 	// li r4,0
 	ctx.r4.s64 = 0;
@@ -29118,7 +29118,7 @@ loc_82369674:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82370f68
 	ctx.lr = 0x823696A4;
-	sub_82370F68(ctx, base);
+	FM2_RenderContext_BindIndexBuffer(ctx, base);
 	// li r11,1
 	ctx.r11.s64 = 1;
 	// li r30,0
@@ -29151,7 +29151,7 @@ loc_823696B0:
 	ctx.r8.u64 = ctx.r11.u8 & 0x40 ? 0 : (ctx.r29.u64 >> (ctx.r11.u8 & 0x7F));
 	// bl 0x82370e48
 	ctx.lr = 0x823696E0;
-	sub_82370E48(ctx, base);
+	FM2_RenderContext_BindVertexStream(ctx, base);
 	// addi r30,r30,1
 	ctx.r30.s64 = ctx.r30.s64 + 1;
 	// cmplwi cr6,r30,16
@@ -30699,7 +30699,7 @@ loc_8236A0A4:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236A0B0) {
+DEFINE_REX_FUNC(FM2_D3D_LockGpuBufferRaw) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -30743,7 +30743,7 @@ DEFINE_REX_FUNC(sub_8236A0B0) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236A0F8) {
+DEFINE_REX_FUNC(FM2_D3D_UnlockGpuBufferRaw) {
 	REX_FUNC_PROLOGUE();
 	// lwz r4,24(r3)
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r3.u32 + 24);
@@ -31025,7 +31025,7 @@ DEFINE_REX_FUNC(sub_8236A2A0) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236A2B8) {
+DEFINE_REX_FUNC(FM2_D3DResource_UnlockForRelease) {
 	REX_FUNC_PROLOGUE();
 	// lwz r3,24(r3)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r3.u32 + 24);
@@ -40971,7 +40971,7 @@ loc_8236E394:
 	ctx.r4.s64 = ctx.r10.s32 >> 17;
 	// bl 0x8236e780
 	ctx.lr = 0x8236E4E4;
-	sub_8236E780(ctx, base);
+	FM2_D3D_EmitScissorRegionPackets(ctx, base);
 	// addi r1,r1,112
 	ctx.r1.s64 = ctx.r1.s64 + 112;
 	// b 0x824131fc
@@ -41377,7 +41377,7 @@ DEFINE_REX_FUNC(sub_8236E738) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236E780) {
+DEFINE_REX_FUNC(FM2_D3D_EmitScissorRegionPackets) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -41829,7 +41829,7 @@ loc_8236EA54:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236EA60) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetTextureFetchBitsLow) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10440(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10440);
@@ -41857,7 +41857,7 @@ DEFINE_REX_FUNC(sub_8236EA80) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236EA90) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetTextureFetchBitsMid) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10440(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10440);
@@ -42508,7 +42508,7 @@ DEFINE_REX_FUNC(sub_8236EF10) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236EF20) {
+DEFINE_REX_FUNC(FM2_Render_SetClearColorByteAndDirtyFlag) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	// clrldi r11,r4,32
@@ -47158,7 +47158,7 @@ loc_82370DBC:
 	REX_STORE_U32(ctx.r3.u32 + 10312, ctx.r10.u32);
 	// bl 0x8236e780
 	ctx.lr = 0x82370DE0;
-	sub_8236E780(ctx, base);
+	FM2_D3D_EmitScissorRegionPackets(ctx, base);
 	// addi r1,r1,112
 	ctx.r1.s64 = ctx.r1.s64 + 112;
 	// lwz r12,-8(r1)
@@ -47227,7 +47227,7 @@ DEFINE_REX_FUNC(sub_82370DF8) {
 
 extern void FM2PlumeTraceVertexStreamBinding(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegister& r7, PPCRegister& r8);
 
-DEFINE_REX_FUNC(sub_82370E48) {
+DEFINE_REX_FUNC(FM2_RenderContext_BindVertexStream) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -47390,7 +47390,7 @@ loc_82370F5C:
 
 extern void FM2PlumeTraceIndexBufferBinding(PPCRegister& r3, PPCRegister& r4);
 
-DEFINE_REX_FUNC(sub_82370F68) {
+DEFINE_REX_FUNC(FM2_RenderContext_BindIndexBuffer) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -47955,7 +47955,7 @@ loc_823712E8:
 	ctx.r4.s64 = ctx.r10.s32 >> 17;
 	// bl 0x8236e780
 	ctx.lr = 0x82371318;
-	sub_8236E780(ctx, base);
+	FM2_D3D_EmitScissorRegionPackets(ctx, base);
 	// li r11,-1
 	ctx.r11.s64 = -1;
 	// std r11,0(r31)
@@ -48996,7 +48996,7 @@ loc_82371A24:
 
 extern void FM2PlumeTraceBoundSurface(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5);
 
-DEFINE_REX_FUNC(sub_82371A30) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetBoundSurface) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -54002,7 +54002,7 @@ loc_82373BB0:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82373BB8) {
+DEFINE_REX_FUNC(FM2_D3D_HandleGpuHang) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -54396,7 +54396,7 @@ DEFINE_REX_FUNC(sub_82373E38) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 13064);
 	// bl 0x82373bb8
 	ctx.lr = 0x82373E70;
-	sub_82373BB8(ctx, base);
+	FM2_D3D_HandleGpuHang(ctx, base);
 	// lwz r11,13064(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 13064);
 	// cmplwi cr6,r11,0
@@ -54851,7 +54851,7 @@ loc_82374184:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82374190) {
+DEFINE_REX_FUNC(FM2_D3D_CreatePresentBackbufferResources) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -55100,7 +55100,7 @@ loc_8237430C:
 	REX_STORE_U32(ctx.r29.u32 + 14448, ctx.r4.u32);
 	// bl 0x82371a30
 	ctx.lr = 0x82374344;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 loc_82374344:
 	// addi r3,r29,13168
 	ctx.r3.s64 = ctx.r29.s64 + 13168;
@@ -55213,7 +55213,7 @@ DEFINE_REX_FUNC(sub_823743D0) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82371a30
 	ctx.lr = 0x82374400;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// mr r30,r29
 	ctx.r30.u64 = ctx.r29.u64;
 loc_82374404:
@@ -55700,7 +55700,7 @@ loc_82374688:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82374190
 	ctx.lr = 0x82374740;
-	sub_82374190(ctx, base);
+	FM2_D3D_CreatePresentBackbufferResources(ctx, base);
 	// cmpwi r3,0
 	ctx.cr0.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// beq 0x82374680
@@ -59086,7 +59086,7 @@ loc_82375E0C:
 	ctx.r4.s64 = ctx.r10.s32 >> 17;
 	// bl 0x8236e780
 	ctx.lr = 0x82375E88;
-	sub_8236E780(ctx, base);
+	FM2_D3D_EmitScissorRegionPackets(ctx, base);
 loc_82375E88:
 	// ld r11,0(r24)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r24.u32 + 0);
@@ -59276,7 +59276,7 @@ loc_82375FB0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382590
 	ctx.lr = 0x82375FD0;
-	sub_82382590(ctx, base);
+	FM2_D3D_EmitSurfaceResolvePackets(ctx, base);
 	// mr r30,r3
 	ctx.r30.u64 = ctx.r3.u64;
 loc_82375FD4:
@@ -59969,7 +59969,7 @@ loc_82376418:
 	ctx.r4.s64 = ctx.r10.s32 >> 17;
 	// bl 0x8236e780
 	ctx.lr = 0x8237646C;
-	sub_8236E780(ctx, base);
+	FM2_D3D_EmitScissorRegionPackets(ctx, base);
 loc_8237646C:
 	// ld r11,0(r30)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r30.u32 + 0);
@@ -60009,7 +60009,7 @@ loc_823764A8:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_823764B0) {
+DEFINE_REX_FUNC(FM2_Render_EmitDrawRangeCountPm4) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12

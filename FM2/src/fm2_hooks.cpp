@@ -4006,6 +4006,21 @@ void FM2PlumeTraceDirectIndexedDrawEntry(PPCRegister& r3, PPCRegister& r4, PPCRe
       r9.u32,
       r10.u32,
   });
+}
+
+void FM2PlumeTraceInstanceHybridDrawEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5,
+                                          PPCRegister& r6, PPCRegister& r7, PPCRegister& r8,
+                                          PPCRegister& r9, PPCRegister& r10) {
+  fm2::native_renderer::RecordInstanceHybridDrawEntry({
+      r3.u32,
+      r4.u32,
+      r5.u32,
+      r6.u32,
+      r7.u32,
+      r8.u32,
+      r9.u32,
+      r10.u32,
+  });
   fm2nr::RecordNativeDirectDrawEntry({.direct_render_context = r3.u32,
                                       .draw_iface = r4.u32});
   MaybeLogPlumeNativeStateSnapshot(

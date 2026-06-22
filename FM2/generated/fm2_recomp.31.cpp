@@ -56493,7 +56493,7 @@ loc_8259F000:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8259F008) {
+DEFINE_REX_FUNC(FM2_D3D_CreateVertexDeclarationFromElements) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -56627,7 +56627,7 @@ DEFINE_REX_FUNC(sub_8259F0C8) {
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r11.u32 + 68);
 	// bl 0x825a22f0
 	ctx.lr = 0x8259F0E8;
-	sub_825A22F0(ctx, base);
+	FM2_D3D_CreateVertexBufferWrapper(ctx, base);
 	// li r3,1
 	ctx.r3.s64 = 1;
 	// addi r1,r1,96
@@ -60220,7 +60220,7 @@ loc_825A0828:
 	REX_STORE_U32(ctx.r28.u32 + 172, ctx.r3.u32);
 	// bl 0x825a2650
 	ctx.lr = 0x825A0844;
-	sub_825A2650(ctx, base);
+	FM2_D3D_CreateTextureWrapper(ctx, base);
 	// b 0x825a0874
 	goto loc_825A0874;
 loc_825A0848:
@@ -64163,7 +64163,7 @@ DEFINE_REX_FUNC(sub_825A2238) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825A22F0) {
+DEFINE_REX_FUNC(FM2_D3D_CreateVertexBufferWrapper) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -64225,7 +64225,7 @@ loc_825A2318:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825A2350) {
+DEFINE_REX_FUNC(FM2_D3D_LockVertexBufferWrapper) {
 	REX_FUNC_PROLOGUE();
 	// lwz r3,0(r3)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r3.u32 + 0);
@@ -64236,16 +64236,16 @@ DEFINE_REX_FUNC(sub_825A2350) {
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// b 0x8236a0b0
-	sub_8236A0B0(ctx, base);
+	FM2_D3D_LockGpuBufferRaw(ctx, base);
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825A2368) {
+DEFINE_REX_FUNC(FM2_D3D_UnlockVertexBufferWrapper) {
 	REX_FUNC_PROLOGUE();
 	// lwz r3,0(r3)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r3.u32 + 0);
 	// b 0x8236a0f8
-	sub_8236A0F8(ctx, base);
+	FM2_D3D_UnlockGpuBufferRaw(ctx, base);
 	return;
 }
 
@@ -64694,7 +64694,7 @@ loc_825A2644:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825A2650) {
+DEFINE_REX_FUNC(FM2_D3D_CreateTextureWrapper) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -64834,7 +64834,7 @@ loc_825A2714:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825A2730) {
+DEFINE_REX_FUNC(FM2_D3D_CreateIndexBufferWrapper) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -64936,7 +64936,7 @@ loc_825A27CC:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825A27D8) {
+DEFINE_REX_FUNC(FM2_D3D_DeserializeAndLockIndexBuffer) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -65127,7 +65127,7 @@ loc_825A291C:
 	REX_STORE_U32(ctx.r30.u32 + 8, ctx.r11.u32);
 	// bl 0x825a2730
 	ctx.lr = 0x825A2930;
-	sub_825A2730(ctx, base);
+	FM2_D3D_CreateIndexBufferWrapper(ctx, base);
 loc_825A2930:
 	// lwz r11,8(r30)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 8);
@@ -65145,7 +65145,7 @@ loc_825A2930:
 	if (!ctx.cr6.eq) goto loc_825A29DC;
 	// bl 0x8236a0b0
 	ctx.lr = 0x825A2950;
-	sub_8236A0B0(ctx, base);
+	FM2_D3D_LockGpuBufferRaw(ctx, base);
 	// mr r29,r3
 	ctx.r29.u64 = ctx.r3.u64;
 	// cmplwi cr6,r28,3
@@ -65224,7 +65224,7 @@ loc_825A2978:
 loc_825A29DC:
 	// bl 0x8236a0b0
 	ctx.lr = 0x825A29E0;
-	sub_8236A0B0(ctx, base);
+	FM2_D3D_LockGpuBufferRaw(ctx, base);
 	// mr r29,r3
 	ctx.r29.u64 = ctx.r3.u64;
 	// cmplwi cr6,r28,2
@@ -65325,7 +65325,7 @@ loc_825A2A8C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 0);
 	// bl 0x8236a0f8
 	ctx.lr = 0x825A2A94;
-	sub_8236A0F8(ctx, base);
+	FM2_D3D_UnlockGpuBufferRaw(ctx, base);
 	// lwz r11,0(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// mr r3,r31
@@ -65643,7 +65643,7 @@ DEFINE_REX_FUNC(sub_825A2C70) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825A2CC0) {
+DEFINE_REX_FUNC(FM2_D3D_DeserializeAndUploadTextureSurfaces) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -65823,7 +65823,7 @@ DEFINE_REX_FUNC(sub_825A2CC0) {
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r30.u32 + 24);
 	// bl 0x825a2650
 	ctx.lr = 0x825A2E0C;
-	sub_825A2650(ctx, base);
+	FM2_D3D_CreateTextureWrapper(ctx, base);
 loc_825A2E0C:
 	// lwz r11,32(r30)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 32);
@@ -66040,7 +66040,7 @@ loc_825A2F6C:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8236a2b8
 	ctx.lr = 0x825A2F88;
-	sub_8236A2B8(ctx, base);
+	FM2_D3DResource_UnlockForRelease(ctx, base);
 	// mr r3,r29
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x82369e08
@@ -66203,7 +66203,7 @@ DEFINE_REX_FUNC(sub_825A2FC0) {
 	ctx.r3.s64 = ctx.r1.s64 + 96;
 	// bl 0x825a2650
 	ctx.lr = 0x825A30B8;
-	sub_825A2650(ctx, base);
+	FM2_D3D_CreateTextureWrapper(ctx, base);
 	// lwz r28,100(r1)
 	ctx.r28.u64 = REX_LOAD_U32(ctx.r1.u32 + 100);
 	// li r4,0
@@ -79570,7 +79570,7 @@ loc_825A8A0C:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x825a22f0
 	ctx.lr = 0x825A8A2C;
-	sub_825A22F0(ctx, base);
+	FM2_D3D_CreateVertexBufferWrapper(ctx, base);
 	// li r6,0
 	ctx.r6.s64 = 0;
 	// li r5,0
@@ -79763,7 +79763,7 @@ DEFINE_REX_FUNC(sub_825A8AF8) {
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x825a22f0
 	ctx.lr = 0x825A8B74;
-	sub_825A22F0(ctx, base);
+	FM2_D3D_CreateVertexBufferWrapper(ctx, base);
 	// li r6,0
 	ctx.r6.s64 = 0;
 	// li r5,0

@@ -1686,10 +1686,17 @@ FM2 render call -> replacement hook -> native Plume state/resources -> Plume dra
 
 IDA hook-surface pass result:
 
-- `FM2_Render_BuildDirectIndexedDrawBuffers` (`0x825380B8`) is the best first
-  product hook. It consumes `direct_render_ctx` and `draw_iface`, resolves direct
-  draw records, binds surface/state, binds resource slots through draw-interface
-  methods, issues indexed draw calls, finalizes batches, and stores clones.
+- `FM2_Render_InstanceHybridDrawPath` (`0x82539650`) is the best first
+  per-frame product hook. It is the direct caller above
+  `FM2_Render_BuildDirectIndexedDrawBuffers` and fires repeatedly for the
+  hybrid draw path without the builder's one-shot guard.
+- `FM2_Render_BuildDirectIndexedDrawBuffers` (`0x825380B8`) is a valuable
+  direct-record compiler/discovery hook. It consumes `direct_render_ctx` and
+  `draw_iface`, resolves direct draw records, binds surface/state, binds
+  resource slots through draw-interface methods, issues indexed draw calls,
+  finalizes batches, and stores clones, but the guard byte at
+  `direct_render_ctx + 0x48` makes it unsuitable as the primary per-frame
+  renderer hook.
 - The direct indexed path exposes exactly the data the current diagnostic replay
   had to rediscover indirectly: stream resources, index resource, pass constants,
   surface, primitive type, start index, and primitive count.
@@ -1717,8 +1724,9 @@ Immediate implementation target:
 
 1. Keep the existing compare window for validation.
 2. Add a Plume native state mirror fed by the render-context setters/binders.
-3. Hook `FM2_Render_BuildDirectIndexedDrawBuffers` to submit one real native
-   Plume draw alongside or instead of the command-buffer clone path.
+3. Hook `FM2_Render_InstanceHybridDrawPath` for the first per-frame native
+   Plume world-geometry draw, using `FM2_Render_BuildDirectIndexedDrawBuffers`
+   only to validate direct-record layout/resource provenance.
 4. Use `FM2_D3D_TryPresentAndUpdateStatus` as the first frame-present bridge
    once native draws are visible.
 
@@ -1746,10 +1754,18 @@ Hook behavior:
 - Native direct draw scans all direct records while enabled, matching compare
   replay, so it can find the first ready native-layout record instead of being
   capped by trace-only decode limits.
-- The native-layout promotion path is shared by compare replay and native direct
-  draw. If the paired native state reports stream 0 stride `28`, stream 1 stride
-  `12`, and a readable native index resource, the submission uses
+- The native-layout promotion path is used by compare replay and one-shot native
+  direct draw. If the paired native state reports stream 0 stride `28`, stream 1
+  stride `12`, and a readable native index resource, the submission uses
   `native_position28_side12`.
+- Unlimited live native batching intentionally keeps the per-record decoded
+  replay buffers instead of promoting through paired native-state resources.
+  Runtime logs showed the promoted native stream/index resources repeated the
+  same triplet across many records (`A9E192C0` / `B09BF460` / `A9E56C4C`),
+  matching the observed fixed car-like wireframe. The per-record decoded plans
+  carry varied stream/index upload bases and auto-selected transforms, so they
+  are the better diagnostic source until the product hook moves up to
+  `FM2_Render_InstanceHybridDrawPath`.
 - If native promotion is not ready, the submission path falls back to the
   existing direct replay plan shape for now.
 
@@ -1843,8 +1859,62 @@ Verification:
 
 Current limitation:
 
-- The live side-by-side path still clears and presents one submitted direct draw
-  at a time. It is useful for proving Plume is receiving live geometry, but it
-  is not yet a composed native frame next to the original game frame.
+- The live side-by-side path now batches accepted direct replay records before
+  presenting, but it is still not a true native frame. It composes compatible
+  diagnostic replay records in chunks and clears once per chunk; it does not yet
+  own the real FM2 frame/pass boundary, camera state, material state, or cached
+  draw-list execution.
 - The stable `limit=1` mode is the best current visual inspection mode for the
   first visible wireframe draw.
+
+### 2026-06-22 Live Batch Follow-up
+
+User observation after the first live-batch smoke: once initial gameplay starts,
+the Plume replay window shows a messy wireframe resembling a car, ignores camera
+position/environment/other track vehicles, and disappears after the race
+countdown.
+
+Log correlation from the same run:
+
+- Native live batches continued presenting near process shutdown:
+  `FM2_PLUME_NATIVE_LIVE_BATCH_SUBMIT presented=true ... draws=16 skipped=0`.
+- The repeated car-like geometry came from native-state promotion, not from the
+  batch renderer. `FM2_PLUME_NATIVE_REPLAY_PLAN` repeatedly selected the same
+  native resource triplet:
+  `s0_upload_base=A9E192C0`, `s1_upload_base=B09BF460`,
+  `index_upload_base=A9E56C4C`.
+- The decoded direct replay records in the same samples had varied stream/index
+  upload bases (`B0BB...`, `B0BD...`, `B0D0...`) and auto-selected transforms.
+
+Code change from this follow-up:
+
+- Added live-batch policy helpers:
+  `ShouldStopDirectPlumeRecordScanAfterNativeAttempt(..., live_batch)` and
+  `ShouldPromoteDirectReplayToNativeLayout(compare, native, live_batch)`.
+- Added cvars:
+  `fm2_plume_native_direct_draw_live_batch` and
+  `fm2_plume_native_direct_draw_live_batch_size`.
+- `SubmitNativeDirectDraw()` now owns copied source bytes in a pending queue and
+  flushes with `FM2_PLUME_NATIVE_LIVE_BATCH_SUBMIT`.
+- Unlimited live native batching skips stale native-state promotion and submits
+  the varied per-record `debug_raw32_side12` replay plans instead.
+
+Verification:
+
+- `unit_tests.exe "[fm2][plume]"` passed with 588 assertions in 50 test cases.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` rebuilt
+  `fm2.exe`; only the pre-existing `fopen`/`getenv` deprecation warnings in
+  `FM2/src/fm2_hooks.cpp` appeared.
+- Gameplay smoke with `--fm2_plume_native_direct_draw_limit 0`,
+  `--fm2_plume_native_direct_draw_live_batch`,
+  `--fm2_plume_native_direct_draw_live_batch_size 16`,
+  `--fm2_plume_debug_replay_window`, `--fm2_plume_debug_replay_side_by_side`,
+  `--fm2_plume_wireframe`, and `--mnk_mode` reached gameplay input with
+  `Space tap result: ok=40 failed=0`.
+
+Next renderer step:
+
+- Stop treating `0x825380B8` as the live renderer boundary. Use
+  `FM2_Render_InstanceHybridDrawPath` for per-frame world geometry, keep
+  render-context setters as the Plume state mirror, and use
+  `FM2_D3D_TryPresentAndUpdateStatus` for present ownership.

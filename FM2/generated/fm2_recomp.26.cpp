@@ -7286,7 +7286,7 @@ loc_824F6504:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_824F6520) {
+DEFINE_REX_FUNC(FM2_D3D_LazyInitPresentChain) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -7725,7 +7725,7 @@ loc_824F67F8:
 	ctx.r4.s64 = 0;
 	// bl 0x824f6520
 	ctx.lr = 0x824F6800;
-	sub_824F6520(ctx, base);
+	FM2_D3D_LazyInitPresentChain(ctx, base);
 loc_824F6800:
 	// li r3,0
 	ctx.r3.s64 = 0;
@@ -7834,7 +7834,7 @@ loc_824F68A0:
 	ctx.r4.s64 = 0;
 	// bl 0x824f6520
 	ctx.lr = 0x824F68C0;
-	sub_824F6520(ctx, base);
+	FM2_D3D_LazyInitPresentChain(ctx, base);
 loc_824F68C0:
 	// li r3,0
 	ctx.r3.s64 = 0;
@@ -11700,7 +11700,7 @@ loc_824F82EC:
 	return;
 loc_824F82F0:
 	// b 0x824f83d8
-	sub_824F83D8(ctx, base);
+	FM2_D3D_TryPresentAndUpdateStatus(ctx, base);
 	return;
 loc_824F82F4:
 	// b 0x824f7880
@@ -11835,7 +11835,7 @@ loc_824F8384:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_824F83D8) {
+DEFINE_REX_FUNC(FM2_D3D_TryPresentAndUpdateStatus) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -12148,7 +12148,7 @@ loc_824F85F4:
 	// mr r3,r10
 	ctx.r3.u64 = ctx.r10.u64;
 	// b 0x824f83d8
-	sub_824F83D8(ctx, base);
+	FM2_D3D_TryPresentAndUpdateStatus(ctx, base);
 	return;
 loc_824F85FC:
 	// mr r3,r10
@@ -23924,7 +23924,7 @@ DEFINE_REX_FUNC(sub_824FD448) {
 	ctx.r31.u64 = ctx.r3.u64;
 	// bl 0x82502268
 	ctx.lr = 0x824FD480;
-	sub_82502268(ctx, base);
+	FM2_D3D_LazyInitPresentChainInit(ctx, base);
 	// lwz r3,80(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// cmplwi cr6,r3,0
@@ -24700,7 +24700,7 @@ DEFINE_REX_FUNC(sub_824FD970) {
 	ctx.r31.u64 = ctx.r3.u64;
 	// bl 0x82502268
 	ctx.lr = 0x824FD9A8;
-	sub_82502268(ctx, base);
+	FM2_D3D_LazyInitPresentChainInit(ctx, base);
 	// lwz r3,80(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// cmplwi cr6,r3,0
@@ -25339,7 +25339,7 @@ DEFINE_REX_FUNC(sub_824FDDA8) {
 	ctx.r31.u64 = ctx.r3.u64;
 	// bl 0x82502268
 	ctx.lr = 0x824FDDE0;
-	sub_82502268(ctx, base);
+	FM2_D3D_LazyInitPresentChainInit(ctx, base);
 	// lwz r3,80(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// cmplwi cr6,r3,0
@@ -25887,7 +25887,7 @@ DEFINE_REX_FUNC(sub_824FE148) {
 	ctx.r27.u64 = ctx.r8.u64;
 	// bl 0x82502268
 	ctx.lr = 0x824FE184;
-	sub_82502268(ctx, base);
+	FM2_D3D_LazyInitPresentChainInit(ctx, base);
 	// lwz r3,80(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// cmplwi cr6,r3,0
@@ -26502,7 +26502,7 @@ DEFINE_REX_FUNC(sub_824FE578) {
 	ctx.r31.u64 = ctx.r3.u64;
 	// bl 0x82502268
 	ctx.lr = 0x824FE5B0;
-	sub_82502268(ctx, base);
+	FM2_D3D_LazyInitPresentChainInit(ctx, base);
 	// lwz r3,80(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// cmplwi cr6,r3,0
@@ -35543,7 +35543,7 @@ loc_82502248:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82502268) {
+DEFINE_REX_FUNC(FM2_D3D_LazyInitPresentChainInit) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -50030,7 +50030,7 @@ DEFINE_REX_FUNC(sub_82508080) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82722fd8
 	ctx.lr = 0x825080D4;
-	sub_82722FD8(ctx, base);
+	FM2_Render_WalkAndDispatchPm4DrawList(ctx, base);
 	// addi r1,r1,112
 	ctx.r1.s64 = ctx.r1.s64 + 112;
 	// b 0x824131fc
@@ -50038,7 +50038,7 @@ DEFINE_REX_FUNC(sub_82508080) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825080E0) {
+DEFINE_REX_FUNC(FM2_Render_BuildFallbackPassCommandBuffers) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -50391,7 +50391,7 @@ loc_8250832C:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x82371a30
 	ctx.lr = 0x82508348;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// addi r4,r1,176
 	ctx.r4.s64 = ctx.r1.s64 + 176;
 	// mr r3,r19
@@ -50582,7 +50582,7 @@ loc_8250845C:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x82371a30
 	ctx.lr = 0x82508494;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// bl 0x825b36a8
 	ctx.lr = 0x82508498;
 	sub_825B36A8(ctx, base);
@@ -52048,7 +52048,7 @@ loc_82508E2C:
 	goto loc_82508D94;
 }
 
-DEFINE_REX_FUNC(sub_82508E38) {
+DEFINE_REX_FUNC(FM2_Render_EmitFallbackPassDrawListIfReady) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -52094,7 +52094,7 @@ DEFINE_REX_FUNC(sub_82508E38) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x825080e0
 	ctx.lr = 0x82508E84;
-	sub_825080E0(ctx, base);
+	FM2_Render_BuildFallbackPassCommandBuffers(ctx, base);
 	// mr r3,r31
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x825064a8
@@ -59309,7 +59309,7 @@ DEFINE_REX_FUNC(sub_8250BD30) {
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x82371a30
 	ctx.lr = 0x8250BE38;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// lwz r11,0(r27)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r27.u32 + 0);
 	// mr r4,r27
@@ -64553,7 +64553,7 @@ loc_8250E064:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 4288);
 	// bl 0x82371a30
 	ctx.lr = 0x8250E0A0;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// lwz r3,4288(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 4288);
 	// bl 0x82369418

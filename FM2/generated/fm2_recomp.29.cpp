@@ -34393,7 +34393,7 @@ loc_8255C42C:
 	ctx.r3.s64 = ctx.r30.s64 + 36;
 	// bl 0x825a27d8
 	ctx.lr = 0x8255C440;
-	sub_825A27D8(ctx, base);
+	FM2_D3D_DeserializeAndLockIndexBuffer(ctx, base);
 	// lwz r11,0(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// mr r3,r31
@@ -48309,7 +48309,7 @@ loc_82562184:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x825a2350
 	ctx.lr = 0x82562190;
-	sub_825A2350(ctx, base);
+	FM2_D3D_LockVertexBufferWrapper(ctx, base);
 	// lwz r11,40(r28)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r28.u32 + 40);
 	// fmr f31,f22
@@ -48435,7 +48435,7 @@ loc_82562250:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x825a2368
 	ctx.lr = 0x82562258;
-	sub_825A2368(ctx, base);
+	FM2_D3D_UnlockVertexBufferWrapper(ctx, base);
 	// fsqrts f0,f31
 	ctx.fpscr.disableFlushMode();
 	ctx.f0.f64 = double(float(sqrt(ctx.f31.f64)));

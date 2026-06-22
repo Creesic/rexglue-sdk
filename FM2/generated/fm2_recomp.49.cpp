@@ -20106,7 +20106,7 @@ loc_827B8234:
 	ctx.r4.u64 = ctx.r31.u64;
 	// bl 0x827baaa8
 	ctx.lr = 0x827B8258;
-	sub_827BAAA8(ctx, base);
+	FM2_D3D_CreateAndUploadVertexIndexBuffers(ctx, base);
 	// b 0x827b8294
 	goto loc_827B8294;
 loc_827B825C:
@@ -25513,7 +25513,7 @@ loc_827BA3A4:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236ef20
 	ctx.lr = 0x827BA478;
-	sub_8236EF20(ctx, base);
+	FM2_Render_SetClearColorByteAndDirtyFlag(ctx, base);
 	// li r4,6
 	ctx.r4.s64 = 6;
 	// lwz r3,7148(r31)
@@ -25527,14 +25527,14 @@ loc_827BA3A4:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236ea90
 	ctx.lr = 0x827BA490;
-	sub_8236EA90(ctx, base);
+	FM2_RenderContext_SetTextureFetchBitsMid(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,7148(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236ea60
 	ctx.lr = 0x827BA49C;
-	sub_8236EA60(ctx, base);
+	FM2_RenderContext_SetTextureFetchBitsLow(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,7148(r31)
@@ -26457,7 +26457,7 @@ loc_827BAA9C:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_827BAAA8) {
+DEFINE_REX_FUNC(FM2_D3D_CreateAndUploadVertexIndexBuffers) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -26592,7 +26592,7 @@ loc_827BAB14:
 	ctx.r3.u64 = __builtin_rotateleft32(ctx.r3.u32, 0);
 	// bl 0x8236a0b0
 	ctx.lr = 0x827BAB9C;
-	sub_8236A0B0(ctx, base);
+	FM2_D3D_LockGpuBufferRaw(ctx, base);
 	// lwz r11,12(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 12);
 	// mr r5,r30
@@ -26610,7 +26610,7 @@ loc_827BAB14:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 84);
 	// bl 0x8236a0f8
 	ctx.lr = 0x827BABBC;
-	sub_8236A0F8(ctx, base);
+	FM2_D3D_UnlockGpuBufferRaw(ctx, base);
 	// mr r3,r31
 	ctx.r3.u64 = ctx.r31.u64;
 	// addi r1,r1,112
@@ -27386,7 +27386,7 @@ loc_827BB008:
 	ctx.r5.u64 = REX_LOAD_U32(ctx.r31.u32 + 80);
 	// bl 0x82370e48
 	ctx.lr = 0x827BB0C4;
-	sub_82370E48(ctx, base);
+	FM2_RenderContext_BindVertexStream(ctx, base);
 	// lwz r11,24(r29)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r29.u32 + 24);
 	// li r5,0
@@ -27625,14 +27625,14 @@ loc_827BB23C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x82370f68
 	ctx.lr = 0x827BB24C;
-	sub_82370F68(ctx, base);
+	FM2_RenderContext_BindIndexBuffer(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,7148(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236ea60
 	ctx.lr = 0x827BB258;
-	sub_8236EA60(ctx, base);
+	FM2_RenderContext_SetTextureFetchBitsLow(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,7148(r31)
@@ -30239,7 +30239,7 @@ loc_827BC398:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236ea60
 	ctx.lr = 0x827BC3A4;
-	sub_8236EA60(ctx, base);
+	FM2_RenderContext_SetTextureFetchBitsLow(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,7148(r31)
@@ -30510,7 +30510,7 @@ loc_827BC4D8:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236ef20
 	ctx.lr = 0x827BC580;
-	sub_8236EF20(ctx, base);
+	FM2_Render_SetClearColorByteAndDirtyFlag(ctx, base);
 	// li r4,6
 	ctx.r4.s64 = 6;
 	// lwz r3,7148(r31)
@@ -31436,7 +31436,7 @@ DEFINE_REX_FUNC(sub_827BCAF8) {
 	ctx.f27.f64 = double(float(ctx.f9.f64 * ctx.f13.f64));
 	// bl 0x8236ea60
 	ctx.lr = 0x827BCB70;
-	sub_8236EA60(ctx, base);
+	FM2_RenderContext_SetTextureFetchBitsLow(ctx, base);
 	// li r4,-1
 	ctx.r4.s64 = -1;
 	// lwz r3,7148(r31)
@@ -31471,7 +31471,7 @@ DEFINE_REX_FUNC(sub_827BCAF8) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236ea90
 	ctx.lr = 0x827BCBAC;
-	sub_8236EA90(ctx, base);
+	FM2_RenderContext_SetTextureFetchBitsMid(ctx, base);
 	// lbz r11,463(r30)
 	ctx.r11.u64 = REX_LOAD_U8(ctx.r30.u32 + 463);
 	// lwz r3,7148(r31)

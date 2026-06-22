@@ -622,7 +622,7 @@ DEFINE_REX_FUNC(sub_8237BD48) {
 	ctx.r5.u64 = REX_LOAD_U32(ctx.r31.u32 + 10432);
 	// bl 0x82382590
 	ctx.lr = 0x8237BD98;
-	sub_82382590(ctx, base);
+	FM2_D3D_EmitSurfaceResolvePackets(ctx, base);
 	// std r3,16(r31)
 	REX_STORE_U64(ctx.r31.u32 + 16, ctx.r3.u64);
 loc_8237BD9C:
@@ -4233,7 +4233,7 @@ loc_8237D594:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236e780
 	ctx.lr = 0x8237D5AC;
-	sub_8236E780(ctx, base);
+	FM2_D3D_EmitScissorRegionPackets(ctx, base);
 	// li r18,1
 	ctx.r18.s64 = 1;
 loc_8237D5B0:
@@ -4257,7 +4257,7 @@ loc_8237D5B0:
 	ctx.r5.u64 = REX_LOAD_U32(ctx.r31.u32 + 10432);
 	// bl 0x82382590
 	ctx.lr = 0x8237D5D8;
-	sub_82382590(ctx, base);
+	FM2_D3D_EmitSurfaceResolvePackets(ctx, base);
 	// std r3,16(r31)
 	REX_STORE_U64(ctx.r31.u32 + 16, ctx.r3.u64);
 loc_8237D5DC:
@@ -4933,7 +4933,7 @@ loc_8237DA34:
 	REX_STORE_U32(ctx.r31.u32 + 48, ctx.r11.u32);
 	// bl 0x82382590
 	ctx.lr = 0x8237DA54;
-	sub_82382590(ctx, base);
+	FM2_D3D_EmitSurfaceResolvePackets(ctx, base);
 	// lwz r11,48(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 48);
 	// lwz r10,56(r31)
@@ -5464,7 +5464,7 @@ loc_8237DD68:
 	ctx.r4.s64 = ctx.r10.s32 >> 17;
 	// bl 0x8236e780
 	ctx.lr = 0x8237DDC0;
-	sub_8236E780(ctx, base);
+	FM2_D3D_EmitScissorRegionPackets(ctx, base);
 loc_8237DDC0:
 	// lwz r11,144(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 144);
@@ -16641,7 +16641,7 @@ loc_82382570:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82382590) {
+DEFINE_REX_FUNC(FM2_D3D_EmitSurfaceResolvePackets) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -19269,7 +19269,7 @@ loc_82383710:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82383718) {
+DEFINE_REX_FUNC(FM2_D3D_EmitIndexedDrawPacket) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -20196,7 +20196,7 @@ loc_82383D48:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x82383718
 	ctx.lr = 0x82383D6C;
-	sub_82383718(ctx, base);
+	FM2_D3D_EmitIndexedDrawPacket(ctx, base);
 loc_82383D6C:
 	// xor r11,r29,r26
 	ctx.r11.u64 = ctx.r29.u64 ^ ctx.r26.u64;
@@ -20302,7 +20302,7 @@ loc_82383E0C:
 	ctx.r5.u64 = ctx.r31.u64;
 	// bl 0x82383718
 	ctx.lr = 0x82383E28;
-	sub_82383718(ctx, base);
+	FM2_D3D_EmitIndexedDrawPacket(ctx, base);
 loc_82383E28:
 	// rlwinm r11,r20,0,11,12
 	ctx.r11.u64 = __builtin_rotateleft64(ctx.r20.u32 | (ctx.r20.u64 << 32), 0) & 0x180000;
@@ -23391,7 +23391,7 @@ loc_823852E0:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_823852F8) {
+DEFINE_REX_FUNC(FM2_D3D_CreateTextureResourceFromFormat) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -24652,7 +24652,7 @@ loc_82385B8C:
 	ctx.r3.s64 = ctx.r1.s64 + 160;
 	// bl 0x82392090
 	ctx.lr = 0x82385BAC;
-	sub_82392090(ctx, base);
+	FM2_D3D_GatherSurfaceMetadataForTextureCreate(ctx, base);
 	// cmpwi r3,0
 	ctx.cr0.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// bge 0x82385bbc
@@ -27477,7 +27477,7 @@ loc_82386F70:
 	ctx.r3.s64 = ctx.r1.s64 + 128;
 	// bl 0x82392090
 	ctx.lr = 0x82386F8C;
-	sub_82392090(ctx, base);
+	FM2_D3D_GatherSurfaceMetadataForTextureCreate(ctx, base);
 	// cmpwi r3,0
 	ctx.cr0.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// bge 0x82386f9c
@@ -27819,7 +27819,7 @@ loc_823871AC:
 	ctx.r4.u64 = __builtin_rotateleft64(ctx.r11.u32 | (ctx.r11.u64 << 32), 0) & 0xFFFFFFFFFFFFFEFF;
 	// bl 0x823852f8
 	ctx.lr = 0x823871DC;
-	sub_823852F8(ctx, base);
+	FM2_D3D_CreateTextureResourceFromFormat(ctx, base);
 	// cmpwi r3,0
 	ctx.cr0.compare<int32_t>(ctx.r3.s32, 0, ctx.xer);
 	// bge 0x823871ec
@@ -28296,7 +28296,7 @@ loc_823874F4:
 	ctx.r3.u64 = ctx.r11.u64 + ctx.r29.u64;
 	// bl 0x82392090
 	ctx.lr = 0x8238751C;
-	sub_82392090(ctx, base);
+	FM2_D3D_GatherSurfaceMetadataForTextureCreate(ctx, base);
 loc_8238751C:
 	// mr r26,r3
 	ctx.r26.u64 = ctx.r3.u64;
@@ -52781,7 +52781,7 @@ DEFINE_REX_FUNC(sub_82391E28) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82391E48) {
+DEFINE_REX_FUNC(FM2_D3D_CopySurfaceRectLocked) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -52899,12 +52899,12 @@ loc_82391F10:
 	ctx.r3.u64 = ctx.r26.u64;
 	// bl 0x8236a2b8
 	ctx.lr = 0x82391F18;
-	sub_8236A2B8(ctx, base);
+	FM2_D3DResource_UnlockForRelease(ctx, base);
 	// mr r3,r27
 	ctx.r3.u64 = ctx.r27.u64;
 	// bl 0x8236a2b8
 	ctx.lr = 0x82391F20;
-	sub_8236A2B8(ctx, base);
+	FM2_D3DResource_UnlockForRelease(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// addi r1,r1,192
@@ -52946,7 +52946,7 @@ DEFINE_REX_FUNC(sub_82391F30) {
 loc_82391F60:
 	// bl 0x8236a2b8
 	ctx.lr = 0x82391F64;
-	sub_8236A2B8(ctx, base);
+	FM2_D3DResource_UnlockForRelease(ctx, base);
 loc_82391F64:
 	// lwz r11,4(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
@@ -52994,7 +52994,7 @@ loc_82391F64:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x82391e48
 	ctx.lr = 0x82391FB8;
-	sub_82391E48(ctx, base);
+	FM2_D3D_CopySurfaceRectLocked(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x824e5a48
@@ -53090,7 +53090,7 @@ DEFINE_REX_FUNC(sub_82392030) {
 	if (ctx.cr0.eq) goto loc_8239206C;
 	// bl 0x8236a2b8
 	ctx.lr = 0x82392054;
-	sub_8236A2B8(ctx, base);
+	FM2_D3DResource_UnlockForRelease(ctx, base);
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// cmplwi r3,0
@@ -53126,7 +53126,7 @@ DEFINE_REX_FUNC(sub_82392088) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82392090) {
+DEFINE_REX_FUNC(FM2_D3D_GatherSurfaceMetadataForTextureCreate) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -53410,7 +53410,7 @@ loc_82392214:
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r22.u32 + 8);
 	// bl 0x82391e48
 	ctx.lr = 0x82392298;
-	sub_82391E48(ctx, base);
+	FM2_D3D_CopySurfaceRectLocked(ctx, base);
 	// mr r31,r3
 	ctx.r31.u64 = ctx.r3.u64;
 	// li r3,0

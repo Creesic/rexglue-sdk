@@ -38585,7 +38585,7 @@ DEFINE_REX_FUNC(sub_825D4078) {
 	ctx.r5.u64 = REX_LOAD_U32(ctx.r11.u32 + 0);
 	// bl 0x82370e48
 	ctx.lr = 0x825D40F8;
-	sub_82370E48(ctx, base);
+	FM2_RenderContext_BindVertexStream(ctx, base);
 loc_825D40F8:
 	// lis r11,-32256
 	ctx.r11.s64 = -2113929216;
@@ -38716,7 +38716,7 @@ loc_825D41A0:
 	ctx.r5.u64 = REX_LOAD_U32(ctx.r11.u32 + 0);
 	// bl 0x82370e48
 	ctx.lr = 0x825D41E4;
-	sub_82370E48(ctx, base);
+	FM2_RenderContext_BindVertexStream(ctx, base);
 loc_825D41E4:
 	// li r30,0
 	ctx.r30.s64 = 0;
@@ -38789,7 +38789,7 @@ loc_825D4230:
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r31.u32 + 36);
 	// bl 0x82370f68
 	ctx.lr = 0x825D4264;
-	sub_82370F68(ctx, base);
+	FM2_RenderContext_BindIndexBuffer(ctx, base);
 	// lwz r4,40(r31)
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r31.u32 + 40);
 	// lwz r3,48(r31)
@@ -38828,7 +38828,7 @@ loc_825D4230:
 	ctx.r3.u64 = ctx.r28.u64;
 	// bl 0x82370f68
 	ctx.lr = 0x825D42AC;
-	sub_82370F68(ctx, base);
+	FM2_RenderContext_BindIndexBuffer(ctx, base);
 	// li r6,0
 	ctx.r6.s64 = 0;
 	// li r5,0
@@ -38878,7 +38878,7 @@ loc_825D42E8:
 	ctx.r3.u64 = ctx.r28.u64;
 	// bl 0x82370e48
 	ctx.lr = 0x825D4304;
-	sub_82370E48(ctx, base);
+	FM2_RenderContext_BindVertexStream(ctx, base);
 	// addi r3,r1,176
 	ctx.r3.s64 = ctx.r1.s64 + 176;
 	// bl 0x82227100
@@ -42372,7 +42372,7 @@ DEFINE_REX_FUNC(sub_825D5A30) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825D5A70) {
+DEFINE_REX_FUNC(FM2_Render_LiverySectionClearColorAndDraw) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	PPCVRegister vTemp{};
@@ -43175,7 +43175,7 @@ loc_825D5F3C:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236ef20
 	ctx.lr = 0x825D5FC0;
-	sub_8236EF20(ctx, base);
+	FM2_Render_SetClearColorByteAndDirtyFlag(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// mr r3,r30
@@ -43245,7 +43245,7 @@ loc_825D602C:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236ef20
 	ctx.lr = 0x825D6038;
-	sub_8236EF20(ctx, base);
+	FM2_Render_SetClearColorByteAndDirtyFlag(ctx, base);
 	// li r4,4
 	ctx.r4.s64 = 4;
 	// mr r3,r30
@@ -43304,7 +43304,7 @@ loc_825D6088:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236ef20
 	ctx.lr = 0x825D609C;
-	sub_8236EF20(ctx, base);
+	FM2_Render_SetClearColorByteAndDirtyFlag(ctx, base);
 	// li r4,4
 	ctx.r4.s64 = 4;
 	// mr r3,r30
@@ -43432,7 +43432,7 @@ loc_825D616C:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236ef20
 	ctx.lr = 0x825D6178;
-	sub_8236EF20(ctx, base);
+	FM2_Render_SetClearColorByteAndDirtyFlag(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// mr r3,r30
@@ -45901,7 +45901,7 @@ loc_825D6FD4:
 	REX_STORE_U64(ctx.r31.u32 + 24, ctx.r11.u64);
 	// bl 0x825d5a70
 	ctx.lr = 0x825D7260;
-	sub_825D5A70(ctx, base);
+	FM2_Render_LiverySectionClearColorAndDraw(ctx, base);
 	// li r5,0
 	ctx.r5.s64 = 0;
 	// lwz r4,832(r29)
@@ -48483,7 +48483,7 @@ loc_825D8408:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x825d5a70
 	ctx.lr = 0x825D8430;
-	sub_825D5A70(ctx, base);
+	FM2_Render_LiverySectionClearColorAndDraw(ctx, base);
 loc_825D8430:
 	// addi r29,r29,1
 	ctx.r29.s64 = ctx.r29.s64 + 1;

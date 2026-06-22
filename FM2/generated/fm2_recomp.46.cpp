@@ -50921,7 +50921,7 @@ DEFINE_REX_FUNC(sub_82760AB8) {
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r30.u32 + 264);
 	// bl 0x82371a30
 	ctx.lr = 0x82760B44;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// addi r4,r1,80
 	ctx.r4.s64 = ctx.r1.s64 + 80;
 	// lwz r3,7148(r31)
@@ -51119,7 +51119,7 @@ DEFINE_REX_FUNC(sub_82760C78) {
 	return;
 loc_82760C8C:
 	// b 0x82515e18
-	sub_82515E18(ctx, base);
+	FM2_D3D_CreateDepthStencilSurfaceAndTexture(ctx, base);
 	return;
 }
 

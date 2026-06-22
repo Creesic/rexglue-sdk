@@ -23619,7 +23619,7 @@ loc_825735B8:
 	REX_STORE_U32(ctx.r1.u32 + 128, ctx.r28.u32);
 	// bl 0x825a22f0
 	ctx.lr = 0x82573624;
-	sub_825A22F0(ctx, base);
+	FM2_D3D_CreateVertexBufferWrapper(ctx, base);
 	// li r6,0
 	ctx.r6.s64 = 0;
 	// lwz r3,0(r29)
@@ -23699,12 +23699,12 @@ loc_8257365C:
 	REX_STORE_U32(ctx.r1.u32 + 112, ctx.r9.u32);
 	// bl 0x825a2730
 	ctx.lr = 0x825736B4;
-	sub_825A2730(ctx, base);
+	FM2_D3D_CreateIndexBufferWrapper(ctx, base);
 	// mr r3,r27
 	ctx.r3.u64 = ctx.r27.u64;
 	// bl 0x825a2350
 	ctx.lr = 0x825736BC;
-	sub_825A2350(ctx, base);
+	FM2_D3D_LockVertexBufferWrapper(ctx, base);
 	// addi r31,r30,48
 	ctx.r31.s64 = ctx.r30.s64 + 48;
 	// lwz r4,4(r31)
@@ -23738,7 +23738,7 @@ loc_825736E0:
 	ctx.r3.u64 = ctx.r27.u64;
 	// bl 0x825a2368
 	ctx.lr = 0x825736F4;
-	sub_825A2368(ctx, base);
+	FM2_D3D_UnlockVertexBufferWrapper(ctx, base);
 	// lwz r10,120(r1)
 	ctx.r10.u64 = REX_LOAD_U32(ctx.r1.u32 + 120);
 	// lwz r9,124(r1)

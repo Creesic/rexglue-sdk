@@ -100,15 +100,15 @@ game wrappers), so mapping is semantic/decompile-based.
 | `DrawPrimitive` | `SWA_Video_DrawPrimitive` | `0x82BE5900` | `FM2_Render_DrawIndexedPrimitive` (main) + `FM2_Render_EmitDrawRangeCountPm4` (PM4 type 1407 vertex-range draw); blit helper: `FM2_Render_EmitIndexedTriangleFanDrawPm4` | `0x827221F0` / `0x823764B0` / `0x8272F650` |
 | `DrawPrimitiveUP` | `SWA_Video_DrawPrimitiveUP` | `0x82BE52F8` | `FM2_D3D_EmitIndexedDrawPacket` (memcpy vertex bytes from GPU ring into CB, then draw/sampler emit) | `0x82383718` |
 | `StretchRect` | `SWA_Video_StretchRect` | `0x82BF6400` | `FM2_Render_BlitTiledRegionTriangleFanPm4` | `0x8272FBA0` |
-| `Clear` | `SWA_Video_Clear` | `0x82BFE4C8` | `FM2_Render_SetClearColorByteAndDirtyFlag` + section clears (`FM2_Render_LiverySectionClearColorAndDraw`) | `0x8236EF20` / `0x825D5A70` |
+| `Clear` | `SWA_Video_Clear` | `0x82BFE4C8` | Color/flags setters + `D3D::SetTileAndDepthClear`; PM4 via `FM2_D3D_CountLeadingDirtyBits` in `FM2_D3D_EmitDirtyStateAndDrawList` | `0x8236EF20` / `0x8236EF88` / `0x8237CBD8` / `0x82382928` |
 | `D3DXFillTexture` | `SWA_Video_D3DXFillTexture` | `0x82C003B8` | `FM2_RenderResource_FillTextureSurfaceLayoutByFormat` | `0x8272AEB8` |
 | `D3DXFillVolumeTexture` | `SWA_Video_D3DXFillVolumeTexture` | `0x82C00910` | Same fill helper via volume mip setup (`FM2_RenderResource_SetupXgTextureHeaders` dispatch) | `0x8272AEB8` / `0x8272AB90` |
 | `DestructResource` | `SWA_Video_DestructResource` | `0x82BE6210` | `FM2_D3D_ReleaseGpuResourceRef` | `0x8237ED10` |
 | present backbuffer setup | — | — | `FM2_D3D_CreatePresentBackbufferResources` | `0x82374190` |
 | FM2-only direct draw hook | — | — | `FM2_Render_BuildDirectIndexedDrawBuffers` | `0x825380B8` |
-| `MakePictureData` | — | `0x82E43FC8` | No FM2 analogue (Sonic picture/atlas helper) | — |
-| `SetResolution` | — | `0x82E9EE38` | `VdQueryVideoMode` in present/backbuffer init (`FM2_D3D_CreatePresentBackbufferResources`) | `0x82374190` |
-| `ScreenShaderInit` | — | `0x82AE2BF8` | No FM2 analogue; closest post-process/presentation init: `FM2_RenderAdapter_InitPresentationVtables_ClearState` | `0x824EA598` |
+| `MakePictureData` | — | `0x82E43FC8` | `FM2_D3D_CreateTextureFromMemoryBuffer` → `FM2_D3D_CreateTextureFromSurfaceLevel` → `FM2_Image_ParseDDSFromMemory` | `0x825A25F8` / `0x82387B08` / `0x8238CEF0` |
+| `SetResolution` | — | `0x82E9EE38` | Runtime scaler: `FM2_GpuKick_ComputeScalerViewportRects` + `FM2_GpuKick_SubmitVdScalerCommandBuffer`; init: `FM2_D3D_CreatePresentBackbufferResources` | `0x82378D58` / `0x8237A888` / `0x82374190` |
+| `ScreenShaderInit` | — | `0x82AE2BF8` | `FM2_MovieRenderer_InitScreenShaderResources` + `FM2_MovieRenderer_InitMovieShaderResources` (Bink movie VS/PS/decl globals) | `0x827BA780` / `0x827BC5E0` |
 
 ### New FM2 manual renames from this pass
 
@@ -138,6 +138,31 @@ game wrappers), so mapping is semantic/decompile-based.
 | `0x82383718` | `FM2_D3D_EmitIndexedDrawPacket` | Memcpy vertex data from GPU cached memory into command buffer, emit sampler/texture-stage packets. Closest FM2 analogue to Unleashed `DrawPrimitiveUP`. |
 | `0x825B2F80` | `FM2_D3D_CacheSurfaceDescFieldsWithSubrect` | `D3DSurface_GetDesc` variant caching format plus explicit width/height subrect fields. |
 | `0x825303B8` | `FM2_Render_ApplyObjectPassSamplerAndDrawRange` | PM4 opcode `45` handler: applies pass samplers/state, may accumulate draw ranges via `FM2_Render_EmitDrawRangeCountPm4`. |
+
+### Gap-pass renames (IDA37, 2026-06-22)
+
+| Address | New name | Evidence |
+| --- | --- | --- |
+| `0x8236EF88` | `FM2_Render_SetClearFlagsAndDirtyBit` | Stores 3-bit clear mask at render-ctx `+10428`, sets dirty bit `0x200`. Paired with `FM2_Render_SetClearColorByteAndDirtyFlag` in movie passes. Unleashed `Clear` flags analogue. |
+| `0x825A25F8` | `FM2_D3D_CreateTextureFromMemoryBuffer` | Takes texture holder + memory ptr + size; calls `FM2_D3D_CreateTextureFromSurfaceLevelAuto`. Unleashed `MakePictureData` hook boundary. |
+| `0x823883C0` | `FM2_D3D_CreateTextureFromSurfaceLevelAuto` | Thin wrapper → `FM2_D3D_CreateTextureFromSurfaceLevel` with auto format dispatch. |
+| `0x827BA780` | `FM2_MovieRenderer_InitScreenShaderResources` | `D3DDevice_CreateVertexDeclaration` + VS/PS GPU blocks → `dword_82A48288/8C/90`. Unleashed `ScreenShaderInit` structural match. |
+| `0x827BC5E0` | `FM2_MovieRenderer_InitMovieShaderResources` | Second shader set → `dword_82A482D8/DC/E0` for movie pre-render pass. |
+| `0x827B89F0` | `FM2_MovieRenderer_InitShaderResourceGlobals` | Calls both movie shader inits; reached from `FM2_MovieRenderer_RegisterAndInitShaders`. |
+| `0x827B7E70` | `FM2_MovieRenderer_RegisterAndInitShaders` | CRT static init: zero movie renderer state, register control tags, init shader globals. |
+| `0x827BA350` | `FM2_MovieRenderer_SetupScreenDrawPass` | Binds screen shader globals, viewport, `SetClearColor(8)`, `SetClearFlags(6)`, sampler/matrix upload. |
+| `0x827BC2D0` | `FM2_MovieRenderer_SetupMoviePreRenderPass` | Binds movie shader globals, `SetClearColor(0)`, `SetClearFlags(6)`, matrix constants. |
+| `0x82378EF8` | `FM2_GpuKick_NotifyScalerViewportRects` | `ComputeScalerViewportRects` + `VdCallGraphicsNotificationRoutines`. Unleashed `SetResolution` notify path. |
+| `0x8229E198` | `FM2_MovieRenderer_EnqueuePlaylistEntry` | Queues Bink movie playlist entries with timing; not shader init. |
+
+### Clear PM4 emit pass (IDA37, 2026-06-22)
+
+| Address | Name | Evidence |
+| --- | --- | --- |
+| `0x8237CBD8` | `D3D::SetTileAndDepthClear` | D3D runtime: packs Z+stencil to render-ctx `+0x29A8`/`+0x29AC`, dirty `0x300`. Called from `FM2_AudioMix_SubmitPendingOutputBody`. Unleashed `Clear` Z/stencil half. |
+| `0x82382928` | `FM2_D3D_CountLeadingDirtyBits` | Emits PM4 TYPE-0 register bursts from dirty shadow tables. Clear color: PM4 base `0x2100`, shadow `ctx+0x284C` (float at `+0x2884`). Clear flags: base `0x2200`, shadow `ctx+0x28B4`. Z/stencil: base `0x2280`, shadow `ctx+0x28E4`. |
+| `0x82375ED0` | `FM2_D3D_EmitDirtyStateAndDrawList` | Orchestrates dirty emit during draw-list submit; calls `CountLeadingDirtyBits` for clear register groups when dirty bits from clear setters are set. |
+| `0x8237D158` | `FM2_AudioMix_SubmitPendingOutputBody` | Shared resolve/clear/output flush (misnamed): calls `SetTileAndDepthClear` then runs `CountLeadingDirtyBits` sweeps. Callers include frame pipeline, livery, object-pass blits. |
 
 ## Ranked Hook Order
 

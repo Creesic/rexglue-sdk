@@ -3396,7 +3396,7 @@ DEFINE_REX_FUNC(sub_82290318) {
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x825a22f0
 	ctx.lr = 0x82290414;
-	sub_825A22F0(ctx, base);
+	FM2_D3D_CreateVertexBufferWrapper(ctx, base);
 	// li r6,0
 	ctx.r6.s64 = 0;
 	// li r5,0
@@ -3429,12 +3429,12 @@ DEFINE_REX_FUNC(sub_82290318) {
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x825a2730
 	ctx.lr = 0x82290450;
-	sub_825A2730(ctx, base);
+	FM2_D3D_CreateIndexBufferWrapper(ctx, base);
 	// mr r3,r29
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x825a2350
 	ctx.lr = 0x82290458;
-	sub_825A2350(ctx, base);
+	FM2_D3D_LockVertexBufferWrapper(ctx, base);
 	// mr r11,r3
 	ctx.r11.u64 = ctx.r3.u64;
 	// mr r3,r29
@@ -3443,7 +3443,7 @@ DEFINE_REX_FUNC(sub_82290318) {
 	REX_STORE_U32(ctx.r30.u32 + 4008, ctx.r11.u32);
 	// bl 0x825a2368
 	ctx.lr = 0x82290468;
-	sub_825A2368(ctx, base);
+	FM2_D3D_UnlockVertexBufferWrapper(ctx, base);
 	// lis r11,-32255
 	ctx.r11.s64 = -2113863680;
 	// li r8,0

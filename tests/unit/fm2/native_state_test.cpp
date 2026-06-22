@@ -180,3 +180,15 @@ TEST_CASE("FM2 Plume wireframe policy maps to render fill mode",
   CHECK(fm2nr::DebugReplayFillModeForWireframe(true) ==
         fm2nr::DebugReplayFillMode::kWireframe);
 }
+
+TEST_CASE("FM2 Plume live direct draw hook uses per-frame hybrid path",
+          "[fm2][plume]") {
+  namespace fm2nr = fm2::native_renderer;
+
+  CHECK(fm2nr::kFM2PlumeLiveDirectDrawHookAddress ==
+        fm2nr::kFM2RenderInstanceHybridDrawPathAddress);
+  CHECK(fm2nr::kFM2PlumeLiveDirectDrawHookAddress !=
+        fm2nr::kFM2RenderBuildDirectIndexedDrawBuffersAddress);
+  CHECK(fm2nr::IsFM2PlumeLiveDirectDrawHookAddress(0x82539650u));
+  CHECK_FALSE(fm2nr::IsFM2PlumeLiveDirectDrawHookAddress(0x825380B8u));
+}

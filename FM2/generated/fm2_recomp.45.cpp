@@ -47231,7 +47231,7 @@ loc_82746550:
 	ctx.r3.s64 = ctx.r1.s64 + 176;
 	// bl 0x82392090
 	ctx.lr = 0x827465B4;
-	sub_82392090(ctx, base);
+	FM2_D3D_GatherSurfaceMetadataForTextureCreate(ctx, base);
 	// mr. r30,r3
 	ctx.r30.u64 = ctx.r3.u64;
 	ctx.cr0.compare<int32_t>(ctx.r30.s32, 0, ctx.xer);
@@ -47663,7 +47663,7 @@ loc_82746838:
 	ctx.r3.s64 = ctx.r1.s64 + 176;
 	// bl 0x82392090
 	ctx.lr = 0x82746890;
-	sub_82392090(ctx, base);
+	FM2_D3D_GatherSurfaceMetadataForTextureCreate(ctx, base);
 	// mr. r30,r3
 	ctx.r30.u64 = ctx.r3.u64;
 	ctx.cr0.compare<int32_t>(ctx.r30.s32, 0, ctx.xer);
@@ -48041,7 +48041,7 @@ loc_82746AC4:
 	ctx.r3.s64 = ctx.r1.s64 + 176;
 	// bl 0x82392090
 	ctx.lr = 0x82746B1C;
-	sub_82392090(ctx, base);
+	FM2_D3D_GatherSurfaceMetadataForTextureCreate(ctx, base);
 	// mr. r30,r3
 	ctx.r30.u64 = ctx.r3.u64;
 	ctx.cr0.compare<int32_t>(ctx.r30.s32, 0, ctx.xer);
@@ -48398,7 +48398,7 @@ loc_82746D24:
 	ctx.r3.s64 = ctx.r1.s64 + 176;
 	// bl 0x82392090
 	ctx.lr = 0x82746D7C;
-	sub_82392090(ctx, base);
+	FM2_D3D_GatherSurfaceMetadataForTextureCreate(ctx, base);
 	// mr. r30,r3
 	ctx.r30.u64 = ctx.r3.u64;
 	ctx.cr0.compare<int32_t>(ctx.r30.s32, 0, ctx.xer);
@@ -48757,7 +48757,7 @@ loc_82746F88:
 	ctx.r3.s64 = ctx.r1.s64 + 176;
 	// bl 0x82392090
 	ctx.lr = 0x82746FE0;
-	sub_82392090(ctx, base);
+	FM2_D3D_GatherSurfaceMetadataForTextureCreate(ctx, base);
 	// mr. r30,r3
 	ctx.r30.u64 = ctx.r3.u64;
 	ctx.cr0.compare<int32_t>(ctx.r30.s32, 0, ctx.xer);
@@ -49114,7 +49114,7 @@ loc_827471E8:
 	ctx.r3.s64 = ctx.r1.s64 + 176;
 	// bl 0x82392090
 	ctx.lr = 0x82747240;
-	sub_82392090(ctx, base);
+	FM2_D3D_GatherSurfaceMetadataForTextureCreate(ctx, base);
 	// mr. r30,r3
 	ctx.r30.u64 = ctx.r3.u64;
 	ctx.cr0.compare<int32_t>(ctx.r30.s32, 0, ctx.xer);

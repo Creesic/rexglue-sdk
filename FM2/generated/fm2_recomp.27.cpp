@@ -1181,7 +1181,7 @@ DEFINE_REX_FUNC(sub_82514168) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x825a22f0
 	ctx.lr = 0x8251422C;
-	sub_825A22F0(ctx, base);
+	FM2_D3D_CreateVertexBufferWrapper(ctx, base);
 	// li r6,0
 	ctx.r6.s64 = 0;
 	// li r5,0
@@ -1305,12 +1305,12 @@ DEFINE_REX_FUNC(sub_82514168) {
 	ctx.r3.u64 = ctx.r26.u64;
 	// bl 0x825a2730
 	ctx.lr = 0x825142E4;
-	sub_825A2730(ctx, base);
+	FM2_D3D_CreateIndexBufferWrapper(ctx, base);
 	// mr r3,r26
 	ctx.r3.u64 = ctx.r26.u64;
 	// bl 0x825a2350
 	ctx.lr = 0x825142EC;
-	sub_825A2350(ctx, base);
+	FM2_D3D_LockVertexBufferWrapper(ctx, base);
 	// mr r11,r3
 	ctx.r11.u64 = ctx.r3.u64;
 	// li r31,0
@@ -1351,7 +1351,7 @@ DEFINE_REX_FUNC(sub_82514168) {
 	REX_STORE_U16(ctx.r11.u32 + 22, ctx.r31.u16);
 	// bl 0x825a2368
 	ctx.lr = 0x8251433C;
-	sub_825A2368(ctx, base);
+	FM2_D3D_UnlockVertexBufferWrapper(ctx, base);
 	// lis r11,-32097
 	ctx.r11.s64 = -2103508992;
 	// li r5,1
@@ -1364,12 +1364,12 @@ DEFINE_REX_FUNC(sub_82514168) {
 	ctx.r3.u64 = ctx.r26.u64;
 	// bl 0x825a2730
 	ctx.lr = 0x82514354;
-	sub_825A2730(ctx, base);
+	FM2_D3D_CreateIndexBufferWrapper(ctx, base);
 	// mr r3,r26
 	ctx.r3.u64 = ctx.r26.u64;
 	// bl 0x825a2350
 	ctx.lr = 0x8251435C;
-	sub_825A2350(ctx, base);
+	FM2_D3D_LockVertexBufferWrapper(ctx, base);
 	// mr r11,r3
 	ctx.r11.u64 = ctx.r3.u64;
 	// li r9,7
@@ -1444,7 +1444,7 @@ DEFINE_REX_FUNC(sub_82514168) {
 	REX_STORE_U16(ctx.r11.u32 + 58, ctx.r10.u16);
 	// bl 0x825a2368
 	ctx.lr = 0x825143F0;
-	sub_825A2368(ctx, base);
+	FM2_D3D_UnlockVertexBufferWrapper(ctx, base);
 	// lis r11,-32252
 	ctx.r11.s64 = -2113667072;
 	// sth r31,112(r1)
@@ -4219,14 +4219,14 @@ loc_8251560C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236ea60
 	ctx.lr = 0x825156C0;
-	sub_8236EA60(ctx, base);
+	FM2_RenderContext_SetTextureFetchBitsLow(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r31
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236ea90
 	ctx.lr = 0x825156CC;
-	sub_8236EA90(ctx, base);
+	FM2_RenderContext_SetTextureFetchBitsMid(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r31
@@ -4500,7 +4500,7 @@ loc_82515868:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// bl 0x827237e8
 	ctx.lr = 0x82515880;
-	sub_827237E8(ctx, base);
+	FM2_Render_BindPassVertexStreamBySlot(ctx, base);
 	// addi r11,r30,1
 	ctx.r11.s64 = ctx.r30.s64 + 1;
 	// lwz r10,4(r31)
@@ -5364,7 +5364,7 @@ DEFINE_REX_FUNC(sub_82515DD8) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82515E18) {
+DEFINE_REX_FUNC(FM2_D3D_CreateDepthStencilSurfaceAndTexture) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -13168,7 +13168,7 @@ loc_825191CC:
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r11.u32 + 4996);
 	// bl 0x8236ef20
 	ctx.lr = 0x825191FC;
-	sub_8236EF20(ctx, base);
+	FM2_Render_SetClearColorByteAndDirtyFlag(ctx, base);
 loc_825191FC:
 	// lwz r6,56(r31)
 	ctx.r6.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
@@ -19079,7 +19079,7 @@ loc_8251B8AC:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x82371a30
 	ctx.lr = 0x8251B8C8;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// lis r11,-32252
 	ctx.r11.s64 = -2113667072;
 	// lwz r3,12(r31)
@@ -19481,7 +19481,7 @@ loc_8251BB28:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x82371a30
 	ctx.lr = 0x8251BB50;
-	sub_82371A30(ctx, base);
+	FM2_RenderContext_SetBoundSurface(ctx, base);
 	// cmpwi cr6,r30,0
 	ctx.cr6.compare<int32_t>(ctx.r30.s32, 0, ctx.xer);
 	// bge cr6,0x8251bb60
@@ -36028,7 +36028,7 @@ DEFINE_REX_FUNC(sub_82522598) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82522748) {
+DEFINE_REX_FUNC(FM2_Render_PrepareObjectPassTlsState) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12

@@ -391,16 +391,35 @@ Cross-Reference"). Key FM2 additions from that pass:
 - `0x8272AEB8` = `FM2_RenderResource_FillTextureSurfaceLayoutByFormat` (`D3DXFillTexture`)
 - `0x827BAAA8` = `FM2_D3D_CreateAndUploadVertexIndexBuffers`
 
-No FM2 analogue identified for Unleashed `MakePictureData` or `ScreenShaderInit`
-(Sonic-specific). `SetResolution` maps to `VdQueryVideoMode` inside
-`FM2_D3D_CreatePresentBackbufferResources`.
+Gap-pass mappings (IDA37, see `docs/FM2-unleashed-video-hook-mapping-summary.md`):
+
+- `0x825A25F8` = `FM2_D3D_CreateTextureFromMemoryBuffer` (`MakePictureData`)
+- `0x82387B08` = `FM2_D3D_CreateTextureFromSurfaceLevel` (memory/file texture create body)
+- `0x8238CEF0` = `FM2_Image_ParseDDSFromMemory` (DDS parse from buffer)
+- `0x823883C0` = `FM2_D3D_CreateTextureFromSurfaceLevelAuto` (thin auto-format wrapper)
+- `0x8236EF88` = `FM2_Render_SetClearFlagsAndDirtyBit` (`Clear` flags half)
+- `0x8237CBD8` = `D3D::SetTileAndDepthClear` (`Clear` Z/stencil state; D3D runtime mangled name)
+- `0x82382928` = `FM2_D3D_CountLeadingDirtyBits` (`Clear` PM4 emit: bases `0x2100`/`0x2200`/`0x2280`)
+- `0x82375ED0` = `FM2_D3D_EmitDirtyStateAndDrawList` (dirty-state PM4 orchestrator incl. clear)
+- `0x8237D158` = `FM2_AudioMix_SubmitPendingOutputBody` (resolve/clear flush; calls `SetTileAndDepthClear`)
+- `0x827BA780` / `0x827BC5E0` = `FM2_MovieRenderer_InitScreenShaderResources` /
+  `FM2_MovieRenderer_InitMovieShaderResources` (`ScreenShaderInit`)
+- `0x827BA350` / `0x827BC2D0` = screen/movie draw passes using those globals
+- `0x82378D58` / `0x8237A888` / `0x82378EF8` = scaler viewport compute/submit/notify
+  (`SetResolution` runtime path)
+- `0x8225D260` = `FM2_RenderAdapter_SwitchPresentationMode` (presentation mode switch)
 
 Key hook candidates:
 
-- `0x825380B8` / `FM2_Render_BuildDirectIndexedDrawBuffers`: best first Plume
-  world-geometry hook. It exposes direct draw records, stream/index resource
+- `0x82539650` / `FM2_Render_InstanceHybridDrawPath`: preferred first Plume
+  world-geometry hook. It is the per-frame caller above the direct indexed
+  buffer builder and does not have the one-shot guard seen in the builder.
+- `0x825380B8` / `FM2_Render_BuildDirectIndexedDrawBuffers`: one-shot
+  direct-record compiler. It exposes direct draw records, stream/index resource
   binds, pass constants, bound surface, primitive type, start index, and
-  primitive count before the data becomes cloned command buffers.
+  primitive count before the data becomes cloned command buffers, but the guard
+  at `direct_render_ctx + 0x48` makes it unsuitable as the primary per-frame
+  product hook.
 - `0x8236DD10`, `0x8236E010`, `0x82370E48`, `0x82370F68`, and `0x82371A30`:
   render-context shader/resource/surface state mirror points.
 - `0x824F6520` / `FM2_D3D_LazyInitPresentChain` and `0x824F83D8` /
@@ -410,4 +429,7 @@ Key hook candidates:
   path is working.
 
 Conclusion: keep the current Plume replay path as instrumentation, but build the
-native renderer product path around these semantic hooks.
+native renderer product path around `FM2_Render_InstanceHybridDrawPath`, the
+render-context state mirror, and the present chain. Treat
+`FM2_Render_BuildDirectIndexedDrawBuffers` as a layout/discovery hook, not the
+main live draw hook.

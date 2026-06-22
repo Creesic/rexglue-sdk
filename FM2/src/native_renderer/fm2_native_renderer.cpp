@@ -133,6 +133,7 @@ std::atomic<bool> g_plume_device_ready{false};
 std::atomic<bool> g_swapchain_ready{false};
 std::atomic<uint64_t> g_build_object_pass_entries{0};
 std::atomic<uint64_t> g_direct_indexed_draw_entries{0};
+std::atomic<uint64_t> g_instance_hybrid_draw_entries{0};
 std::atomic<uint64_t> g_debug_replay_attempts{0};
 std::atomic<uint64_t> g_debug_replay_submitted{0};
 std::atomic<uint64_t> g_debug_replay_failed{0};
@@ -1443,12 +1444,14 @@ void Shutdown() {
   if (was_initialized) {
     REXLOG_INFO(
         "FM2 Plume native renderer shut down build_object_pass={} "
-        "direct_indexed_draw={} debug_replay_attempts={} "
+        "direct_indexed_draw={} instance_hybrid_draw={} "
+        "debug_replay_attempts={} "
         "debug_replay_submitted={} debug_replay_failed={} "
         "native_direct_draw_attempts={} native_direct_draw_submitted={} "
         "native_direct_draw_failed={} last_hook={:08X}",
         g_build_object_pass_entries.load(std::memory_order_relaxed),
         g_direct_indexed_draw_entries.load(std::memory_order_relaxed),
+        g_instance_hybrid_draw_entries.load(std::memory_order_relaxed),
         g_debug_replay_attempts.load(std::memory_order_relaxed),
         g_debug_replay_submitted.load(std::memory_order_relaxed),
         g_debug_replay_failed.load(std::memory_order_relaxed),
@@ -1472,16 +1475,27 @@ bool RenderClearOnce() {
 void RecordBuildObjectPassEntry(const GuestArgs& args) {
   const uint64_t count =
       g_build_object_pass_entries.fetch_add(1, std::memory_order_relaxed) + 1;
-  StoreLastArgs(0x82531370u, args);
-  MaybeLogPacket("FM2_PLUME_BUILD_OBJECT_PASS", 0x82531370u, count, args);
+  StoreLastArgs(kFM2RenderBuildObjectPassCommandBufferAddress, args);
+  MaybeLogPacket("FM2_PLUME_BUILD_OBJECT_PASS",
+                 kFM2RenderBuildObjectPassCommandBufferAddress, count, args);
 }
 
 void RecordDirectIndexedDrawEntry(const GuestArgs& args) {
   const uint64_t count = g_direct_indexed_draw_entries.fetch_add(
                              1, std::memory_order_relaxed) +
                          1;
-  StoreLastArgs(0x825380B8u, args);
-  MaybeLogPacket("FM2_PLUME_DIRECT_INDEXED_DRAW", 0x825380B8u, count, args);
+  StoreLastArgs(kFM2RenderBuildDirectIndexedDrawBuffersAddress, args);
+  MaybeLogPacket("FM2_PLUME_DIRECT_INDEXED_DRAW_BUILD",
+                 kFM2RenderBuildDirectIndexedDrawBuffersAddress, count, args);
+}
+
+void RecordInstanceHybridDrawEntry(const GuestArgs& args) {
+  const uint64_t count = g_instance_hybrid_draw_entries.fetch_add(
+                             1, std::memory_order_relaxed) +
+                         1;
+  StoreLastArgs(kFM2RenderInstanceHybridDrawPathAddress, args);
+  MaybeLogPacket("FM2_PLUME_INSTANCE_HYBRID_DRAW",
+                 kFM2RenderInstanceHybridDrawPathAddress, count, args);
 }
 
 bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
@@ -1665,6 +1679,8 @@ Stats GetStatsSnapshot() {
       g_build_object_pass_entries.load(std::memory_order_relaxed);
   out.direct_indexed_draw_entries =
       g_direct_indexed_draw_entries.load(std::memory_order_relaxed);
+  out.instance_hybrid_draw_entries =
+      g_instance_hybrid_draw_entries.load(std::memory_order_relaxed);
   out.debug_replay_attempts =
       g_debug_replay_attempts.load(std::memory_order_relaxed);
   out.debug_replay_submitted =

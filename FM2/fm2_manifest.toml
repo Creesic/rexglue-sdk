@@ -92,7 +92,9 @@ longjmp_address = 0x82418210
 0x82276AA0 = { name = "FM2_QueueDeferredVFunc0C_ByteParam" }
 0x822786B0 = { name = "FM2_QueueDeferredVFuncD0_TwoU32Params" }
 0x82279028 = { name = "FM2_QueueDeferredVFunc40_TwoU32Params" }
+0x8225D260 = { name = "FM2_RenderAdapter_SwitchPresentationMode" }
 0x8227D0B8 = { name = "FM2_QueueDeferredVFuncD4_ThreeQwordParams" }
+0x8229E198 = { name = "FM2_MovieRenderer_EnqueuePlaylistEntry" }
 0x8234D348 = { name = "FM2_UpdateListEntriesAndNotifyManager" }
 0x8234D5A8 = { name = "FM2_TriggerMatchingListEntryActions" }
 0x8236DD10 = { name = "FM2_RenderContext_SetPixelShaderState" }
@@ -106,6 +108,7 @@ longjmp_address = 0x82418210
 0x825A22F0 = { name = "FM2_D3D_CreateVertexBufferWrapper" }
 0x825A2350 = { name = "FM2_D3D_LockVertexBufferWrapper" }
 0x825A2368 = { name = "FM2_D3D_UnlockVertexBufferWrapper" }
+0x825A25F8 = { name = "FM2_D3D_CreateTextureFromMemoryBuffer" }
 0x825A2650 = { name = "FM2_D3D_CreateTextureWrapper" }
 0x825A2730 = { name = "FM2_D3D_CreateIndexBufferWrapper" }
 0x825A27D8 = { name = "FM2_D3D_DeserializeAndLockIndexBuffer" }
@@ -125,6 +128,13 @@ longjmp_address = 0x82418210
 0x8236EA60 = { name = "FM2_RenderContext_SetTextureFetchBitsLow" }
 0x8236EA90 = { name = "FM2_RenderContext_SetTextureFetchBitsMid" }
 0x8236EF20 = { name = "FM2_Render_SetClearColorByteAndDirtyFlag" }
+0x8236EF88 = { name = "FM2_Render_SetClearFlagsAndDirtyBit" }
+0x82378D58 = { name = "FM2_GpuKick_ComputeScalerViewportRects" }
+0x82378EF8 = { name = "FM2_GpuKick_NotifyScalerViewportRects" }
+0x8237A888 = { name = "FM2_GpuKick_SubmitVdScalerCommandBuffer" }
+0x82387B08 = { name = "FM2_D3D_CreateTextureFromSurfaceLevel" }
+0x823883C0 = { name = "FM2_D3D_CreateTextureFromSurfaceLevelAuto" }
+0x8238CEF0 = { name = "FM2_Image_ParseDDSFromMemory" }
 0x823852F8 = { name = "FM2_D3D_CreateTextureResourceFromFormat" }
 0x82391E48 = { name = "FM2_D3D_CopySurfaceRectLocked" }
 0x82373BB8 = { name = "FM2_D3D_HandleGpuHang" }
@@ -135,9 +145,17 @@ longjmp_address = 0x82418210
 0x8272AEB8 = { name = "FM2_RenderResource_FillTextureSurfaceLayoutByFormat" }
 0x8272F650 = { name = "FM2_Render_EmitIndexedTriangleFanDrawPm4" }
 0x8272FBA0 = { name = "FM2_Render_BlitTiledRegionTriangleFanPm4" }
+0x827B7E70 = { name = "FM2_MovieRenderer_RegisterAndInitShaders" }
+0x827B89F0 = { name = "FM2_MovieRenderer_InitShaderResourceGlobals" }
+0x827BA350 = { name = "FM2_MovieRenderer_SetupScreenDrawPass" }
+0x827BA780 = { name = "FM2_MovieRenderer_InitScreenShaderResources" }
+0x827BC2D0 = { name = "FM2_MovieRenderer_SetupMoviePreRenderPass" }
+0x827BC5E0 = { name = "FM2_MovieRenderer_InitMovieShaderResources" }
 0x827BAAA8 = { name = "FM2_D3D_CreateAndUploadVertexIndexBuffers" }
 0x82375A40 = { name = "FM2_D3D_BeginCommandBufferBatch" }
 0x82375ED0 = { name = "FM2_D3D_EmitDirtyStateAndDrawList" }
+0x8237D158 = { name = "FM2_AudioMix_SubmitPendingOutputBody" }
+0x82382928 = { name = "FM2_D3D_CountLeadingDirtyBits" }
 0x82376A58 = { name = "FM2_D3D_FinalizeCommandBufferBatch" }
 0x82382590 = { name = "FM2_D3D_EmitSurfaceResolvePackets" }
 0x824F6520 = { name = "FM2_D3D_LazyInitPresentChain" }
@@ -934,8 +952,8 @@ registers = ["r3", "r4", "r5"]
 after_instruction = false
 
 [[entrypoint.midasm_hook]]
-address = 0x825380B8
-name = "FM2PlumeTraceDirectIndexedDrawEntry"
+address = 0x82539650
+name = "FM2PlumeTraceInstanceHybridDrawEntry"
 registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
 after_instruction = false
 

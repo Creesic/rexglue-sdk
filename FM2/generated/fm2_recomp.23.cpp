@@ -49480,7 +49480,7 @@ loc_824A52A8:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_824A52C0) {
+DEFINE_REX_FUNC(FM2_D3D_InitGlobalDeviceSingleton) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -49886,7 +49886,7 @@ DEFINE_REX_FUNC(sub_824A5550) {
 	if (ctx.cr0.eq) goto loc_824A558C;
 	// bl 0x824a52c0
 	ctx.lr = 0x824A5584;
-	sub_824A52C0(ctx, base);
+	FM2_D3D_InitGlobalDeviceSingleton(ctx, base);
 	// stw r3,11768(r31)
 	REX_STORE_U32(ctx.r31.u32 + 11768, ctx.r3.u32);
 	// b 0x824a5594

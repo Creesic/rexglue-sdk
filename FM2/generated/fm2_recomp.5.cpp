@@ -61307,7 +61307,7 @@ loc_822868B4:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x825af1e0
 	ctx.lr = 0x822869C0;
-	sub_825AF1E0(ctx, base);
+	FM2_Render_CreateGridVertexDeclarationAndStream(ctx, base);
 	// mr r4,r29
 	ctx.r4.u64 = ctx.r29.u64;
 	// lwz r3,16(r26)
