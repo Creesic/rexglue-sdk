@@ -152,6 +152,7 @@ fm2::native_renderer::GuestArgs g_last_args;
 #if FM2_HAS_PLUME && REX_PLATFORM_WIN32
 struct OwnedDirectReplaySubmission {
   fm2::native_renderer::DirectDrawDebugReplayPlan plan;
+  fm2::native_renderer::NativeDrawPacket native_packet;
   std::vector<uint8_t> stream0;
   std::vector<uint8_t> stream1;
   std::vector<uint8_t> index;
@@ -223,6 +224,15 @@ struct PreparedDirectDebugReplayDraw {
       fm2::native_renderer::DirectDrawReplayTopology::kUnknown;
   fm2::native_renderer::DirectDrawReplayPipelineLayout layout =
       fm2::native_renderer::DirectDrawReplayPipelineLayout::kUnsupported;
+  plume::RenderFormat index_format = plume::RenderFormat::UNKNOWN;
+  std::unique_ptr<plume::RenderBuffer> stream0_buffer;
+  std::unique_ptr<plume::RenderBuffer> stream1_buffer;
+  std::unique_ptr<plume::RenderBuffer> index_buffer;
+};
+
+struct PreparedNativePassDraw {
+  fm2::native_renderer::NativeDrawPacket packet;
+  fm2::native_renderer::DirectDrawDebugReplayPlan plan;
   plume::RenderFormat index_format = plume::RenderFormat::UNKNOWN;
   std::unique_ptr<plume::RenderBuffer> stream0_buffer;
   std::unique_ptr<plume::RenderBuffer> stream1_buffer;
@@ -1276,16 +1286,19 @@ bool CopyReplaySourceBytes(const uint8_t* source, uint32_t byte_count,
   return true;
 }
 
-bool QueueNativeDirectDrawLocked(
+bool BuildOwnedDirectReplaySubmission(
     const fm2::native_renderer::DirectDrawDebugReplayPlan& plan,
-    const fm2::native_renderer::DirectDrawReplaySourceBytes& sources) {
+    const fm2::native_renderer::DirectDrawReplaySourceBytes& sources,
+    const fm2::native_renderer::NativeDrawPacket& native_packet,
+    OwnedDirectReplaySubmission& out) {
   if (!plan.ready || plan.stream_count != 2u || !sources.stream0 ||
-      !sources.stream1 || !sources.index) {
+      !sources.stream1 || !sources.index || !native_packet.ready) {
     return false;
   }
 
   OwnedDirectReplaySubmission pending;
   pending.plan = plan;
+  pending.native_packet = native_packet;
   if (!CopyReplaySourceBytes(sources.stream0, plan.streams[0].upload_bytes,
                              pending.stream0) ||
       !CopyReplaySourceBytes(sources.stream1, plan.streams[1].upload_bytes,
@@ -1295,8 +1308,222 @@ bool QueueNativeDirectDrawLocked(
     return false;
   }
 
+  out = std::move(pending);
+  return true;
+}
+
+bool QueueNativeDirectDrawLocked(
+    const fm2::native_renderer::DirectDrawDebugReplayPlan& plan,
+    const fm2::native_renderer::DirectDrawReplaySourceBytes& sources,
+    const fm2::native_renderer::NativeDrawPacket& native_packet) {
+  OwnedDirectReplaySubmission pending;
+  if (!BuildOwnedDirectReplaySubmission(plan, sources, native_packet,
+                                        pending)) {
+    return false;
+  }
+
   g_plume.native_direct_draw_pending.push_back(std::move(pending));
   return true;
+}
+
+bool RenderNativePassCommandLocked(
+    const fm2::native_renderer::NativePassCommand& command,
+    const OwnedDirectReplaySubmission* submissions, uint32_t submission_count,
+    const char* submit_log_name) {
+  const fm2::native_renderer::NativePassSubmitPlan submit_plan =
+      fm2::native_renderer::BuildNativePassSubmitPlan(command);
+  if (!submit_plan.ready) {
+    REXLOG_WARN(
+        "FM2_PLUME_NATIVE_PASS_SUBMIT_REJECT reason={} command_reason={} "
+        "draws={}",
+        fm2::native_renderer::NativePassSubmitRejectReasonName(
+            submit_plan.reject_reason),
+        fm2::native_renderer::NativePassCommandRejectReasonName(
+            submit_plan.command_reject_reason),
+        command.draw_count);
+    return false;
+  }
+  if (!submissions || submission_count != submit_plan.draw_count) {
+    REXLOG_WARN(
+        "FM2_PLUME_NATIVE_PASS_SUBMIT_REJECT reason=submission_mismatch "
+        "submissions={} draws={}",
+        submission_count, submit_plan.draw_count);
+    return false;
+  }
+
+  const fm2::native_renderer::DirectDrawReplayTopology effective_topology =
+      EffectiveDebugReplayTopology(submit_plan.topology);
+  const plume::RenderFormat index_format =
+      ReplayIndexFormatToPlume(submit_plan.index_format);
+  if (effective_topology ==
+          fm2::native_renderer::DirectDrawReplayTopology::kUnknown ||
+      index_format == plume::RenderFormat::UNKNOWN) {
+    return false;
+  }
+  if (!g_plume.device || !g_plume.command_queue || !g_plume.command_list ||
+      !g_plume.swapchain || !g_plume.acquire_semaphore || !g_plume.fence ||
+      !ResizeSwapchainIfNeededLocked() ||
+      !EnsureDebugReplayPipelineLocked(effective_topology,
+                                       submit_plan.layout)) {
+    return false;
+  }
+
+  std::vector<PreparedNativePassDraw> draws;
+  draws.reserve(submission_count);
+  uint32_t skipped = 0;
+  for (uint32_t i = 0; i < submission_count; ++i) {
+    const OwnedDirectReplaySubmission& pending = submissions[i];
+    const fm2::native_renderer::NativeDrawPacket& packet =
+        submit_plan.draws[i];
+    if (pending.native_packet.source_sequence != packet.source_sequence ||
+        !fm2::native_renderer::NativeDrawPassKeysEqual(
+            pending.native_packet.pass, packet.pass)) {
+      ++skipped;
+      continue;
+    }
+    if (pending.stream0.size() <
+            packet.resources.streams[0].replay_upload_bytes ||
+        pending.stream1.size() <
+            packet.resources.streams[1].replay_upload_bytes ||
+        pending.index.size() < packet.resources.index.replay_upload_bytes) {
+      ++skipped;
+      continue;
+    }
+
+    PreparedNativePassDraw prepared;
+    prepared.packet = packet;
+    prepared.plan = pending.plan;
+    prepared.index_format = index_format;
+    prepared.stream0_buffer = CreateConvertedReplayBufferLocked(
+        "FM2 native pass stream0", pending.stream0.data(),
+        packet.resources.streams[0].replay_upload_bytes,
+        packet.resources.streams[0].replay_upload_endian,
+        plume::RenderBufferFlag::VERTEX);
+    prepared.stream1_buffer = CreateConvertedReplayBufferLocked(
+        "FM2 native pass stream1", pending.stream1.data(),
+        packet.resources.streams[1].replay_upload_bytes,
+        packet.resources.streams[1].replay_upload_endian,
+        plume::RenderBufferFlag::VERTEX);
+    prepared.index_buffer = CreateConvertedReplayBufferLocked(
+        "FM2 native pass index", pending.index.data(),
+        packet.resources.index.replay_upload_bytes,
+        packet.resources.index.replay_upload_endian,
+        plume::RenderBufferFlag::INDEX);
+    if (!prepared.stream0_buffer || !prepared.stream1_buffer ||
+        !prepared.index_buffer) {
+      ++skipped;
+      continue;
+    }
+
+    draws.push_back(std::move(prepared));
+  }
+
+  if (draws.empty()) {
+    return false;
+  }
+
+  uint32_t image_index = 0;
+  if (!g_plume.swapchain->acquireTexture(g_plume.acquire_semaphore.get(),
+                                         &image_index)) {
+    REXLOG_WARN("FM2 Plume native pass failed to acquire swapchain texture");
+    return false;
+  }
+  if (image_index >= g_plume.framebuffers.size()) {
+    REXLOG_WARN("FM2 Plume native pass acquired invalid image index {}",
+                image_index);
+    return false;
+  }
+
+  plume::RenderTexture* texture = g_plume.swapchain->getTexture(image_index);
+  const uint32_t width = g_plume.swapchain->getWidth();
+  const uint32_t height = g_plume.swapchain->getHeight();
+
+  g_plume.command_list->begin();
+  g_plume.command_list->barriers(
+      plume::RenderBarrierStage::GRAPHICS,
+      plume::RenderTextureBarrier(texture,
+                                  plume::RenderTextureLayout::COLOR_WRITE));
+  g_plume.command_list->setFramebuffer(g_plume.framebuffers[image_index].get());
+  g_plume.command_list->setViewports(
+      plume::RenderViewport(0.0f, 0.0f, float(width), float(height)));
+  g_plume.command_list->setScissors(plume::RenderRect(0, 0, width, height));
+  g_plume.command_list->clearColor(0, ReplayClearColorLocked());
+  g_plume.command_list->setGraphicsPipelineLayout(
+      g_plume.debug_replay_pipeline_layout.get());
+  g_plume.command_list->setPipeline(g_plume.debug_replay_pipeline.get());
+
+  for (PreparedNativePassDraw& draw : draws) {
+    const fm2::native_renderer::NativeDrawPacket& packet = draw.packet;
+    std::array<plume::RenderVertexBufferView, 2> vertex_views = {
+        plume::RenderVertexBufferView(
+            draw.stream0_buffer.get(),
+            packet.resources.streams[0].replay_upload_bytes),
+        plume::RenderVertexBufferView(
+            draw.stream1_buffer.get(),
+            packet.resources.streams[1].replay_upload_bytes),
+    };
+    std::array<plume::RenderInputSlot, 2> input_slots = {
+        plume::RenderInputSlot(
+            packet.resources.streams[0].slot,
+            packet.resources.streams[0].native_stride_bytes),
+        plume::RenderInputSlot(
+            packet.resources.streams[1].slot,
+            packet.resources.streams[1].native_stride_bytes),
+    };
+    plume::RenderIndexBufferView index_view(
+        draw.index_buffer.get(), packet.resources.index.replay_upload_bytes,
+        draw.index_format);
+    const DebugReplayPushConstants push_constants =
+        BuildDebugReplayPushConstants(draw.plan);
+
+    g_plume.command_list->setGraphicsPushConstants(0, &push_constants);
+    g_plume.command_list->setVertexBuffers(
+        0, vertex_views.data(), static_cast<uint32_t>(vertex_views.size()),
+        input_slots.data());
+    g_plume.command_list->setIndexBuffer(&index_view);
+    g_plume.command_list->drawIndexedInstanced(
+        packet.draw.index_count, packet.draw.instance_count,
+        packet.draw.start_index, packet.draw.base_vertex,
+        packet.draw.start_instance);
+  }
+
+  g_plume.command_list->barriers(
+      plume::RenderBarrierStage::NONE,
+      plume::RenderTextureBarrier(texture,
+                                  plume::RenderTextureLayout::PRESENT));
+  g_plume.command_list->end();
+
+  while (g_plume.release_semaphores.size() <
+         g_plume.swapchain->getTextureCount()) {
+    g_plume.release_semaphores.emplace_back(
+        g_plume.device->createCommandSemaphore());
+  }
+
+  const plume::RenderCommandList* command_list = g_plume.command_list.get();
+  plume::RenderCommandSemaphore* wait_semaphore =
+      g_plume.acquire_semaphore.get();
+  plume::RenderCommandSemaphore* signal_semaphore =
+      g_plume.release_semaphores[image_index].get();
+
+  g_plume.command_queue->executeCommandLists(
+      &command_list, 1, &wait_semaphore, 1, &signal_semaphore, 1,
+      g_plume.fence.get());
+  const bool presented =
+      g_plume.swapchain->present(image_index, &signal_semaphore, 1);
+  g_plume.command_queue->waitForCommandFence(g_plume.fence.get());
+
+  REXLOG_INFO(
+      "{} presented={} image={} size={}x{} draws={} skipped={} topology={} "
+      "layout={} submit_object={:08X} pass_marker={} first_sequence={} "
+      "last_sequence={}",
+      submit_log_name ? submit_log_name : "FM2_PLUME_NATIVE_PASS_SUBMIT",
+      presented ? 1u : 0u, image_index, width, height, draws.size(), skipped,
+      static_cast<unsigned>(effective_topology),
+      fm2::native_renderer::DirectDrawReplayPipelineLayoutName(
+          submit_plan.layout),
+      submit_plan.pass.submit_object, submit_plan.pass.pass_marker,
+      command.first_source_sequence, command.last_source_sequence);
+  return presented;
 }
 
 bool FlushNativeDirectDrawBatchLocked(const char* reason) {
@@ -1304,26 +1531,42 @@ bool FlushNativeDirectDrawBatchLocked(const char* reason) {
     return true;
   }
 
-  std::vector<fm2::native_renderer::DirectDrawReplaySubmission> submissions;
-  submissions.reserve(g_plume.native_direct_draw_pending.size());
+  std::vector<fm2::native_renderer::NativeDrawPacket> native_packets;
+  native_packets.reserve(g_plume.native_direct_draw_pending.size());
   for (const OwnedDirectReplaySubmission& pending :
        g_plume.native_direct_draw_pending) {
-    submissions.push_back({
-        pending.plan,
-        {
-            pending.stream0.data(),
-            pending.stream1.data(),
-            pending.index.data(),
-        },
-    });
+    native_packets.push_back(pending.native_packet);
   }
 
-  const uint32_t queued_count = static_cast<uint32_t>(submissions.size());
-  const bool submitted = RenderDirectDebugReplayBatchLocked(
-      submissions.data(), queued_count, "FM2_PLUME_NATIVE_LIVE_BATCH_SUBMIT");
+  const fm2::native_renderer::NativePassCommand native_pass =
+      fm2::native_renderer::BuildNativePassCommand(
+          native_packets.data(), static_cast<uint32_t>(native_packets.size()));
+  const uint32_t queued_count = static_cast<uint32_t>(native_packets.size());
+  if (!native_pass.ready) {
+    REXLOG_WARN(
+        "FM2_PLUME_NATIVE_PASS_REJECT reason={} queued={} "
+        "packet_reject={} first_sequence={} last_sequence={}",
+        fm2::native_renderer::NativePassCommandRejectReasonName(
+            native_pass.reject_reason),
+        queued_count,
+        fm2::native_renderer::NativeDrawPacketRejectReasonName(
+            native_pass.first_packet_reject_reason),
+        native_pass.first_source_sequence, native_pass.last_source_sequence);
+    g_plume.native_direct_draw_pending.clear();
+    return false;
+  }
+
+  const bool submitted = RenderNativePassCommandLocked(
+      native_pass, g_plume.native_direct_draw_pending.data(), queued_count,
+      "FM2_PLUME_NATIVE_LIVE_BATCH_SUBMIT");
   REXLOG_INFO(
-      "FM2_PLUME_NATIVE_LIVE_BATCH_RESULT reason={} queued={} submitted={}",
-      reason ? reason : "unknown", queued_count, submitted ? 1u : 0u);
+      "FM2_PLUME_NATIVE_LIVE_BATCH_RESULT reason={} queued={} submitted={} "
+      "pass_draws={} first_sequence={} last_sequence={} submit_object={:08X} "
+      "pass_marker={}",
+      reason ? reason : "unknown", queued_count, submitted ? 1u : 0u,
+      native_pass.draw_count, native_pass.first_source_sequence,
+      native_pass.last_source_sequence, native_pass.pass.submit_object,
+      native_pass.pass.pass_marker);
   g_plume.native_direct_draw_pending.clear();
   return submitted;
 }
@@ -1608,13 +1851,21 @@ bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
         GetModeName(mode));
     return false;
   }
-  if (!plan.ready) {
+#if FM2_HAS_PLUME && REX_PLATFORM_WIN32
+  const NativeDrawPacket native_packet = BuildNativeDrawPacket(plan);
+  if (!native_packet.ready) {
     g_native_direct_draw_failed.fetch_add(1, std::memory_order_relaxed);
+    REXLOG_WARN(
+        "FM2_PLUME_NATIVE_DIRECT_DRAW_REJECT attempt={} reason={} "
+        "native_state={} pass={} pipeline={} resources={}",
+        attempt, NativeDrawPacketRejectReasonName(native_packet.reject_reason),
+        plan.native_state.valid ? 1u : 0u,
+        native_packet.pass.valid ? 1u : 0u,
+        native_packet.pipeline.valid ? 1u : 0u,
+        native_packet.resources.valid ? 1u : 0u);
     return false;
   }
 
-#if FM2_HAS_PLUME && REX_PLATFORM_WIN32
-  const NativeDrawPacket native_packet = BuildNativeDrawPacket(plan);
   bool accepted = false;
   bool queued = false;
   bool flushed = false;
@@ -1622,15 +1873,32 @@ bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
   {
     std::scoped_lock lock(g_plume_mutex);
     if (WantsNativeDirectDrawLiveBatch()) {
-      queued = QueueNativeDirectDrawLocked(plan, sources);
+      if (!g_plume.native_direct_draw_pending.empty() &&
+          !NativeDrawPassKeysEqual(
+              g_plume.native_direct_draw_pending.front().native_packet.pass,
+              native_packet.pass)) {
+        flushed = true;
+        accepted = FlushNativeDirectDrawBatchLocked("pass_change");
+        pending_count =
+            static_cast<uint32_t>(g_plume.native_direct_draw_pending.size());
+      } else {
+        accepted = true;
+      }
+
+      if (accepted) {
+        queued = QueueNativeDirectDrawLocked(plan, sources, native_packet);
+      }
       if (queued) {
         pending_count =
             static_cast<uint32_t>(g_plume.native_direct_draw_pending.size());
         if (ShouldFlushNativeDirectDrawLiveBatch(
                 pending_count,
-                REXCVAR_GET(fm2_plume_native_direct_draw_live_batch_size))) {
+                REXCVAR_GET(fm2_plume_native_direct_draw_live_batch_size)) ||
+            pending_count >= kNativePassCommandMaxDraws) {
           flushed = true;
-          accepted = FlushNativeDirectDrawBatchLocked("batch_size");
+          accepted = FlushNativeDirectDrawBatchLocked(
+              pending_count >= kNativePassCommandMaxDraws ? "pass_draw_limit"
+                                                          : "batch_size");
           pending_count =
               static_cast<uint32_t>(g_plume.native_direct_draw_pending.size());
         } else {
@@ -1638,7 +1906,25 @@ bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
         }
       }
     } else {
-      accepted = RenderDirectDebugReplayLocked(plan, sources);
+      const NativePassCommand native_pass =
+          BuildNativePassCommand(&native_packet, 1u);
+      if (native_pass.ready) {
+        OwnedDirectReplaySubmission submission;
+        if (BuildOwnedDirectReplaySubmission(plan, sources, native_packet,
+                                             submission)) {
+          accepted = RenderNativePassCommandLocked(
+              native_pass, &submission, 1u,
+              "FM2_PLUME_NATIVE_DIRECT_DRAW_SUBMIT_PASS");
+        }
+      } else {
+        REXLOG_WARN(
+            "FM2_PLUME_NATIVE_DIRECT_DRAW_PASS_REJECT attempt={} reason={} "
+            "packet_reject={}",
+            attempt,
+            NativePassCommandRejectReasonName(native_pass.reject_reason),
+            NativeDrawPacketRejectReasonName(
+                native_pass.first_packet_reject_reason));
+      }
     }
   }
   if (accepted) {

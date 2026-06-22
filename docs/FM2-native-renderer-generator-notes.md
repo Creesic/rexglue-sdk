@@ -1972,3 +1972,150 @@ Verification:
   `viewport=1 texture_fetch=1 clear=1 pass=1 pass_flags=00000001`, and
   repeated `FM2_PLUME_NATIVE_LIVE_BATCH_SUBMIT` lines with
   `draws=16 skipped=0 native_state_draws=16`.
+
+### 2026-06-22 Native Pass Command Boundary
+
+This slice starts using the carried semantic state as a native-renderer
+boundary instead of treating it as logging-only metadata.
+
+Implemented files:
+
+- `FM2/src/native_renderer/fm2_native_draw.h`
+- `FM2/src/native_renderer/fm2_native_renderer.cpp`
+- `tests/unit/fm2/native_draw_test.cpp`
+
+New abstraction:
+
+- `NativeDrawPacket` remains the per-draw semantic object: FM2 pass key,
+  pipeline key, native/replay resource key, and indexed draw call.
+- `NativePassCommand` is the next layer up. It groups ready draw packets that
+  share a single FM2 pass key and rejects batches that are empty, contain a
+  rejected draw packet, cross pass boundaries, or exceed the fixed pass-command
+  draw limit.
+- `BuildNativePassCommand()` is still host-side metadata, not a true Plume draw
+  submitter. It defines the command shape that a real FM2 native pass backend
+  can consume later.
+
+Runtime behavior:
+
+- `SubmitNativeDirectDraw()` now rejects native direct draw attempts whose
+  `NativeDrawPacket` is incomplete, instead of blindly submitting decoded replay
+  buffers through the native-direct path.
+- Live native-direct batching now stores each pending draw's
+  `NativeDrawPacket`.
+- A pending live batch flushes when the next ready packet belongs to a different
+  FM2 pass key, so pass boundaries are explicit before the eventual native pass
+  submitter exists.
+- `FlushNativeDirectDrawBatchLocked()` builds a `NativePassCommand` from pending
+  packets before replay-backed submission. If the command is rejected, the batch
+  is dropped with a `FM2_PLUME_NATIVE_PASS_REJECT` log. If accepted, the old
+  replay-backed renderer still performs the visible draw for now and logs pass
+  metadata in `FM2_PLUME_NATIVE_LIVE_BATCH_RESULT`.
+
+Current limitation:
+
+- This is not yet native Plume geometry/state submission. It is the control
+  boundary immediately before that work: semantic packets are now required and
+  grouped by FM2 pass, but accepted commands still render through the existing
+  direct debug replay path.
+
+Verification:
+
+- Red test was confirmed first: `cmake --build --preset
+  win-amd64-relwithdebinfo --target unit_tests` failed to compile because
+  `NativePassCommand`, `NativePassCommandRejectReason`, and
+  `BuildNativePassCommand()` did not exist.
+- `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests`
+  passed after implementation.
+- `out/win-amd64/RelWithDebInfo/unit_tests.exe "[fm2][plume]"` passed with
+  693 assertions in 56 test cases.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed from
+  `FM2/`.
+
+### 2026-06-22 Native Pass Plume Submitter
+
+This slice replaces the replay-backed native-direct batch flush with a real
+`NativePassCommand` submit boundary that records Plume command lists directly.
+It is intentionally still conservative: the submitter only accepts packets that
+share one pass, one topology, one index format, and one vertex layout.
+
+Implemented files:
+
+- `FM2/src/native_renderer/fm2_native_draw.h`
+- `FM2/src/native_renderer/fm2_direct_draw_decode.h`
+- `FM2/src/native_renderer/fm2_native_renderer.cpp`
+- `tests/unit/fm2/native_draw_test.cpp`
+- `tests/unit/fm2/direct_draw_decode_test.cpp`
+
+New abstraction:
+
+- `NativePassSubmitPlan` is the pure validation layer between
+  `NativePassCommand` and Plume submission.
+- Native-state resources are accepted only when the replay and native layouts
+  match, such as `native_position28_side12`.
+- Direct replay resources are accepted as a fallback when FM2 has valid semantic
+  pass/pipeline state but the captured native stream/index binding is incomplete.
+- Mixed pass, topology, index-format, or layout batches are rejected before any
+  Plume command-list work.
+
+Runtime behavior:
+
+- `FlushNativeDirectDrawBatchLocked()` now builds a `NativePassCommand`, then
+  submits it through `RenderNativePassCommandLocked()` instead of
+  `RenderDirectDebugReplayBatchLocked()`.
+- Non-live `SubmitNativeDirectDraw()` now routes a one-draw pass command through
+  the same submitter path.
+- `fm2_plume_native_direct_draw_live_batch` still owns source bytes per draw, so
+  the submitter can build Plume vertex/index buffers after the original decoded
+  source pointers have gone out of scope.
+- The submitter binds vertex streams using the semantic packet stream slots and
+  strides, then draws with the packet's indexed draw call.
+
+Important limitation:
+
+- The first native-layout-only attempt rejected every live pass submit with
+  `missing_native_resources`. The captured native state had pass and pipeline
+  data, but the stream snapshot was not usable: stream 0 appeared as stride 16,
+  stream 1 had `resource=0` and `stride=0`, while the direct replay records had
+  the expected `debug_raw32_side12` stream/index uploads.
+- Because of that, the current smoke run uses the direct-resource fallback:
+  `NativePassCommand` is live, Plume submission is live, but the active layout is
+  still `debug_raw32_side12` and the pipeline is still the debug replay shader
+  path. This is not yet the final FM2 native world renderer shape used by
+  ReOdyssey/Unleashed.
+
+Verification:
+
+- Red tests were added first for `NativePassSubmitPlan`: native-layout accept,
+  replay-layout reject, and direct-resource fallback accept.
+- `out/win-amd64/RelWithDebInfo/unit_tests.exe "[fm2][plume]"` passed with
+  712 assertions in 59 test cases after the fallback was added.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed from
+  `FM2/`.
+- Gameplay smoke with gamepad-A automation, live native batching, side-by-side
+  replay window, and wireframe reached gameplay input with
+  `Gamepad A tap result: ok=40 failed=0`.
+- Fresh logs in
+  `FM2/out/build/win-amd64-relwithdebinfo/logs/fm2_161*.log` contained
+  800 `FM2_PLUME_NATIVE_LIVE_BATCH_SUBMIT` lines across `fm2_161.log`
+  and `fm2_161.1.log`, including `presented=1 size=960x540 draws=16
+  skipped=0 topology=2 layout=debug_raw32_side12`.
+- The same `fm2_161*.log` set had no
+  `FM2_PLUME_NATIVE_DIRECT_DRAW_REJECT`,
+  `FM2_PLUME_NATIVE_PASS_SUBMIT_REJECT`, or
+  `FM2_PLUME_NATIVE_PASS_REJECT` lines.
+- Screenshot QA wrote
+  `FM2/out/build/win-amd64-relwithdebinfo/fm2-native-pass-smoke.png` and
+  reported `status=ok`, `width=960`, `height=540`, `nonDark=57563`, and
+  `avgLum=73.76`.
+
+Next renderer step:
+
+- Fix or replace the native stream/index binding capture so the submitter can
+  use `native_position28_side12` resources instead of the direct replay fallback.
+  The most relevant FM2 hook candidates remain the pass setup and stream binding
+  cluster:
+  `FM2_Render_BindPassVertexStreamsWithConstants`,
+  `FM2_Render_SetupPassShaderAndVertexStreams`,
+  `FM2_Render_BindPassVertexStreamBySlot`, and the instance draw path around
+  `FM2_Render_InstanceHybridDrawPath`.

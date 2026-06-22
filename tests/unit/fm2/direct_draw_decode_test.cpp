@@ -244,8 +244,7 @@ TEST_CASE("FM2 native direct draw policy bypasses trace-only debug limits",
 
   CHECK(decode::ShouldPromoteDirectReplayToNativeLayout(true, false, false));
   CHECK(decode::ShouldPromoteDirectReplayToNativeLayout(false, true, false));
-  CHECK_FALSE(
-      decode::ShouldPromoteDirectReplayToNativeLayout(false, true, true));
+  CHECK(decode::ShouldPromoteDirectReplayToNativeLayout(false, true, true));
   CHECK(decode::ShouldPromoteDirectReplayToNativeLayout(true, true, true));
 }
 

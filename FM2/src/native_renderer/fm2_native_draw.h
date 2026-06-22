@@ -17,6 +17,31 @@ enum class NativeDrawPacketRejectReason : uint8_t {
   kUnsupportedIndexFormat,
 };
 
+enum class NativePassCommandRejectReason : uint8_t {
+  kNone,
+  kEmptyBatch,
+  kPacketRejected,
+  kPassMismatch,
+  kDrawLimitExceeded,
+};
+
+enum class NativePassSubmitRejectReason : uint8_t {
+  kNone,
+  kCommandRejected,
+  kReplayLayoutNotNative,
+  kUnsupportedNativeLayout,
+  kUnsupportedTopology,
+  kUnsupportedIndexFormat,
+  kMixedPipeline,
+  kDrawLimitExceeded,
+};
+
+enum class NativeDrawResourceSource : uint8_t {
+  kUnknown,
+  kNativeState,
+  kDirectReplay,
+};
+
 constexpr const char* NativeDrawPacketRejectReasonName(
     NativeDrawPacketRejectReason reason) {
   switch (reason) {
@@ -36,6 +61,46 @@ constexpr const char* NativeDrawPacketRejectReasonName(
       return "unsupported_topology";
     case NativeDrawPacketRejectReason::kUnsupportedIndexFormat:
       return "unsupported_index_format";
+  }
+  return "unknown";
+}
+
+constexpr const char* NativePassCommandRejectReasonName(
+    NativePassCommandRejectReason reason) {
+  switch (reason) {
+    case NativePassCommandRejectReason::kNone:
+      return "none";
+    case NativePassCommandRejectReason::kEmptyBatch:
+      return "empty_batch";
+    case NativePassCommandRejectReason::kPacketRejected:
+      return "packet_rejected";
+    case NativePassCommandRejectReason::kPassMismatch:
+      return "pass_mismatch";
+    case NativePassCommandRejectReason::kDrawLimitExceeded:
+      return "draw_limit_exceeded";
+  }
+  return "unknown";
+}
+
+constexpr const char* NativePassSubmitRejectReasonName(
+    NativePassSubmitRejectReason reason) {
+  switch (reason) {
+    case NativePassSubmitRejectReason::kNone:
+      return "none";
+    case NativePassSubmitRejectReason::kCommandRejected:
+      return "command_rejected";
+    case NativePassSubmitRejectReason::kReplayLayoutNotNative:
+      return "replay_layout_not_native";
+    case NativePassSubmitRejectReason::kUnsupportedNativeLayout:
+      return "unsupported_native_layout";
+    case NativePassSubmitRejectReason::kUnsupportedTopology:
+      return "unsupported_topology";
+    case NativePassSubmitRejectReason::kUnsupportedIndexFormat:
+      return "unsupported_index_format";
+    case NativePassSubmitRejectReason::kMixedPipeline:
+      return "mixed_pipeline";
+    case NativePassSubmitRejectReason::kDrawLimitExceeded:
+      return "draw_limit_exceeded";
   }
   return "unknown";
 }
@@ -109,6 +174,7 @@ struct NativeDrawIndexResource {
 
 struct NativeDrawResourceKey {
   bool valid = false;
+  NativeDrawResourceSource source = NativeDrawResourceSource::kUnknown;
   NativeDrawStreamResource streams[2];
   NativeDrawIndexResource index;
 };
@@ -122,6 +188,38 @@ struct NativeDrawPacket {
   NativeDrawPipelineKey pipeline;
   NativeDrawResourceKey resources;
   DirectDrawReplayIndexedDraw draw;
+};
+
+constexpr uint32_t kNativePassCommandMaxDraws = 16u;
+
+struct NativePassCommand {
+  bool ready = false;
+  NativePassCommandRejectReason reject_reason =
+      NativePassCommandRejectReason::kEmptyBatch;
+  NativeDrawPacketRejectReason first_packet_reject_reason =
+      NativeDrawPacketRejectReason::kNone;
+  uint32_t draw_count = 0;
+  uint32_t rejected_packet_count = 0;
+  uint64_t first_source_sequence = 0;
+  uint64_t last_source_sequence = 0;
+  NativeDrawPassKey pass;
+  NativeDrawPacket draws[kNativePassCommandMaxDraws];
+};
+
+struct NativePassSubmitPlan {
+  bool ready = false;
+  NativePassSubmitRejectReason reject_reason =
+      NativePassSubmitRejectReason::kCommandRejected;
+  NativePassCommandRejectReason command_reject_reason =
+      NativePassCommandRejectReason::kNone;
+  uint32_t draw_count = 0;
+  DirectDrawReplayTopology topology = DirectDrawReplayTopology::kUnknown;
+  DirectDrawReplayIndexFormat index_format =
+      DirectDrawReplayIndexFormat::kUnknown;
+  DirectDrawReplayPipelineLayout layout =
+      DirectDrawReplayPipelineLayout::kUnsupported;
+  NativeDrawPassKey pass;
+  NativeDrawPacket draws[kNativePassCommandMaxDraws];
 };
 
 constexpr NativeDrawPassKey BuildNativeDrawPassKey(
@@ -141,6 +239,16 @@ constexpr NativeDrawPassKey BuildNativeDrawPassKey(
   out.draw_mode = pass.draw_mode;
   out.pass_marker = pass.pass_marker;
   return out;
+}
+
+constexpr bool NativeDrawPassKeysEqual(const NativeDrawPassKey& lhs,
+                                       const NativeDrawPassKey& rhs) {
+  return lhs.valid == rhs.valid && lhs.submit_object == rhs.submit_object &&
+         lhs.tls_or_pass_context == rhs.tls_or_pass_context &&
+         lhs.pass_flags == rhs.pass_flags && lhs.drawable == rhs.drawable &&
+         lhs.draw_callback == rhs.draw_callback &&
+         lhs.wireframe == rhs.wireframe && lhs.draw_mode == rhs.draw_mode &&
+         lhs.pass_marker == rhs.pass_marker;
 }
 
 constexpr bool HasNativeDrawPipelineState(
@@ -219,19 +327,64 @@ constexpr NativeDrawIndexResource BuildNativeDrawIndexResource(
   return out;
 }
 
+constexpr NativeDrawStreamResource BuildDirectReplayDrawStreamResource(
+    const DirectDrawReplayVertexStream& replay_stream) {
+  NativeDrawStreamResource out;
+  out.slot = replay_stream.slot;
+  out.native_resource = replay_stream.guest_base;
+  out.native_byte_offset = 0;
+  out.native_stride_bytes = replay_stream.stride;
+  out.dirty_mask = 0;
+  out.replay_guest_base = replay_stream.guest_base;
+  out.replay_upload_guest_base = replay_stream.upload_guest_base;
+  out.replay_upload_bytes = replay_stream.upload_bytes;
+  out.replay_hash = replay_stream.hash;
+  out.replay_upload_endian = replay_stream.upload_endian;
+  out.valid = replay_stream.guest_base != 0 &&
+              replay_stream.upload_bytes != 0 && replay_stream.stride != 0;
+  return out;
+}
+
+constexpr NativeDrawIndexResource BuildDirectReplayDrawIndexResource(
+    const DirectDrawReplayIndexBuffer& replay_index) {
+  NativeDrawIndexResource out;
+  out.native_resource = replay_index.guest_base;
+  out.replay_guest_base = replay_index.guest_base;
+  out.replay_upload_guest_base = replay_index.upload_guest_base;
+  out.replay_upload_bytes = replay_index.upload_bytes;
+  out.replay_hash = replay_index.hash;
+  out.replay_upload_endian = replay_index.upload_endian;
+  out.valid = replay_index.guest_base != 0 && replay_index.upload_bytes != 0;
+  return out;
+}
+
 constexpr NativeDrawResourceKey BuildNativeDrawResourceKey(
     const DirectDrawDebugReplayPlan& plan) {
   NativeDrawResourceKey out;
-  if (!plan.native_state.valid || plan.stream_count != 2u) {
+  if (plan.stream_count != 2u) {
     return out;
   }
 
-  out.streams[0] = BuildNativeDrawStreamResource(plan.native_state.streams[0],
-                                                 plan.streams[0]);
-  out.streams[1] = BuildNativeDrawStreamResource(plan.native_state.streams[1],
-                                                 plan.streams[1]);
-  out.index = BuildNativeDrawIndexResource(plan.native_state, plan.index);
+  if (plan.native_state.valid) {
+    out.streams[0] = BuildNativeDrawStreamResource(plan.native_state.streams[0],
+                                                   plan.streams[0]);
+    out.streams[1] = BuildNativeDrawStreamResource(plan.native_state.streams[1],
+                                                   plan.streams[1]);
+    out.index = BuildNativeDrawIndexResource(plan.native_state, plan.index);
+    out.valid = out.streams[0].valid && out.streams[1].valid && out.index.valid;
+    if (out.valid) {
+      out.source = NativeDrawResourceSource::kNativeState;
+      return out;
+    }
+  }
+
+  out.streams[0] = BuildDirectReplayDrawStreamResource(plan.streams[0]);
+  out.streams[1] = BuildDirectReplayDrawStreamResource(plan.streams[1]);
+  out.index = BuildDirectReplayDrawIndexResource(plan.index);
   out.valid = out.streams[0].valid && out.streams[1].valid && out.index.valid;
+  if (out.valid) {
+    out.source = NativeDrawResourceSource::kDirectReplay;
+  }
   return out;
 }
 
@@ -275,6 +428,113 @@ constexpr NativeDrawPacket BuildNativeDrawPacket(
 
   out.ready = true;
   out.reject_reason = NativeDrawPacketRejectReason::kNone;
+  return out;
+}
+
+constexpr NativePassCommand BuildNativePassCommand(
+    const NativeDrawPacket* packets, uint32_t packet_count) {
+  NativePassCommand out;
+  if (!packets || packet_count == 0u) {
+    out.reject_reason = NativePassCommandRejectReason::kEmptyBatch;
+    return out;
+  }
+
+  for (uint32_t i = 0; i < packet_count; ++i) {
+    const NativeDrawPacket& packet = packets[i];
+    if (!packet.ready) {
+      ++out.rejected_packet_count;
+      out.reject_reason = NativePassCommandRejectReason::kPacketRejected;
+      out.first_packet_reject_reason = packet.reject_reason;
+      return out;
+    }
+
+    if (!out.pass.valid) {
+      out.pass = packet.pass;
+      out.first_source_sequence = packet.source_sequence;
+    } else if (!NativeDrawPassKeysEqual(out.pass, packet.pass)) {
+      out.reject_reason = NativePassCommandRejectReason::kPassMismatch;
+      return out;
+    }
+
+    if (out.draw_count >= kNativePassCommandMaxDraws) {
+      out.reject_reason = NativePassCommandRejectReason::kDrawLimitExceeded;
+      return out;
+    }
+
+    out.draws[out.draw_count++] = packet;
+    out.last_source_sequence = packet.source_sequence;
+  }
+
+  out.ready = true;
+  out.reject_reason = NativePassCommandRejectReason::kNone;
+  return out;
+}
+
+constexpr NativePassSubmitPlan BuildNativePassSubmitPlan(
+    const NativePassCommand& command) {
+  NativePassSubmitPlan out;
+  if (!command.ready || command.draw_count == 0u) {
+    out.reject_reason = NativePassSubmitRejectReason::kCommandRejected;
+    out.command_reject_reason = command.reject_reason;
+    return out;
+  }
+
+  out.pass = command.pass;
+  for (uint32_t i = 0; i < command.draw_count; ++i) {
+    if (i >= kNativePassCommandMaxDraws) {
+      out.reject_reason = NativePassSubmitRejectReason::kDrawLimitExceeded;
+      return out;
+    }
+
+    const NativeDrawPacket& packet = command.draws[i];
+    if (packet.pipeline.topology == DirectDrawReplayTopology::kUnknown) {
+      out.reject_reason = NativePassSubmitRejectReason::kUnsupportedTopology;
+      return out;
+    }
+    if (packet.pipeline.index_format == DirectDrawReplayIndexFormat::kUnknown) {
+      out.reject_reason = NativePassSubmitRejectReason::kUnsupportedIndexFormat;
+      return out;
+    }
+    DirectDrawReplayPipelineLayout packet_layout =
+        DirectDrawReplayPipelineLayout::kUnsupported;
+    if (packet.resources.source == NativeDrawResourceSource::kDirectReplay) {
+      packet_layout = packet.pipeline.replay_layout;
+      if (packet_layout == DirectDrawReplayPipelineLayout::kUnsupported) {
+        out.reject_reason =
+            NativePassSubmitRejectReason::kUnsupportedNativeLayout;
+        return out;
+      }
+    } else {
+      if (packet.pipeline.native_layout ==
+          DirectDrawReplayPipelineLayout::kUnsupported) {
+        out.reject_reason =
+            NativePassSubmitRejectReason::kUnsupportedNativeLayout;
+        return out;
+      }
+      if (packet.pipeline.replay_layout != packet.pipeline.native_layout) {
+        out.reject_reason =
+            NativePassSubmitRejectReason::kReplayLayoutNotNative;
+        return out;
+      }
+      packet_layout = packet.pipeline.native_layout;
+    }
+
+    if (out.draw_count == 0u) {
+      out.topology = packet.pipeline.topology;
+      out.index_format = packet.pipeline.index_format;
+      out.layout = packet_layout;
+    } else if (out.topology != packet.pipeline.topology ||
+               out.index_format != packet.pipeline.index_format ||
+               out.layout != packet_layout) {
+      out.reject_reason = NativePassSubmitRejectReason::kMixedPipeline;
+      return out;
+    }
+
+    out.draws[out.draw_count++] = packet;
+  }
+
+  out.ready = true;
+  out.reject_reason = NativePassSubmitRejectReason::kNone;
   return out;
 }
 

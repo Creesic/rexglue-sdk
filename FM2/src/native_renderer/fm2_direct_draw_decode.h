@@ -183,8 +183,8 @@ constexpr bool ShouldFlushNativeDirectDrawLiveBatch(
 constexpr bool ShouldPromoteDirectReplayToNativeLayout(
     bool compare_enabled, bool native_direct_draw_enabled,
     bool native_live_batch_enabled) {
-  return compare_enabled ||
-         (native_direct_draw_enabled && !native_live_batch_enabled);
+  (void)native_live_batch_enabled;
+  return compare_enabled || native_direct_draw_enabled;
 }
 
 constexpr bool DirectDebugReplaySubmitLimitReached(uint64_t attempt,
