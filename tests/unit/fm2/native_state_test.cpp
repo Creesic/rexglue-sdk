@@ -92,6 +92,36 @@ TEST_CASE("FM2 native state adapters map hook arguments into snapshots",
   CHECK(snapshot.bound_surface.surface_arg == 3u);
 }
 
+TEST_CASE("FM2 native state records viewport clear and texture fetch hooks",
+          "[fm2][plume]") {
+  namespace fm2nr = fm2::native_renderer;
+
+  fm2nr::ResetNativeStateRecorder();
+
+  fm2nr::RecordNativeViewportModeArgs(0x1000u, 2u);
+  fm2nr::RecordNativeTextureFetchLowArgs(0x1000u, 5u);
+  fm2nr::RecordNativeTextureFetchMidArgs(0x1000u, 7u);
+  fm2nr::RecordNativeClearColorArgs(0x1000u, 8u);
+  fm2nr::RecordNativeClearFlagsArgs(0x1000u, 6u);
+  fm2nr::RecordNativePassDrawBoundaryArgs(0x7000u, 0x8000u, 0x22u, 0x9000u,
+                                          0xA000u, 1u, 2u, 3u);
+
+  const fm2nr::NativeStateSnapshot snapshot =
+      fm2nr::SnapshotNativeState(0x1000u);
+
+  REQUIRE(snapshot.valid);
+  CHECK(snapshot.viewport.valid);
+  CHECK(snapshot.viewport.viewport_mode == 2u);
+  CHECK(snapshot.texture_fetch.valid);
+  CHECK(snapshot.texture_fetch.fetch_bits_low == 5u);
+  CHECK(snapshot.texture_fetch.fetch_bits_mid == 7u);
+  CHECK(snapshot.clear.valid);
+  CHECK(snapshot.clear.clear_color_byte == 8u);
+  CHECK(snapshot.clear.clear_flags == 6u);
+  CHECK(snapshot.last_pass.valid);
+  CHECK(snapshot.last_pass.pass_flags == 0x22u);
+}
+
 TEST_CASE("FM2 native state pairs direct draws with latest render context",
           "[fm2][plume]") {
   namespace fm2nr = fm2::native_renderer;

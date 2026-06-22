@@ -3993,6 +3993,35 @@ void FM2PlumeTraceBoundSurface(PPCRegister& r3, PPCRegister& r4,
   fm2nr::RecordNativeBoundSurfaceArgs(r3.u32, r4.u32, r5.u32);
 }
 
+void FM2PlumeTraceViewportMode(PPCRegister& r3, PPCRegister& r4) {
+  fm2nr::RecordNativeViewportModeArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceTextureFetchLow(PPCRegister& r3, PPCRegister& r4) {
+  fm2nr::RecordNativeTextureFetchLowArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceTextureFetchMid(PPCRegister& r3, PPCRegister& r4) {
+  fm2nr::RecordNativeTextureFetchMidArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceClearColor(PPCRegister& r3, PPCRegister& r4) {
+  fm2nr::RecordNativeClearColorArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceClearFlags(PPCRegister& r3, PPCRegister& r4) {
+  fm2nr::RecordNativeClearFlagsArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTracePassDrawWork(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5,
+                              PPCRegister& r6, PPCRegister& r7, PPCRegister& r8,
+                              PPCRegister& r9, PPCRegister& r10) {
+  fm2nr::RecordNativePassDrawBoundaryArgs(r3.u32, r4.u32, r5.u32, r6.u32, r7.u32,
+                                          r8.u32, r9.u32, r10.u32);
+}
+
+// Intentionally not manifest-hooked: BuildDirectIndexedDrawBuffers has a one-shot
+// guard at direct_render_ctx+0x48. Use FM2PlumeTraceInstanceHybridDrawEntry.
 void FM2PlumeTraceDirectIndexedDrawEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5,
                                          PPCRegister& r6, PPCRegister& r7, PPCRegister& r8,
                                          PPCRegister& r9, PPCRegister& r10) {
@@ -4030,6 +4059,11 @@ void FM2PlumeTraceInstanceHybridDrawEntry(PPCRegister& r3, PPCRegister& r4, PPCR
 
 void FM2PlumeTraceD3DDirtyStateEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
   MaybeLogPlumeD3DDirtyStateEntry(r3.u32, r4.u32, r5.u32);
+}
+
+void FM2PlumeTracePresent(PPCRegister& r3) {
+  fm2::native_renderer::FlushNativeDirectDrawOnPresent();
+  fm2::native_renderer::RecordPresentEntry(r3.u32);
 }
 
 void FM2SigSiteA56C(PPCRegister& r3) {

@@ -1,5 +1,7 @@
 #include "native_renderer/fm2_native_renderer.h"
 
+#include "native_renderer/fm2_native_state.h"
+
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -134,6 +136,7 @@ std::atomic<bool> g_swapchain_ready{false};
 std::atomic<uint64_t> g_build_object_pass_entries{0};
 std::atomic<uint64_t> g_direct_indexed_draw_entries{0};
 std::atomic<uint64_t> g_instance_hybrid_draw_entries{0};
+std::atomic<uint64_t> g_present_entries{0};
 std::atomic<uint64_t> g_debug_replay_attempts{0};
 std::atomic<uint64_t> g_debug_replay_submitted{0};
 std::atomic<uint64_t> g_debug_replay_failed{0};
@@ -830,6 +833,18 @@ bool CreateDebugReplayWindowSwapchainLocked(rex::ui::Window* host_window) {
       reinterpret_cast<plume::RenderWindow>(g_plume.debug_replay_window));
 }
 
+plume::RenderColor ReplayClearColorLocked() {
+  constexpr plume::RenderColor kDefault(0.0f, 0.02f, 0.04f, 1.0f);
+  const fm2::native_renderer::NativeStateSnapshot snapshot =
+      fm2::native_renderer::SnapshotLastNativeState();
+  if (!snapshot.clear.valid) {
+    return kDefault;
+  }
+  const float grayscale =
+      static_cast<float>(snapshot.clear.clear_color_byte) * (1.0f / 255.0f);
+  return plume::RenderColor(grayscale, grayscale, grayscale, 1.0f);
+}
+
 bool RenderClearOnceLocked() {
   if (!g_plume.device || !g_plume.command_queue || !g_plume.command_list ||
       !g_plume.swapchain || !g_plume.acquire_semaphore || !g_plume.fence) {
@@ -993,8 +1008,7 @@ bool RenderDirectDebugReplayLocked(
   g_plume.command_list->setViewports(
       plume::RenderViewport(0.0f, 0.0f, float(width), float(height)));
   g_plume.command_list->setScissors(plume::RenderRect(0, 0, width, height));
-  g_plume.command_list->clearColor(
-      0, plume::RenderColor(0.0f, 0.02f, 0.04f, 1.0f));
+  g_plume.command_list->clearColor(0, ReplayClearColorLocked());
   g_plume.command_list->setGraphicsPipelineLayout(
       g_plume.debug_replay_pipeline_layout.get());
   g_plume.command_list->setPipeline(g_plume.debug_replay_pipeline.get());
@@ -1176,8 +1190,7 @@ bool RenderDirectDebugReplayBatchLocked(
   g_plume.command_list->setViewports(
       plume::RenderViewport(0.0f, 0.0f, float(width), float(height)));
   g_plume.command_list->setScissors(plume::RenderRect(0, 0, width, height));
-  g_plume.command_list->clearColor(
-      0, plume::RenderColor(0.0f, 0.02f, 0.04f, 1.0f));
+  g_plume.command_list->clearColor(0, ReplayClearColorLocked());
   g_plume.command_list->setGraphicsPipelineLayout(
       g_plume.debug_replay_pipeline_layout.get());
   g_plume.command_list->setPipeline(g_plume.debug_replay_pipeline.get());
@@ -1498,6 +1511,27 @@ void RecordInstanceHybridDrawEntry(const GuestArgs& args) {
                  kFM2RenderInstanceHybridDrawPathAddress, count, args);
 }
 
+void RecordPresentEntry(uint32_t present_chain_object) {
+  const uint64_t count =
+      g_present_entries.fetch_add(1, std::memory_order_relaxed) + 1;
+  GuestArgs args{.r3 = present_chain_object};
+  StoreLastArgs(kFM2D3DTryPresentAndUpdateStatusAddress, args);
+  MaybeLogPacket("FM2_PLUME_PRESENT", kFM2D3DTryPresentAndUpdateStatusAddress,
+                 count, args);
+}
+
+bool FlushNativeDirectDrawOnPresent() {
+#if FM2_HAS_PLUME && REX_PLATFORM_WIN32
+  if (!WantsNativeDirectDrawLiveBatch()) {
+    return true;
+  }
+  std::scoped_lock lock(g_plume_mutex);
+  return FlushNativeDirectDrawBatchLocked("present");
+#else
+  return true;
+#endif
+}
+
 bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
                              const DirectDrawReplaySourceBytes& sources) {
   if (!WantsDirectDebugReplay()) {
@@ -1681,6 +1715,7 @@ Stats GetStatsSnapshot() {
       g_direct_indexed_draw_entries.load(std::memory_order_relaxed);
   out.instance_hybrid_draw_entries =
       g_instance_hybrid_draw_entries.load(std::memory_order_relaxed);
+  out.present_entries = g_present_entries.load(std::memory_order_relaxed);
   out.debug_replay_attempts =
       g_debug_replay_attempts.load(std::memory_order_relaxed);
   out.debug_replay_submitted =

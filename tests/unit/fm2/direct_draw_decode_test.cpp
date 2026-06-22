@@ -281,7 +281,16 @@ TEST_CASE("FM2 direct draw segment summary preserves raw header fields",
   CHECK(decode::DirectDrawReplayTopologyFromSegmentHeader(0x8210u, 0x94E8u) ==
         decode::DirectDrawReplayTopology::kTriangleStrip);
   CHECK(decode::DirectDrawReplayTopologyFromSegmentSummary(summary) ==
+        decode::DirectDrawReplayTopology::kTriangleList);
+  CHECK(decode::ResolveDirectDrawReplayTopology(
+            decode::DirectDrawReplayTopology::kUnknown, 0u) ==
         decode::DirectDrawReplayTopology::kUnknown);
+  CHECK(decode::ResolveDirectDrawReplayTopology(
+            decode::DirectDrawReplayTopology::kUnknown, 6u) ==
+        decode::DirectDrawReplayTopology::kTriangleList);
+  CHECK(decode::ResolveDirectDrawReplayTopology(
+            decode::DirectDrawReplayTopology::kTriangleStrip, 6u) ==
+        decode::DirectDrawReplayTopology::kTriangleStrip);
 }
 
 TEST_CASE("FM2 D3D context post-direct trace arms once with a nonzero budget",

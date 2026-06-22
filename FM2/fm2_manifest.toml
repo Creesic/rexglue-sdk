@@ -101,9 +101,11 @@ longjmp_address = 0x82418210
 0x8236E010 = { name = "FM2_RenderContext_SetVertexShaderState" }
 0x82370E48 = { name = "FM2_RenderContext_BindVertexStream" }
 0x82370F68 = { name = "FM2_RenderContext_BindIndexBuffer" }
+0x823715B0 = { name = "FM2_RenderContext_SetViewportModeAndApply" }
 0x82371A30 = { name = "FM2_RenderContext_SetBoundSurface" }
 0x82374190 = { name = "FM2_D3D_CreatePresentBackbufferResources" }
 0x824A52C0 = { name = "FM2_D3D_InitGlobalDeviceSingleton" }
+0x8250F7C0 = { name = "FM2_Render_EmitPassDrawWork" }
 0x82502268 = { name = "FM2_D3D_LazyInitPresentChainInit" }
 0x825A22F0 = { name = "FM2_D3D_CreateVertexBufferWrapper" }
 0x825A2350 = { name = "FM2_D3D_LockVertexBufferWrapper" }
@@ -961,6 +963,48 @@ after_instruction = false
 address = 0x82375ED0
 name = "FM2PlumeTraceD3DDirtyStateEntry"
 registers = ["r3", "r4", "r5"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x823715B0
+name = "FM2PlumeTraceViewportMode"
+registers = ["r3", "r4"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8236EA60
+name = "FM2PlumeTraceTextureFetchLow"
+registers = ["r3", "r4"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8236EA90
+name = "FM2PlumeTraceTextureFetchMid"
+registers = ["r3", "r4"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8236EF20
+name = "FM2PlumeTraceClearColor"
+registers = ["r3", "r4"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8236EF88
+name = "FM2PlumeTraceClearFlags"
+registers = ["r3", "r4"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8250F7C0
+name = "FM2PlumeTracePassDrawWork"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x824F83D8
+name = "FM2PlumeTracePresent"
+registers = ["r3"]
 after_instruction = false
 
 [entrypoint.rexcrt]

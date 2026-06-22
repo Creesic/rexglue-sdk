@@ -42,6 +42,29 @@ struct NativeStateSurfaceBinding {
   uint32_t surface_arg = 0;
 };
 
+struct NativeStateViewportBinding {
+  bool valid = false;
+  uint64_t sequence = 0;
+  uint32_t render_context = 0;
+  uint32_t viewport_mode = 0;
+};
+
+struct NativeStateTextureFetchBinding {
+  bool valid = false;
+  uint64_t sequence = 0;
+  uint32_t render_context = 0;
+  uint8_t fetch_bits_low = 0;
+  uint8_t fetch_bits_mid = 0;
+};
+
+struct NativeStateClearBinding {
+  bool valid = false;
+  uint64_t sequence = 0;
+  uint32_t render_context = 0;
+  uint8_t clear_color_byte = 0;
+  uint8_t clear_flags = 0;
+};
+
 struct NativeStatePassDrawBoundary {
   bool valid = false;
   uint64_t sequence = 0;
@@ -72,6 +95,9 @@ struct NativeStateSnapshot {
       streams = {};
   NativeStateIndexBufferBinding index_buffer;
   NativeStateSurfaceBinding bound_surface;
+  NativeStateViewportBinding viewport;
+  NativeStateTextureFetchBinding texture_fetch;
+  NativeStateClearBinding clear;
   NativeStatePassDrawBoundary last_pass;
   NativeStateDirectDrawEntry last_direct_draw;
 };
@@ -89,6 +115,11 @@ class NativeStateRecorder {
       const NativeStateVertexStreamBinding& binding);
   void RecordIndexBufferBinding(const NativeStateIndexBufferBinding& binding);
   void RecordBoundSurface(const NativeStateSurfaceBinding& binding);
+  void RecordViewportMode(const NativeStateViewportBinding& binding);
+  void RecordTextureFetchLow(uint32_t render_context, uint8_t fetch_bits_low);
+  void RecordTextureFetchMid(uint32_t render_context, uint8_t fetch_bits_mid);
+  void RecordClearColor(uint32_t render_context, uint8_t clear_color_byte);
+  void RecordClearFlags(uint32_t render_context, uint8_t clear_flags);
   void RecordPassDrawBoundary(const NativeStatePassDrawBoundary& boundary);
   void RecordDirectDrawEntry(const NativeStateDirectDrawEntry& entry);
 
@@ -116,7 +147,21 @@ void RecordNativeVertexStreamBinding(
 void RecordNativeIndexBufferBinding(
     const NativeStateIndexBufferBinding& binding);
 void RecordNativeBoundSurface(const NativeStateSurfaceBinding& binding);
+void RecordNativeViewportModeArgs(uint32_t render_context,
+                                  uint32_t viewport_mode);
+void RecordNativeTextureFetchLowArgs(uint32_t render_context,
+                                     uint32_t fetch_bits_low);
+void RecordNativeTextureFetchMidArgs(uint32_t render_context,
+                                     uint32_t fetch_bits_mid);
+void RecordNativeClearColorArgs(uint32_t render_context,
+                                uint32_t clear_color_byte);
+void RecordNativeClearFlagsArgs(uint32_t render_context, uint32_t clear_flags);
 void RecordNativePassDrawBoundary(const NativeStatePassDrawBoundary& boundary);
+void RecordNativePassDrawBoundaryArgs(uint32_t submit_object,
+                                      uint32_t tls_or_pass_context,
+                                      uint32_t pass_flags, uint32_t drawable,
+                                      uint32_t draw_callback, uint32_t wireframe,
+                                      uint32_t draw_mode, uint32_t pass_marker);
 void RecordNativeDirectDrawEntry(const NativeStateDirectDrawEntry& entry);
 void RecordNativeVertexShaderStateArgs(uint32_t render_context,
                                        uint32_t shader);

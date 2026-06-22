@@ -110,6 +110,85 @@ void NativeStateRecorder::RecordBoundSurface(
   last_pipeline_render_context_ = binding.render_context;
 }
 
+void NativeStateRecorder::RecordViewportMode(
+    const NativeStateViewportBinding& binding) {
+  if (binding.render_context == 0) {
+    return;
+  }
+  std::scoped_lock lock(mutex_);
+  NativeStateSnapshot& snapshot = GetOrCreateContext(binding.render_context);
+  snapshot.viewport = binding;
+  snapshot.viewport.valid = true;
+  snapshot.viewport.sequence = NextSequence();
+  snapshot.sequence = snapshot.viewport.sequence;
+  last_render_context_ = binding.render_context;
+  last_pipeline_render_context_ = binding.render_context;
+}
+
+void NativeStateRecorder::RecordTextureFetchLow(uint32_t render_context,
+                                                uint8_t fetch_bits_low) {
+  if (render_context == 0) {
+    return;
+  }
+  std::scoped_lock lock(mutex_);
+  NativeStateSnapshot& snapshot = GetOrCreateContext(render_context);
+  snapshot.texture_fetch.render_context = render_context;
+  snapshot.texture_fetch.fetch_bits_low = fetch_bits_low;
+  snapshot.texture_fetch.valid = true;
+  snapshot.texture_fetch.sequence = NextSequence();
+  snapshot.sequence = snapshot.texture_fetch.sequence;
+  last_render_context_ = render_context;
+  last_pipeline_render_context_ = render_context;
+}
+
+void NativeStateRecorder::RecordTextureFetchMid(uint32_t render_context,
+                                                uint8_t fetch_bits_mid) {
+  if (render_context == 0) {
+    return;
+  }
+  std::scoped_lock lock(mutex_);
+  NativeStateSnapshot& snapshot = GetOrCreateContext(render_context);
+  snapshot.texture_fetch.render_context = render_context;
+  snapshot.texture_fetch.fetch_bits_mid = fetch_bits_mid;
+  snapshot.texture_fetch.valid = true;
+  snapshot.texture_fetch.sequence = NextSequence();
+  snapshot.sequence = snapshot.texture_fetch.sequence;
+  last_render_context_ = render_context;
+  last_pipeline_render_context_ = render_context;
+}
+
+void NativeStateRecorder::RecordClearColor(uint32_t render_context,
+                                           uint8_t clear_color_byte) {
+  if (render_context == 0) {
+    return;
+  }
+  std::scoped_lock lock(mutex_);
+  NativeStateSnapshot& snapshot = GetOrCreateContext(render_context);
+  snapshot.clear.render_context = render_context;
+  snapshot.clear.clear_color_byte = clear_color_byte;
+  snapshot.clear.valid = true;
+  snapshot.clear.sequence = NextSequence();
+  snapshot.sequence = snapshot.clear.sequence;
+  last_render_context_ = render_context;
+  last_pipeline_render_context_ = render_context;
+}
+
+void NativeStateRecorder::RecordClearFlags(uint32_t render_context,
+                                           uint8_t clear_flags) {
+  if (render_context == 0) {
+    return;
+  }
+  std::scoped_lock lock(mutex_);
+  NativeStateSnapshot& snapshot = GetOrCreateContext(render_context);
+  snapshot.clear.render_context = render_context;
+  snapshot.clear.clear_flags = clear_flags;
+  snapshot.clear.valid = true;
+  snapshot.clear.sequence = NextSequence();
+  snapshot.sequence = snapshot.clear.sequence;
+  last_render_context_ = render_context;
+  last_pipeline_render_context_ = render_context;
+}
+
 void NativeStateRecorder::RecordPassDrawBoundary(
     const NativeStatePassDrawBoundary& boundary) {
   std::scoped_lock lock(mutex_);
@@ -284,6 +363,52 @@ void RecordNativeBoundSurfaceArgs(uint32_t render_context, uint32_t surface,
   RecordNativeBoundSurface({.render_context = render_context,
                             .surface = surface,
                             .surface_arg = surface_arg});
+}
+
+void RecordNativeViewportModeArgs(uint32_t render_context,
+                                  uint32_t viewport_mode) {
+  g_native_state_recorder.RecordViewportMode({.render_context = render_context,
+                                              .viewport_mode = viewport_mode});
+}
+
+void RecordNativeTextureFetchLowArgs(uint32_t render_context,
+                                     uint32_t fetch_bits_low) {
+  g_native_state_recorder.RecordTextureFetchLow(
+      render_context, static_cast<uint8_t>(fetch_bits_low & 0xFFu));
+}
+
+void RecordNativeTextureFetchMidArgs(uint32_t render_context,
+                                     uint32_t fetch_bits_mid) {
+  g_native_state_recorder.RecordTextureFetchMid(
+      render_context, static_cast<uint8_t>(fetch_bits_mid & 0xFFu));
+}
+
+void RecordNativeClearColorArgs(uint32_t render_context,
+                              uint32_t clear_color_byte) {
+  g_native_state_recorder.RecordClearColor(
+      render_context, static_cast<uint8_t>(clear_color_byte & 0xFFu));
+}
+
+void RecordNativeClearFlagsArgs(uint32_t render_context, uint32_t clear_flags) {
+  g_native_state_recorder.RecordClearFlags(
+      render_context, static_cast<uint8_t>(clear_flags & 0xFFu));
+}
+
+void RecordNativePassDrawBoundaryArgs(uint32_t submit_object,
+                                      uint32_t tls_or_pass_context,
+                                      uint32_t pass_flags, uint32_t drawable,
+                                      uint32_t draw_callback, uint32_t wireframe,
+                                      uint32_t draw_mode, uint32_t pass_marker) {
+  RecordNativePassDrawBoundary({
+      .submit_object = submit_object,
+      .tls_or_pass_context = tls_or_pass_context,
+      .pass_flags = pass_flags,
+      .drawable = drawable,
+      .draw_callback = draw_callback,
+      .wireframe = wireframe,
+      .draw_mode = draw_mode,
+      .pass_marker = pass_marker,
+  });
 }
 
 NativeStateSnapshot SnapshotNativeState(uint32_t render_context) {

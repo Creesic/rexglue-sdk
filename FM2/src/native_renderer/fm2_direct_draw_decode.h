@@ -1117,13 +1117,26 @@ constexpr DirectDrawReplayTopology DirectDrawReplayTopologyFromSegmentHeader(
   return DirectDrawReplayTopology::kUnknown;
 }
 
+constexpr DirectDrawReplayTopology ResolveDirectDrawReplayTopology(
+    DirectDrawReplayTopology from_header, uint32_t index_count) {
+  if (from_header != DirectDrawReplayTopology::kUnknown) {
+    return from_header;
+  }
+  if (index_count >= 3u && (index_count % 3u) == 0u) {
+    return DirectDrawReplayTopology::kTriangleList;
+  }
+  return DirectDrawReplayTopology::kUnknown;
+}
+
 constexpr DirectDrawReplayTopology DirectDrawReplayTopologyFromSegmentSummary(
     const DirectDrawSegmentSummary& segment) {
   if (!segment.valid) {
     return DirectDrawReplayTopology::kUnknown;
   }
-  return DirectDrawReplayTopologyFromSegmentHeader(segment.raw_w0,
-                                                  segment.raw_w2);
+  return ResolveDirectDrawReplayTopology(
+      DirectDrawReplayTopologyFromSegmentHeader(segment.raw_w0,
+                                                segment.raw_w2),
+      segment.index_count);
 }
 
 constexpr uint32_t DirectDrawReplayPrimitiveCountFromIndexCount(
