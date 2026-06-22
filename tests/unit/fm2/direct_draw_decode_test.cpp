@@ -186,6 +186,23 @@ TEST_CASE("FM2 direct debug replay can filter records", "[fm2][plume]") {
   CHECK_FALSE(decode::ShouldSubmitDirectDebugReplayRecord(2u, 3u));
 }
 
+TEST_CASE("FM2 compare replay policy bypasses trace-only debug limits",
+          "[fm2][plume]") {
+  namespace decode = fm2::native_renderer;
+
+  CHECK(decode::ShouldDecodeDirectDrawForCompareReplay(false, true));
+  CHECK(decode::ShouldDecodeDirectDrawForCompareReplay(true, false));
+  CHECK_FALSE(decode::ShouldDecodeDirectDrawForCompareReplay(false, false));
+
+  CHECK(decode::DirectCompareReplayRecordScanCount(31u, 0u) == 31u);
+  CHECK(decode::DirectCompareReplayRecordScanCount(31u, 8u) == 8u);
+  CHECK(decode::DirectCompareReplayRecordScanCount(4u, 8u) == 4u);
+
+  CHECK_FALSE(decode::DirectDebugReplaySubmitLimitReached(2u, 1u, true));
+  CHECK(decode::DirectDebugReplaySubmitLimitReached(2u, 1u, false));
+  CHECK_FALSE(decode::DirectDebugReplaySubmitLimitReached(99u, 0u, false));
+}
+
 TEST_CASE("FM2 direct debug replay topology names parse diagnostics",
           "[fm2][plume]") {
   namespace decode = fm2::native_renderer;

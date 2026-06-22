@@ -71,6 +71,11 @@ REXCVAR_DEFINE_BOOL(
     fm2_plume_debug_replay_window, false, "FM2",
     "Create a separate diagnostic Plume window for shadow-mode debug replay.");
 
+REXCVAR_DEFINE_BOOL(
+    fm2_plume_compare_window, false, "FM2",
+    "Create a separate Plume comparison window in shadow mode and submit "
+    "replayable native draws to it.");
+
 REXCVAR_DEFINE_UINT32(
     fm2_plume_debug_replay_limit, 1, "FM2",
     "Maximum number of FM2 Plume diagnostic direct-draw replays to submit");
@@ -132,6 +137,7 @@ constexpr plume::RenderFormat kSwapchainFormat =
 constexpr wchar_t kDebugReplayWindowClassName[] =
     L"ReXGlueFM2PlumeDebugReplayWindow";
 constexpr wchar_t kDebugReplayWindowTitle[] = L"FM2 Plume Debug Replay";
+constexpr wchar_t kCompareWindowTitle[] = L"FM2 Plume Compare";
 constexpr uint32_t kDebugReplayWindowClientWidth = 960;
 constexpr uint32_t kDebugReplayWindowClientHeight = 540;
 
@@ -155,6 +161,16 @@ struct DebugReplayPushConstants {
 };
 
 static_assert((sizeof(DebugReplayPushConstants) % sizeof(uint32_t)) == 0);
+
+struct PreparedDirectDebugReplayDraw {
+  fm2::native_renderer::DirectDrawDebugReplayPlan plan;
+  fm2::native_renderer::DirectDrawReplayTopology effective_topology =
+      fm2::native_renderer::DirectDrawReplayTopology::kUnknown;
+  plume::RenderFormat index_format = plume::RenderFormat::UNKNOWN;
+  std::unique_ptr<plume::RenderBuffer> stream0_buffer;
+  std::unique_ptr<plume::RenderBuffer> stream1_buffer;
+  std::unique_ptr<plume::RenderBuffer> index_buffer;
+};
 
 bool CreateFramebuffersLocked();
 #endif
@@ -249,8 +265,12 @@ void DestroyDebugReplayWindowLocked() {
 }
 
 bool CreateDebugReplayWindowLocked() {
+  const wchar_t* title = REXCVAR_GET(fm2_plume_compare_window)
+                             ? kCompareWindowTitle
+                             : kDebugReplayWindowTitle;
   if (g_plume.debug_replay_window &&
       IsWindow(g_plume.debug_replay_window) != FALSE) {
+    SetWindowTextW(g_plume.debug_replay_window, title);
     ShowWindow(g_plume.debug_replay_window, SW_SHOWNOACTIVATE);
     return true;
   }
@@ -270,7 +290,7 @@ bool CreateDebugReplayWindowLocked() {
   const int width = rect.right - rect.left;
   const int height = rect.bottom - rect.top;
   g_plume.debug_replay_window = CreateWindowExW(
-      kWindowExStyle, kDebugReplayWindowClassName, kDebugReplayWindowTitle,
+      kWindowExStyle, kDebugReplayWindowClassName, title,
       kWindowStyle, CW_USEDEFAULT, CW_USEDEFAULT, width, height, nullptr,
       nullptr, GetModuleHandleW(nullptr), nullptr);
   if (!g_plume.debug_replay_window) {
@@ -868,6 +888,174 @@ bool RenderDirectDebugReplayLocked(
       DebugReplayTransformModeName(push_constants.transform_mode));
   return presented;
 }
+
+bool RenderDirectDebugReplayBatchLocked(
+    const fm2::native_renderer::DirectDrawReplaySubmission* submissions,
+    uint32_t submission_count) {
+  if (!submissions || submission_count == 0 || !g_plume.device ||
+      !g_plume.command_queue || !g_plume.command_list || !g_plume.swapchain ||
+      !g_plume.acquire_semaphore || !g_plume.fence ||
+      !ResizeSwapchainIfNeededLocked()) {
+    return false;
+  }
+
+  std::vector<PreparedDirectDebugReplayDraw> draws;
+  draws.reserve(submission_count);
+  uint32_t skipped = 0;
+  fm2::native_renderer::DirectDrawReplayTopology batch_topology =
+      fm2::native_renderer::DirectDrawReplayTopology::kUnknown;
+
+  for (uint32_t i = 0; i < submission_count; ++i) {
+    const auto& submission = submissions[i];
+    const auto& plan = submission.plan;
+    const auto& sources = submission.sources;
+    if (!plan.ready || plan.stream_count != 2u || !sources.stream0 ||
+        !sources.stream1 || !sources.index) {
+      ++skipped;
+      continue;
+    }
+
+    const fm2::native_renderer::DirectDrawReplayTopology effective_topology =
+        EffectiveDebugReplayTopology(plan.topology);
+    if (effective_topology ==
+            fm2::native_renderer::DirectDrawReplayTopology::kUnknown ||
+        plan.streams[0].stride != 0x20u || plan.streams[1].stride != 0x0Cu) {
+      ++skipped;
+      continue;
+    }
+    if (batch_topology ==
+        fm2::native_renderer::DirectDrawReplayTopology::kUnknown) {
+      batch_topology = effective_topology;
+    } else if (batch_topology != effective_topology) {
+      ++skipped;
+      continue;
+    }
+
+    const plume::RenderFormat index_format =
+        ReplayIndexFormatToPlume(plan.index_format);
+    if (index_format == plume::RenderFormat::UNKNOWN) {
+      ++skipped;
+      continue;
+    }
+
+    PreparedDirectDebugReplayDraw prepared;
+    prepared.plan = plan;
+    prepared.effective_topology = effective_topology;
+    prepared.index_format = index_format;
+    prepared.stream0_buffer = CreateConvertedReplayBufferLocked(
+        "FM2 compare stream0", sources.stream0, plan.streams[0].upload_bytes,
+        plan.streams[0].upload_endian, plume::RenderBufferFlag::VERTEX);
+    prepared.stream1_buffer = CreateConvertedReplayBufferLocked(
+        "FM2 compare stream1", sources.stream1, plan.streams[1].upload_bytes,
+        plan.streams[1].upload_endian, plume::RenderBufferFlag::VERTEX);
+    prepared.index_buffer = CreateConvertedReplayBufferLocked(
+        "FM2 compare index", sources.index, plan.index.upload_bytes,
+        plan.index.upload_endian, plume::RenderBufferFlag::INDEX);
+    if (!prepared.stream0_buffer || !prepared.stream1_buffer ||
+        !prepared.index_buffer) {
+      ++skipped;
+      continue;
+    }
+    draws.push_back(std::move(prepared));
+  }
+
+  if (draws.empty() || !EnsureDebugReplayPipelineLocked(batch_topology)) {
+    return false;
+  }
+
+  uint32_t image_index = 0;
+  if (!g_plume.swapchain->acquireTexture(g_plume.acquire_semaphore.get(),
+                                         &image_index)) {
+    REXLOG_WARN("FM2 Plume compare replay failed to acquire swapchain texture");
+    return false;
+  }
+  if (image_index >= g_plume.framebuffers.size()) {
+    REXLOG_WARN("FM2 Plume compare replay acquired invalid image index {}",
+                image_index);
+    return false;
+  }
+
+  plume::RenderTexture* texture = g_plume.swapchain->getTexture(image_index);
+  const uint32_t width = g_plume.swapchain->getWidth();
+  const uint32_t height = g_plume.swapchain->getHeight();
+
+  g_plume.command_list->begin();
+  g_plume.command_list->barriers(
+      plume::RenderBarrierStage::GRAPHICS,
+      plume::RenderTextureBarrier(texture,
+                                  plume::RenderTextureLayout::COLOR_WRITE));
+  g_plume.command_list->setFramebuffer(g_plume.framebuffers[image_index].get());
+  g_plume.command_list->setViewports(
+      plume::RenderViewport(0.0f, 0.0f, float(width), float(height)));
+  g_plume.command_list->setScissors(plume::RenderRect(0, 0, width, height));
+  g_plume.command_list->clearColor(
+      0, plume::RenderColor(0.0f, 0.02f, 0.04f, 1.0f));
+  g_plume.command_list->setGraphicsPipelineLayout(
+      g_plume.debug_replay_pipeline_layout.get());
+  g_plume.command_list->setPipeline(g_plume.debug_replay_pipeline.get());
+
+  for (PreparedDirectDebugReplayDraw& draw : draws) {
+    std::array<plume::RenderVertexBufferView, 2> vertex_views = {
+        plume::RenderVertexBufferView(draw.stream0_buffer.get(),
+                                      draw.plan.streams[0].upload_bytes),
+        plume::RenderVertexBufferView(draw.stream1_buffer.get(),
+                                      draw.plan.streams[1].upload_bytes),
+    };
+    std::array<plume::RenderInputSlot, 2> input_slots = {
+        plume::RenderInputSlot(draw.plan.streams[0].slot,
+                               draw.plan.streams[0].stride),
+        plume::RenderInputSlot(draw.plan.streams[1].slot,
+                               draw.plan.streams[1].stride),
+    };
+    plume::RenderIndexBufferView index_view(draw.index_buffer.get(),
+                                            draw.plan.index.upload_bytes,
+                                            draw.index_format);
+    const DebugReplayPushConstants push_constants =
+        BuildDebugReplayPushConstants(draw.plan);
+
+    g_plume.command_list->setGraphicsPushConstants(0, &push_constants);
+    g_plume.command_list->setVertexBuffers(
+        0, vertex_views.data(), static_cast<uint32_t>(vertex_views.size()),
+        input_slots.data());
+    g_plume.command_list->setIndexBuffer(&index_view);
+    g_plume.command_list->drawIndexedInstanced(
+        draw.plan.draw.index_count, draw.plan.draw.instance_count,
+        draw.plan.draw.start_index, draw.plan.draw.base_vertex,
+        draw.plan.draw.start_instance);
+  }
+
+  g_plume.command_list->barriers(
+      plume::RenderBarrierStage::NONE,
+      plume::RenderTextureBarrier(texture,
+                                  plume::RenderTextureLayout::PRESENT));
+  g_plume.command_list->end();
+
+  while (g_plume.release_semaphores.size() <
+         g_plume.swapchain->getTextureCount()) {
+    g_plume.release_semaphores.emplace_back(
+        g_plume.device->createCommandSemaphore());
+  }
+
+  const plume::RenderCommandList* command_list = g_plume.command_list.get();
+  plume::RenderCommandSemaphore* wait_semaphore =
+      g_plume.acquire_semaphore.get();
+  plume::RenderCommandSemaphore* signal_semaphore =
+      g_plume.release_semaphores[image_index].get();
+
+  g_plume.command_queue->executeCommandLists(
+      &command_list, 1, &wait_semaphore, 1, &signal_semaphore, 1,
+      g_plume.fence.get());
+  const bool presented =
+      g_plume.swapchain->present(image_index, &signal_semaphore, 1);
+  g_plume.command_queue->waitForCommandFence(g_plume.fence.get());
+
+  REXLOG_INFO(
+      "FM2_PLUME_COMPARE_REPLAY_SUBMIT presented={} image={} size={}x{} "
+      "draws={} skipped={} topology={}",
+      presented, image_index, width, height, draws.size(), skipped,
+      static_cast<unsigned>(batch_topology));
+  return presented;
+}
 #endif
 
 }  // namespace
@@ -895,7 +1083,12 @@ bool WantsReXGraphics() {
 }
 
 bool WantsDirectDebugReplay() {
-  return REXCVAR_GET(fm2_plume_debug_replay);
+  return REXCVAR_GET(fm2_plume_debug_replay) ||
+         REXCVAR_GET(fm2_plume_compare_window);
+}
+
+bool WantsCompareWindow() {
+  return REXCVAR_GET(fm2_plume_compare_window);
 }
 
 bool Initialize(rex::ui::Window* window) {
@@ -917,11 +1110,11 @@ bool Initialize(rex::ui::Window* window) {
   }
 
   const bool wants_debug_replay_swapchain =
-      mode == Mode::kShadow && REXCVAR_GET(fm2_plume_debug_replay) &&
+      mode == Mode::kShadow && WantsDirectDebugReplay() &&
       REXCVAR_GET(fm2_plume_debug_replay_shadow_swapchain);
   const bool wants_debug_replay_window =
-      mode == Mode::kShadow && REXCVAR_GET(fm2_plume_debug_replay) &&
-      REXCVAR_GET(fm2_plume_debug_replay_window);
+      mode == Mode::kShadow && WantsDirectDebugReplay() &&
+      (REXCVAR_GET(fm2_plume_debug_replay_window) || WantsCompareWindow());
   if (mode == Mode::kPlumeClear) {
     if (!CreateSwapchainLocked(window)) {
       REXLOG_WARN("FM2 Plume clear mode could not create swapchain");
@@ -1016,14 +1209,15 @@ void RecordDirectIndexedDrawEntry(const GuestArgs& args) {
 
 bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
                              const DirectDrawReplaySourceBytes& sources) {
-  if (!REXCVAR_GET(fm2_plume_debug_replay)) {
+  if (!WantsDirectDebugReplay()) {
     return false;
   }
 
   const uint64_t attempt =
       g_debug_replay_attempts.fetch_add(1, std::memory_order_relaxed) + 1;
   const uint32_t limit = REXCVAR_GET(fm2_plume_debug_replay_limit);
-  if (limit != 0 && attempt > limit) {
+  if (DirectDebugReplaySubmitLimitReached(attempt, limit,
+                                          WantsCompareWindow())) {
     return false;
   }
 
@@ -1057,6 +1251,46 @@ bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
   (void)sources;
   g_debug_replay_failed.fetch_add(1, std::memory_order_relaxed);
   REXLOG_WARN("FM2 Plume debug replay requested without Plume support");
+  return false;
+#endif
+}
+
+bool SubmitDirectDebugReplayBatch(const DirectDrawReplaySubmission* submissions,
+                                  uint32_t submission_count) {
+  if (!WantsCompareWindow() || !submissions || submission_count == 0) {
+    return false;
+  }
+
+  g_debug_replay_attempts.fetch_add(submission_count,
+                                    std::memory_order_relaxed);
+
+  const Mode mode = GetMode();
+  if (mode != Mode::kShadow) {
+    g_debug_replay_failed.fetch_add(submission_count,
+                                    std::memory_order_relaxed);
+    REXLOG_WARN("FM2 Plume compare replay requires fm2_plume_mode=shadow; "
+                "current mode={}",
+                GetModeName(mode));
+    return false;
+  }
+
+#if FM2_HAS_PLUME && REX_PLATFORM_WIN32
+  bool submitted = false;
+  {
+    std::scoped_lock lock(g_plume_mutex);
+    submitted = RenderDirectDebugReplayBatchLocked(submissions, submission_count);
+  }
+  if (submitted) {
+    g_debug_replay_submitted.fetch_add(submission_count,
+                                       std::memory_order_relaxed);
+  } else {
+    g_debug_replay_failed.fetch_add(submission_count,
+                                    std::memory_order_relaxed);
+  }
+  return submitted;
+#else
+  g_debug_replay_failed.fetch_add(submission_count, std::memory_order_relaxed);
+  REXLOG_WARN("FM2 Plume compare replay requested without Plume support");
   return false;
 #endif
 }

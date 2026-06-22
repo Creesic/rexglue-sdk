@@ -3293,7 +3293,7 @@ DEFINE_REX_FUNC(sub_82290318) {
 	ctx.r3.s64 = ctx.r11.s64 + -32416;
 	// bl 0x825a2158
 	ctx.lr = 0x8229034C;
-	sub_825A2158(ctx, base);
+	FM2_Render_LoadPixelShaderResourceById(ctx, base);
 	// lis r11,-32100
 	ctx.r11.s64 = -2103705600;
 	// li r4,12
@@ -3302,7 +3302,7 @@ DEFINE_REX_FUNC(sub_82290318) {
 	ctx.r3.s64 = ctx.r11.s64 + 18244;
 	// bl 0x825a21c8
 	ctx.lr = 0x8229035C;
-	sub_825A21C8(ctx, base);
+	FM2_Render_LoadVertexShaderResourceById(ctx, base);
 	// lis r11,-32255
 	ctx.r11.s64 = -2113863680;
 	// li r10,12

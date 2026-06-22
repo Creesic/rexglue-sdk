@@ -850,6 +850,36 @@ registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
 after_instruction = false
 
 [[entrypoint.midasm_hook]]
+address = 0x8236DD10
+name = "FM2PlumeTracePixelShaderState"
+registers = ["r3", "r4"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8236E010
+name = "FM2PlumeTraceVertexShaderState"
+registers = ["r3", "r4"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82370E48
+name = "FM2PlumeTraceVertexStreamBinding"
+registers = ["r3", "r4", "r5", "r6", "r7", "r8"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82370F68
+name = "FM2PlumeTraceIndexBufferBinding"
+registers = ["r3", "r4"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82371A30
+name = "FM2PlumeTraceBoundSurface"
+registers = ["r3", "r4", "r5"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
 address = 0x825380B8
 name = "FM2PlumeTraceDirectIndexedDrawEntry"
 registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]

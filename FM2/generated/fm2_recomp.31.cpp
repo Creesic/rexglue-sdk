@@ -57561,7 +57561,7 @@ DEFINE_REX_FUNC(sub_8259F6E0) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8259F6F0) {
+DEFINE_REX_FUNC(FM2_Render_InitPixelShaderResource) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -57619,7 +57619,7 @@ DEFINE_REX_FUNC(sub_8259F740) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8259F750) {
+DEFINE_REX_FUNC(FM2_Render_InitVertexShaderResource) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -58125,7 +58125,7 @@ loc_8259FA70:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8259FA90) {
+DEFINE_REX_FUNC(FM2_Render_FindPixelShaderResourceById) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -58296,7 +58296,7 @@ loc_8259FB8C:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8259FBA8) {
+DEFINE_REX_FUNC(FM2_Render_FindVertexShaderResourceById) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -62254,7 +62254,7 @@ loc_825A15F4:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825A1608) {
+DEFINE_REX_FUNC(FM2_Render_GetOrCreatePixelShaderResourceById) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -62300,7 +62300,7 @@ DEFINE_REX_FUNC(sub_825A1608) {
 	ctx.r3.u64 = ctx.r27.u64;
 	// bl 0x8259fa90
 	ctx.lr = 0x825A1654;
-	sub_8259FA90(ctx, base);
+	FM2_Render_FindPixelShaderResourceById(ctx, base);
 loc_825A1654:
 	// cmplwi cr6,r30,0
 	ctx.cr6.compare<uint32_t>(ctx.r30.u32, 0, ctx.xer);
@@ -62330,7 +62330,7 @@ loc_825A1674:
 	if (ctx.cr0.eq) goto loc_825A1690;
 	// bl 0x8259f6f0
 	ctx.lr = 0x825A1688;
-	sub_8259F6F0(ctx, base);
+	FM2_Render_InitPixelShaderResource(ctx, base);
 	// mr r4,r3
 	ctx.r4.u64 = ctx.r3.u64;
 	// b 0x825a1694
@@ -62382,7 +62382,7 @@ loc_825A16C8:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825A16E0) {
+DEFINE_REX_FUNC(FM2_Render_GetOrCreateVertexShaderResourceById) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -62428,7 +62428,7 @@ DEFINE_REX_FUNC(sub_825A16E0) {
 	ctx.r3.u64 = ctx.r27.u64;
 	// bl 0x8259fba8
 	ctx.lr = 0x825A172C;
-	sub_8259FBA8(ctx, base);
+	FM2_Render_FindVertexShaderResourceById(ctx, base);
 loc_825A172C:
 	// cmplwi cr6,r30,0
 	ctx.cr6.compare<uint32_t>(ctx.r30.u32, 0, ctx.xer);
@@ -62458,7 +62458,7 @@ loc_825A174C:
 	if (ctx.cr0.eq) goto loc_825A1768;
 	// bl 0x8259f750
 	ctx.lr = 0x825A1760;
-	sub_8259F750(ctx, base);
+	FM2_Render_InitVertexShaderResource(ctx, base);
 	// mr r4,r3
 	ctx.r4.u64 = ctx.r3.u64;
 	// b 0x825a176c
@@ -63927,7 +63927,7 @@ loc_825A2140:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825A2158) {
+DEFINE_REX_FUNC(FM2_Render_LoadPixelShaderResourceById) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -63962,7 +63962,7 @@ DEFINE_REX_FUNC(sub_825A2158) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r10.u32 + 44);
 	// bl 0x825a1608
 	ctx.lr = 0x825A2194;
-	sub_825A1608(ctx, base);
+	FM2_Render_GetOrCreatePixelShaderResourceById(ctx, base);
 	// lwz r31,0(r31)
 	ctx.r31.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// lis r30,6
@@ -63991,7 +63991,7 @@ DEFINE_REX_FUNC(sub_825A2158) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_825A21C8) {
+DEFINE_REX_FUNC(FM2_Render_LoadVertexShaderResourceById) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -64026,7 +64026,7 @@ DEFINE_REX_FUNC(sub_825A21C8) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r10.u32 + 44);
 	// bl 0x825a16e0
 	ctx.lr = 0x825A2204;
-	sub_825A16E0(ctx, base);
+	FM2_Render_GetOrCreateVertexShaderResourceById(ctx, base);
 	// lwz r31,0(r31)
 	ctx.r31.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// lis r30,6

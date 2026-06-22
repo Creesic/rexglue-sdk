@@ -19038,14 +19038,14 @@ DEFINE_REX_FUNC(sub_82571850) {
 	REX_STORE_U32(ctx.r31.u32 + 1104, ctx.r11.u32);
 	// bl 0x825a2158
 	ctx.lr = 0x82571888;
-	sub_825A2158(ctx, base);
+	FM2_Render_LoadPixelShaderResourceById(ctx, base);
 	// li r4,5
 	ctx.r4.s64 = 5;
 	// addi r3,r31,68
 	ctx.r3.s64 = ctx.r31.s64 + 68;
 	// bl 0x825a21c8
 	ctx.lr = 0x82571894;
-	sub_825A21C8(ctx, base);
+	FM2_Render_LoadVertexShaderResourceById(ctx, base);
 	// lis r10,42
 	ctx.r10.s64 = 2752512;
 	// lis r11,-32251
@@ -38642,21 +38642,21 @@ DEFINE_REX_FUNC(sub_825795F0) {
 	ctx.r3.s64 = ctx.r31.s64 + 320;
 	// bl 0x825a21c8
 	ctx.lr = 0x82579610;
-	sub_825A21C8(ctx, base);
+	FM2_Render_LoadVertexShaderResourceById(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// addi r3,r31,352
 	ctx.r3.s64 = ctx.r31.s64 + 352;
 	// bl 0x825a21c8
 	ctx.lr = 0x8257961C;
-	sub_825A21C8(ctx, base);
+	FM2_Render_LoadVertexShaderResourceById(ctx, base);
 	// li r4,6
 	ctx.r4.s64 = 6;
 	// addi r3,r31,384
 	ctx.r3.s64 = ctx.r31.s64 + 384;
 	// bl 0x825a2158
 	ctx.lr = 0x82579628;
-	sub_825A2158(ctx, base);
+	FM2_Render_LoadPixelShaderResourceById(ctx, base);
 	// lis r10,42
 	ctx.r10.s64 = 2752512;
 	// lis r11,-32251

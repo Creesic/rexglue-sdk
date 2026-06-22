@@ -1575,7 +1575,7 @@ loc_8251448C:
 	ctx.r3.s64 = ctx.r11.s64 + 17804;
 	// bl 0x825a2158
 	ctx.lr = 0x825144D8;
-	sub_825A2158(ctx, base);
+	FM2_Render_LoadPixelShaderResourceById(ctx, base);
 	// lis r11,-32097
 	ctx.r11.s64 = -2103508992;
 	// li r4,11
@@ -1584,7 +1584,7 @@ loc_8251448C:
 	ctx.r3.s64 = ctx.r11.s64 + 17848;
 	// bl 0x825a21c8
 	ctx.lr = 0x825144E8;
-	sub_825A21C8(ctx, base);
+	FM2_Render_LoadVertexShaderResourceById(ctx, base);
 	// stb r27,17797(r24)
 	REX_STORE_U8(ctx.r24.u32 + 17797, ctx.r27.u8);
 loc_825144EC:

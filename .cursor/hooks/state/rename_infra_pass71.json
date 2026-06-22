@@ -1,0 +1,20 @@
+﻿[
+  { "addr": "0x8222E7B8", "name": "FM2_RaceGhost_GetRarityDescriptorName" },
+  { "addr": "0x8229BA30", "name": "FM2_AudioSample_BuildOutputPairDescriptorFieldBody" },
+  { "addr": "0x8230B038", "name": "FM2_CReplayStats_Ctor" },
+  { "addr": "0x8236A2B8", "name": "FM2_D3DResource_UnlockForRelease" },
+  { "addr": "0x8237DF50", "name": "FM2_D3DTexture_InitDefaultDescriptorCopy" },
+  { "addr": "0x8240E3B0", "name": "FM2_D3DTexture_InitSurfaceDesc" },
+  { "addr": "0x824EF788", "name": "FM2_RaceGhost_GetInterpolationModeByte" },
+  { "addr": "0x824FB0E8", "name": "FM2_DeferredTask_InitPreloadAnimRecord" },
+  { "addr": "0x824FD258", "name": "FM2_RaceGhost_GetRarityByte" },
+  { "addr": "0x824FD260", "name": "FM2_AsyncQueue_HasPendingOp" },
+  { "addr": "0x82503688", "name": "FM2_PresentationCar_DtorBody" },
+  { "addr": "0x825A3B58", "name": "FM2_Render_HasPassFlag" },
+  { "addr": "0x825AD5E8", "name": "FM2_Render_GetPassConstantDesc" },
+  { "addr": "0x825B36A0", "name": "FM2_AudioRenderFrame_StoreFenceAndDrain" },
+  { "addr": "0x825DB058", "name": "FM2_LuaGarage_HasProfileManagerHeap" },
+  { "addr": "0x82615A50", "name": "FM2_ComObject_DeleteOptionalBody" },
+  { "addr": "0x8264EAF0", "name": "FM2_CarDynamics_InitScalarPair" },
+  { "addr": "0x8264ECD0", "name": "FM2_CarDynamics_InvokeUpdateHook" }
+]

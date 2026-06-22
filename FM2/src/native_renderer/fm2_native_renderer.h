@@ -51,6 +51,7 @@ Mode GetMode();
 const char* GetModeName(Mode mode);
 bool WantsReXGraphics();
 bool WantsDirectDebugReplay();
+bool WantsCompareWindow();
 
 bool Initialize(rex::ui::Window* window);
 void Shutdown();
@@ -60,6 +61,12 @@ void RecordBuildObjectPassEntry(const GuestArgs& args);
 void RecordDirectIndexedDrawEntry(const GuestArgs& args);
 bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
                              const DirectDrawReplaySourceBytes& sources);
+struct DirectDrawReplaySubmission {
+  DirectDrawDebugReplayPlan plan;
+  DirectDrawReplaySourceBytes sources;
+};
+bool SubmitDirectDebugReplayBatch(const DirectDrawReplaySubmission* submissions,
+                                  uint32_t submission_count);
 Stats GetStatsSnapshot();
 
 }  // namespace fm2::native_renderer

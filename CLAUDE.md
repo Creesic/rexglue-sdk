@@ -60,6 +60,9 @@ Configure presets: `win-amd64`, `win-arm64`, `linux-amd64`, `linux-arm64`. Build
 append a config: `<configure>-{debug,release,relwithdebinfo}`. RelWithDebInfo is the default
 working config (debug-info builds get a `rd` suffix, debug a `d` suffix).
 
+`thirdparty/` deps are **git submodules** (`plume/` is vendored in-tree, not a submodule). A fresh
+clone needs `git submodule update --init --recursive` before configuring.
+
 ```powershell
 # Configure + build + install the SDK (Windows, default working config)
 cmake --preset win-amd64
@@ -131,6 +134,20 @@ The SDK binary `rexglue` (target `rex::rexglue`) requires a subcommand:
   `FM2/out/build/win-amd64-relwithdebinfo/`.
 - Durable findings go in `docs/` (already covered: rendering UI overexposure, XAM/sign-in,
   audio pipeline, performance/CP starvation, IDA→TOML function notes, native renderer generator).
+
+## IDA reverse-engineering workflow
+
+Naming the XEX's `sub_` functions is a major ongoing activity (it produces the `FM2_` names that
+make crash triage possible). **AGENTS.md is authoritative on this** — read its "Learned User
+Preferences" and "Learned Workspace Facts" before doing rename work. Key points:
+
+- Every rename is manual, evidence-based decompiler naming — no heuristic/placeholder names
+  (`FM2_Helper_XXXX`, `*_Caller`). Prefer behavior-based `snake_case` over vague verbs.
+- The IDA database is `default.xex.i64`; batch renames go through the IDA MCP server.
+- Log renames in a dated `docs/FM2-ida-renames-*.md` and cross-reference from
+  `docs/FM2-ida-toml-function-notes.md`; useful names get burned into `FM2/fm2_manifest.toml`.
+- Tooling: `scripts/ida_fm2_*.py` (enumerate unnamed callees, batch rename) and the
+  `.cursor/hooks/ida-rename-loop.ts` loop with per-pass artifacts in `.cursor/hooks/state/`.
 
 ## Conventions
 

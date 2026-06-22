@@ -55,18 +55,21 @@ on failure). Title projects should use relative XEX paths and
 
 Typical full runtime plus FM2 rebuild:
 
+Paths below are **relative to the repo root** so they survive copy/move (this checkout is
+`ReXGlue080plume`, not the older `ReXGlue080`). Run from the repo root unless noted; `$RepoRoot`
+is wherever you cloned it.
+
 ```powershell
-Set-Location 'C:\Users\Tera\Documents\GitHub\ReXGlue080'
+# from the repo root
 cmake --build --preset win-amd64-relwithdebinfo --target install
-Copy-Item -LiteralPath 'C:\Users\Tera\Documents\GitHub\ReXGlue080\out\install\win-amd64\bin\rexruntimerd.dll' -Destination 'C:\Users\Tera\Documents\GitHub\ReXGlue080\FM2\out\build\win-amd64-relwithdebinfo\rexruntimerd.dll' -Force
-Set-Location 'C:\Users\Tera\Documents\GitHub\ReXGlue080\FM2'
+Copy-Item -LiteralPath '.\out\install\win-amd64\bin\rexruntimerd.dll' -Destination '.\FM2\out\build\win-amd64-relwithdebinfo\rexruntimerd.dll' -Force
+Set-Location '.\FM2'
 cmake --build --preset win-amd64-relwithdebinfo --target fm2
 ```
 
-Run FM2 codegen only when intentionally regenerating:
+Run FM2 codegen only when intentionally regenerating (from `FM2/`):
 
 ```powershell
-Set-Location 'C:\Users\Tera\Documents\GitHub\ReXGlue080\FM2'
 cmake --build --preset win-amd64-relwithdebinfo --target fm2_codegen
 ```
 
@@ -141,10 +144,17 @@ After rebuilding the SDK/runtime, make sure FM2 is using the fresh
   `*_Caller`); every rename must be manual evidence-based decompile naming.
 - Log all IDA renames in a dated `docs/FM2-ida-renames-*.md` file and
   cross-reference it from `docs/FM2-ida-toml-function-notes.md`.
-- When asked to work an IDA naming cluster, continue until all unnamed `sub_`
-  functions in that transitive closure are exhausted.
+- When asked to work an IDA naming cluster or to loop/keep going until done,
+  continue until all unnamed `sub_` callees in scope are exhausted (cluster
+  closure or global `FM2_` infrastructure queue).
+- Prefer specific behavior-based snake_case names over vague names like
+  `handler`, `process_data`, or `do_stuff`.
 - Cross-check repo docs and local Xbox 360 tech docs when naming unnamed IDA
   functions from already-named `FM2_` caller context.
+- During IDA naming work, "go", "continue", or "keep going" means proceed with
+  the next manual pass without asking for extra confirmation first.
+- In the IDA rename loop, skip low-confidence candidates and record them in the
+  scratchpad skipped table with reason; do not overwrite meaningful names.
 
 ## Learned Workspace Facts
 
@@ -164,3 +174,27 @@ After rebuilding the SDK/runtime, make sure FM2 is using the fresh
   `FM2_D3D_EmitDrawListStatePackets`, `FM2_D3D_EmitScissorRegionPackets`,
   `FM2_D3D_EmitSurfaceResolvePackets`, `FM2_D3D_BeginCommandBufferBatch`, and
   `FM2_D3D_FinalizeCommandBufferBatch`.
+- IDA MCP Python rename scripts should use `ida_name.set_name(...,
+  ida_name.SN_CHECK)` with `ida_name.SN_FORCE` fallback; do not use
+  `idc.SN_FORCE`. `ida_name.set_name` returns boolean `True` on success (not
+  integer `0`).
+- IDA Python symbol lookup and free-name checks should use
+  `ida_name.get_name_ea(ida_idaapi.BADADDR, name)` (i.e. `0xFFFFFFFFFFFFFFFF`
+  when unused), not `get_name_ea(0, name)`.
+- IDA MCP scripts should iterate functions with `idautils.Functions()`, not
+  `ida_funcs.Functions()`.
+- Infrastructure `sub_` naming queue: run `scripts/ida_fm2_list_unnamed_sub_callees.py`
+  with `--outside-emit` (writes `.cursor/hooks/state/unnamed-sub-callees.json`),
+  then decompile high-caller-count candidates for manual passes. Pass artifacts
+  (`build_infra_passN.py`, `rename_infra_passN.json`, `append_infra_passN.md`)
+  live in `.cursor/hooks/state/`.
+- Lua binding registrars are often identifiable from embedded method-name strings
+  and should be named `FM2_Lua_Register*`.
+- CRT/XML static-init hooks commonly follow `FM2_Crt_AtexitRegister*` and
+  `FM2_XmlStaticInit_CacheTypeHandle_<global>` patterns from embedded strings
+  and type-handle globals.
+- IDA rename loop (hook `.cursor/hooks/ida-rename-loop.ts`): at most 12
+  `snake_case` renames per iteration logged in `.cursor/ida-rename-scratchpad.md`;
+  set `IDA_RENAME_LOOP: done` when exhausted. Appends via
+  `.cursor/hooks/state/merge_scratchpad.py`. Separate from `FM2_` infrastructure
+  passes in `.cursor/hooks/state/`.

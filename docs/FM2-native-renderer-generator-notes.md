@@ -1098,3 +1098,429 @@ The reusable long-term architecture should be:
     by visual replay evidence.
   - Keep original Xenos draw enabled until a Plume debug draw presents from a
     captured packet.
+
+## 2026-06-22 ReOdyssey Reference Pass
+
+Reference project:
+`C:\Users\Tera\Documents\GitHub\ReOdyssey`.
+
+IDA context for this pass:
+
+- IDB: `D:\Emulation\Games_Xbox_360\Forza2\default.xex.i64`
+- Module: `default.xex`
+- Image base: `0x82000000`
+- Hex-Rays ready: yes
+
+The important ReOdyssey lesson is architectural, not copy/paste. ReOdyssey
+does not build a universal PM4/Xenos emulator for rendering. It hooks a
+title-level D3D/RHI surface, stores game-facing resources as host objects, keeps
+a host-side pipeline state, and flushes that state into Plume at draw time.
+
+### Working Hypotheses
+
+1. FM2 now has enough named render-context functions to build the same kind of
+   host-side state tracker above PM4 packet emission.
+   - Distinguishing evidence: shader, resource, vertex/index, surface,
+     constant, and pass-boundary functions expose stable context slots and
+     resource pointers.
+   - Current status: supported by IDA decompilation listed below.
+2. The existing direct-draw replay work is the right first draw source, but it
+   should become an `FM2NativeDrawPacket` backed by a persistent state tracker,
+   not remain a one-off debug replay path.
+   - Distinguishing evidence: replay already has buffers, index arguments,
+     shader payload hashes, constants, and topology evidence.
+   - Current status: supported by June 18 replay notes.
+3. The D3D PM4 emit cluster remains useful for validation and missing state, but
+   it is too low-level to be the primary native renderer abstraction.
+   - Distinguishing evidence: ReOdyssey succeeds by bypassing the guest GPU
+     command stream and mirroring title D3D state before packet emission.
+   - Current status: supported by ReOdyssey source and FM2 decompilation.
+
+### ReOdyssey Architecture To Reuse
+
+Source anchors:
+
+- `src/render/guest_resources.h`
+- `src/render/d3d_resource_hooks.cpp`
+- `src/render/d3d_hooks.cpp`
+- `src/render/render_state.cpp`
+- `src/render/render_internal.h`
+- `src/render/video.cpp`
+
+Key pieces:
+
+- `GuestResource` is a host-owned object with a magic value and a resource type.
+  Derived types include textures, render targets, depth surfaces, buffers,
+  vertex declarations, vertex shaders, and pixel shaders.
+- `GuestBuffer` owns a Plume `RenderBuffer` plus mapped staging memory, byte
+  size, and index format.
+- `GuestShader` maps guest shader microcode to a generated shader-cache entry
+  and owns a Plume `RenderShader` plus specialized shader variants.
+- `Video::Init` creates the Plume interface, device, direct/copy queues,
+  swapchain, descriptor sets, null texture descriptors, sampler descriptors,
+  and a pipeline layout with root descriptors for constants.
+- `ExecuteUpload` records copy work on a copy command list and waits for the
+  copy fence, giving resource upload a simple synchronization contract.
+- `PipelineState` stores vertex/pixel shaders, vertex declaration, blend,
+  depth/stencil, cull mode, topology, vertex strides, render-target/depth
+  formats, sample count, and shader specialization bits.
+- `FlushRenderState` resolves pending texture copies, transitions render
+  targets, binds framebuffer/viewport/scissor, gets or creates a pipeline,
+  uploads constants, binds descriptor sets, and only then allows draw commands.
+- Draw hooks call state setters, select or repair vertex declarations where the
+  title is inconsistent, call `FlushRenderState`, and then issue Plume
+  `drawIndexedInstanced` or `drawInstanced`.
+- `Video::Present` resolves pending guest render-target content and blits the
+  selected guest present source to the Plume swapchain.
+
+For FM2, this means the next durable unit should be a native state layer, not a
+larger PM4 decoder. The PM4 decoder/debug replay remains a probe and fallback
+oracle while the higher-level state layer comes online.
+
+### FM2 Hook Surface From Current IDA Names
+
+The newest IDA names expose a practical first state-tracker surface:
+
+- `0x8236DD10 = FM2_RenderContext_SetPixelShaderState`
+  - Stores the resolved pixel shader object at render context `ctx+0x307C`.
+  - If `shader+0x3C` is nonzero, the compiled state table is
+    `shader+0x28+relative_offset`.
+  - Runtime trace already identified pixel shader type tag `0x00100007` and
+    payload pointer at `shader+0x18`.
+- `0x8236E010 = FM2_RenderContext_SetVertexShaderState`
+  - Stores the resolved vertex shader object at render context `ctx+0x3080`.
+  - If `shader+0x37C` is nonzero, the compiled state table is
+    `shader+0x368+relative_offset`.
+  - Runtime trace already identified vertex shader type tag `0x00100006` and
+    payload pointer at `shader+0x20`.
+- `0x82375078 = FM2_RenderContext_SetShaderResourceState`
+  - Allocates or advances a command buffer for shader/resource state packets.
+  - This is useful validation, but still lower-level than the desired native
+    state abstraction.
+- `0x82370E48 = FM2_RenderContext_BindVertexStream`
+  - Accepts stream slot, D3DResource pointer, byte offset, stride-like value,
+    and dirty mask.
+  - Reads guest buffer base from `resource+0x18` and byte size from
+    `resource+0x1C`, then stores the converted base and remaining size into the
+    render context.
+  - Updates per-stream resource state near `ctx+0x2F94` and per-stream stride
+    bytes near `ctx+0x2FD8`.
+- `0x82370F68 = FM2_RenderContext_BindIndexBuffer`
+  - Stores the index D3DResource pointer at render context `ctx+0x2F7C`.
+- `0x82371A30 = FM2_RenderContext_SetBoundSurface`
+  - Stores the surface pointer at render context `ctx+0x2F90`.
+  - Copies surface fields from `surface+0x1C` and `surface+0x20` into context
+    render-target state and marks framebuffer-related dirty bits.
+- `0x823715C0 = FM2_RenderContext_UploadConstantBlock`
+  - Thin wrapper over `FM2_RenderContext_UploadFloat6Constants`.
+  - Good hook candidate for logging small constant blocks, but not enough alone
+    for full matrix/pipeline constants.
+- `0x8250F7C0 = FM2_Render_EmitPassDrawWork`
+  - Validates pass/renderable state, obtains the global render context and
+    active command-buffer context, uploads pass transform constants for one
+    path, sets render-context state bits for normal pass draw, then calls the
+    supplied draw callback as `draw_callback(renderable, pass_flags, draw_arg)`.
+  - This is a strong pass-level boundary for native state snapshots.
+
+Other named setters worth recording into the same state layer:
+
+- `FM2_RenderContext_SetZEnableBit`
+- `FM2_RenderContext_SetAlphaBlendEnableBits`
+- `FM2_RenderContext_SetCullEnableState`
+- `FM2_RenderContext_SetAlphaTestState`
+- `FM2_RenderContext_SetBlendModeBits`
+- `FM2_RenderContext_SetDepthCompareBits`
+- `FM2_RenderContext_SetStencilOpBits`
+- `FM2_RenderContext_SetColorWriteMaskBits`
+- `FM2_RenderContext_SetPolygonModeBits`
+- `FM2_RenderContext_SetDepthStencilEnableState`
+- `FM2_RenderContext_SetSamplerStateLowNibble`
+- `FM2_RenderContext_SetSamplerStateMidNibble`
+- `FM2_RenderContext_SetSamplerStateHighNibble`
+- `FM2_RenderContext_SetSamplerStateTopNibble`
+- `FM2_RenderContext_SetTextureFetchBitsLow`
+- `FM2_RenderContext_SetTextureFetchBitsMid`
+- `FM2_RenderContext_SetViewportModeAndApply`
+- `FM2_RenderContext_ApplyViewportConstants`
+- `FM2_RenderContext_ExportViewportConstants`
+- `FM2_RenderContext_UploadMatrixConstants`
+- `FM2_RenderContext_UploadMatrixConstantsFromPass`
+
+### Proposed FM2 Native State Layer
+
+The next FM2 implementation should add a small state layer beside the existing
+debug replay path:
+
+- `FM2NativeResource`
+  - Guest pointer, resource kind, guest base, byte size, Plume resource pointer
+    when promoted, and trace hashes for validation.
+- `FM2NativeShader`
+  - Guest shader pointer, type tag, payload pointer, payload byte count,
+    structural hash, generated shader-cache lookup result, and Plume shader
+    pointer once available.
+- `FM2NativePipelineState`
+  - Vertex shader, pixel shader, stream bindings, index binding, surface
+    bindings, blend/depth/stencil/cull bits, sampler/texture fetch bits,
+    topology, viewport/scissor, and shader constant snapshot metadata.
+- `FM2NativeDrawPacket`
+  - Snapshot of `FM2NativePipelineState` plus draw arguments, stream/index
+    upload ranges, transform-source decision, and the original FM2 pass/draw
+    addresses for correlation.
+
+This state layer should be read-only at first. It should not suppress Xenos
+draws. It should only observe FM2 state mutations and build draw packets that
+can be compared against the existing direct-draw replay plan.
+
+### First Code Slice
+
+Recommended next code slice:
+
+1. Add `FM2/src/native_renderer/fm2_native_state.h` and `.cpp`.
+2. Keep the public API narrow and Plume-free initially:
+   - record pixel shader state
+   - record vertex shader state
+   - record vertex stream binding
+   - record index binding
+   - record bound surface
+   - record pass draw boundary
+   - snapshot state for direct indexed draw replay
+3. Add manifest hooks for only the read-only state records, behind cvars:
+   - `fm2_plume_native_state_trace`
+   - `fm2_plume_native_state_trace_limit`
+   - `fm2_plume_native_state_draw_snapshot`
+4. At `FM2PlumeTraceDirectIndexedDrawEntry`, merge the existing
+   `DirectDrawDebugReplayPlan` with the newest native state snapshot.
+5. Do not replace rendering yet. The success signal for this slice is a log
+   line that shows one draw packet with:
+   - vertex/pixel shader pointers and payload hashes
+   - stream0/index resource pointers and upload ranges
+   - bound surface pointer
+   - pass flags/draw callback context
+   - topology source
+   - transform candidate source
+
+### Generator Implication
+
+The generator path still looks feasible only after several handwritten native
+renderers exist. ReOdyssey plus FM2 suggest the generator should not consume raw
+PM4 as its primary input. A more realistic generator workflow is:
+
+1. Discover and name title render API functions.
+2. Classify create/set/draw/present/resource-lock functions.
+3. Generate title-specific hook stubs and state-record structs.
+4. Let humans fill or verify field offsets from decompilation/runtime probes.
+5. Generate Plume translation scaffolding from the verified state schema.
+6. Keep title quirks as explicit overrides, not hidden heuristics.
+
+For FM2, the immediate path is therefore handwritten and evidence-driven. The
+automation target is the workflow around the handwritten renderer, not a
+universal native renderer generator yet.
+
+### 2026-06-22 First Native State Recorder Slice
+
+Implemented files:
+
+- `FM2/src/native_renderer/fm2_native_state.h`
+- `FM2/src/native_renderer/fm2_native_state.cpp`
+- `tests/unit/fm2/native_state_test.cpp`
+
+Build wiring:
+
+- `FM2/CMakeLists.txt` now compiles `fm2_native_state.cpp` into `fm2`.
+- `tests/unit/CMakeLists.txt` now compiles the same source into `unit_tests`.
+
+Runtime wiring:
+
+- `FM2PlumeTraceDirectIndexedDrawEntry` now records the direct render context
+  and draw-interface pointer into the native state recorder.
+- New cvars:
+  - `fm2_plume_native_state_trace`
+  - `fm2_plume_native_state_trace_limit`
+- When enabled, the hook emits `FM2_PLUME_NATIVE_STATE` before the existing
+  direct decode log for the same direct draw entry.
+
+Verification:
+
+- Red test was confirmed first: the new `native_state_test.cpp` failed to build
+  because `native_renderer/fm2_native_state.h` did not exist.
+- `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests` passed.
+- `unit_tests.exe "[fm2][plume]"` passed with 486 assertions in 42 test cases.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed from
+  `FM2/`.
+- Gameplay smoke command used the existing
+  `scripts/fm2/Invoke-FM2GameplaySmoke.ps1` harness with targeted
+  `postmessage` input and these added runtime args:
+  `--fm2_plume_native_state_trace --fm2_plume_native_state_trace_limit 8`.
+- The smoke reached gameplay input successfully:
+  `Space tap result: ok=40 failed=0`, and app input verification reported
+  `keyDown=40 keyUp=40 aDown=32`.
+- `C:\temp\fm2-clean.log` contained the new snapshot line immediately before
+  the direct decode line:
+  - `FM2_PLUME_NATIVE_STATE n=1 valid=1 ctx=4153A5B0 seq=1 ... direct_valid=1 direct_iface=2E0162C0 ...`
+  - `FM2_PLUME_DIRECT_DECODE n=1 ctx=4153A5B0 iface=2E0162C0 ...`
+
+### 2026-06-22 Native State Setter Hook Slice
+
+The next implementation target above is now implemented.
+
+Manifest/codegen hooks added:
+
+- `0x8236DD10 = FM2_RenderContext_SetPixelShaderState`
+- `0x8236E010 = FM2_RenderContext_SetVertexShaderState`
+- `0x82370E48 = FM2_RenderContext_BindVertexStream`
+- `0x82370F68 = FM2_RenderContext_BindIndexBuffer`
+- `0x82371A30 = FM2_RenderContext_SetBoundSurface`
+
+Hook adapters added in `FM2/src/fm2_hooks.cpp`:
+
+- `FM2PlumeTracePixelShaderState`
+- `FM2PlumeTraceVertexShaderState`
+- `FM2PlumeTraceVertexStreamBinding`
+- `FM2PlumeTraceIndexBufferBinding`
+- `FM2PlumeTraceBoundSurface`
+
+Recorder API additions:
+
+- `RecordNative*Args` adapters mirror the captured PPC register values and are
+  covered by unit tests.
+- `SnapshotNativeStateForDirectDraw` pairs the most recent render-context
+  pipeline state with the direct draw entry.
+
+Runtime finding:
+
+- The direct indexed draw hook's `r3` value is not the same object as the
+  render-context setter `r3` value. A direct-context lookup produced
+  `direct_valid=1` but zero shader/stream/index/surface state even though the
+  global recorder sequence counter had advanced into the hundreds of millions.
+- The fix is to track the latest pipeline render context separately and attach
+  each direct draw entry to that pipeline snapshot without changing the direct
+  draw context key.
+
+Verification:
+
+- Red adapter test was confirmed first: `native_state_test.cpp` failed to
+  compile on missing `RecordNative*Args` functions.
+- Red pairing test was confirmed next: `native_state_test.cpp` failed to
+  compile on missing `SnapshotNativeStateForDirectDraw`.
+- `unit_tests.exe "[fm2][plume]"` passed with 512 assertions in 44 test cases.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed from
+  `FM2/` with the existing `fopen`/`getenv` deprecation warnings in
+  `fm2_hooks.cpp`.
+- Gameplay smoke via `scripts/fm2/Invoke-FM2GameplaySmoke.ps1` reached gameplay
+  input with `Space tap result: ok=40 failed=0` and input verification
+  `keyDown=40 keyUp=40 aDown=36`.
+- `C:\temp\fm2-clean.log` then showed populated native state:
+  - `FM2_PLUME_NATIVE_STATE n=1 valid=1 ctx=4004D100 seq=167161782 vs_valid=1 vs=4181A600 ps_valid=1 ps=2E8F24B0 s0_valid=1 s0_res=BACACA50 s0_stride=16 s1_valid=1 s1_res=2ECFFA80 s1_stride=12 ib_valid=1 ib=BACACAE0 surf_valid=1 surf=2E049240 direct_valid=1 direct_iface=2E0162C0`
+  - The paired direct decode immediately after used direct context
+    `ctx=42950010`, confirming the two-context pairing is intentional.
+
+Next implementation target:
+
+1. Feed `SnapshotNativeStateForDirectDraw` into `DirectDrawDebugReplayPlan`
+   construction instead of relying only on the direct record decode.
+2. Add pass-boundary or draw-callback context once the native draw submit path
+   needs `FM2_Render_EmitPassDrawWork` fields.
+3. Start resolving shader payloads, vertex stream guest buffers, index buffers,
+   and bound surface metadata from the paired snapshot into Plume resource
+   handles.
+
+### 2026-06-22 Plume Compare Window Slice
+
+The first side-by-side comparison mode is now implemented. This does not replace
+the ReX/Xenos renderer yet; it keeps the existing renderer in the main FM2 window
+and opens a second Plume-backed HWND for native-renderer comparison output.
+
+Runtime cvar:
+
+- `fm2_plume_compare_window`
+
+Expected launch shape:
+
+```powershell
+FM2\out\build\win-amd64-relwithdebinfo\fm2.exe `
+  --fm2_plume_mode shadow `
+  --fm2_plume_compare_window `
+  --mnk_mode
+```
+
+Behavior:
+
+- `shadow` mode still lets the original ReX/Xenos renderer own the normal game
+  window and frame presentation.
+- `fm2_plume_compare_window` creates the existing Plume diagnostic window path
+  as a separate window titled `FM2 Plume Compare`.
+- Compare-window mode implies direct debug replay internally. It no longer
+  requires `fm2_plume_trace_direct_decode` just to decode replayable direct draw
+  contexts.
+- Compare-window mode bypasses the debug replay submit limit because this mode
+  is meant to continuously compare against the live game, not sample one record.
+- For each direct indexed draw entry, compare mode scans all decoded direct
+  records currently admitted by the decode cap and submits every replay-ready
+  record into a single Plume present when those records are compatible.
+- The batch submit path acquires the Plume swapchain once, clears once, emits all
+  compatible prepared draws, and presents once for that decoded direct context.
+
+Implemented files:
+
+- `FM2/src/native_renderer/fm2_direct_draw_decode.h`
+- `FM2/src/native_renderer/fm2_native_renderer.h`
+- `FM2/src/native_renderer/fm2_native_renderer.cpp`
+- `FM2/src/fm2_hooks.cpp`
+- `tests/unit/fm2/direct_draw_decode_test.cpp`
+
+Unit coverage:
+
+- `ShouldDecodeDirectDrawForCompareReplay` keeps trace and compare gating
+  explicit.
+- `DirectCompareReplayRecordScanCount` documents that compare mode scans the
+  available decoded records unless a future explicit cap is provided.
+- `DirectDebugReplaySubmitLimitReached` documents that compare-window mode
+  ignores the trace-only submit limit.
+
+Verification:
+
+- Red test was confirmed first: `direct_draw_decode_test.cpp` failed to compile
+  on missing compare replay policy helpers.
+- `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests` passed.
+- `unit_tests.exe "[fm2][plume]"` passed with 521 assertions in 45 test cases.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed from
+  `FM2/` with the existing `fopen`/`getenv` deprecation warnings in
+  `fm2_hooks.cpp`.
+- Gameplay smoke via `scripts/fm2/Invoke-FM2GameplaySmoke.ps1` used these added
+  runtime args:
+  `--fm2_plume_mode shadow --fm2_plume_compare_window --mnk_mode`.
+- The smoke reached gameplay input successfully:
+  `Space tap result: ok=40 failed=0`, and app input verification reported
+  `keyDown=40 keyUp=40 aDown=36`.
+- FM2 app logs showed the comparison window and swapchain initialization:
+  - `FM2 Plume debug replay window created hwnd=0x110157e`
+  - `FM2 Plume swapchain initialized size=960x540 textures=2`
+  - `FM2 Plume native renderer initialized mode=shadow`
+- The same run produced repeated compare-window batch presents:
+  - `FM2_PLUME_COMPARE_REPLAY_SUBMIT presented=true image=... size=960x540 draws=31 skipped=0 topology=2`
+- `C:\temp\fm2-clean.log` showed compare mode decoding without the trace cvar:
+  - `FM2_PLUME_DIRECT_DECODE n=689 ... rec_count=31 scan=31`
+  - `FM2_PLUME_COMPARE_REPLAY_RESULT n=689 submissions=31 submitted=1 mode=shadow`
+
+Current limitations:
+
+- The second window is still powered by the direct debug replay path and debug
+  shaders. It is not yet a render-target-accurate native renderer.
+- The compare window presents per decoded direct context, not once per final game
+  frame. It is useful for proving draw extraction and Plume submission, but not
+  yet for exact frame composition.
+- Batch replay currently requires compatible effective topology across the
+  prepared records in the batch.
+- Compare mode can produce very large diagnostic logs when the existing
+  `LogLine` sink is enabled. One smoke run grew `C:\temp\fm2-clean.log` to about
+  78 MB because compare mode decodes frequently.
+
+Next implementation target:
+
+1. Use the paired `SnapshotNativeStateForDirectDraw` pipeline snapshot to bind
+   actual FM2 shader, vertex stream, index buffer, and surface resources instead
+   of the direct debug replay placeholders.
+2. Add a frame or pass boundary hook so the Plume comparison window can present
+   once per original frame.
+3. Throttle or split compare-window diagnostic logging so long gameplay runs do
+   not balloon `C:\temp\fm2-clean.log`.

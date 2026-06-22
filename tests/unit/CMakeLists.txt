@@ -14,6 +14,7 @@ add_executable(unit_tests
     ppc/import_function_test.cpp
     ppc/stack_test.cpp
     fm2/direct_draw_decode_test.cpp
+    fm2/native_state_test.cpp
     system/guest_path_test.cpp
     system/function_dispatcher_test.cpp
     codegen/manifest_test.cpp
@@ -25,6 +26,7 @@ target_sources(unit_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src/rexglue/commands/migration_scan.cpp
     ${PROJECT_SOURCE_DIR}/src/rexglue/ui/ui.cpp
     ${PROJECT_SOURCE_DIR}/src/rexglue/ui/progress.cpp
+    ${PROJECT_SOURCE_DIR}/FM2/src/native_renderer/fm2_native_state.cpp
 )
 
 target_include_directories(unit_tests PRIVATE

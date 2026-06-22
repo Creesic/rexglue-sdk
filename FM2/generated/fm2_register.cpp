@@ -18596,9 +18596,9 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8259F680, sub_8259F680);
   registrar->SetFunction(0x8259F688, sub_8259F688);
   registrar->SetFunction(0x8259F6E0, sub_8259F6E0);
-  registrar->SetFunction(0x8259F6F0, sub_8259F6F0);
+  registrar->SetFunction(0x8259F6F0, FM2_Render_InitPixelShaderResource);
   registrar->SetFunction(0x8259F740, sub_8259F740);
-  registrar->SetFunction(0x8259F750, sub_8259F750);
+  registrar->SetFunction(0x8259F750, FM2_Render_InitVertexShaderResource);
   registrar->SetFunction(0x8259F7A0, sub_8259F7A0);
   registrar->SetFunction(0x8259F7F0, sub_8259F7F0);
   registrar->SetFunction(0x8259F800, sub_8259F800);
@@ -18607,8 +18607,8 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8259F868, sub_8259F868);
   registrar->SetFunction(0x8259F900, sub_8259F900);
   registrar->SetFunction(0x8259F978, sub_8259F978);
-  registrar->SetFunction(0x8259FA90, sub_8259FA90);
-  registrar->SetFunction(0x8259FBA8, sub_8259FBA8);
+  registrar->SetFunction(0x8259FA90, FM2_Render_FindPixelShaderResourceById);
+  registrar->SetFunction(0x8259FBA8, FM2_Render_FindVertexShaderResourceById);
   registrar->SetFunction(0x8259FCC0, sub_8259FCC0);
   registrar->SetFunction(0x8259FD80, sub_8259FD80);
   registrar->SetFunction(0x8259FDB0, sub_8259FDB0);
@@ -18638,8 +18638,8 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x825A13F0, sub_825A13F0);
   registrar->SetFunction(0x825A1458, sub_825A1458);
   registrar->SetFunction(0x825A1530, sub_825A1530);
-  registrar->SetFunction(0x825A1608, sub_825A1608);
-  registrar->SetFunction(0x825A16E0, sub_825A16E0);
+  registrar->SetFunction(0x825A1608, FM2_Render_GetOrCreatePixelShaderResourceById);
+  registrar->SetFunction(0x825A16E0, FM2_Render_GetOrCreateVertexShaderResourceById);
   registrar->SetFunction(0x825A17B8, sub_825A17B8);
   registrar->SetFunction(0x825A18B8, sub_825A18B8);
   registrar->SetFunction(0x825A1978, sub_825A1978);
@@ -18649,8 +18649,8 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x825A1D90, sub_825A1D90);
   registrar->SetFunction(0x825A1FF8, sub_825A1FF8);
   registrar->SetFunction(0x825A20A8, sub_825A20A8);
-  registrar->SetFunction(0x825A2158, sub_825A2158);
-  registrar->SetFunction(0x825A21C8, sub_825A21C8);
+  registrar->SetFunction(0x825A2158, FM2_Render_LoadPixelShaderResourceById);
+  registrar->SetFunction(0x825A21C8, FM2_Render_LoadVertexShaderResourceById);
   registrar->SetFunction(0x825A2238, sub_825A2238);
   registrar->SetFunction(0x825A22F0, sub_825A22F0);
   registrar->SetFunction(0x825A2350, sub_825A2350);

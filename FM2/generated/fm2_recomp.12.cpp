@@ -39822,10 +39822,13 @@ DEFINE_REX_FUNC(sub_8236DCD8) {
 	return;
 }
 
+extern void FM2PlumeTracePixelShaderState(PPCRegister& r3, PPCRegister& r4);
+
 DEFINE_REX_FUNC(FM2_RenderContext_SetPixelShaderState) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
+	FM2PlumeTracePixelShaderState(ctx.r3, ctx.r4);
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x824131a8
 	ctx.lr = 0x8236DD18;
@@ -40259,10 +40262,13 @@ loc_8236E008:
 	return;
 }
 
+extern void FM2PlumeTraceVertexShaderState(PPCRegister& r3, PPCRegister& r4);
+
 DEFINE_REX_FUNC(FM2_RenderContext_SetVertexShaderState) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
+	FM2PlumeTraceVertexShaderState(ctx.r3, ctx.r4);
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x824131a8
 	ctx.lr = 0x8236E018;
@@ -47219,10 +47225,13 @@ DEFINE_REX_FUNC(sub_82370DF8) {
 	return;
 }
 
+extern void FM2PlumeTraceVertexStreamBinding(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegister& r7, PPCRegister& r8);
+
 DEFINE_REX_FUNC(sub_82370E48) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
+	FM2PlumeTraceVertexStreamBinding(ctx.r3, ctx.r4, ctx.r5, ctx.r6, ctx.r7, ctx.r8);
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x824131a0
 	ctx.lr = 0x82370E50;
@@ -47379,10 +47388,13 @@ loc_82370F5C:
 	return;
 }
 
+extern void FM2PlumeTraceIndexBufferBinding(PPCRegister& r3, PPCRegister& r4);
+
 DEFINE_REX_FUNC(sub_82370F68) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
+	FM2PlumeTraceIndexBufferBinding(ctx.r3, ctx.r4);
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x824131ac
 	ctx.lr = 0x82370F70;
@@ -48982,10 +48994,13 @@ loc_82371A24:
 	return;
 }
 
+extern void FM2PlumeTraceBoundSurface(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5);
+
 DEFINE_REX_FUNC(sub_82371A30) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
+	FM2PlumeTraceBoundSurface(ctx.r3, ctx.r4, ctx.r5);
 	ctx.r12.u64 = ctx.lr;
 	// stw r12,-8(r1)
 	REX_STORE_U32(ctx.r1.u32 + -8, ctx.r12.u32);

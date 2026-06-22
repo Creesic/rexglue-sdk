@@ -134,6 +134,25 @@ constexpr bool ShouldSubmitDirectDebugReplayRecord(uint32_t record_index,
          record_index == selected_index;
 }
 
+constexpr bool ShouldDecodeDirectDrawForCompareReplay(bool trace_enabled,
+                                                      bool compare_enabled) {
+  return trace_enabled || compare_enabled;
+}
+
+constexpr uint32_t DirectCompareReplayRecordScanCount(uint32_t record_count,
+                                                      uint32_t record_limit) {
+  if (record_limit == 0 || record_limit > record_count) {
+    return record_count;
+  }
+  return record_limit;
+}
+
+constexpr bool DirectDebugReplaySubmitLimitReached(uint64_t attempt,
+                                                   uint32_t limit,
+                                                   bool compare_enabled) {
+  return !compare_enabled && limit != 0 && attempt > limit;
+}
+
 constexpr bool ShouldArmD3DCommandContextAfterDirectTrace(uint32_t sample_limit,
                                                           bool already_armed) {
   return sample_limit != 0 && !already_armed;

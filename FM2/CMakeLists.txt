@@ -16,6 +16,7 @@ include(generated/rexglue.cmake)
 set(FM2_SOURCES
     src/main.cpp
     src/fm2_hooks.cpp
+    src/native_renderer/fm2_native_state.cpp
     src/native_renderer/fm2_native_renderer.cpp
 )
 
