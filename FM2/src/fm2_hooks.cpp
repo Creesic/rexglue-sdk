@@ -3602,7 +3602,12 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
           "vs=%08X ps=%08X s0_valid=%u s0_res=%08X s0_offset=%u "
           "s0_stride=%u s0_dirty=%08X s1_valid=%u s1_res=%08X "
           "s1_offset=%u s1_stride=%u s1_dirty=%08X ib=%08X "
-          "surf=%08X surf_arg=%u",
+          "surf=%08X surf_arg=%u viewport_valid=%u viewport_mode=%u "
+          "texture_fetch_valid=%u texture_fetch_low=%02X "
+          "texture_fetch_mid=%02X clear_valid=%u clear_color_byte=%02X "
+          "clear_flags=%02X pass_valid=%u submit=%08X pass_ctx=%08X "
+          "pass_flags=%08X drawable=%08X draw_cb=%08X wireframe=%u "
+          "draw_mode=%u pass_marker=%u",
           static_cast<unsigned long long>(sample_ix + 1), record_index,
           native.render_context,
           static_cast<unsigned long long>(native.sequence),
@@ -3614,7 +3619,19 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
           native.streams[1].resource, native.streams[1].byte_offset,
           native.streams[1].stride_bytes, native.streams[1].dirty_mask,
           native.index_resource, native.bound_surface,
-          native.bound_surface_arg);
+          native.bound_surface_arg, native.viewport.valid ? 1u : 0u,
+          native.viewport.viewport_mode,
+          native.texture_fetch.valid ? 1u : 0u,
+          static_cast<unsigned>(native.texture_fetch.fetch_bits_low),
+          static_cast<unsigned>(native.texture_fetch.fetch_bits_mid),
+          native.clear.valid ? 1u : 0u,
+          static_cast<unsigned>(native.clear.clear_color_byte),
+          static_cast<unsigned>(native.clear.clear_flags),
+          native.pass.valid ? 1u : 0u, native.pass.submit_object,
+          native.pass.tls_or_pass_context, native.pass.pass_flags,
+          native.pass.drawable, native.pass.draw_callback,
+          native.pass.wireframe, native.pass.draw_mode,
+          native.pass.pass_marker);
     }
     RememberDirectReplayPlan(sample_ix + 1, record_index, replay_plan);
     fm2nr::DirectDrawDebugReplayPlan submission_plan = replay_plan;

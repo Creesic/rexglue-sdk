@@ -994,6 +994,35 @@ struct DirectDrawReplayNativeStreamBinding {
   uint32_t dirty_mask = 0;
 };
 
+struct DirectDrawReplayNativeViewportSummary {
+  bool valid = false;
+  uint32_t viewport_mode = 0;
+};
+
+struct DirectDrawReplayNativeTextureFetchSummary {
+  bool valid = false;
+  uint8_t fetch_bits_low = 0;
+  uint8_t fetch_bits_mid = 0;
+};
+
+struct DirectDrawReplayNativeClearSummary {
+  bool valid = false;
+  uint8_t clear_color_byte = 0;
+  uint8_t clear_flags = 0;
+};
+
+struct DirectDrawReplayNativePassSummary {
+  bool valid = false;
+  uint32_t submit_object = 0;
+  uint32_t tls_or_pass_context = 0;
+  uint32_t pass_flags = 0;
+  uint32_t drawable = 0;
+  uint32_t draw_callback = 0;
+  uint32_t wireframe = 0;
+  uint32_t draw_mode = 0;
+  uint32_t pass_marker = 0;
+};
+
 struct DirectDrawReplayNativeStateSummary {
   bool valid = false;
   uint64_t sequence = 0;
@@ -1006,6 +1035,10 @@ struct DirectDrawReplayNativeStateSummary {
   uint32_t index_resource = 0;
   uint32_t bound_surface = 0;
   uint32_t bound_surface_arg = 0;
+  DirectDrawReplayNativeViewportSummary viewport;
+  DirectDrawReplayNativeTextureFetchSummary texture_fetch;
+  DirectDrawReplayNativeClearSummary clear;
+  DirectDrawReplayNativePassSummary pass;
 };
 
 constexpr DirectDrawReplayPipelineLayout DirectDrawReplayNativeLayoutFromState(
@@ -1769,6 +1802,67 @@ BuildDirectDrawReplayNativeStreamBinding(
   return out;
 }
 
+constexpr DirectDrawReplayNativeViewportSummary
+BuildDirectDrawReplayNativeViewportSummary(
+    const NativeStateViewportBinding& binding) {
+  DirectDrawReplayNativeViewportSummary out;
+  if (!binding.valid) {
+    return out;
+  }
+
+  out.valid = true;
+  out.viewport_mode = binding.viewport_mode;
+  return out;
+}
+
+constexpr DirectDrawReplayNativeTextureFetchSummary
+BuildDirectDrawReplayNativeTextureFetchSummary(
+    const NativeStateTextureFetchBinding& binding) {
+  DirectDrawReplayNativeTextureFetchSummary out;
+  if (!binding.valid) {
+    return out;
+  }
+
+  out.valid = true;
+  out.fetch_bits_low = binding.fetch_bits_low;
+  out.fetch_bits_mid = binding.fetch_bits_mid;
+  return out;
+}
+
+constexpr DirectDrawReplayNativeClearSummary
+BuildDirectDrawReplayNativeClearSummary(
+    const NativeStateClearBinding& binding) {
+  DirectDrawReplayNativeClearSummary out;
+  if (!binding.valid) {
+    return out;
+  }
+
+  out.valid = true;
+  out.clear_color_byte = binding.clear_color_byte;
+  out.clear_flags = binding.clear_flags;
+  return out;
+}
+
+constexpr DirectDrawReplayNativePassSummary
+BuildDirectDrawReplayNativePassSummary(
+    const NativeStatePassDrawBoundary& boundary) {
+  DirectDrawReplayNativePassSummary out;
+  if (!boundary.valid) {
+    return out;
+  }
+
+  out.valid = true;
+  out.submit_object = boundary.submit_object;
+  out.tls_or_pass_context = boundary.tls_or_pass_context;
+  out.pass_flags = boundary.pass_flags;
+  out.drawable = boundary.drawable;
+  out.draw_callback = boundary.draw_callback;
+  out.wireframe = boundary.wireframe;
+  out.draw_mode = boundary.draw_mode;
+  out.pass_marker = boundary.pass_marker;
+  return out;
+}
+
 constexpr DirectDrawReplayNativeStateSummary
 BuildDirectDrawReplayNativeStateSummary(
     const NativeStateSnapshot& snapshot) {
@@ -1804,6 +1898,11 @@ BuildDirectDrawReplayNativeStateSummary(
     out.bound_surface = snapshot.bound_surface.surface;
     out.bound_surface_arg = snapshot.bound_surface.surface_arg;
   }
+  out.viewport = BuildDirectDrawReplayNativeViewportSummary(snapshot.viewport);
+  out.texture_fetch =
+      BuildDirectDrawReplayNativeTextureFetchSummary(snapshot.texture_fetch);
+  out.clear = BuildDirectDrawReplayNativeClearSummary(snapshot.clear);
+  out.pass = BuildDirectDrawReplayNativePassSummary(snapshot.last_pass);
   return out;
 }
 

@@ -25,11 +25,6 @@
 #include <cstring>
 #include <string_view>
 
-#if REX_PLATFORM_WIN32
-#include <rex/ui/window_win.h>
-#include <Windows.h>
-#endif
-
 REXCVAR_DEFINE_BOOL(mnk_mode, false, "Input", "Enable keyboard/mouse controller emulation");
 REXCVAR_DEFINE_INT32(mnk_user_index, 0, "Input", "Controller slot (0-3) for MnK").range(0, 3);
 REXCVAR_DEFINE_DOUBLE(mnk_sensitivity, 1.0, "Input", "Mouse sensitivity for right stick")
@@ -143,11 +138,8 @@ void MnkInputDriver::OnWindowAvailable(rex::ui::Window* window) {
 
 void MnkInputDriver::OnClosing(rex::ui::UIEvent&) {
   if (attached_window_) {
-    if (mouse_captured_) {
-      mouse_captured_ = false;
-      attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
-      attached_window_->ReleaseMouse();
-    }
+    mouse_tracking_active_ = false;
+    mouse_position_valid_ = false;
     attached_window_->RemoveInputListener(this);
     attached_window_->RemoveListener(this);
     attached_window_ = nullptr;
@@ -198,7 +190,7 @@ X_RESULT MnkInputDriver::GetState(uint32_t user_index, X_INPUT_STATE* out_state)
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
-  UpdateMouseCapture();
+  UpdateMouseTracking();
 
   if (!is_active() || !has_focus_) {
     if (out_state) {
@@ -323,45 +315,23 @@ void MnkInputDriver::EnqueueKeystroke(uint16_t vk_pad, bool down) {
   keystroke_queue_.push(ks);
 }
 
-void MnkInputDriver::CenterCursor() {
-  if (!attached_window_)
-    return;
-  int32_t cx = static_cast<int32_t>(attached_window_->GetActualLogicalWidth() / 2);
-  int32_t cy = static_cast<int32_t>(attached_window_->GetActualLogicalHeight() / 2);
-  prev_mouse_x_ = cx;
-  prev_mouse_y_ = cy;
-#if REX_PLATFORM_WIN32
-  auto* win32_window = dynamic_cast<rex::ui::Win32Window*>(attached_window_);
-  if (win32_window && win32_window->hwnd()) {
-    POINT pt = {static_cast<LONG>(cx), static_cast<LONG>(cy)};
-    ClientToScreen(win32_window->hwnd(), &pt);
-    SetCursorPos(pt.x, pt.y);
-  }
-#endif
-}
-
-void MnkInputDriver::UpdateMouseCapture() {
+void MnkInputDriver::UpdateMouseTracking() {
   if (!attached_window_)
     return;
 
-  bool should_capture = IsEnabled() && has_focus_ && is_active();
+  const MnkMouseWindowPolicy policy =
+      BuildMnkMouseWindowPolicy(IsEnabled(), has_focus_, is_active());
 
-  if (should_capture && !mouse_captured_) {
-    mouse_captured_ = true;
-    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
-    attached_window_->CaptureMouse();
-    // Reset deltas to avoid a spike on capture start
+  if (policy.track_mouse && !mouse_tracking_active_) {
+    mouse_tracking_active_ = true;
+    mouse_position_valid_ = false;
     mouse_dx_ = 0;
     mouse_dy_ = 0;
-  } else if (!should_capture && mouse_captured_) {
-    mouse_captured_ = false;
-    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
-    attached_window_->ReleaseMouse();
-  }
-
-  // Re-center cursor each frame while captured to prevent edge clamping
-  if (mouse_captured_) {
-    CenterCursor();
+  } else if (!policy.track_mouse && mouse_tracking_active_) {
+    mouse_tracking_active_ = false;
+    mouse_position_valid_ = false;
+    mouse_dx_ = 0;
+    mouse_dy_ = 0;
   }
 }
 
@@ -434,11 +404,19 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
 }
 
 void MnkInputDriver::OnMouseMove(rex::ui::MouseEvent& e) {
-  if (!IsEnabled() || !has_focus_)
+  const MnkMouseWindowPolicy policy =
+      BuildMnkMouseWindowPolicy(IsEnabled(), has_focus_, is_active());
+  if (!policy.track_mouse)
     return;
   std::lock_guard lock(state_mutex_);
   int32_t x = e.x();
   int32_t y = e.y();
+  if (!mouse_position_valid_) {
+    prev_mouse_x_ = x;
+    prev_mouse_y_ = y;
+    mouse_position_valid_ = true;
+    return;
+  }
   mouse_dx_ += x - prev_mouse_x_;
   mouse_dy_ += y - prev_mouse_y_;
   prev_mouse_x_ = x;
@@ -456,11 +434,8 @@ void MnkInputDriver::OnLostFocus(rex::ui::UISetupEvent&) {
   std::memset(key_down_, 0, sizeof(key_down_));
   mouse_dx_ = 0;
   mouse_dy_ = 0;
-  if (mouse_captured_ && attached_window_) {
-    mouse_captured_ = false;
-    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
-    attached_window_->ReleaseMouse();
-  }
+  mouse_tracking_active_ = false;
+  mouse_position_valid_ = false;
 }
 
 void MnkInputDriver::OnGotFocus(rex::ui::UISetupEvent&) {

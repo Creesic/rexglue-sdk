@@ -20,6 +20,22 @@
 
 namespace rex::input::mnk {
 
+struct MnkMouseWindowPolicy {
+  bool track_mouse = false;
+  bool capture_window_mouse = false;
+  bool hide_cursor = false;
+  bool recenter_cursor = false;
+};
+
+[[nodiscard]] constexpr MnkMouseWindowPolicy BuildMnkMouseWindowPolicy(bool enabled,
+                                                                       bool has_focus,
+                                                                       bool active) {
+  return {.track_mouse = enabled && has_focus && active,
+          .capture_window_mouse = false,
+          .hide_cursor = false,
+          .recenter_cursor = false};
+}
+
 class MnkInputDriver final : public InputDriver,
                              public rex::ui::WindowInputListener,
                              public rex::ui::WindowListener {
@@ -53,8 +69,7 @@ class MnkInputDriver final : public InputDriver,
  private:
   uint32_t UserIndex() const;
   bool IsEnabled() const;
-  void CenterCursor();
-  void UpdateMouseCapture();
+  void UpdateMouseTracking();
   void SetKeyState(uint16_t vk, bool down);
   void EnqueueKeystroke(uint16_t vk_pad, bool down);
 
@@ -68,7 +83,8 @@ class MnkInputDriver final : public InputDriver,
   int32_t mouse_dy_ = 0;
   int32_t prev_mouse_x_ = 0;
   int32_t prev_mouse_y_ = 0;
-  bool mouse_captured_ = false;
+  bool mouse_tracking_active_ = false;
+  bool mouse_position_valid_ = false;
   bool has_focus_ = true;
 
   // Keystroke queue

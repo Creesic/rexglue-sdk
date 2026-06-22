@@ -807,8 +807,32 @@ TEST_CASE("FM2 direct draw replay plan carries paired native state provenance",
                             .render_context = 0x4004D100u,
                             .surface = 0x2E049240u,
                             .surface_arg = 2u};
+  snapshot.viewport = {.valid = true,
+                       .sequence = 7u,
+                       .render_context = 0x4004D100u,
+                       .viewport_mode = 3u};
+  snapshot.texture_fetch = {.valid = true,
+                            .sequence = 8u,
+                            .render_context = 0x4004D100u,
+                            .fetch_bits_low = 0x12u,
+                            .fetch_bits_mid = 0x34u};
+  snapshot.clear = {.valid = true,
+                    .sequence = 9u,
+                    .render_context = 0x4004D100u,
+                    .clear_color_byte = 0x56u,
+                    .clear_flags = 0x78u};
+  snapshot.last_pass = {.valid = true,
+                        .sequence = 10u,
+                        .submit_object = 0x41001000u,
+                        .tls_or_pass_context = 0x42002000u,
+                        .pass_flags = 0x33u,
+                        .drawable = 0x43003000u,
+                        .draw_callback = 0x44004000u,
+                        .wireframe = 1u,
+                        .draw_mode = 2u,
+                        .pass_marker = 3u};
   snapshot.last_direct_draw = {.valid = true,
-                               .sequence = 7u,
+                               .sequence = 11u,
                                .direct_render_context = 0x42950010u,
                                .draw_iface = 0x2E0162C0u};
 
@@ -831,6 +855,23 @@ TEST_CASE("FM2 direct draw replay plan carries paired native state provenance",
   CHECK(plan.native_state.index_resource == 0xBACACAE0u);
   CHECK(plan.native_state.bound_surface == 0x2E049240u);
   CHECK(plan.native_state.bound_surface_arg == 2u);
+  CHECK(plan.native_state.viewport.valid);
+  CHECK(plan.native_state.viewport.viewport_mode == 3u);
+  CHECK(plan.native_state.texture_fetch.valid);
+  CHECK(plan.native_state.texture_fetch.fetch_bits_low == 0x12u);
+  CHECK(plan.native_state.texture_fetch.fetch_bits_mid == 0x34u);
+  CHECK(plan.native_state.clear.valid);
+  CHECK(plan.native_state.clear.clear_color_byte == 0x56u);
+  CHECK(plan.native_state.clear.clear_flags == 0x78u);
+  CHECK(plan.native_state.pass.valid);
+  CHECK(plan.native_state.pass.submit_object == 0x41001000u);
+  CHECK(plan.native_state.pass.tls_or_pass_context == 0x42002000u);
+  CHECK(plan.native_state.pass.pass_flags == 0x33u);
+  CHECK(plan.native_state.pass.drawable == 0x43003000u);
+  CHECK(plan.native_state.pass.draw_callback == 0x44004000u);
+  CHECK(plan.native_state.pass.wireframe == 1u);
+  CHECK(plan.native_state.pass.draw_mode == 2u);
+  CHECK(plan.native_state.pass.pass_marker == 3u);
 
   CHECK(plan.streams[0].guest_base == 0xB0BBF697u);
   CHECK(plan.streams[0].stride == 0x20u);

@@ -1,5 +1,6 @@
 #include "native_renderer/fm2_native_renderer.h"
 
+#include "native_renderer/fm2_native_draw.h"
 #include "native_renderer/fm2_native_state.h"
 
 #include <array>
@@ -1082,6 +1083,7 @@ bool RenderDirectDebugReplayBatchLocked(
   draws.reserve(submission_count);
   uint32_t skipped = 0;
   uint32_t native_state_draws = 0;
+  uint32_t native_packet_draws = 0;
   uint32_t native_layout_draws = 0;
   fm2::native_renderer::DirectDrawReplayTopology batch_topology =
       fm2::native_renderer::DirectDrawReplayTopology::kUnknown;
@@ -1152,6 +1154,9 @@ bool RenderDirectDebugReplayBatchLocked(
     }
     if (plan.native_state.valid) {
       ++native_state_draws;
+    }
+    if (fm2::native_renderer::BuildNativeDrawPacket(plan).ready) {
+      ++native_packet_draws;
     }
     if (layout == fm2::native_renderer::DirectDrawReplayPipelineLayout::
                       kNativePosition28Side12) {
@@ -1252,11 +1257,11 @@ bool RenderDirectDebugReplayBatchLocked(
 
   REXLOG_INFO(
       "{} presented={} image={} size={}x{} "
-      "draws={} skipped={} native_state_draws={} native_layout_draws={} "
-      "topology={} layout={}",
+      "draws={} skipped={} native_state_draws={} native_packet_draws={} "
+      "native_layout_draws={} topology={} layout={}",
       submit_log_name ? submit_log_name : "FM2_PLUME_DEBUG_REPLAY_BATCH_SUBMIT",
       presented, image_index, width, height, draws.size(), skipped,
-      native_state_draws, native_layout_draws,
+      native_state_draws, native_packet_draws, native_layout_draws,
       static_cast<unsigned>(batch_topology),
       fm2::native_renderer::DirectDrawReplayPipelineLayoutName(batch_layout));
   return presented;
@@ -1609,6 +1614,7 @@ bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
   }
 
 #if FM2_HAS_PLUME && REX_PLATFORM_WIN32
+  const NativeDrawPacket native_packet = BuildNativeDrawPacket(plan);
   bool accepted = false;
   bool queued = false;
   bool flushed = false;
@@ -1644,7 +1650,8 @@ bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
       "FM2_PLUME_NATIVE_DIRECT_DRAW_SUBMIT attempt={} submitted={} "
       "queued={} flushed={} pending={} live_batch={} "
       "mode={} topology={} layout={} index_count={} native_state={} "
-      "transform_valid={}",
+      "viewport={} texture_fetch={} clear={} pass={} pass_flags={:08X} "
+      "native_packet={} native_reject={} native_layout={} transform_valid={}",
       attempt, accepted ? 1u : 0u, queued ? 1u : 0u, flushed ? 1u : 0u,
       pending_count, WantsNativeDirectDrawLiveBatch() ? 1u : 0u,
       GetModeName(mode),
@@ -1652,6 +1659,14 @@ bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
       DirectDrawReplayPipelineLayoutName(
           DirectDrawReplayPipelineLayoutForPlan(plan)),
       plan.draw.index_count, plan.native_state.valid ? 1u : 0u,
+      plan.native_state.viewport.valid ? 1u : 0u,
+      plan.native_state.texture_fetch.valid ? 1u : 0u,
+      plan.native_state.clear.valid ? 1u : 0u,
+      plan.native_state.pass.valid ? 1u : 0u,
+      plan.native_state.pass.pass_flags,
+      native_packet.ready ? 1u : 0u,
+      NativeDrawPacketRejectReasonName(native_packet.reject_reason),
+      DirectDrawReplayPipelineLayoutName(native_packet.pipeline.native_layout),
       plan.transform.valid ? 1u : 0u);
   return accepted;
 #else

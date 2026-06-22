@@ -1918,3 +1918,57 @@ Next renderer step:
   `FM2_Render_InstanceHybridDrawPath` for per-frame world geometry, keep
   render-context setters as the Plume state mirror, and use
   `FM2_D3D_TryPresentAndUpdateStatus` for present ownership.
+
+### 2026-06-22 Native Draw Semantic State Handoff
+
+This slice moves FM2 closer to the ReOdyssey/Unleashed native-renderer shape:
+each draw plan now carries the semantic API state captured by the FM2 hooks,
+instead of only the raw replay buffers and the older shader/stream/surface
+subset.
+
+Implemented files:
+
+- `FM2/src/native_renderer/fm2_direct_draw_decode.h`
+- `FM2/src/fm2_hooks.cpp`
+- `FM2/src/native_renderer/fm2_native_renderer.cpp`
+- `tests/unit/fm2/direct_draw_decode_test.cpp`
+
+State now preserved in `DirectDrawReplayNativeStateSummary`:
+
+- viewport mode from `FM2PlumeTraceViewportMode`
+- texture-fetch low/mid bits from `FM2PlumeTraceTextureFetchLow/Mid`
+- clear color byte and clear flags from `FM2PlumeTraceClearColor/Flags`
+- pass boundary metadata from `FM2PlumeTracePassDrawWork`
+
+Runtime trace updates:
+
+- `FM2_PLUME_DIRECT_REPLAY_NATIVE_STATE` now logs
+  `viewport_valid`, `texture_fetch_valid`, `clear_valid`, and `pass_valid`
+  plus the relevant values.
+- `FM2_PLUME_NATIVE_DIRECT_DRAW_SUBMIT` now logs whether viewport, texture
+  fetch, clear, and pass state are present on the submitted draw plan.
+
+Verification:
+
+- Red test was confirmed first: `unit_tests` failed to compile because
+  `DirectDrawReplayNativeStateSummary` had no `viewport`, `texture_fetch`,
+  `clear`, or `pass` members.
+- `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests`
+  passed.
+- `out/win-amd64/RelWithDebInfo/unit_tests.exe "[fm2][plume]"` passed with
+  623 assertions in 52 test cases.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed from
+  `FM2/`; the build still emits the existing deprecated CRT warnings in
+  `FM2/src/fm2_hooks.cpp`.
+- Gameplay smoke via `scripts/fm2/Invoke-FM2GameplaySmoke.ps1` reached
+  gameplay input with `Space tap result: ok=40 failed=0` and
+  `keyDown=40 keyUp=40 aDown=37`.
+- `C:\temp\fm2-clean.log` contained 18,097
+  `FM2_PLUME_DIRECT_REPLAY_NATIVE_STATE` lines with the new fields; sample
+  values included `viewport_valid=1`, `texture_fetch_valid=1`,
+  `clear_valid=1`, `pass_valid=1`, and `pass_flags=00000001`.
+- Fresh app logs `FM2/out/build/win-amd64-relwithdebinfo/logs/fm2_150*.log`
+  contained live submissions with
+  `viewport=1 texture_fetch=1 clear=1 pass=1 pass_flags=00000001`, and
+  repeated `FM2_PLUME_NATIVE_LIVE_BATCH_SUBMIT` lines with
+  `draws=16 skipped=0 native_state_draws=16`.

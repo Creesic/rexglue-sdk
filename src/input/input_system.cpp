@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <rex/input/automation/automation_input_driver.h>
 #include <rex/dbg.h>
 #include <rex/input/flags.h>
 #include <rex/input/input_driver.h>
@@ -163,6 +164,14 @@ std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
   auto input = std::make_unique<InputSystem>(nullptr);
 
   if (!tool_mode) {
+    if (automation::IsAutomationGamepadEnabled()) {
+      auto automation_driver =
+          std::make_unique<automation::AutomationInputDriver>(nullptr, 0);
+      if (automation_driver->Setup() == X_STATUS_SUCCESS) {
+        input->AddDriver(std::move(automation_driver));
+      }
+    }
+
 #if REX_PLATFORM_WIN32
     if (REXCVAR_GET(input_backend) == "xinput") {
       auto xinput_driver = std::make_unique<xinput::XinputInputDriver>(nullptr, 0);
