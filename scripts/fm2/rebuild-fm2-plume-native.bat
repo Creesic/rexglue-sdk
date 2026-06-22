@@ -21,7 +21,22 @@ set "SDK_DLL_INSTALL=out\install\win-amd64\bin\rexruntimerd.dll"
 set "FM2_DIR=FM2\out\build\%PRESET%"
 
 echo.
-echo === [1/3] FM2 codegen (manifest / midasm hooks) ===
+echo === [1/4] Stop running fm2.exe (if any) ===
+tasklist /FI "IMAGENAME eq fm2.exe" 2>nul | find /I "fm2.exe" >nul
+if errorlevel 1 (
+  echo No running fm2.exe.
+) else (
+  taskkill /IM fm2.exe /F >nul 2>&1
+  if errorlevel 1 (
+    echo ERROR: could not stop fm2.exe.
+    set "EXIT_CODE=1"
+    goto :done
+  )
+  echo Stopped fm2.exe.
+)
+
+echo.
+echo === [2/4] FM2 codegen (manifest / midasm hooks) ===
 pushd FM2
 cmake --build --preset %PRESET% --target fm2_codegen
 if errorlevel 1 (
@@ -32,7 +47,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo === [2/3] FM2 build ===
+echo === [3/4] FM2 build ===
 cmake --build --preset %PRESET% --target fm2
 set "BUILD_RC=%ERRORLEVEL%"
 popd
@@ -43,7 +58,7 @@ if not "%BUILD_RC%"=="0" (
 )
 
 echo.
-echo === [3/3] Sync fresh rexruntimerd.dll into FM2 build dir ===
+echo === [4/4] Sync fresh rexruntimerd.dll into FM2 build dir ===
 if not exist "%FM2_DIR%\" (
   echo ERROR: FM2 build dir missing: %FM2_DIR%
   set "EXIT_CODE=1"
