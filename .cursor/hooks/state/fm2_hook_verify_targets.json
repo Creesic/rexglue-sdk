@@ -1,0 +1,82 @@
+[
+  {
+    "addr": "0x8236DD10",
+    "name": "FM2_RenderContext_SetPixelShaderState"
+  },
+  {
+    "addr": "0x8236E010",
+    "name": "FM2_RenderContext_SetVertexShaderState"
+  },
+  {
+    "addr": "0x82370E48",
+    "name": "FM2_RenderContext_BindVertexStream"
+  },
+  {
+    "addr": "0x82370F68",
+    "name": "FM2_RenderContext_BindIndexBuffer"
+  },
+  {
+    "addr": "0x82371A30",
+    "name": "FM2_RenderContext_SetBoundSurface"
+  },
+  {
+    "addr": "0x825A22F0",
+    "name": "FM2_D3D_CreateVertexBufferWrapper"
+  },
+  {
+    "addr": "0x825A2350",
+    "name": "FM2_D3D_LockVertexBufferWrapper"
+  },
+  {
+    "addr": "0x825A25F8",
+    "name": "FM2_D3D_CreateTextureFromMemoryBuffer"
+  },
+  {
+    "addr": "0x825A2650",
+    "name": "FM2_D3D_CreateTextureWrapper"
+  },
+  {
+    "addr": "0x825A2730",
+    "name": "FM2_D3D_CreateIndexBufferWrapper"
+  },
+  {
+    "addr": "0x825A27D8",
+    "name": "FM2_D3D_DeserializeAndLockIndexBuffer"
+  },
+  {
+    "addr": "0x82515E18",
+    "name": "FM2_D3D_CreateDepthStencilSurfaceAndTexture"
+  },
+  {
+    "addr": "0x8259F008",
+    "name": "FM2_D3D_CreateVertexDeclarationFromElements"
+  },
+  {
+    "addr": "0x82383718",
+    "name": "FM2_D3D_EmitIndexedDrawPacket"
+  },
+  {
+    "addr": "0x82392090",
+    "name": "FM2_D3D_GatherSurfaceMetadataForTextureCreate"
+  },
+  {
+    "addr": "0x8236A2B8",
+    "name": "FM2_D3DResource_UnlockForRelease"
+  },
+  {
+    "addr": "0x824F83D8",
+    "name": "FM2_D3D_TryPresentAndUpdateStatus"
+  },
+  {
+    "addr": "0x825A1608",
+    "name": "FM2_Render_GetOrCreatePixelShaderResourceById"
+  },
+  {
+    "addr": "0x825A16E0",
+    "name": "FM2_Render_GetOrCreateVertexShaderResourceById"
+  },
+  {
+    "addr": "0x827221F0",
+    "name": "FM2_Render_DrawIndexedPrimitive"
+  }
+]

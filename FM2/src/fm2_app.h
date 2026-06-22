@@ -19,7 +19,9 @@
 #include <rex/rex_app.h>
 #include <rex/system.h>
 
-#include "native_renderer/fm2_native_renderer.h"
+#if FM2_HAS_PLUME
+#include "render/video.h"
+#endif
 
 class Fm2App : public rex::ReXApp {
  public:
@@ -31,39 +33,34 @@ class Fm2App : public rex::ReXApp {
         PPCImageConfig));
   }
 
-  // Override virtual hooks for customization:
   void OnPreSetup(rex::RuntimeConfig& config) override {
 #if REX_PLATFORM_WIN32
     config.audio_factory = REX_AUDIO_BACKEND(rex::audio::xaudio2::XAudio2AudioSystem);
 #else
     config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
 #endif
-    if (!fm2::native_renderer::WantsReXGraphics()) {
-      config.graphics.reset();
-    }
+#if FM2_HAS_PLUME
+    // ReOdyssey pattern: native Plume renderer owns presentation.
+    config.graphics.reset();
+#endif
   }
-  // void OnLoadXexImage(std::string& xex_image) override {}
-  void OnPostSetup() override {
-    const auto mode = fm2::native_renderer::GetMode();
-    if (!fm2::native_renderer::Initialize(window())) {
-      if (mode == fm2::native_renderer::Mode::kPlumeClear) {
-        constexpr const char* kMessage =
-            "FM2 Plume clear mode failed to initialize; startup cannot "
-            "continue because ReXGlue graphics is disabled.";
-        REXLOG_ERROR("{}", kMessage);
-        rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, kMessage);
-        std::exit(EXIT_FAILURE);
+
+  void OnPreLaunchModule() override {
+#if FM2_HAS_PLUME
+    if (auto* w = window()) {
+      if (!Video::Init(w->GetNativeWindowHandle(), 1280, 720)) {
+        REXLOG_ERROR("FM2 native Plume renderer failed to initialize");
       }
-      REXLOG_WARN(
-          "FM2 Plume native renderer failed to initialize in mode={}; "
-          "continuing with normal startup",
-          fm2::native_renderer::GetModeName(mode));
     }
+#endif
   }
-  // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
+
   void OnShutdown() override {
-    fm2::native_renderer::Shutdown();
+#if FM2_HAS_PLUME
+    Video::Shutdown();
+#endif
   }
+
   void OnConfigurePaths(rex::PathConfig& paths) override {
     if (!paths.game_data_root.empty()) {
       return;
