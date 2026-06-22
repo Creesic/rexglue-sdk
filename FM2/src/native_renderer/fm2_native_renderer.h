@@ -134,6 +134,7 @@ void RecordDirectIndexedDrawEntry(const GuestArgs& args);
 void RecordInstanceHybridDrawEntry(const GuestArgs& args);
 void RecordPresentEntry(uint32_t present_chain_object);
 bool FlushNativeDirectDrawOnPresent();
+bool FlushDebugReplayOnPresent();
 bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
                              const DirectDrawReplaySourceBytes& sources);
 bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,

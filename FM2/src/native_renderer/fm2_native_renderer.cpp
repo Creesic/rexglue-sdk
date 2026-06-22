@@ -102,6 +102,11 @@ REXCVAR_DEFINE_UINT32(
     fm2_plume_debug_replay_limit, 1, "FM2",
     "Maximum number of FM2 Plume diagnostic direct-draw replays to submit");
 
+REXCVAR_DEFINE_BOOL(
+    fm2_plume_debug_replay_live_batch, true, "FM2",
+    "Accumulate FM2 debug replay draws per frame and present as one batch at "
+    "present time; requires fm2_plume_debug_replay_limit=0.");
+
 REXCVAR_DEFINE_UINT32(
     fm2_plume_native_direct_draw_limit, 1, "FM2",
     "Maximum number of FM2 native Plume direct draws to submit; 0 disables the "
@@ -182,6 +187,7 @@ struct PlumeState {
       fm2::native_renderer::DebugReplayFillMode::kSolid;
   HWND debug_replay_window = nullptr;
   std::vector<OwnedDirectReplaySubmission> native_direct_draw_pending;
+  std::vector<OwnedDirectReplaySubmission> debug_replay_pending;
 };
 
 std::mutex g_plume_mutex;
@@ -406,6 +412,7 @@ bool CreateDebugReplayWindowLocked(HWND host_window) {
 
 void ResetPlumeStateLocked() {
   g_plume.native_direct_draw_pending.clear();
+  g_plume.debug_replay_pending.clear();
   DestroyDebugReplayWindowLocked();
   g_plume.debug_replay_pipeline.reset();
   g_plume.debug_replay_pipeline_topology =
@@ -1570,6 +1577,50 @@ bool FlushNativeDirectDrawBatchLocked(const char* reason) {
   g_plume.native_direct_draw_pending.clear();
   return submitted;
 }
+
+bool QueueDebugReplayLocked(
+    const fm2::native_renderer::DirectDrawDebugReplayPlan& plan,
+    const fm2::native_renderer::DirectDrawReplaySourceBytes& sources) {
+  if (!plan.ready || plan.stream_count != 2u || !sources.stream0 ||
+      !sources.stream1 || !sources.index) {
+    return false;
+  }
+  OwnedDirectReplaySubmission pending;
+  pending.plan = plan;
+  if (!CopyReplaySourceBytes(sources.stream0, plan.streams[0].upload_bytes,
+                             pending.stream0) ||
+      !CopyReplaySourceBytes(sources.stream1, plan.streams[1].upload_bytes,
+                             pending.stream1) ||
+      !CopyReplaySourceBytes(sources.index, plan.index.upload_bytes,
+                             pending.index)) {
+    return false;
+  }
+  g_plume.debug_replay_pending.push_back(std::move(pending));
+  return true;
+}
+
+bool FlushDebugReplayBatchLocked(const char* reason) {
+  if (g_plume.debug_replay_pending.empty()) {
+    return true;
+  }
+  std::vector<fm2::native_renderer::DirectDrawReplaySubmission> submissions;
+  submissions.reserve(g_plume.debug_replay_pending.size());
+  for (const OwnedDirectReplaySubmission& owned : g_plume.debug_replay_pending) {
+    submissions.push_back({owned.plan,
+                           {owned.stream0.data(), owned.stream1.data(),
+                            owned.index.data()}});
+  }
+  const uint32_t queued_count =
+      static_cast<uint32_t>(g_plume.debug_replay_pending.size());
+  const bool submitted = RenderDirectDebugReplayBatchLocked(
+      submissions.data(), queued_count,
+      "FM2_PLUME_DEBUG_REPLAY_LIVE_BATCH_SUBMIT");
+  REXLOG_INFO(
+      "FM2_PLUME_DEBUG_REPLAY_LIVE_BATCH reason={} queued={} submitted={}",
+      reason ? reason : "unknown", queued_count, submitted ? 1u : 0u);
+  g_plume.debug_replay_pending.clear();
+  return submitted;
+}
 #endif
 
 }  // namespace
@@ -1780,6 +1831,19 @@ bool FlushNativeDirectDrawOnPresent() {
 #endif
 }
 
+bool FlushDebugReplayOnPresent() {
+#if FM2_HAS_PLUME && REX_PLATFORM_WIN32
+  if (!REXCVAR_GET(fm2_plume_debug_replay_live_batch) ||
+      !WantsDirectDebugReplay()) {
+    return true;
+  }
+  std::scoped_lock lock(g_plume_mutex);
+  return FlushDebugReplayBatchLocked("present");
+#else
+  return true;
+#endif
+}
+
 bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
                              const DirectDrawReplaySourceBytes& sources) {
   if (!WantsDirectDebugReplay()) {
@@ -1809,6 +1873,19 @@ bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
   }
 
 #if FM2_HAS_PLUME && REX_PLATFORM_WIN32
+  if (REXCVAR_GET(fm2_plume_debug_replay_live_batch)) {
+    bool queued = false;
+    {
+      std::scoped_lock lock(g_plume_mutex);
+      queued = QueueDebugReplayLocked(plan, sources);
+    }
+    if (queued) {
+      g_debug_replay_submitted.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      g_debug_replay_failed.fetch_add(1, std::memory_order_relaxed);
+    }
+    return queued;
+  }
   bool submitted = false;
   {
     std::scoped_lock lock(g_plume_mutex);

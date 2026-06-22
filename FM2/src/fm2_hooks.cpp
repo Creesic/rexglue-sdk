@@ -4171,6 +4171,7 @@ void FM2PlumeTraceD3DDirtyStateEntry(PPCRegister& r3, PPCRegister& r4, PPCRegist
 
 void FM2PlumeTracePresent(PPCRegister& r3) {
   fm2::native_renderer::FlushNativeDirectDrawOnPresent();
+  fm2::native_renderer::FlushDebugReplayOnPresent();
   fm2::native_renderer::RecordPresentEntry(r3.u32);
 }
 
