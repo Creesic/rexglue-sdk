@@ -3296,10 +3296,16 @@ void LogD3DCommandContextFetchGroups(uint8_t* base, uint64_t sample_number,
   }
 }
 
-void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t draw_iface) {
+void MaybeLogPlumeDirectIndexedDrawDecode(
+    uint32_t direct_render_ctx, uint32_t draw_iface,
+    const fm2nr::DirectDrawLiveDrawFilter& live_draw_filter = {},
+    const fm2nr::NativeStateSnapshot* native_snapshot_override = nullptr,
+    bool allow_native_direct_submit = true) {
   const bool trace_direct_decode = REXCVAR_GET(fm2_plume_trace_direct_decode);
   const bool compare_replay = fm2::native_renderer::WantsCompareWindow();
-  const bool native_direct_draw = fm2::native_renderer::WantsNativeDirectDraw();
+  const bool native_direct_draw =
+      allow_native_direct_submit &&
+      fm2::native_renderer::WantsNativeDirectDraw();
   const bool native_direct_draw_live_batch =
       fm2::native_renderer::WantsNativeDirectDrawLiveBatch();
   if (!fm2nr::ShouldDecodeDirectDrawForPlumeSubmission(
@@ -3328,7 +3334,9 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
     return;
   }
   const fm2nr::NativeStateSnapshot native_snapshot =
-      fm2nr::SnapshotNativeStateForDirectDraw(direct_render_ctx);
+      native_snapshot_override ? *native_snapshot_override
+                               : fm2nr::SnapshotNativeStateForDirectDraw(
+                                     direct_render_ctx);
 
   constexpr uint32_t kMaxDecodedRecords = 256;
   constexpr uint32_t kMaxDecodedSegments = 1024;
@@ -3340,9 +3348,13 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
       TryLoadU32(base, direct_render_ctx + fm2nr::kDirectDrawCtxRecordEndOffset);
   const uint32_t record_count = fm2nr::BoundedVectorCount(
       record_begin, record_end, fm2nr::kDirectDrawRecordStride, kMaxDecodedRecords);
-  const uint32_t record_scan = fm2nr::DirectPlumeSubmissionRecordScanCount(
-      record_count, REXCVAR_GET(fm2_plume_trace_direct_decode_record_limit),
-      compare_replay, native_direct_draw);
+  const uint32_t record_scan =
+      live_draw_filter.enabled
+          ? record_count
+          : fm2nr::DirectPlumeSubmissionRecordScanCount(
+                record_count,
+                REXCVAR_GET(fm2_plume_trace_direct_decode_record_limit),
+                compare_replay, native_direct_draw);
 
   LogLine(
       "FM2_PLUME_DIRECT_DECODE n=%llu ctx=%08X iface=%08X built=%u "
@@ -3406,6 +3418,7 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
     uint16_t first_index_count = 0;
     fm2nr::DirectDrawReplayTopology first_topology =
         fm2nr::DirectDrawReplayTopology::kUnknown;
+    fm2nr::DirectDrawSegmentSummary first_segment_summary;
 
     if (holder && GuestReadableRange(base, holder + fm2nr::kDirectDrawHolderSegmentBeginOffset,
                                      8)) {
@@ -3446,9 +3459,16 @@ void MaybeLogPlumeDirectIndexedDrawDecode(uint32_t direct_render_ctx, uint32_t d
         first_segment = segment;
         first_start = segment_summary.start_index;
         first_index_count = segment_summary.index_count;
+        first_segment_summary = segment_summary;
         first_topology =
             fm2nr::DirectDrawReplayTopologyFromSegmentSummary(segment_summary);
       }
+    }
+
+    if (!fm2nr::DirectDrawLiveDrawFilterMatchesRecord(
+            live_draw_filter, stream0_resource, index_d3d_resource,
+            first_segment_summary)) {
+      continue;
     }
 
     const uint32_t primitive_count =
@@ -4071,7 +4091,76 @@ void FM2PlumeTraceInstanceHybridDrawEntry(PPCRegister& r3, PPCRegister& r4, PPCR
                                       .draw_iface = r4.u32});
   MaybeLogPlumeNativeStateSnapshot(
       fm2nr::SnapshotNativeStateForDirectDraw(r3.u32));
-  MaybeLogPlumeDirectIndexedDrawDecode(r3.u32, r4.u32);
+  MaybeLogPlumeDirectIndexedDrawDecode(r3.u32, r4.u32, {}, nullptr, false);
+}
+
+void FM2PlumeTraceDirectIfaceIndexedDraw(PPCRegister& r3, PPCRegister& r4,
+                                         PPCRegister& r5, PPCRegister& r6,
+                                         PPCRegister& r7) {
+  (void)r5;
+
+  uint8_t* base = GuestBase();
+  const uint32_t render_context = TryLoadU32AtOffset(base, r3.u32, 0x14u);
+  if (render_context == 0) {
+    return;
+  }
+
+  const fm2nr::NativeStateSnapshot snapshot =
+      fm2nr::SnapshotNativeState(render_context);
+  if (!snapshot.valid || !snapshot.last_direct_draw.valid) {
+    return;
+  }
+
+  MaybeLogPlumeNativeStateSnapshot(snapshot);
+  const fm2nr::DirectDrawLiveDrawFilter live_draw_filter =
+      fm2nr::BuildDirectDrawLiveDrawFilter(
+          r4.u32, r6.u32, r7.u32, snapshot.streams[0].resource,
+          snapshot.index_buffer.resource);
+  if (!live_draw_filter.enabled) {
+    if (REXCVAR_GET(fm2_plume_trace_direct_decode) ||
+        REXCVAR_GET(fm2_plume_native_state_trace)) {
+      LogLine(
+          "FM2_PLUME_DIRECT_LIVE_DRAW iface=%08X render_ctx=%08X "
+          "direct_ctx=%08X primitive_type=%u start_index=%u "
+          "primitive_count=%u filter_enabled=0 s0_valid=%u s0_res=%08X "
+          "s0_stride=%u ib_valid=%u ib=%08X",
+          r3.u32, render_context,
+          snapshot.last_direct_draw.direct_render_context, r4.u32, r6.u32,
+          r7.u32, snapshot.streams[0].valid ? 1u : 0u,
+          snapshot.streams[0].resource, snapshot.streams[0].stride_bytes,
+          snapshot.index_buffer.valid ? 1u : 0u,
+          snapshot.index_buffer.resource);
+    }
+    return;
+  }
+
+  if (REXCVAR_GET(fm2_plume_trace_direct_decode) ||
+      REXCVAR_GET(fm2_plume_native_state_trace)) {
+    LogLine(
+        "FM2_PLUME_DIRECT_LIVE_DRAW iface=%08X render_ctx=%08X "
+        "direct_ctx=%08X primitive_type=%u start_index=%u "
+        "primitive_count=%u topology=%u index_count=%u "
+        "s0_res=%08X s0_stride=%u s1_valid=%u s1_res=%08X "
+        "s1_stride=%u ib=%08X",
+        r3.u32, render_context, snapshot.last_direct_draw.direct_render_context,
+        r4.u32, live_draw_filter.start_index, r7.u32,
+        static_cast<unsigned>(live_draw_filter.topology),
+        live_draw_filter.index_count, live_draw_filter.stream0_resource,
+        snapshot.streams[0].stride_bytes,
+        snapshot.streams[1].valid ? 1u : 0u, snapshot.streams[1].resource,
+        snapshot.streams[1].stride_bytes, live_draw_filter.index_resource);
+  }
+
+  MaybeLogPlumeDirectIndexedDrawDecode(
+      snapshot.last_direct_draw.direct_render_context, r3.u32,
+      live_draw_filter, &snapshot, true);
+}
+
+void FM2PlumeTraceExecuteBoundDrawPass(PPCRegister& r3, PPCRegister& r4,
+                                       PPCRegister& r5) {
+  // r3=pass_context, r4=pass_index, r5=draw_list_ptr
+  // Called via vtable; no direct bl callers; fires per-frame per-pass.
+  fm2nr::RecordNativePassDrawBoundaryArgs(r3.u32, r4.u32, r5.u32, 0, 0, 0, 0, 0);
 }
 
 void FM2PlumeTraceD3DDirtyStateEntry(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {

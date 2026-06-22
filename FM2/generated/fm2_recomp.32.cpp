@@ -23652,9 +23652,12 @@ DEFINE_REX_FUNC(sub_825B32E8) {
 	return;
 }
 
+extern void FM2PlumeTraceDirectIfaceIndexedDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6, PPCRegister& r7);
+
 DEFINE_REX_FUNC(sub_825B3320) {
 	REX_FUNC_PROLOGUE();
 	// lis r10,-32256
+	FM2PlumeTraceDirectIfaceIndexedDraw(ctx.r3, ctx.r4, ctx.r5, ctx.r6, ctx.r7);
 	ctx.r10.s64 = -2113929216;
 	// lwz r3,20(r3)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r3.u32 + 20);

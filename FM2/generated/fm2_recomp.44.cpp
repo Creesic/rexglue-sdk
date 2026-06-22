@@ -11313,10 +11313,13 @@ loc_82723740:
 	goto loc_82723028;
 }
 
+extern void FM2PlumeTraceExecuteBoundDrawPass(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5);
+
 DEFINE_REX_FUNC(FM2_Render_ExecuteBoundDrawPass) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
+	FM2PlumeTraceExecuteBoundDrawPass(ctx.r3, ctx.r4, ctx.r5);
 	ctx.r12.u64 = ctx.lr;
 	// bl 0x824131ac
 	ctx.lr = 0x82723758;

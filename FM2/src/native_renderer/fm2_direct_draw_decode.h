@@ -783,6 +783,66 @@ enum class DirectDrawReplayTopology : uint8_t {
   kTriangleStrip,
 };
 
+struct DirectDrawLiveDrawFilter {
+  bool enabled = false;
+  DirectDrawReplayTopology topology = DirectDrawReplayTopology::kUnknown;
+  uint32_t start_index = 0;
+  uint32_t index_count = 0;
+  uint32_t stream0_resource = 0;
+  uint32_t index_resource = 0;
+};
+
+constexpr DirectDrawReplayTopology
+DirectDrawReplayTopologyFromDirectIfacePrimitiveType(uint32_t primitive_type) {
+  if (primitive_type == 4u) {
+    return DirectDrawReplayTopology::kTriangleList;
+  }
+  return DirectDrawReplayTopology::kUnknown;
+}
+
+constexpr uint32_t DirectDrawReplayIndexCountFromPrimitiveCount(
+    DirectDrawReplayTopology topology, uint32_t primitive_count) {
+  switch (topology) {
+    case DirectDrawReplayTopology::kTriangleList:
+      return primitive_count * 3u;
+    case DirectDrawReplayTopology::kTriangleStrip:
+      return primitive_count + 2u;
+    case DirectDrawReplayTopology::kUnknown:
+      break;
+  }
+  return 0;
+}
+
+constexpr DirectDrawLiveDrawFilter BuildDirectDrawLiveDrawFilter(
+    uint32_t primitive_type, uint32_t start_index, uint32_t primitive_count,
+    uint32_t stream0_resource, uint32_t index_resource) {
+  DirectDrawLiveDrawFilter out;
+  out.topology = DirectDrawReplayTopologyFromDirectIfacePrimitiveType(
+      primitive_type);
+  out.start_index = start_index;
+  out.index_count =
+      DirectDrawReplayIndexCountFromPrimitiveCount(out.topology,
+                                                   primitive_count);
+  out.stream0_resource = stream0_resource;
+  out.index_resource = index_resource;
+  out.enabled = out.topology != DirectDrawReplayTopology::kUnknown &&
+                out.index_count != 0 && stream0_resource != 0 &&
+                index_resource != 0;
+  return out;
+}
+
+constexpr bool DirectDrawLiveDrawFilterMatchesRecord(
+    const DirectDrawLiveDrawFilter& filter, uint32_t stream0_resource,
+    uint32_t index_resource, const DirectDrawSegmentSummary& segment) {
+  if (!filter.enabled) {
+    return true;
+  }
+  return segment.valid && stream0_resource == filter.stream0_resource &&
+         index_resource == filter.index_resource &&
+         segment.start_index == filter.start_index &&
+         segment.index_count == filter.index_count;
+}
+
 struct DirectDrawIndexedPacketSummary {
   DirectDrawReplayTopology topology = DirectDrawReplayTopology::kUnknown;
   uint32_t record_index = 0;

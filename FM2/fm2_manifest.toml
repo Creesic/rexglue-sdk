@@ -960,6 +960,12 @@ registers = ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"]
 after_instruction = false
 
 [[entrypoint.midasm_hook]]
+address = 0x825B3320
+name = "FM2PlumeTraceDirectIfaceIndexedDraw"
+registers = ["r3", "r4", "r5", "r6", "r7"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
 address = 0x82375ED0
 name = "FM2PlumeTraceD3DDirtyStateEntry"
 registers = ["r3", "r4", "r5"]
@@ -1005,6 +1011,12 @@ after_instruction = false
 address = 0x824F83D8
 name = "FM2PlumeTracePresent"
 registers = ["r3"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82723750
+name = "FM2PlumeTraceExecuteBoundDrawPass"
+registers = ["r3", "r4", "r5"]
 after_instruction = false
 
 [entrypoint.rexcrt]

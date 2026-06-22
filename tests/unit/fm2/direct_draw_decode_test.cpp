@@ -248,6 +248,38 @@ TEST_CASE("FM2 native direct draw policy bypasses trace-only debug limits",
   CHECK(decode::ShouldPromoteDirectReplayToNativeLayout(true, true, true));
 }
 
+TEST_CASE("FM2 direct draw interface filter selects the bound record",
+          "[fm2][plume]") {
+  namespace decode = fm2::native_renderer;
+
+  const decode::DirectDrawLiveDrawFilter filter =
+      decode::BuildDirectDrawLiveDrawFilter(4u, 0u, 1354u, 0x2E0F1400u,
+                                            0x2E0F14E0u);
+
+  REQUIRE(filter.enabled);
+  CHECK(filter.topology == decode::DirectDrawReplayTopology::kTriangleList);
+  CHECK(filter.start_index == 0u);
+  CHECK(filter.index_count == 4062u);
+  CHECK(filter.stream0_resource == 0x2E0F1400u);
+  CHECK(filter.index_resource == 0x2E0F14E0u);
+
+  decode::DirectDrawSegmentSummary segment;
+  segment.valid = true;
+  segment.start_index = 0u;
+  segment.index_count = 4062u;
+
+  CHECK(decode::DirectDrawLiveDrawFilterMatchesRecord(
+      filter, 0x2E0F1400u, 0x2E0F14E0u, segment));
+  CHECK_FALSE(decode::DirectDrawLiveDrawFilterMatchesRecord(
+      filter, 0x2E0F16A0u, 0x2E0F14E0u, segment));
+  CHECK_FALSE(decode::DirectDrawLiveDrawFilterMatchesRecord(
+      filter, 0x2E0F1400u, 0x2E0F1900u, segment));
+
+  segment.start_index = 6u;
+  CHECK_FALSE(decode::DirectDrawLiveDrawFilterMatchesRecord(
+      filter, 0x2E0F1400u, 0x2E0F14E0u, segment));
+}
+
 TEST_CASE("FM2 direct debug replay topology names parse diagnostics",
           "[fm2][plume]") {
   namespace decode = fm2::native_renderer;

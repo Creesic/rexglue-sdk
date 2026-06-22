@@ -347,3 +347,24 @@ TEST_CASE("FM2 native pass submit plan accepts direct-resource fallback",
   CHECK(submit_plan.layout ==
         fm2nr::DirectDrawReplayPipelineLayout::kDebugRaw32Side12);
 }
+
+TEST_CASE("FM2 native draw falls back when native state layout is unsupported",
+          "[fm2][plume]") {
+  namespace fm2nr = fm2::native_renderer;
+
+  fm2nr::DirectDrawDebugReplayPlan plan = BuildReadyNativeDrawPlan();
+  plan.native_state.streams[0].stride_bytes = 32u;
+  plan.native_state.streams[1].stride_bytes = 12u;
+
+  const fm2nr::NativeDrawPacket packet = fm2nr::BuildNativeDrawPacket(plan);
+
+  REQUIRE(packet.ready);
+  REQUIRE(packet.resources.valid);
+  CHECK(packet.pipeline.native_layout ==
+        fm2nr::DirectDrawReplayPipelineLayout::kUnsupported);
+  CHECK(packet.resources.source ==
+        fm2nr::NativeDrawResourceSource::kDirectReplay);
+  CHECK(packet.resources.streams[0].native_resource == 0xB0BBF697u);
+  CHECK(packet.resources.streams[0].native_stride_bytes == 32u);
+  CHECK(packet.resources.streams[1].native_resource == 0xB09BF463u);
+}

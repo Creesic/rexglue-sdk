@@ -365,7 +365,9 @@ constexpr NativeDrawResourceKey BuildNativeDrawResourceKey(
     return out;
   }
 
-  if (plan.native_state.valid) {
+  if (plan.native_state.valid &&
+      DirectDrawReplayNativeLayoutFromState(plan.native_state) !=
+          DirectDrawReplayPipelineLayout::kUnsupported) {
     out.streams[0] = BuildNativeDrawStreamResource(plan.native_state.streams[0],
                                                    plan.streams[0]);
     out.streams[1] = BuildNativeDrawStreamResource(plan.native_state.streams[1],
