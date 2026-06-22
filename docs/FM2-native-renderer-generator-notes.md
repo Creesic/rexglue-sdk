@@ -2119,3 +2119,58 @@ Next renderer step:
   `FM2_Render_SetupPassShaderAndVertexStreams`,
   `FM2_Render_BindPassVertexStreamBySlot`, and the instance draw path around
   `FM2_Render_InstanceHybridDrawPath`.
+
+### 2026-06-22 Post-Bind Direct Interface Draw Hook
+
+The first native-pass submitter still captured stale stream/index state because
+the `FM2_Render_InstanceHybridDrawPath` hook at `0x82539650` runs before the
+direct interface binds the current draw resources. Fresh traces showed
+`FM2_PLUME_NATIVE_STATE` and `FM2_PLUME_DIRECT_REPLAY_NATIVE_STATE` stuck at
+stream 0 stride 16, stream 1 resource 0/stride 0, and an old index buffer even
+while the direct replay records had complete per-record resources.
+
+IDA confirmed the direct interface vtable shape used by this path:
+
+- `+0x64 -> 0x825B3220`: stream descriptor thunk, tail-calls
+  `FM2_RenderContext_BindVertexStream`.
+- `+0x74 -> 0x825B32C0`: index descriptor thunk, tail-calls
+  `FM2_RenderContext_BindIndexBuffer`.
+- `+0x80 -> 0x825B3320`: indexed draw thunk, after stream/index binding, then
+  branches to the D3D draw packet emitter.
+
+Implemented follow-up:
+
+- Added manifest hook `FM2PlumeTraceDirectIfaceIndexedDraw` at `0x825B3320`.
+- The hook reads `draw_iface + 0x14` for the render context, snapshots the
+  current native state after the stream/index thunks, and builds a
+  `DirectDrawLiveDrawFilter` from primitive type, start index, primitive count,
+  current stream 0 resource, and current index resource.
+- `MaybeLogPlumeDirectIndexedDrawDecode()` now accepts that filter and a
+  snapshot override, scans the direct records for the matching live draw, and
+  submits only the matching record.
+- The older instance-entry hook still records the direct render context and can
+  trace, but it no longer submits native direct draws from stale pre-bind state.
+- `BuildNativeDrawResourceKey()` now uses native-state resources only when the
+  captured native layout is supported. A complete post-bind snapshot with the
+  current `debug_raw32_side12` layout falls back to direct replay resources
+  instead of rejecting as `unsupported_native_layout`.
+
+Verification:
+
+- `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests`
+  passed.
+- `out/win-amd64/RelWithDebInfo/unit_tests.exe "[fm2][plume]"` passed with
+  729 assertions in 61 test cases.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2_codegen`
+  regenerated the hook glue.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed from
+  `FM2/`; only the existing deprecated CRT warnings in `FM2/src/fm2_hooks.cpp`
+  appeared.
+
+Remaining limitation:
+
+- This corrects the capture timing and record selection, but it does not create
+  a new FM2-native world layout by itself. If the post-bind live state is
+  complete but still describes `debug_raw32_side12`, Plume intentionally uses
+  the direct-resource fallback until a supported native FM2 geometry layout is
+  identified.

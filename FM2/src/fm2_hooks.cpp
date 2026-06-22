@@ -3308,7 +3308,9 @@ void MaybeLogPlumeDirectIndexedDrawDecode(
       fm2::native_renderer::WantsNativeDirectDraw();
   const bool native_direct_draw_live_batch =
       fm2::native_renderer::WantsNativeDirectDrawLiveBatch();
-  if (!fm2nr::ShouldDecodeDirectDrawForPlumeSubmission(
+  const bool debug_replay = fm2::native_renderer::WantsDirectDebugReplay();
+  if (!debug_replay &&
+      !fm2nr::ShouldDecodeDirectDrawForPlumeSubmission(
           trace_direct_decode, compare_replay, native_direct_draw)) {
     return;
   }
@@ -3323,7 +3325,7 @@ void MaybeLogPlumeDirectIndexedDrawDecode(
     trace_sample = fm2nr::ShouldTraceDirectDrawSample(
         sample_ix, sample_skip, sample_limit);
   }
-  if (!trace_sample && !compare_replay && !native_direct_draw) {
+  if (!trace_sample && !compare_replay && !native_direct_draw && !debug_replay) {
     return;
   }
 
