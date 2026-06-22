@@ -74,10 +74,6 @@ rem
 rem fm2_plume_debug_replay_limit: 0 = unlimited (window updates every frame)
 rem                                1 = freeze on first draw (single-shot diagnostic)
 rem
-rem fm2_plume_debug_replay_live_batch: collect all draws from each frame and
-rem   present them together at game present time, giving a coherent composite
-rem   view instead of per-object flicker. Requires limit=0.
-rem
 rem To switch to the native-packet batch path instead, replace the debug_replay
 rem block below with:
 rem   --fm2_plume_native_direct_draw 1
@@ -87,7 +83,6 @@ rem   --fm2_plume_native_direct_draw_live_batch_size 16
 set FM2_ARGS=--fm2_plume_mode shadow ^
  --fm2_plume_debug_replay 1 ^
  --fm2_plume_debug_replay_limit 0 ^
- --fm2_plume_debug_replay_live_batch 1 ^
  --fm2_plume_debug_replay_window ^
  --fm2_plume_debug_replay_side_by_side ^
  --fm2_plume_direct_replay_transform_source c36_mul_c28 ^

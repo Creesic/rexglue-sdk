@@ -1873,19 +1873,6 @@ bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
   }
 
 #if FM2_HAS_PLUME && REX_PLATFORM_WIN32
-  if (REXCVAR_GET(fm2_plume_debug_replay_live_batch)) {
-    bool queued = false;
-    {
-      std::scoped_lock lock(g_plume_mutex);
-      queued = QueueDebugReplayLocked(plan, sources);
-    }
-    if (queued) {
-      g_debug_replay_submitted.fetch_add(1, std::memory_order_relaxed);
-    } else {
-      g_debug_replay_failed.fetch_add(1, std::memory_order_relaxed);
-    }
-    return queued;
-  }
   bool submitted = false;
   {
     std::scoped_lock lock(g_plume_mutex);
@@ -2077,6 +2064,54 @@ bool SubmitDirectDebugReplayBatch(const DirectDrawReplaySubmission* submissions,
 #else
   g_debug_replay_failed.fetch_add(submission_count, std::memory_order_relaxed);
   REXLOG_WARN("FM2 Plume compare replay requested without Plume support");
+  return false;
+#endif
+}
+
+bool SubmitDirectDebugReplayBatchForReplayWindow(
+    const DirectDrawReplaySubmission* submissions, uint32_t submission_count) {
+  if (!WantsDirectDebugReplay() || !submissions || submission_count == 0) {
+    return false;
+  }
+
+  const uint64_t attempt =
+      g_debug_replay_attempts.fetch_add(submission_count,
+                                        std::memory_order_relaxed) +
+      submission_count;
+  const uint32_t limit = REXCVAR_GET(fm2_plume_debug_replay_limit);
+  if (DirectDebugReplaySubmitLimitReached(attempt, limit, WantsCompareWindow())) {
+    return false;
+  }
+
+  const Mode mode = GetMode();
+  if (mode != Mode::kShadow && mode != Mode::kPlumeClear) {
+    g_debug_replay_failed.fetch_add(submission_count,
+                                    std::memory_order_relaxed);
+    REXLOG_WARN(
+        "FM2 Plume debug replay batch requires fm2_plume_mode=shadow or "
+        "plume_clear; current mode={}",
+        GetModeName(mode));
+    return false;
+  }
+
+#if FM2_HAS_PLUME && REX_PLATFORM_WIN32
+  bool submitted = false;
+  {
+    std::scoped_lock lock(g_plume_mutex);
+    submitted = RenderDirectDebugReplayBatchLocked(
+        submissions, submission_count, "FM2_PLUME_DEBUG_REPLAY_BATCH_SUBMIT");
+  }
+  if (submitted) {
+    g_debug_replay_submitted.fetch_add(submission_count,
+                                       std::memory_order_relaxed);
+  } else {
+    g_debug_replay_failed.fetch_add(submission_count,
+                                    std::memory_order_relaxed);
+  }
+  return submitted;
+#else
+  g_debug_replay_failed.fetch_add(submission_count, std::memory_order_relaxed);
+  REXLOG_WARN("FM2 Plume debug replay batch requested without Plume support");
   return false;
 #endif
 }

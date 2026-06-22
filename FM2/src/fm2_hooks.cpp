@@ -3392,6 +3392,10 @@ void MaybeLogPlumeDirectIndexedDrawDecode(
   if (compare_replay) {
     compare_submissions.reserve(record_scan);
   }
+  std::vector<fm2nr::DirectDrawReplaySubmission> debug_replay_submissions;
+  if (debug_replay && !compare_replay) {
+    debug_replay_submissions.reserve(record_scan);
+  }
 
   for (uint32_t record_index = 0; record_index < record_scan; ++record_index) {
     const uint32_t record = record_begin + record_index * fm2nr::kDirectDrawRecordStride;
@@ -3743,22 +3747,28 @@ void MaybeLogPlumeDirectIndexedDrawDecode(
         fm2::native_renderer::WantsDirectDebugReplay() &&
         fm2nr::ShouldSubmitDirectDebugReplayRecord(
             record_index, REXCVAR_GET(fm2_plume_direct_replay_record_index))) {
-      const bool submitted = fm2::native_renderer::SubmitDirectDebugReplay(
-          replay_plan, {
-                           reinterpret_cast<const uint8_t*>(
-                               REX_RAW_ADDR(replay_plan.streams[0].upload_guest_base)),
-                           reinterpret_cast<const uint8_t*>(
-                               REX_RAW_ADDR(replay_plan.streams[1].upload_guest_base)),
-                           reinterpret_cast<const uint8_t*>(
-                               REX_RAW_ADDR(replay_plan.index.upload_guest_base)),
-                       });
-      LogLine(
-          "FM2_PLUME_DEBUG_REPLAY_RESULT n=%llu rec_i=%08X submitted=%u "
-          "mode=%s",
-          static_cast<unsigned long long>(sample_ix + 1), record_index,
-          submitted ? 1u : 0u,
-          fm2::native_renderer::GetModeName(fm2::native_renderer::GetMode()));
+      debug_replay_submissions.push_back(
+          {replay_plan,
+           {reinterpret_cast<const uint8_t*>(
+                REX_RAW_ADDR(replay_plan.streams[0].upload_guest_base)),
+            reinterpret_cast<const uint8_t*>(
+                REX_RAW_ADDR(replay_plan.streams[1].upload_guest_base)),
+            reinterpret_cast<const uint8_t*>(
+                REX_RAW_ADDR(replay_plan.index.upload_guest_base))}});
     }
+  }
+  if (!debug_replay_submissions.empty()) {
+    const bool submitted =
+        fm2::native_renderer::SubmitDirectDebugReplayBatchForReplayWindow(
+            debug_replay_submissions.data(),
+            static_cast<uint32_t>(debug_replay_submissions.size()));
+    LogLine(
+        "FM2_PLUME_DEBUG_REPLAY_RESULT n=%llu submissions=%u submitted=%u "
+        "mode=%s",
+        static_cast<unsigned long long>(sample_ix + 1),
+        static_cast<uint32_t>(debug_replay_submissions.size()),
+        submitted ? 1u : 0u,
+        fm2::native_renderer::GetModeName(fm2::native_renderer::GetMode()));
   }
   if (!compare_submissions.empty()) {
     const bool submitted = fm2::native_renderer::SubmitDirectDebugReplayBatch(

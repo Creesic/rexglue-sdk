@@ -145,6 +145,8 @@ struct DirectDrawReplaySubmission {
 };
 bool SubmitDirectDebugReplayBatch(const DirectDrawReplaySubmission* submissions,
                                   uint32_t submission_count);
+bool SubmitDirectDebugReplayBatchForReplayWindow(
+    const DirectDrawReplaySubmission* submissions, uint32_t submission_count);
 Stats GetStatsSnapshot();
 
 }  // namespace fm2::native_renderer
