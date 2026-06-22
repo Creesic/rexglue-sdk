@@ -6,10 +6,13 @@ rem Paths are relative to the repo root. FM2's target graph rebuilds the runtime
 rem when needed; copy the runtime DLL after the FM2 build so the game never runs
 rem with a stale rexruntimerd.dll.
 
+set "EXIT_CODE=0"
+
 set "REPO_ROOT=%~dp0..\.."
 cd /d "%REPO_ROOT%" || (
   echo ERROR: could not cd to repo root: %REPO_ROOT%
-  exit /b 1
+  set "EXIT_CODE=1"
+  goto :done
 )
 
 set "PRESET=win-amd64-relwithdebinfo"
@@ -24,7 +27,8 @@ cmake --build --preset %PRESET% --target fm2_codegen
 if errorlevel 1 (
   popd
   echo ERROR: fm2_codegen failed.
-  exit /b 1
+  set "EXIT_CODE=1"
+  goto :done
 )
 
 echo.
@@ -34,14 +38,16 @@ set "BUILD_RC=%ERRORLEVEL%"
 popd
 if not "%BUILD_RC%"=="0" (
   echo ERROR: fm2 build failed.
-  exit /b %BUILD_RC%
+  set "EXIT_CODE=%BUILD_RC%"
+  goto :done
 )
 
 echo.
 echo === [3/3] Sync fresh rexruntimerd.dll into FM2 build dir ===
 if not exist "%FM2_DIR%\" (
   echo ERROR: FM2 build dir missing: %FM2_DIR%
-  exit /b 1
+  set "EXIT_CODE=1"
+  goto :done
 )
 if exist "%SDK_DLL_BUILD%" (
   set "SDK_DLL_SRC=%SDK_DLL_BUILD%"
@@ -49,16 +55,26 @@ if exist "%SDK_DLL_BUILD%" (
   set "SDK_DLL_SRC=%SDK_DLL_INSTALL%"
 ) else (
   echo ERROR: could not find rexruntimerd.dll in build or install output.
-  exit /b 1
+  set "EXIT_CODE=1"
+  goto :done
 )
 copy /Y "%SDK_DLL_SRC%" "%FM2_DIR%\rexruntimerd.dll"
 if errorlevel 1 (
   echo ERROR: failed to copy rexruntimerd.dll.
-  exit /b 1
+  set "EXIT_CODE=1"
+  goto :done
 )
 echo Copied from %SDK_DLL_SRC%
 
 echo.
 echo OK: FM2 rebuilt with fresh SDK runtime and codegen.
 echo Exe: FM2\out\build\%PRESET%\fm2.exe
-exit /b 0
+goto :done
+
+:done
+if not "%EXIT_CODE%"=="0" (
+  echo.
+  echo FAILED with exit code %EXIT_CODE%. See messages above.
+  pause
+)
+exit /b %EXIT_CODE%
