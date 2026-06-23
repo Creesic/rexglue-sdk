@@ -2,6 +2,7 @@
 
 #include "native_renderer/fm2_native_draw.h"
 #include "native_renderer/fm2_native_state.h"
+#include "native_renderer/fm2_shader_cache_status.h"
 
 #include <array>
 #include <atomic>
@@ -10,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <rex/cvar.h>
@@ -121,6 +123,16 @@ REXCVAR_DEFINE_UINT32(
     fm2_plume_native_direct_draw_live_batch_size, 16, "FM2",
     "Number of queued FM2 native direct draw submissions to present together; "
     "0 presents each accepted submission immediately.");
+
+REXCVAR_DEFINE_BOOL(
+    fm2_plume_native_shader_cache_trace, true, "FM2",
+    "Log generated shader-cache coverage for FM2 native direct-draw shader "
+    "keys.");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_native_shader_cache_trace_limit, 128, "FM2",
+    "Maximum unique FM2 native direct-draw shader cache coverage lines to log; "
+    "0 disables the limit.");
 
 REXCVAR_DEFINE_STRING(
     fm2_plume_debug_replay_transform_mode, "local", "FM2",
@@ -247,6 +259,111 @@ struct PreparedNativePassDraw {
 
 bool CreateFramebuffersLocked();
 #endif
+
+uint64_t NativeShaderCacheTraceKey(
+    const fm2::native_renderer::NativeDrawPipelineKey& pipeline) {
+  uint64_t key = 0xEC6EF372FE94F82Aull;
+  const auto mix = [&key](uint64_t value) {
+    key ^= value + 0x9E3779B97F4A7C15ull + (key << 6) + (key >> 2);
+  };
+  mix(pipeline.vertex_payload_hash);
+  mix(pipeline.pixel_payload_hash);
+  mix(pipeline.has_vertex_structural_ucode
+          ? pipeline.vertex_structural_ucode_hash
+          : 0ull);
+  mix(pipeline.has_pixel_structural_ucode
+          ? pipeline.pixel_structural_ucode_hash
+          : 0ull);
+  return key;
+}
+
+void LogNativeShaderCacheCoverage(
+    const fm2::native_renderer::NativeDrawPacket& native_packet,
+    uint64_t attempt) {
+  if (!REXCVAR_GET(fm2_plume_native_shader_cache_trace) ||
+      !native_packet.pipeline.valid) {
+    return;
+  }
+
+  const fm2::native_renderer::NativeDrawPipelineKey& pipeline =
+      native_packet.pipeline;
+  const fm2::native_renderer::NativeShaderCacheCoverage vertex_coverage =
+      fm2::native_renderer::ProbeNativeShaderCacheCoverage(
+          g_shaderCacheEntries, g_shaderCacheEntryCount,
+          pipeline.vertex_payload_hash, pipeline.has_vertex_structural_ucode,
+          pipeline.vertex_structural_ucode_hash);
+  const fm2::native_renderer::NativeShaderCacheCoverage pixel_coverage =
+      fm2::native_renderer::ProbeNativeShaderCacheCoverage(
+          g_shaderCacheEntries, g_shaderCacheEntryCount,
+          pipeline.pixel_payload_hash, pipeline.has_pixel_structural_ucode,
+          pipeline.pixel_structural_ucode_hash);
+
+  static std::mutex s_coverage_log_mutex;
+  static std::unordered_set<uint64_t> s_logged_coverage_keys;
+  const uint64_t trace_key = NativeShaderCacheTraceKey(pipeline);
+  {
+    std::lock_guard lock(s_coverage_log_mutex);
+    if (s_logged_coverage_keys.contains(trace_key)) {
+      return;
+    }
+    const uint32_t limit =
+        REXCVAR_GET(fm2_plume_native_shader_cache_trace_limit);
+    if (limit != 0 && s_logged_coverage_keys.size() >= limit) {
+      return;
+    }
+    s_logged_coverage_keys.insert(trace_key);
+  }
+
+  const bool covered = vertex_coverage.covered() && pixel_coverage.covered();
+  const char* status = covered ? "covered" : "miss";
+  if (covered) {
+    REXLOG_INFO(
+        "FM2_PLUME_NATIVE_SHADER_CACHE_COVERAGE attempt={} status={} "
+        "cache_entries={} vs={:08X} ps={:08X} topology={} "
+        "replay_layout={} native_layout={} "
+        "v_payload={:016X} v_payload_hit={} v_ucode_valid={} "
+        "v_ucode={:016X} v_ucode_hit={} "
+        "p_payload={:016X} p_payload_hit={} p_ucode_valid={} "
+        "p_ucode={:016X} p_ucode_hit={}",
+        attempt, status, g_shaderCacheEntryCount, pipeline.vertex_shader,
+        pipeline.pixel_shader, static_cast<unsigned>(pipeline.topology),
+        fm2::native_renderer::DirectDrawReplayPipelineLayoutName(
+            pipeline.replay_layout),
+        fm2::native_renderer::DirectDrawReplayPipelineLayoutName(
+            pipeline.native_layout),
+        pipeline.vertex_payload_hash, vertex_coverage.payload_hit ? 1u : 0u,
+        pipeline.has_vertex_structural_ucode ? 1u : 0u,
+        pipeline.vertex_structural_ucode_hash,
+        vertex_coverage.structural_ucode_hit ? 1u : 0u,
+        pipeline.pixel_payload_hash, pixel_coverage.payload_hit ? 1u : 0u,
+        pipeline.has_pixel_structural_ucode ? 1u : 0u,
+        pipeline.pixel_structural_ucode_hash,
+        pixel_coverage.structural_ucode_hit ? 1u : 0u);
+  } else {
+    REXLOG_WARN(
+        "FM2_PLUME_NATIVE_SHADER_CACHE_COVERAGE attempt={} status={} "
+        "cache_entries={} vs={:08X} ps={:08X} topology={} "
+        "replay_layout={} native_layout={} "
+        "v_payload={:016X} v_payload_hit={} v_ucode_valid={} "
+        "v_ucode={:016X} v_ucode_hit={} "
+        "p_payload={:016X} p_payload_hit={} p_ucode_valid={} "
+        "p_ucode={:016X} p_ucode_hit={}",
+        attempt, status, g_shaderCacheEntryCount, pipeline.vertex_shader,
+        pipeline.pixel_shader, static_cast<unsigned>(pipeline.topology),
+        fm2::native_renderer::DirectDrawReplayPipelineLayoutName(
+            pipeline.replay_layout),
+        fm2::native_renderer::DirectDrawReplayPipelineLayoutName(
+            pipeline.native_layout),
+        pipeline.vertex_payload_hash, vertex_coverage.payload_hit ? 1u : 0u,
+        pipeline.has_vertex_structural_ucode ? 1u : 0u,
+        pipeline.vertex_structural_ucode_hash,
+        vertex_coverage.structural_ucode_hit ? 1u : 0u,
+        pipeline.pixel_payload_hash, pixel_coverage.payload_hit ? 1u : 0u,
+        pipeline.has_pixel_structural_ucode ? 1u : 0u,
+        pipeline.pixel_structural_ucode_hash,
+        pixel_coverage.structural_ucode_hit ? 1u : 0u);
+  }
+}
 
 fm2::native_renderer::Mode ParseMode(const std::string& value) {
   if (value == "shadow") {
@@ -1929,6 +2046,7 @@ bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
         native_packet.resources.valid ? 1u : 0u);
     return false;
   }
+  LogNativeShaderCacheCoverage(native_packet, attempt);
 
   bool accepted = false;
   bool queued = false;

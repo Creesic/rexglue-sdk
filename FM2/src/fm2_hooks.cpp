@@ -92,6 +92,14 @@ REXCVAR_DEFINE_UINT32(
     fm2_load_trace_overlay_state, 0, "FM2",
     "Load-trace overlay state: 0=off, 1=armed, 2=recording");
 
+REXCVAR_DEFINE_BOOL(
+    fm2_plume_midasm_trace, false, "FM2",
+    "Emit bounded diagnostics when FM2 Plume midasm trace hooks fire.");
+
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_midasm_trace_limit, 128, "FM2",
+    "Maximum FM2 Plume midasm trace lines to emit per hook in one run; 0 is unlimited.");
+
 uint8_t* GuestBase() {
   auto* kernel_state = rex::system::kernel_state();
   if (!kernel_state || !kernel_state->memory()) {
@@ -2111,6 +2119,18 @@ uint32_t PlumeDirectRenderContextFromDrawIface(uint32_t draw_iface) {
   return TryLoadU32(base, draw_iface + 0x14u);
 }
 
+uint32_t NextPlumeMidasmTraceIndex(std::atomic<uint32_t>& counter) {
+  if (!REXCVAR_GET(fm2_plume_midasm_trace)) {
+    return 0;
+  }
+  const uint32_t index = counter.fetch_add(1, std::memory_order_relaxed) + 1;
+  const uint32_t limit = REXCVAR_GET(fm2_plume_midasm_trace_limit);
+  if (limit != 0 && index > limit) {
+    return 0;
+  }
+  return index;
+}
+
 }  // namespace
 
 void FM2PlumeTracePixelShaderState(PPCRegister& r3, PPCRegister& r4) {
@@ -2159,12 +2179,21 @@ void FM2PlumeTraceBoundSurface(PPCRegister& r3, PPCRegister& r4,
 
 void FM2PlumeTraceD3DDirtyStateEntry(PPCRegister& r3, PPCRegister& r4,
                                      PPCRegister& r5) {
+  static std::atomic<uint32_t> s_trace_count{0};
+  if (const uint32_t n = NextPlumeMidasmTraceIndex(s_trace_count)) {
+    LogLine("FM2_PLUME_MIDASM_TRACE hook=D3DDirtyState n=%u r3=%08X r4=%08X r5=%08X",
+            n, r3.u32, r4.u32, r5.u32);
+  }
   (void)r3;
   (void)r4;
   (void)r5;
 }
 
 void FM2PlumeTracePresent(PPCRegister& r3) {
+  static std::atomic<uint32_t> s_trace_count{0};
+  if (const uint32_t n = NextPlumeMidasmTraceIndex(s_trace_count)) {
+    LogLine("FM2_PLUME_MIDASM_TRACE hook=Present n=%u r3=%08X", n, r3.u32);
+  }
   fm2::native_renderer::RecordPresentEntry(r3.u32);
   fm2::native_renderer::FlushNativeDirectDrawOnPresent();
   fm2::native_renderer::FlushDebugReplayOnPresent();
@@ -2174,6 +2203,12 @@ void FM2PlumeTracePassDrawWork(PPCRegister& r3, PPCRegister& r4,
                                PPCRegister& r5, PPCRegister& r6,
                                PPCRegister& r7, PPCRegister& r8,
                                PPCRegister& r9, PPCRegister& r10) {
+  static std::atomic<uint32_t> s_trace_count{0};
+  if (const uint32_t n = NextPlumeMidasmTraceIndex(s_trace_count)) {
+    LogLine("FM2_PLUME_MIDASM_TRACE hook=PassDrawWork n=%u r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X",
+            n, r3.u32, r4.u32, r5.u32, r6.u32, r7.u32, r8.u32, r9.u32,
+            r10.u32);
+  }
   fm2::native_renderer::RecordNativePassDrawBoundaryArgs(
       r3.u32, r4.u32, r5.u32, r6.u32, r7.u32, r8.u32, r9.u32, r10.u32);
 }
@@ -2182,6 +2217,12 @@ void FM2PlumeTraceBuildObjectPassEntry(PPCRegister& r3, PPCRegister& r4,
                                        PPCRegister& r5, PPCRegister& r6,
                                        PPCRegister& r7, PPCRegister& r8,
                                        PPCRegister& r9, PPCRegister& r10) {
+  static std::atomic<uint32_t> s_trace_count{0};
+  if (const uint32_t n = NextPlumeMidasmTraceIndex(s_trace_count)) {
+    LogLine("FM2_PLUME_MIDASM_TRACE hook=BuildObjectPass n=%u r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X",
+            n, r3.u32, r4.u32, r5.u32, r6.u32, r7.u32, r8.u32, r9.u32,
+            r10.u32);
+  }
   fm2::native_renderer::RecordBuildObjectPassEntry(
       PlumeGuestArgs(r3, r4, r5, r6, r7, r8, r9, r10));
 }
@@ -2190,6 +2231,12 @@ void FM2PlumeTraceInstanceHybridDrawEntry(PPCRegister& r3, PPCRegister& r4,
                                           PPCRegister& r5, PPCRegister& r6,
                                           PPCRegister& r7, PPCRegister& r8,
                                           PPCRegister& r9, PPCRegister& r10) {
+  static std::atomic<uint32_t> s_trace_count{0};
+  if (const uint32_t n = NextPlumeMidasmTraceIndex(s_trace_count)) {
+    LogLine("FM2_PLUME_MIDASM_TRACE hook=InstanceHybridDraw n=%u r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X",
+            n, r3.u32, r4.u32, r5.u32, r6.u32, r7.u32, r8.u32, r9.u32,
+            r10.u32);
+  }
   fm2::native_renderer::RecordInstanceHybridDrawEntry(
       PlumeGuestArgs(r3, r4, r5, r6, r7, r8, r9, r10));
 }
@@ -2197,6 +2244,11 @@ void FM2PlumeTraceInstanceHybridDrawEntry(PPCRegister& r3, PPCRegister& r4,
 void FM2PlumeTraceDirectIfaceIndexedDraw(PPCRegister& r3, PPCRegister& r4,
                                          PPCRegister& r5, PPCRegister& r6,
                                          PPCRegister& r7) {
+  static std::atomic<uint32_t> s_trace_count{0};
+  if (const uint32_t n = NextPlumeMidasmTraceIndex(s_trace_count)) {
+    LogLine("FM2_PLUME_MIDASM_TRACE hook=DirectIfaceIndexedDraw n=%u r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X",
+            n, r3.u32, r4.u32, r5.u32, r6.u32, r7.u32);
+  }
   fm2::native_renderer::RecordDirectIndexedDrawEntry(
       {.r3 = r3.u32, .r4 = r4.u32, .r5 = r5.u32, .r6 = r6.u32, .r7 = r7.u32});
   const uint32_t direct_render_context =
@@ -2207,6 +2259,11 @@ void FM2PlumeTraceDirectIfaceIndexedDraw(PPCRegister& r3, PPCRegister& r4,
 
 void FM2PlumeTraceExecuteBoundDrawPass(PPCRegister& r3, PPCRegister& r4,
                                        PPCRegister& r5) {
+  static std::atomic<uint32_t> s_trace_count{0};
+  if (const uint32_t n = NextPlumeMidasmTraceIndex(s_trace_count)) {
+    LogLine("FM2_PLUME_MIDASM_TRACE hook=ExecuteBoundDrawPass n=%u r3=%08X r4=%08X r5=%08X",
+            n, r3.u32, r4.u32, r5.u32);
+  }
   fm2::native_renderer::RecordDirectIndexedDrawEntry(
       {.r3 = r3.u32, .r4 = r4.u32, .r5 = r5.u32});
 }
