@@ -2174,3 +2174,46 @@ Remaining limitation:
   complete but still describes `debug_raw32_side12`, Plume intentionally uses
   the direct-resource fallback until a supported native FM2 geometry layout is
   identified.
+
+### 2026-06-23 D3D Hook Call-Through Rebuild
+
+The FM2 `d3d_hooks.cpp` replacement pass must preserve the generated FM2
+function bodies. `REX_HOOK` overrides the weak generated symbol, so hooks for
+render-context state setters and present now call the corresponding generated
+`__imp__*` function first, then mirror state into Plume.
+
+Implemented scope:
+
+- Kept the FM2 render-context state mirror on verified call-through boundaries:
+  `FM2_RenderContext_SetPixelShaderState`,
+  `FM2_RenderContext_SetVertexShaderState`,
+  `FM2_RenderContext_BindVertexStream`,
+  `FM2_RenderContext_BindIndexBuffer`,
+  `FM2_RenderContext_SetBoundSurface`, the current packed-state helpers named
+  `sub_8236EAF8` through `sub_8236F4A0`, and
+  `FM2_D3D_TryPresentAndUpdateStatus`.
+- Removed stale ReOdyssey-style replacements for FM2 title wrappers whose
+  physical prototypes do not match FM2, including the resource creation,
+  lock/unlock, generated draw wrapper, and low-level emit-packet hooks.
+- Restored the generated manifest callback definitions in `fm2_hooks.cpp` so
+  `FM2PlumeTrace*` hooks link and feed `fm2_native_state` /
+  `fm2_native_renderer` counters.
+- Added `src/native_renderer/fm2_native_renderer.cpp` and
+  `src/native_renderer/fm2_native_state.cpp` to the FM2 target and generated
+  the native replay shader DXIL headers used by that renderer.
+
+Verification:
+
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed from
+  `FM2/`.
+- `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests` is not
+  available in this FM2 build tree; Ninja reports `unknown target 'unit_tests'`.
+
+Current limitation:
+
+- The current `FM2PlumeTraceDirectIfaceIndexedDraw` shim records the post-bind
+  direct-render context (`draw_iface + 0x14`) and draw arguments, but this
+  checkout does not expose the older hook-side direct-record decoder described
+  above. The next clean product step is to add a small native-renderer API that
+  consumes the recorded live draw state and submits through the existing
+  `SubmitNativeDirectDraw`/native batch path.

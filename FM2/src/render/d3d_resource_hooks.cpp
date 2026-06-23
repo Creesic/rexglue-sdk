@@ -454,7 +454,7 @@ static GuestShader *CreateShaderFromFunction(const uint32_t *function,
     if (entry->guest_shader == nullptr) {
       auto *shader = GuestNew<GuestShader>(type);
       shader->shaderCacheEntry = entry;
-      entry->guest_shader = reinterpret_cast<::GuestShader *>(shader);
+      entry->guest_shader = reinterpret_cast<GuestShader *>(shader);
       REXGPU_INFO("CreateShader: hash=0x{:016X} type={} -> guestAddr=0x{:08X}",
                   hash, int(type), ToGuest(shader));
       return shader;

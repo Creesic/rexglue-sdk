@@ -26,6 +26,9 @@
 #include <rex/system/kernel_state.h>
 #include <rex/thread.h>
 
+#include "native_renderer/fm2_native_renderer.h"
+#include "native_renderer/fm2_native_state.h"
+
 namespace {
 
 
@@ -2088,6 +2091,125 @@ bool FM2FastForwardSplashTiming(PPCRegister& f1, PPCRegister& f2, PPCRegister& r
 // Intentionally not manifest-hooked: BuildDirectIndexedDrawBuffers has a one-shot
 // guard at direct_render_ctx+0x48. Use FM2PlumeTraceInstanceHybridDrawEntry.
 
+namespace {
+
+fm2::native_renderer::GuestArgs PlumeGuestArgs(
+    PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6,
+    PPCRegister& r7, PPCRegister& r8, PPCRegister& r9, PPCRegister& r10) {
+  return {.r3 = r3.u32,
+          .r4 = r4.u32,
+          .r5 = r5.u32,
+          .r6 = r6.u32,
+          .r7 = r7.u32,
+          .r8 = r8.u32,
+          .r9 = r9.u32,
+          .r10 = r10.u32};
+}
+
+uint32_t PlumeDirectRenderContextFromDrawIface(uint32_t draw_iface) {
+  uint8_t* base = GuestBase();
+  return TryLoadU32(base, draw_iface + 0x14u);
+}
+
+}  // namespace
+
+void FM2PlumeTracePixelShaderState(PPCRegister& r3, PPCRegister& r4) {
+  fm2::native_renderer::RecordNativePixelShaderStateArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceVertexShaderState(PPCRegister& r3, PPCRegister& r4) {
+  fm2::native_renderer::RecordNativeVertexShaderStateArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceTextureFetchLow(PPCRegister& r3, PPCRegister& r4) {
+  fm2::native_renderer::RecordNativeTextureFetchLowArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceTextureFetchMid(PPCRegister& r3, PPCRegister& r4) {
+  fm2::native_renderer::RecordNativeTextureFetchMidArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceClearColor(PPCRegister& r3, PPCRegister& r4) {
+  fm2::native_renderer::RecordNativeClearColorArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceClearFlags(PPCRegister& r3, PPCRegister& r4) {
+  fm2::native_renderer::RecordNativeClearFlagsArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceVertexStreamBinding(PPCRegister& r3, PPCRegister& r4,
+                                      PPCRegister& r5, PPCRegister& r6,
+                                      PPCRegister& r7, PPCRegister& r8) {
+  fm2::native_renderer::RecordNativeVertexStreamBindingArgs(
+      r3.u32, r4.u32, r5.u32, r6.u32, r7.u32, r8.u32);
+}
+
+void FM2PlumeTraceIndexBufferBinding(PPCRegister& r3, PPCRegister& r4) {
+  fm2::native_renderer::RecordNativeIndexBufferBindingArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceViewportMode(PPCRegister& r3, PPCRegister& r4) {
+  fm2::native_renderer::RecordNativeViewportModeArgs(r3.u32, r4.u32);
+}
+
+void FM2PlumeTraceBoundSurface(PPCRegister& r3, PPCRegister& r4,
+                               PPCRegister& r5) {
+  fm2::native_renderer::RecordNativeBoundSurfaceArgs(r3.u32, r4.u32, r5.u32);
+}
+
+void FM2PlumeTraceD3DDirtyStateEntry(PPCRegister& r3, PPCRegister& r4,
+                                     PPCRegister& r5) {
+  (void)r3;
+  (void)r4;
+  (void)r5;
+}
+
+void FM2PlumeTracePresent(PPCRegister& r3) {
+  fm2::native_renderer::RecordPresentEntry(r3.u32);
+  fm2::native_renderer::FlushNativeDirectDrawOnPresent();
+  fm2::native_renderer::FlushDebugReplayOnPresent();
+}
+
+void FM2PlumeTracePassDrawWork(PPCRegister& r3, PPCRegister& r4,
+                               PPCRegister& r5, PPCRegister& r6,
+                               PPCRegister& r7, PPCRegister& r8,
+                               PPCRegister& r9, PPCRegister& r10) {
+  fm2::native_renderer::RecordNativePassDrawBoundaryArgs(
+      r3.u32, r4.u32, r5.u32, r6.u32, r7.u32, r8.u32, r9.u32, r10.u32);
+}
+
+void FM2PlumeTraceBuildObjectPassEntry(PPCRegister& r3, PPCRegister& r4,
+                                       PPCRegister& r5, PPCRegister& r6,
+                                       PPCRegister& r7, PPCRegister& r8,
+                                       PPCRegister& r9, PPCRegister& r10) {
+  fm2::native_renderer::RecordBuildObjectPassEntry(
+      PlumeGuestArgs(r3, r4, r5, r6, r7, r8, r9, r10));
+}
+
+void FM2PlumeTraceInstanceHybridDrawEntry(PPCRegister& r3, PPCRegister& r4,
+                                          PPCRegister& r5, PPCRegister& r6,
+                                          PPCRegister& r7, PPCRegister& r8,
+                                          PPCRegister& r9, PPCRegister& r10) {
+  fm2::native_renderer::RecordInstanceHybridDrawEntry(
+      PlumeGuestArgs(r3, r4, r5, r6, r7, r8, r9, r10));
+}
+
+void FM2PlumeTraceDirectIfaceIndexedDraw(PPCRegister& r3, PPCRegister& r4,
+                                         PPCRegister& r5, PPCRegister& r6,
+                                         PPCRegister& r7) {
+  fm2::native_renderer::RecordDirectIndexedDrawEntry(
+      {.r3 = r3.u32, .r4 = r4.u32, .r5 = r5.u32, .r6 = r6.u32, .r7 = r7.u32});
+  const uint32_t direct_render_context =
+      PlumeDirectRenderContextFromDrawIface(r3.u32);
+  fm2::native_renderer::RecordNativeDirectDrawEntry(
+      {.direct_render_context = direct_render_context, .draw_iface = r3.u32});
+}
+
+void FM2PlumeTraceExecuteBoundDrawPass(PPCRegister& r3, PPCRegister& r4,
+                                       PPCRegister& r5) {
+  fm2::native_renderer::RecordDirectIndexedDrawEntry(
+      {.r3 = r3.u32, .r4 = r4.u32, .r5 = r5.u32});
+}
 
 
 

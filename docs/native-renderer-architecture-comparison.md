@@ -202,6 +202,84 @@ PM4 packets:
 | `rex_D3DDevice_BlockUntilIdle` | not yet verified | — |
 | `rex_BlockOnFence_CDevice_D3D_*` | `?BlockOnSecondaryPosition@CDevice@D3D@@QAAXPAKK@Z` | 0x82371D60 |
 
+#### Phase 1 continuation findings: current FM2 hook import triage
+
+**Conducted 2026-06-22 via IDA MCP against FM2 `default.xex.i64`.**
+Purpose: check the ReOdyssey-style `REX_IMPORT` names currently present in
+`FM2/src/render/d3d_hooks.cpp` before wiring more of the native renderer around
+them.
+
+Full per-symbol mapping for all 76 ReOdyssey hook symbols lives in
+`docs/FM2-reodyssey-hook-equivalence-map.md`.
+
+The important correction is that raw ReOdyssey `sub_823C...` labels are not
+portable between games. In FM2 they land in XGRAPHICS, D3DX/zlib, or texture
+untile helpers, not UE3/RHI render-state setters.
+
+| Current imported name in FM2 hook code | IDA result in FM2 | Phase 1 decision |
+|---|---|---|
+| `__imp__sub_823C10B0` | inside `sub_823C0E58`; bitstream packing fields at `+5808/+5812` | invalid for color-write state |
+| `__imp__sub_823C36D8` | inside `sub_823C36A8`; tiny byte/pixel unpack helper | invalid for Z-write state |
+| `__imp__sub_823C6308` | inside `rex_XGOffsetResourceAddress` at function start `0x823C62B8` | invalid for cull mode |
+| `__imp__sub_823CCAC0` | `UntileSurface(...)` | invalid for rasterizer state |
+| `__imp__rex_RHISetDepthState_*` | name absent in FM2 IDB | UE3/ReOdyssey-specific; no direct FM2 equivalent |
+| `__imp__rex_RHISetStencilState` | name absent in FM2 IDB | UE3/ReOdyssey-specific; no direct FM2 equivalent |
+| `__imp__rex_D3DDevice_SetScissorRect` | name absent in FM2 IDB | use FM2 PM4/scissor path, not public API |
+| `__imp__rex_D3DDevice_SetRenderState_ClipPlaneEnable` | name absent in FM2 IDB | use FM2 render-context clip-plane setters |
+| `__imp__rex_D3DDevice_SetRenderState_ViewportEnable` | name absent in FM2 IDB | use FM2 render-context state, not ReOdyssey import |
+| `__imp__rex_SetPending_ClipPlanes_*` | name absent in FM2 IDB | generic pending render-state emitter exists, but not this helper |
+| `__imp__rex_XGSetVertexDeclaration` | name absent in FM2 IDB | use `FM2_D3D_CreateVertexDeclarationFromElements` / `D3DDevice_CreateVertexDeclaration` |
+| `__imp__rex_FXeVertexShader_Init` / `__imp__rex_FXePixelShader_Init` | names absent in FM2 IDB | use FM2 shader-resource load path |
+| `__imp__rex_D3DBaseTexture_LockTail` | name absent in FM2 IDB | do not import by ReOdyssey name; locate FM2 texture lock path separately |
+| `__imp__rex_LockSurface_D3D_*` | name absent in FM2 IDB | use confirmed FM2 surface lock/metadata path instead |
+
+Confirmed FM2-specific state anchors from this pass:
+
+| FM2 function | Address | Observed behavior |
+|---|---:|---|
+| `rex_D3DDevice_SetViewport` | `0x823715C0` | reads a D3D viewport and forwards six values to `FM2_RenderContext_UploadFloat6Constants` |
+| `FM2_RenderContext_SetAlphaBlendEnableBits` | `0x8236F1F0` | updates packed render-state bits and marks dirty `0x800/0x20000` |
+| `FM2_RenderContext_SetCullEnableState` | `0x8236F228` | writes cull enable at `ctx+11600`, mirrors bit 0 into `ctx+10420`, marks dirty |
+| `FM2_RenderContext_SetAlphaTestState` | `0x8236F268` | updates alpha-test field in packed state |
+| `FM2_RenderContext_SetBlendModeBits` | `0x8236F2A0` | updates blend mode field in packed state |
+| `FM2_RenderContext_SetDepthCompareBits` | `0x8236F2D0` | updates depth compare field in packed state |
+| `FM2_RenderContext_SetStencilOpBits` | `0x8236F308` | updates stencil operation field in packed state |
+| `FM2_RenderContext_SetColorWriteMaskBits` | `0x8236F340` | writes bits 14-16 of `ctx+10420`, marks dirty `0x800` |
+| `FM2_RenderContext_SetPolygonModeBits` | `0x8236F370` | updates polygon-mode field in packed state |
+| `FM2_RenderContext_SetMiscStateBitsA` | `0x8236F410` | updates upper misc state bits in packed state |
+| `FM2_RenderContext_SetClipPlane0Enable` | `0x8236F440` | writes clip-plane enable byte at `ctx+10371` |
+| `FM2_RenderContext_SetClipPlane1Enable` | `0x8236F460` | writes clip-plane enable byte at `ctx+10370` |
+| `FM2_RenderContext_SetClipPlane2Enable` | `0x8236F480` | writes clip-plane enable byte at `ctx+10369` |
+| `FM2_RenderContext_SetClipPlane3Enable` | `0x8236F4A0` | writes clip-plane enable byte at `ctx+10367` |
+| `FM2_RenderContext_SetDepthStencilEnableState` | `0x8236EAF8` | toggles depth/stencil enable, mirrors packed state to `ctx+10424/+10456/+10460/+10464`, marks dirty bits `0x400/4/2/1` |
+| `rex_SetPending_RenderStates_D3D_YAXPAVCDevice_1_KKPAX_Z` | `0x82382928` | generic PM4 TYPE-0 register burst emitter for dirty shadow dwords |
+| `FM2_ConstantBuffer_UploadVector4Block` | `0x827307E8` | VMX128 upload of vector constant blocks |
+| `FM2_D3D_EmitShaderConstantsBatch` | `0x82730DC0` | emits pending state and shader constant PM4 packets; calls draw-list state and surface resolve emitters when dirty bits require it |
+
+Confirmed FM2 resource/synchronization anchors from this pass:
+
+| FM2 function | Address | Observed behavior |
+|---|---:|---|
+| `rex_D3DSurface_LockRect` | `0x8236C180` | thin XDK surface lock wrapper; called by FM2 surface upload/texture-create paths |
+| `rex_D3DSurface_GetDesc` | `0x8236C0E8` | fills `D3DSURFACE_DESC`, including texture-backed surface handling |
+| `FM2_D3D_GatherSurfaceMetadataForTextureCreate` | `0x82392090` | unlocks prior lock-surface object, calls `rex_D3DSurface_GetDesc`, validates optional subrect, and later reaches `D3DSurface_LockRect`; this is the safer FM2 hook surface for texture-from-surface capture |
+| `D3D::CDevice::BlockOnSecondaryPosition` | `0x82371D60` | waits on secondary command buffer cursor with `D3D::CBlocker(D3DBLOCKTYPE_SECONDARY_OVERRUN)`; synchronization helper, not a render-state or present hook |
+
+Still unresolved after this pass:
+
+| ReOdyssey hook | FM2 status |
+|---|---|
+| `rex_D3DDevice_BlockUntilIdle` | exact name absent in FM2 IDB |
+| `rex_BlockOnFence_CDevice_D3D_*` | exact ReOdyssey alias absent in FM2 IDB |
+| `rex_KickOff_CDevice_D3D_*` | exact name absent in FM2 IDB |
+| `rex_D3DDevice_SetPredication` | not yet located as a useful FM2-native-render hook |
+| `rex_D3DDevice_SetShaderGPRAllocation` | not yet located as a useful FM2-native-render hook |
+
+Immediate code implication: do not build the FM2 native renderer around
+ReOdyssey raw imports or UE3 `RHI*` hooks. The FM2 pass should use the named
+`FM2_RenderContext_*` wrappers above for semantic render state, and the PM4
+emit/draw functions only as FM2-specific draw submission boundaries.
+
 #### Summary: what differs from the ReOdyssey model
 
 A full ReOdyssey-style port to FM2 is viable for resource management and most

@@ -50,6 +50,46 @@ void LockTextureRect(GuestTexture *texture, uint32_t *outPitch,
 void UnlockTextureRect(GuestTexture *texture);
 } // namespace fm2::render
 
+REX_IMPORT(__imp__FM2_RenderContext_SetPixelShaderState,
+           g_origFm2SetPixelShaderState, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetVertexShaderState,
+           g_origFm2SetVertexShaderState, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_BindVertexStream,
+           g_origFm2BindVertexStream,
+           void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint64_t));
+REX_IMPORT(__imp__FM2_RenderContext_BindIndexBuffer,
+           g_origFm2BindIndexBuffer, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetBoundSurface,
+           g_origFm2SetBoundSurface, void(uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3D_TryPresentAndUpdateStatus,
+           g_origFm2TryPresentAndUpdateStatus, void(uint32_t));
+
+// Current generated names for the FM2 render-context packed-state helpers.
+REX_IMPORT(__imp__sub_8236EAF8, g_origFm2SetDepthStencilEnableState,
+           void(uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236F1F0, g_origFm2SetAlphaBlendEnableBits,
+           void(uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236F268, g_origFm2SetAlphaTestState,
+           void(uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236F2D0, g_origFm2SetDepthCompareBits,
+           void(uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236F340, g_origFm2SetColorWriteMaskBits,
+           void(uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236F440, g_origFm2SetClipPlane0Enable,
+           void(uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236F460, g_origFm2SetClipPlane1Enable,
+           void(uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236F480, g_origFm2SetClipPlane2Enable,
+           void(uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236F4A0, g_origFm2SetClipPlane3Enable,
+           void(uint32_t, uint32_t));
+
+REX_IMPORT(__imp__sub_82369FA0, g_origVertexBufferLock,
+           uint32_t(void *, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3D_LockGpuBufferRaw, g_origIndexBufferLock,
+           uint32_t(void *, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236C0E8, g_origSurfaceGetDesc, void(void *, void *));
+
 namespace {
 
 using rr::GuestBaseTexture;
@@ -75,6 +115,29 @@ struct GuestLockedRect {
 template <typename T> T *AsFm2(T *p) {
   return rr::IsFm2Resource(p) ? p : nullptr;
 }
+
+GuestDevice *DeviceForRenderContext(uint32_t renderContext) {
+  if (renderContext != 0) {
+    auto *device = ghp::ToHost<GuestDevice>(renderContext);
+    rr::SetActiveGuestDevice(device);
+    return device;
+  }
+  return rr::GetActiveGuestDevice();
+}
+
+void SetStreamSourceNative(GuestDevice *device, uint32_t stream,
+                           GuestBuffer *buffer, uint32_t offset,
+                           uint32_t stride, uint64_t mask);
+void SetIndicesNative(GuestDevice *device, GuestBuffer *buffer);
+void SetRenderTargetNative(GuestDevice *device, uint32_t index,
+                           GuestSurface *surface);
+void SetVertexShaderNative(GuestDevice *device, GuestShader *shader);
+void SetPixelShaderNative(GuestDevice *device, GuestShader *shader);
+void DrawIndexedVertices(GuestDevice *device, uint32_t primType,
+                         int32_t baseVertexIndex, uint32_t startIndex,
+                         uint32_t indexCount);
+void DrawVerticesUP(GuestDevice *device, uint32_t primType,
+                    uint32_t vertexCount, void *data, uint32_t stride);
 
 struct PendingImmediateDraw {
   GuestDevice *device = nullptr;
@@ -139,53 +202,60 @@ uint32_t KickOff(GuestDevice *device) {
 void BlockOnSecondaryPosition(GuestDevice * /*device*/, uint32_t /*position*/,
                               uint32_t /*flags*/) {}
 
-void Fm2Present(uint32_t /*present_chain*/) {
+void Fm2Present(uint32_t presentChain) {
+  g_origFm2TryPresentAndUpdateStatus(presentChain);
   FlushImmediateVertices();
   Video::Present();
 }
 
-void Fm2SetPixelShaderState(uint32_t /*render_context*/, uint32_t shader) {
-  GuestDevice *device = rr::GetActiveGuestDevice();
+void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shader) {
+  g_origFm2SetPixelShaderState(renderContext, shader);
+  GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr || shader == 0) {
     return;
   }
-  SetPixelShader(device, ghp::ToHost<GuestShader>(shader));
+  SetPixelShaderNative(device, ghp::ToHost<GuestShader>(shader));
 }
 
-void Fm2SetVertexShaderState(uint32_t /*render_context*/, uint32_t shader) {
-  GuestDevice *device = rr::GetActiveGuestDevice();
+void Fm2SetVertexShaderState(uint32_t renderContext, uint32_t shader) {
+  g_origFm2SetVertexShaderState(renderContext, shader);
+  GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr || shader == 0) {
     return;
   }
-  SetVertexShader(device, ghp::ToHost<GuestShader>(shader));
+  SetVertexShaderNative(device, ghp::ToHost<GuestShader>(shader));
 }
 
-void Fm2BindVertexStream(uint32_t /*render_context*/, uint32_t slot,
+void Fm2BindVertexStream(uint32_t renderContext, uint32_t slot,
                          uint32_t resource, uint32_t byte_offset,
                          uint32_t stride_bytes, uint64_t dirty_mask) {
-  GuestDevice *device = rr::GetActiveGuestDevice();
+  g_origFm2BindVertexStream(renderContext, slot, resource, byte_offset,
+                            stride_bytes, dirty_mask);
+  GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr) {
     return;
   }
-  SetStreamSource(device, slot, ghp::ToHost<GuestBuffer>(resource), byte_offset,
-                  stride_bytes, dirty_mask);
+  SetStreamSourceNative(device, slot, ghp::ToHost<GuestBuffer>(resource),
+                        byte_offset, stride_bytes, dirty_mask);
 }
 
-void Fm2BindIndexBuffer(uint32_t /*render_context*/, uint32_t resource) {
-  GuestDevice *device = rr::GetActiveGuestDevice();
+void Fm2BindIndexBuffer(uint32_t renderContext, uint32_t resource) {
+  g_origFm2BindIndexBuffer(renderContext, resource);
+  GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr) {
     return;
   }
-  SetIndices(device, ghp::ToHost<GuestBuffer>(resource));
+  SetIndicesNative(device, ghp::ToHost<GuestBuffer>(resource));
 }
 
-void Fm2SetBoundSurface(uint32_t /*render_context*/, uint32_t surface,
-                        uint32_t /*surface_arg*/) {
-  GuestDevice *device = rr::GetActiveGuestDevice();
+void Fm2SetBoundSurface(uint32_t renderContext, uint32_t surface,
+                        uint32_t surfaceArg) {
+  g_origFm2SetBoundSurface(renderContext, surface, surfaceArg);
+  GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr || surface == 0) {
     return;
   }
-  SetRenderTarget(device, 0, ghp::ToHost<GuestBaseTexture>(surface));
+  SetRenderTargetNative(device, 0, ghp::ToHost<GuestSurface>(surface));
 }
 
 void Fm2RememberGuestDevice(GuestDevice *device) {
@@ -310,46 +380,6 @@ struct GuestLockedTail {
   rex::be<uint32_t> bits;
 };
 
-} 
-REX_IMPORT(__imp__rex_D3DBaseTexture_LockTail, g_origBaseTextureLockTail,
-           void(void *, uint32_t, void *, uint32_t));
-REX_IMPORT(__imp__rex_D3DVertexBuffer_Lock, g_origVertexBufferLock,
-           uint32_t(void *, uint32_t, uint32_t, uint32_t));
-REX_IMPORT(__imp__rex_D3DIndexBuffer_Lock, g_origIndexBufferLock,
-           uint32_t(void *, uint32_t, uint32_t, uint32_t));
-REX_IMPORT(__imp__rex_LockSurface_D3D_YAXPAUD3DBaseTexture_IIKPAPAEPAK22_Z,
-           g_origLockSurface,
-           void(void *, uint32_t, uint32_t, uint32_t, void *, void *, void *,
-                void *));
-REX_IMPORT(__imp__rex_D3DSurface_GetDesc, g_origSurfaceGetDesc,
-           void(void *, void *));
-REX_IMPORT(__imp__rex_XGSetVertexDeclaration, g_origXGSetVertexDeclaration,
-           void(void *, void *));
-REX_IMPORT(__imp__rex_FXeVertexShader_Init, g_origFXeVertexShaderInit,
-           void(void *, void *));
-REX_IMPORT(__imp__rex_FXePixelShader_Init, g_origFXePixelShaderInit,
-           void(void *, void *));
-REX_IMPORT(__imp__rex_RHISetDepthState_YAXPAVFD3DDepthState_Z,
-           g_origRHISetDepthState, void(rr::GuestDevice *, void *));
-REX_IMPORT(__imp__rex_RHISetStencilState, g_origRHISetStencilState,
-           void(rr::GuestDevice *, void *));
-REX_IMPORT(__imp__sub_823CCAC0, g_origApplyRasterizerState,
-           void(rr::GuestDevice *, void *));
-REX_IMPORT(__imp__sub_823C10B0, g_origSetColorWriteEnable,
-           void(rr::GuestDevice *, uint32_t));
-REX_IMPORT(__imp__sub_823C36D8, g_origSetZWriteEnable,
-           void(rr::GuestDevice *, uint32_t));
-REX_IMPORT(__imp__sub_823C6308, g_origSetCullMode,
-           void(rr::GuestDevice *, uint32_t));
-REX_IMPORT(__imp__rex_D3DDevice_SetScissorRect, g_origSetScissorRect,
-           void(rr::GuestDevice *, rr::GuestRect *));
-REX_IMPORT(__imp__rex_D3DDevice_SetRenderState_ClipPlaneEnable,
-           g_origClipPlaneEnable, void(rr::GuestDevice *, uint32_t));
-REX_IMPORT(__imp__rex_D3DDevice_SetRenderState_ViewportEnable,
-           g_origViewportEnable, void(rr::GuestDevice *, uint32_t));
-REX_IMPORT(__imp__rex_SetPending_ClipPlanes_D3D_YAXPAVCDevice_1_K_Z,
-           g_origSetPendingClipPlanes, void(rr::GuestDevice *, uint64_t));
-namespace {
 
 uint32_t VertexBufferLock(GuestBuffer *buffer, uint32_t offset, uint32_t size,
                           uint32_t flags) {
@@ -366,7 +396,6 @@ uint32_t IndexBufferLock(GuestBuffer *buffer, uint32_t offset, uint32_t size,
 
 void XGSetVertexDeclaration(rr::GuestVertexElement *elements,
                             void *guestDeclaration) {
-  g_origXGSetVertexDeclaration(elements, guestDeclaration);
   rr::RegisterVertexDeclarationAlias(ghp::ToGuest(guestDeclaration),
                                      rr::CreateVertexDeclaration(elements));
 }
@@ -386,7 +415,6 @@ struct GuestSurfaceDesc {
 void BaseTextureLockTail(GuestTexture *texture, uint32_t arrayIndex,
                          GuestLockedTail *locked, uint32_t flags) {
   if (!rr::IsFm2Resource(texture)) {
-    g_origBaseTextureLockTail(texture, arrayIndex, locked, flags);
     return;
   }
   if (locked == nullptr)
@@ -403,8 +431,6 @@ void LockSurface(GuestTexture *texture, uint32_t arrayIndex, uint32_t level,
                  rex::be<uint32_t> *pRowPitch, rex::be<uint32_t> *pSlicePitch,
                  rex::be<uint32_t> *pTailOffset) {
   if (!rr::IsFm2Resource(texture)) {
-    g_origLockSurface(texture, arrayIndex, level, flags, ppData, pRowPitch,
-                      pSlicePitch, pTailOffset);
     return;
   }
   uint32_t pitch = 0, bits = 0;
@@ -632,12 +658,12 @@ void SetBoundShaderState(GuestDevice *device, void *boundStateRef) {
   rr::SetPixelShader(device, info.pixelShader);
 }
 
-void SetVertexShader(GuestDevice *device, GuestShader *shader) {
+void SetVertexShaderNative(GuestDevice *device, GuestShader *shader) {
   FlushImmediateVertices();
   rr::SetVertexShader(device, ResolveShader(shader));
 }
 
-void SetPixelShader(GuestDevice *device, GuestShader *shader) {
+void SetPixelShaderNative(GuestDevice *device, GuestShader *shader) {
   FlushImmediateVertices();
   rr::SetPixelShader(device, ResolveShader(shader));
 }
@@ -758,8 +784,9 @@ struct GuestD3DIndexBufferHeader {
   rex::be<uint32_t> size;    // byte size
 };
 
-void SetStreamSource(GuestDevice *device, uint32_t stream, GuestBuffer *buffer,
-                     uint32_t offset, uint32_t stride, uint64_t /*mask*/) {
+void SetStreamSourceNative(GuestDevice *device, uint32_t stream,
+                           GuestBuffer *buffer, uint32_t offset,
+                           uint32_t stride, uint64_t /*mask*/) {
   FlushImmediateVertices();
   GuestBuffer *reo = AsFm2(buffer);
   if (reo == nullptr && buffer != nullptr) {
@@ -778,7 +805,7 @@ void SetStreamSource(GuestDevice *device, uint32_t stream, GuestBuffer *buffer,
   }
   rr::SetStreamSource(device, stream, reo, offset, stride);
 }
-void SetIndices(GuestDevice *device, GuestBuffer *buffer) {
+void SetIndicesNative(GuestDevice *device, GuestBuffer *buffer) {
   FlushImmediateVertices();
   GuestBuffer *reo = AsFm2(buffer);
   if (reo == nullptr && buffer != nullptr) {
@@ -804,11 +831,10 @@ void SetViewport(GuestDevice *device, rr::GuestViewport *viewport) {
 }
 void SetScissorRect(GuestDevice *device, rr::GuestRect *rect) {
   FlushImmediateVertices();
-  g_origSetScissorRect(device, rect);
   rr::SetScissorRect(device, rect);
 }
-void SetRenderTarget(GuestDevice *device, uint32_t index,
-                     GuestSurface *surface) {
+void SetRenderTargetNative(GuestDevice *device, uint32_t index,
+                           GuestSurface *surface) {
   FlushImmediateVertices();
   rr::GuestBaseTexture *reo = AsFm2(surface);
   if (reo == nullptr && surface != nullptr)
@@ -840,7 +866,6 @@ void SetDepthStencilSurface(GuestDevice *device, GuestSurface *surface) {
 
 void RHISetDepthState(GuestDevice *device, void *depthStateGuest) {
   FlushImmediateVertices();
-  g_origRHISetDepthState(device, depthStateGuest);
 
   const auto *ds = reinterpret_cast<const rex::be<uint32_t> *>(depthStateGuest);
   if (ds == nullptr)
@@ -854,7 +879,6 @@ void RHISetDepthState(GuestDevice *device, void *depthStateGuest) {
 
 void RHISetStencilState(GuestDevice *device, void *stencilStateGuest) {
   FlushImmediateVertices();
-  g_origRHISetStencilState(device, stencilStateGuest);
 
   const auto *ss =
       reinterpret_cast<const rex::be<uint32_t> *>(stencilStateGuest);
@@ -941,9 +965,70 @@ RENDER_STATE_HOOK(RsSrcBlendAlpha, D3DRS_SRCBLENDALPHA)
 RENDER_STATE_HOOK(RsZEnable, D3DRS_ZENABLE)
 #undef RENDER_STATE_HOOK
 
+void MirrorFm2RenderState(uint32_t renderContext, uint32_t state,
+                          uint32_t value) {
+  GuestDevice *device = DeviceForRenderContext(renderContext);
+  if (device == nullptr)
+    return;
+  FlushImmediateVertices();
+  rr::SetRenderState(device, state, value);
+}
+
+void MirrorFm2ClipPlanes(uint32_t renderContext) {
+  GuestDevice *device = DeviceForRenderContext(renderContext);
+  if (device == nullptr)
+    return;
+  FlushImmediateVertices();
+  rr::UpdateClipPlaneConstants(device);
+}
+
+void Fm2SetDepthStencilEnableState(uint32_t renderContext, uint32_t value) {
+  g_origFm2SetDepthStencilEnableState(renderContext, value);
+  MirrorFm2RenderState(renderContext, rr::D3DRS_ZENABLE, value);
+}
+
+void Fm2SetAlphaBlendEnableBits(uint32_t renderContext, uint32_t value) {
+  g_origFm2SetAlphaBlendEnableBits(renderContext, value);
+  MirrorFm2RenderState(renderContext, rr::D3DRS_ALPHABLENDENABLE, value);
+}
+
+void Fm2SetAlphaTestState(uint32_t renderContext, uint32_t value) {
+  g_origFm2SetAlphaTestState(renderContext, value);
+  MirrorFm2RenderState(renderContext, rr::D3DRS_ALPHATESTENABLE, value);
+}
+
+void Fm2SetDepthCompareBits(uint32_t renderContext, uint32_t value) {
+  g_origFm2SetDepthCompareBits(renderContext, value);
+  MirrorFm2RenderState(renderContext, rr::D3DRS_ZFUNC, value);
+}
+
+void Fm2SetColorWriteMaskBits(uint32_t renderContext, uint32_t value) {
+  g_origFm2SetColorWriteMaskBits(renderContext, value);
+  MirrorFm2RenderState(renderContext, rr::D3DRS_COLORWRITEENABLE, value);
+}
+
+void Fm2SetClipPlane0Enable(uint32_t renderContext, uint32_t value) {
+  g_origFm2SetClipPlane0Enable(renderContext, value);
+  MirrorFm2ClipPlanes(renderContext);
+}
+
+void Fm2SetClipPlane1Enable(uint32_t renderContext, uint32_t value) {
+  g_origFm2SetClipPlane1Enable(renderContext, value);
+  MirrorFm2ClipPlanes(renderContext);
+}
+
+void Fm2SetClipPlane2Enable(uint32_t renderContext, uint32_t value) {
+  g_origFm2SetClipPlane2Enable(renderContext, value);
+  MirrorFm2ClipPlanes(renderContext);
+}
+
+void Fm2SetClipPlane3Enable(uint32_t renderContext, uint32_t value) {
+  g_origFm2SetClipPlane3Enable(renderContext, value);
+  MirrorFm2ClipPlanes(renderContext);
+}
+
 void ApplyRasterizerState(GuestDevice *device, void *rasterizerStateGuest) {
   FlushImmediateVertices();
-  g_origApplyRasterizerState(device, rasterizerStateGuest);
 
   if (rasterizerStateGuest == nullptr)
     return;
@@ -954,38 +1039,32 @@ void ApplyRasterizerState(GuestDevice *device, void *rasterizerStateGuest) {
 
 void SetColorWriteEnable(GuestDevice *device, uint32_t value) {
   FlushImmediateVertices();
-  g_origSetColorWriteEnable(device, value);
   rr::SetRenderState(device, rr::D3DRS_COLORWRITEENABLE,
                      value != 0 ? 0xFu : 0u);
 }
 
 void SetZWriteEnable(GuestDevice *device, uint32_t value) {
   FlushImmediateVertices();
-  g_origSetZWriteEnable(device, value);
   rr::SetRenderState(device, rr::D3DRS_ZWRITEENABLE, value);
 }
 
 void SetCullMode(GuestDevice *device, uint32_t value) {
   FlushImmediateVertices();
-  g_origSetCullMode(device, value);
   rr::SetRenderState(device, rr::D3DRS_CULLMODE, value);
 }
 
 void RsClipPlaneEnable(GuestDevice *device, uint32_t value) {
   FlushImmediateVertices();
-  g_origClipPlaneEnable(device, value);
   rr::UpdateClipPlaneConstants(device);
 }
 
 void RsViewportEnable(GuestDevice *device, uint32_t value) {
   FlushImmediateVertices();
-  g_origViewportEnable(device, value);
   rr::SetViewportEnable(device, value);
 }
 
 void SetPendingClipPlanes(GuestDevice *device, uint64_t dirtyMask) {
   FlushImmediateVertices();
-  g_origSetPendingClipPlanes(device, dirtyMask);
   rr::UpdateClipPlaneConstants(device);
 }
 
@@ -1018,14 +1097,12 @@ void SetVertexDeclarationBind(GuestDevice *device,
     rr::SetVertexDeclaration(device, reoDecl);
 }
 void *FXeVertexShaderInit(uint8_t *self, uint32_t *blob) {
-  g_origFXeVertexShaderInit(self, blob);
   uint32_t d3dShader = *reinterpret_cast<rex::be<uint32_t> *>(self + 8);
   rr::RegisterShaderAlias(d3dShader, rr::CreateVertexShader(blob));
   return self;
 }
 
 void *FXePixelShaderInit(uint8_t *self, uint32_t *blob) {
-  g_origFXePixelShaderInit(self, blob);
   uint32_t d3dShader = *reinterpret_cast<rex::be<uint32_t> *>(self + 8);
   rr::RegisterShaderAlias(d3dShader, rr::CreatePixelShader(blob));
   return self;
@@ -1082,23 +1159,8 @@ void RHIDrawIndexedPrimitiveUP(GuestDevice *device, uint32_t primType,
 } // namespace
 
 // ===========================================================================
-// FM2 native renderer hooks (ReOdyssey-style D3D interception)
+// FM2 native renderer hooks: call generated FM2 bodies, then mirror state.
 // ===========================================================================
-
-REX_HOOK(FM2_D3D_CreateVertexBufferWrapper, CreateVertexBuffer);
-REX_HOOK(FM2_D3D_CreateIndexBufferWrapper, CreateIndexBuffer);
-REX_HOOK(FM2_D3D_CreateTextureWrapper, CreateTexture);
-REX_HOOK(FM2_D3D_CreateDepthStencilSurfaceAndTexture, CreateSurface);
-REX_HOOK(FM2_D3D_CreateVertexDeclarationFromElements, CreateVertexDeclaration);
-REX_HOOK(FM2_Render_GetOrCreateVertexShaderResourceById, CreateVertexShader);
-REX_HOOK(FM2_Render_GetOrCreatePixelShaderResourceById, CreatePixelShader);
-REX_HOOK(FM2_D3D_CreateTextureFromMemoryBuffer,
-         D3DXCreateTextureFromFileInMemory);
-
-REX_HOOK(FM2_D3D_LockVertexBufferWrapper, VertexBufferLock);
-REX_HOOK(FM2_D3D_DeserializeAndLockIndexBuffer, IndexBufferLock);
-REX_HOOK(FM2_D3D_GatherSurfaceMetadataForTextureCreate, SurfaceLockRect);
-REX_HOOK(FM2_D3DResource_UnlockForRelease, UnlockResourceHook);
 
 REX_HOOK(FM2_RenderContext_SetPixelShaderState, Fm2SetPixelShaderState);
 REX_HOOK(FM2_RenderContext_SetVertexShaderState, Fm2SetVertexShaderState);
@@ -1106,7 +1168,14 @@ REX_HOOK(FM2_RenderContext_BindVertexStream, Fm2BindVertexStream);
 REX_HOOK(FM2_RenderContext_BindIndexBuffer, Fm2BindIndexBuffer);
 REX_HOOK(FM2_RenderContext_SetBoundSurface, Fm2SetBoundSurface);
 
-REX_HOOK(FM2_Render_DrawIndexedPrimitive, Fm2DrawIndexedVertices);
-REX_HOOK(FM2_D3D_EmitIndexedDrawPacket, Fm2DrawVerticesUP);
+REX_HOOK(sub_8236EAF8, Fm2SetDepthStencilEnableState);
+REX_HOOK(sub_8236F1F0, Fm2SetAlphaBlendEnableBits);
+REX_HOOK(sub_8236F268, Fm2SetAlphaTestState);
+REX_HOOK(sub_8236F2D0, Fm2SetDepthCompareBits);
+REX_HOOK(sub_8236F340, Fm2SetColorWriteMaskBits);
+REX_HOOK(sub_8236F440, Fm2SetClipPlane0Enable);
+REX_HOOK(sub_8236F460, Fm2SetClipPlane1Enable);
+REX_HOOK(sub_8236F480, Fm2SetClipPlane2Enable);
+REX_HOOK(sub_8236F4A0, Fm2SetClipPlane3Enable);
 
 REX_HOOK(FM2_D3D_TryPresentAndUpdateStatus, Fm2Present);

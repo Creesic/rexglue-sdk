@@ -22,6 +22,8 @@ set(FM2_SOURCES
     src/render/d3d_resource_hooks.cpp
     src/render/pipeline.cpp
     src/render/render_state.cpp
+    src/native_renderer/fm2_native_renderer.cpp
+    src/native_renderer/fm2_native_state.cpp
     generated/shader_cache.cpp
 )
 
@@ -39,9 +41,16 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../plume/CMakeLists.txt")
         add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../plume" "${CMAKE_CURRENT_BINARY_DIR}/plume")
     endif()
 
+    set(FM2_DEFAULT_ZSTD_DIR
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../ReOdyssey/thirdparty/zstd")
     set(FM2_ZSTD_DIR
-        "${CMAKE_CURRENT_SOURCE_DIR}/../ReOdyssey/thirdparty/zstd"
+        "${FM2_DEFAULT_ZSTD_DIR}"
         CACHE PATH "zstd source for FM2 shader cache decompression")
+    if(NOT EXISTS "${FM2_ZSTD_DIR}/build/cmake/CMakeLists.txt"
+       AND EXISTS "${FM2_DEFAULT_ZSTD_DIR}/build/cmake/CMakeLists.txt")
+        set(FM2_ZSTD_DIR "${FM2_DEFAULT_ZSTD_DIR}" CACHE PATH
+            "zstd source for FM2 shader cache decompression" FORCE)
+    endif()
     if(EXISTS "${FM2_ZSTD_DIR}/build/cmake/CMakeLists.txt")
         set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
         set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
@@ -66,19 +75,20 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../plume/CMakeLists.txt")
     set(FM2_GENERATED_SHADER_BINARY_DIR
         "${CMAKE_CURRENT_BINARY_DIR}/generated/shaders")
 
-    function(fm2_compile_dxil_shader OUT_VAR SOURCE_FILE PROFILE ARRAY_NAME)
+    function(fm2_compile_dxil_shader OUT_VAR SOURCE_FILE PROFILE ENTRY_POINT
+             ARRAY_NAME HEADER_SUBDIR HEADER_BASENAME)
         get_filename_component(shader_name "${SOURCE_FILE}" NAME)
         set(dxil_output
             "${FM2_GENERATED_SHADER_BINARY_DIR}/${shader_name}.dxil")
         set(header_output
-            "${FM2_GENERATED_SHADER_INCLUDE_DIR}/render/shaders/${shader_name}.dxil.h")
+            "${FM2_GENERATED_SHADER_INCLUDE_DIR}/${HEADER_SUBDIR}/${HEADER_BASENAME}.dxil.h")
 
         add_custom_command(
             OUTPUT "${dxil_output}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory
                 "${FM2_GENERATED_SHADER_BINARY_DIR}"
             COMMAND "${FM2_DXC_EXECUTABLE}"
-                -E main
+                -E "${ENTRY_POINT}"
                 -T "${PROFILE}"
                 -Fo "${dxil_output}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/${SOURCE_FILE}"
@@ -107,9 +117,23 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../plume/CMakeLists.txt")
     set(FM2_BLIT_SHADER_HEADERS)
     if(FM2_DXC_EXECUTABLE)
         fm2_compile_dxil_shader(FM2_BLIT_SHADER_HEADERS
-            src/render/shaders/copy_vs.hlsl vs_6_0 g_copy_vs_dxil)
+            src/render/shaders/copy_vs.hlsl vs_6_0 main g_copy_vs_dxil
+            render/shaders copy_vs.hlsl)
         fm2_compile_dxil_shader(FM2_BLIT_SHADER_HEADERS
-            src/render/shaders/copy_ps.hlsl ps_6_0 g_copy_ps_dxil)
+            src/render/shaders/copy_ps.hlsl ps_6_0 main g_copy_ps_dxil
+            render/shaders copy_ps.hlsl)
+        fm2_compile_dxil_shader(FM2_BLIT_SHADER_HEADERS
+            src/native_renderer/shaders/fm2_debug_replay.vert.hlsl vs_6_0
+            VSMain fm2DebugReplayVertBlobDXIL
+            shaders fm2DebugReplayVert.hlsl)
+        fm2_compile_dxil_shader(FM2_BLIT_SHADER_HEADERS
+            src/native_renderer/shaders/fm2_debug_replay_native28.vert.hlsl
+            vs_6_0 VSMain fm2DebugReplayNative28VertBlobDXIL
+            shaders fm2DebugReplayNative28Vert.hlsl)
+        fm2_compile_dxil_shader(FM2_BLIT_SHADER_HEADERS
+            src/native_renderer/shaders/fm2_debug_replay.frag.hlsl ps_6_0
+            PSMain fm2DebugReplayFragBlobDXIL
+            shaders fm2DebugReplayFrag.hlsl)
         add_custom_target(fm2_blit_shaders DEPENDS ${FM2_BLIT_SHADER_HEADERS})
         add_dependencies(fm2 fm2_blit_shaders)
         target_sources(fm2 PRIVATE ${FM2_BLIT_SHADER_HEADERS})
