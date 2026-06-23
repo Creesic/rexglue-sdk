@@ -684,6 +684,110 @@ std::vector<std::unique_ptr<GuestTexture>> g_guestTextureStorage;
 
 } // namespace
 
+GuestTexture *TranslateGuestTextureFetch(const void *guestFetch,
+                                         bool uploadGuestData) {
+  const uint32_t guestAddress = ToGuest(guestFetch);
+  if (guestFetch == nullptr || Device() == nullptr) {
+    return nullptr;
+  }
+
+  const auto *fetch = reinterpret_cast<const rex::be<uint32_t> *>(guestFetch);
+  XenosTextureInfo info = ParseTextureFetchConstant(fetch);
+  if (!info.valid) {
+    static std::unordered_set<uint32_t> s_warned;
+    if (s_warned.insert(guestAddress).second) {
+      REXGPU_WARN("TranslateGuestTextureFetch: 0x{:08X} invalid fetch "
+                  "({}x{} fmt={} base=0x{:08X})",
+                  guestAddress, info.width, info.height, int(info.format),
+                  info.baseAddress);
+    }
+    return nullptr;
+  }
+
+  GuestTexture *cached = nullptr;
+  {
+    std::lock_guard lock(g_guestTextureAliasMutex);
+    auto it = g_guestTextureAliases.find(info.baseAddress);
+    if (it != g_guestTextureAliases.end() && it->second != nullptr) {
+      cached = it->second;
+      if (cached->width != info.width || cached->height != info.height ||
+          cached->format != info.format) {
+        g_guestTextureAliases.erase(it);
+        cached = nullptr;
+      }
+    }
+  }
+  if (cached != nullptr) {
+    if (uploadGuestData) {
+      UploadGuestTextureData(cached, info);
+    }
+    return cached;
+  }
+
+  auto textureStorage = std::make_unique<GuestTexture>();
+  GuestTexture *texture = textureStorage.get();
+  texture->type = ResourceType::Texture;
+
+  RenderTextureDesc desc;
+  desc.dimension = RenderTextureDimension::TEXTURE_2D;
+  desc.width = info.width;
+  desc.height = info.height;
+  desc.depth = 1;
+  desc.mipLevels = 1;
+  desc.arraySize = 1;
+  desc.format = info.format;
+  desc.flags = RenderTextureFlag::NONE;
+  texture->textureHolder = Device()->createTexture(desc);
+  texture->texture = texture->textureHolder.get();
+  if (texture->texture == nullptr) {
+    REXGPU_WARN("TranslateGuestTextureFetch: failed to create {}x{} fmt={} "
+                "texture for fetch 0x{:08X}",
+                info.width, info.height, int(info.format), guestAddress);
+    return nullptr;
+  }
+
+  RenderTextureViewDesc viewDesc;
+  viewDesc.format = info.format;
+  viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
+  viewDesc.mipLevels = 1;
+  if (info.format == RenderFormat::R8_UNORM) {
+    viewDesc.componentMapping =
+        RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R,
+                               RenderSwizzle::R, RenderSwizzle::ONE);
+  }
+  texture->textureView = texture->texture->createTextureView(viewDesc);
+  texture->width = info.width;
+  texture->height = info.height;
+  texture->depth = 1;
+  texture->levels = 1;
+  texture->format = info.format;
+  texture->requiresHostInitialization = false;
+  texture->hostInitialized = true;
+  texture->viewDimension = RenderTextureViewDimension::TEXTURE_2D;
+  texture->descriptorIndex = AllocTextureDescriptor();
+  TextureDescriptorSet()->setTexture(
+      texture->descriptorIndex, texture->texture,
+      RenderTextureLayout::SHADER_READ, texture->textureView.get());
+
+  if (uploadGuestData) {
+    UploadGuestTextureData(texture, info);
+  }
+
+  REXGPU_INFO("TranslateGuestTextureFetch: 0x{:08X} base=0x{:08X} {}x{} "
+              "fmt={} tiled={} endian={} upload={} -> desc {}",
+              guestAddress, info.baseAddress, info.width, info.height,
+              int(info.format), info.tiled, info.endian, uploadGuestData,
+              texture->descriptorIndex);
+
+  GuestTexture *result = texture;
+  {
+    std::lock_guard lock(g_guestTextureAliasMutex);
+    g_guestTextureStorage.push_back(std::move(textureStorage));
+    g_guestTextureAliases[info.baseAddress] = result;
+  }
+  return result;
+}
+
 GuestTexture *TranslateGuestTexture(void *guestHeader, bool uploadGuestData) {
   const uint32_t guestAddress = ToGuest(guestHeader);
 

@@ -46,6 +46,8 @@ GuestShader *CreatePixelShader(const uint32_t *function);
 void RegisterShaderAlias(uint32_t guestAddress, GuestShader *shader);
 GuestShader *LookupShaderAlias(uint32_t guestAddress);
 GuestTexture *LoadTextureFromMemory(const uint8_t *data, uint32_t size);
+GuestTexture *TranslateGuestTextureFetch(const void *guestFetch,
+                                         bool uploadGuestData);
 GuestTexture *TranslateGuestTexture(void *guestHeader, bool uploadGuestData);
 GuestBaseTexture *TranslateGuestSurface(void *guestHeader);
 uint32_t LockVertexBuffer(GuestBuffer *buffer, uint32_t flags);
@@ -123,6 +125,9 @@ REXCVAR_DEFINE_BOOL(
 REXCVAR_DEFINE_UINT32(
     fm2_plume_render_hook_trace_limit, 128, "FM2",
     "Maximum FM2 native render hook trace lines to emit per hook in one run; 0 is unlimited.");
+REXCVAR_DEFINE_BOOL(
+    fm2_plume_vdswap_present, true, "FM2",
+    "Mirror FM2's VdSwap frontbuffer into the active Plume swapchain.");
 
 struct GuestRasterizerState {
   uint8_t pad0[8];
@@ -1462,6 +1467,48 @@ void RHIDrawIndexedPrimitiveUP(GuestDevice *device, uint32_t primType,
 }
 
 } // namespace
+
+void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
+                         PPCRegister &r9, PPCRegister &r10,
+                         PPCRegister &r1) {
+  auto readGuestU32 = [](uint32_t guestAddress) -> uint32_t {
+    auto *value = ghp::ToHost<rex::be<uint32_t>>(guestAddress);
+    return value != nullptr ? value->get() : 0;
+  };
+
+  const uint32_t fetchAddress = r4.u32;
+  const uint32_t frontbufferAddress = readGuestU32(r8.u32);
+  const uint32_t textureFormat = readGuestU32(r9.u32);
+  const uint32_t colorSpace = readGuestU32(r10.u32);
+  const uint32_t widthPtr = readGuestU32(r1.u32 + 84);
+  const uint32_t heightPtr = readGuestU32(r1.u32 + 92);
+  const uint32_t width = readGuestU32(widthPtr);
+  const uint32_t height = readGuestU32(heightPtr);
+
+  rr::GuestTexture *frontBuffer =
+      rr::TranslateGuestTextureFetch(ghp::ToHost<void>(fetchAddress), true);
+  const bool hasTexture =
+      frontBuffer != nullptr && frontBuffer->texture != nullptr;
+
+  static uint32_t s_traceCount = 0;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=VdSwap n={} buffer=0x{:08X} "
+                "fetch=0x{:08X} frontbuffer=0x{:08X} textureFormat=0x{:08X} "
+                "colorSpace=0x{:08X} size={}x{} source={} hasTexture={}",
+                n, r3.u32, fetchAddress, frontbufferAddress, textureFormat,
+                colorSpace, width, height, static_cast<const void *>(frontBuffer),
+                hasTexture);
+  }
+
+  if (!REXCVAR_GET(fm2_plume_vdswap_present)) {
+    return;
+  }
+
+  if (hasTexture) {
+    rr::SetPresentSource(frontBuffer);
+  }
+  Video::Present();
+}
 
 // ===========================================================================
 // FM2 native renderer hooks: call generated FM2 bodies, then mirror state.

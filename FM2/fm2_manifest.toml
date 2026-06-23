@@ -147,6 +147,7 @@ longjmp_address = 0x82418210
 0x8236F460 = { name = "FM2_RenderContext_SetClipPlane1Enable" }
 0x8236F480 = { name = "FM2_RenderContext_SetClipPlane2Enable" }
 0x8236F4A0 = { name = "FM2_RenderContext_SetClipPlane3Enable" }
+0x8236CB28 = { name = "FM2_GpuCommandBuffer_BuildAndSubmit" }
 0x82378D58 = { name = "FM2_GpuKick_ComputeScalerViewportRects" }
 0x82378EF8 = { name = "FM2_GpuKick_NotifyScalerViewportRects" }
 0x8237A888 = { name = "FM2_GpuKick_SubmitVdScalerCommandBuffer" }
@@ -1027,6 +1028,12 @@ after_instruction = false
 address = 0x824F83D8
 name = "FM2PlumeTracePresent"
 registers = ["r3"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8236CD78
+name = "FM2PlumeTraceVdSwap"
+registers = ["r3", "r4", "r8", "r9", "r10", "r1"]
 after_instruction = false
 
 [[entrypoint.midasm_hook]]
