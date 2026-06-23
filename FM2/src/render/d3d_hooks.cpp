@@ -1643,15 +1643,19 @@ REX_HOOK(FM2_RenderContext_SetClipPlane3Enable, Fm2SetClipPlane3Enable);
 
 REX_HOOK(FM2_D3D_TryPresentAndUpdateStatus, Fm2Present);
 
-// Resource creation
-REX_HOOK(FM2_D3DDevice_CreateVertexBuffer, CreateVertexBuffer);
-REX_HOOK(FM2_D3DDevice_CreateIndexBuffer, CreateIndexBuffer);
-REX_HOOK(FM2_D3DDevice_CreateTexture, CreateTexture);
-REX_HOOK(FM2_D3DDevice_CreateSurface, CreateSurface);
-REX_HOOK(FM2_D3DDevice_CreateVertexDeclaration, CreateVertexDeclaration);
+// Resource creation (NOT hooked: GuestBuffer/GuestTexture layout is C++/LE, but FM2
+// reads fields directly from resource objects using XDK D3DVertexBuffer offsets (BE).
+// Hooking creation returns objects with wrong layout → FM2 reads garbage pData → memcpy crash.
+// TODO: implement alias map (xdkGuestAddr → GuestBuffer*) so original XDK resources
+// are created for FM2 to read, while native Plume resources shadow them for Lock/Bind.
+// REX_HOOK(FM2_D3DDevice_CreateVertexBuffer, CreateVertexBuffer);
+// REX_HOOK(FM2_D3DDevice_CreateIndexBuffer, CreateIndexBuffer);
+// REX_HOOK(FM2_D3DDevice_CreateTexture, CreateTexture);
+// REX_HOOK(FM2_D3DDevice_CreateSurface, CreateSurface);
+// REX_HOOK(FM2_D3DDevice_CreateVertexDeclaration, CreateVertexDeclaration);
+// REX_HOOK(FM2_D3D_CreateTextureFromSurfaceLevelAuto, D3DXCreateTextureFromFileInMemory);
 REX_HOOK(FM2_Render_AllocGpuPassMemoryBlock, Fm2AllocGpuPassMemoryBlock);
 REX_HOOK(FM2_D3D_CreateGpuMemoryBlock, Fm2CreateGpuMemoryBlock);
-REX_HOOK(FM2_D3D_CreateTextureFromSurfaceLevelAuto, D3DXCreateTextureFromFileInMemory);
 
 // Lock / unlock
 REX_HOOK(FM2_D3DVertexBuffer_Lock, VertexBufferLock);
