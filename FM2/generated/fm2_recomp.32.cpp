@@ -1933,7 +1933,7 @@ DEFINE_REX_FUNC(sub_825AA140) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x82369fa0
 	ctx.lr = 0x825AA20C;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// lwz r11,4(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
 	// mr r27,r3
@@ -13738,7 +13738,7 @@ DEFINE_REX_FUNC(sub_825AF018) {
 	ctx.r30.u64 = ctx.r3.u64;
 	// bl 0x82369fa0
 	ctx.lr = 0x825AF05C;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// lis r9,-32256
 	ctx.r9.s64 = -2113929216;
 	// lwz r10,0(r31)
@@ -14482,7 +14482,7 @@ loc_825AF468:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236eaf8
 	ctx.lr = 0x825AF558;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// b 0x825af578
@@ -14499,7 +14499,7 @@ loc_825AF560:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236eaf8
 	ctx.lr = 0x825AF574;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 loc_825AF578:
@@ -14902,7 +14902,7 @@ loc_825AF844:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236eaf8
 	ctx.lr = 0x825AF850;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// mr r4,r19
 	ctx.r4.u64 = ctx.r19.u64;
 	// lwz r3,56(r31)
@@ -23018,7 +23018,7 @@ DEFINE_REX_FUNC(FM2_D3D_CacheSurfaceDescFields) {
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236c0e8
 	ctx.lr = 0x825B2F20;
-	sub_8236C0E8(ctx, base);
+	FM2_D3DSurface_GetDesc(ctx, base);
 	// lwz r11,104(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 104);
 	// lwz r10,108(r1)
@@ -23097,7 +23097,7 @@ DEFINE_REX_FUNC(FM2_D3D_CacheSurfaceDescFieldsWithSubrect) {
 	ctx.r27.u64 = ctx.r7.u64;
 	// bl 0x8236c0e8
 	ctx.lr = 0x825B2FAC;
-	sub_8236C0E8(ctx, base);
+	FM2_D3DSurface_GetDesc(ctx, base);
 	// lwz r11,80(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// stw r29,4(r31)

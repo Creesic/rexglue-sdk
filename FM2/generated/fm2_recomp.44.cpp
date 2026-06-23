@@ -7203,7 +7203,7 @@ DEFINE_REX_FUNC(sub_82721D00) {
 	// lwz r3,7148(r11)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r11.u32 + 7148);
 	// b 0x8236f1f0
-	sub_8236F1F0(ctx, base);
+	FM2_RenderContext_SetAlphaBlendEnableBits(ctx, base);
 	return;
 }
 
@@ -26060,7 +26060,7 @@ loc_82729598:
 	ctx.r4.s64 = ctx.r1.s64 + 176;
 	// bl 0x8236c0e8
 	ctx.lr = 0x827295A0;
-	sub_8236C0E8(ctx, base);
+	FM2_D3DSurface_GetDesc(ctx, base);
 loc_827295A0:
 	// lis r11,-32092
 	ctx.r11.s64 = -2103181312;
@@ -26249,7 +26249,7 @@ loc_8272968C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 7148);
 	// bl 0x8236f228
 	ctx.lr = 0x827296E8;
-	sub_8236F228(ctx, base);
+	FM2_RenderContext_SetCullEnableState(ctx, base);
 loc_827296E8:
 	// li r4,0
 	ctx.r4.s64 = 0;
@@ -28454,7 +28454,7 @@ DEFINE_REX_FUNC(sub_8272A410) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236eaf8
 	ctx.lr = 0x8272A4FC;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,15
 	ctx.r4.s64 = 15;
 	// lwz r3,7148(r31)

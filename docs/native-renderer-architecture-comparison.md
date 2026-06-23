@@ -151,12 +151,12 @@ between XDK versions/builds).
 | `rex_D3DVertexBuffer_Lock` | `rex_D3DVertexBuffer_Lock` | 0x82369FA0 | 0x50 | size+range ✓ |
 | `rex_D3DIndexBuffer_Lock` | `rex_D3DIndexBuffer_Lock` | 0x8236A0B0 | 0x48 | size+range ✓ |
 | `rex_D3DSurface_LockRect` | `rex_D3DSurface_LockRect` | 0x8236C180 | 0x20 | size+range ✓ |
-| `rex_D3DBaseTexture_LockTail` | not yet located | — | 0xC0 | — |
-| `rex_LockSurface_D3D_*` | not yet located | — | 0xC4 | — |
+| `rex_D3DBaseTexture_LockTail` | exact name absent; not a Phase 1 hook | — | 0xC0 | absent |
+| `rex_LockSurface_D3D_*` | `rex_D3DSurface_LockRect` / `FM2_D3D_GatherSurfaceMetadataForTextureCreate` | 0x8236C180 / 0x82392090 | 0x20 / 0x4F0 | FM2 substitute |
 | `rex_UnlockResource_D3D_*` | `?UnlockResource@D3D@@YAXPAUD3DResource@@PAX1@Z` | 0x82369C88 | 0x104 | name match |
 | `rex_D3DSurface_GetDesc` | `rex_D3DSurface_GetDesc` | 0x8236C0E8 | 0x98 | size+range ✓ |
 | `rex_D3DDevice_Release` | `rex_D3DDevice_Release` | 0x82369418 | 0x54 | size+range ✓ |
-| `rex_XGSetVertexDeclaration` | not yet located | — | 0xEC | — |
+| `rex_XGSetVertexDeclaration` | `D3DDevice_CreateVertexDeclaration` / `FM2_D3D_CreateVertexDeclarationFromElements` | 0x8236E240 / 0x8259F008 | 0xE0 / wrapper | FM2 substitute |
 | `rex_XGSetTextureHeaderEx` | `rex_XGSetTextureHeaderEx` | 0x823C6070 | 0x8C | name match |
 | `rex_XGSetVertexBufferHeader` | `XGSetVertexBufferHeader` | 0x823C5C90 | 0x94 | name match |
 | `rex_XGSetIndexBufferHeader` | `rex_XGSetIndexBufferHeader` | 0x823C5D28 | 0x90 | name match |
@@ -180,10 +180,10 @@ different names; hookable at this wrapper level:**
 | `rex_D3DDevice_ClearF` | `FM2_Render_SetClearFlagsAndDirtyBit` + PM4 path | 0x8236EF88 | 0x1C | structural equivalent |
 | `rex_D3DDevice_Resolve` | `FM2_D3D_EmitSurfaceResolvePackets` | 0x82382590 | 0x394 | name ✓ |
 | Various `SetRenderState_*` | `FM2_RenderContext_SetAlphaBlendEnableBits`, `SetCullEnableState`, `SetAlphaTestState`, `SetDepthCompareBits`, etc. | 0x8236F1F0–0x8236F308 | 0x1C–0x38 | structural match |
-| `rex_D3DDevice_SetVertexShaderConstantFN` | not yet verified | — | 0xE8 | — |
-| `rex_D3DDevice_SetPixelShaderConstantFN` | not yet verified | — | 0xE8 | — |
-| `rex_D3DDevice_SetShaderGPRAllocation` | not yet verified | — | 0xE8 | — |
-| `rex_D3DDevice_SetPredication` | not yet verified | — | 0x16C | — |
+| `rex_D3DDevice_SetVertexShaderConstantFN` | `FM2_ConstantBuffer_UploadVector4Block` / `FM2_D3D_EmitShaderConstantsBatch` | 0x827307E8 / 0x82730DC0 | grouped PM4 path | FM2 substitute |
+| `rex_D3DDevice_SetPixelShaderConstantFN` | `FM2_ConstantBuffer_UploadVector4Block` / `FM2_D3D_EmitShaderConstantsBatch` | 0x827307E8 / 0x82730DC0 | grouped PM4 path | FM2 substitute |
+| `rex_D3DDevice_SetShaderGPRAllocation` | exact name absent; no useful FM2 native-render hook located | — | 0xE8 | absent |
+| `rex_D3DDevice_SetPredication` | exact name absent; no useful FM2 native-render hook located | — | 0x16C | absent |
 
 **Shader creation — ABSENT in FM2.** FM2 does not call `D3DDevice_CreateVertexShader`,
 `D3DDevice_CreatePixelShader`, `FXeVertexShader_Init`, or `FXePixelShader_Init` at
@@ -198,8 +198,8 @@ PM4 packets:
 |---|---|---|
 | `rex_D3DDevice_DrawIndexedVertices` | `FM2_Render_DrawIndexedPrimitive` (bypasses D3D API entirely) | 0x827221F0 |
 | `rex_D3DDevice_DrawVertices` | no equivalent found | — |
-| `rex_D3DDevice_Swap` | called via vtable slot 0x3C from `FM2_D3D_TryPresentAndUpdateStatus`; target address not yet resolved | 0x824F83D8 (caller) |
-| `rex_D3DDevice_BlockUntilIdle` | not yet verified | — |
+| `rex_D3DDevice_Swap` | `FM2_D3D_TryPresentAndUpdateStatus`; concrete swap target is a runtime vtable slot `+0x3C`, so hook the caller | 0x824F83D8 (caller) |
+| `rex_D3DDevice_BlockUntilIdle` | exact name absent; no Phase 1 product hook | — |
 | `rex_BlockOnFence_CDevice_D3D_*` | `?BlockOnSecondaryPosition@CDevice@D3D@@QAAXPAKK@Z` | 0x82371D60 |
 
 #### Phase 1 continuation findings: current FM2 hook import triage
@@ -265,20 +265,58 @@ Confirmed FM2 resource/synchronization anchors from this pass:
 | `FM2_D3D_GatherSurfaceMetadataForTextureCreate` | `0x82392090` | unlocks prior lock-surface object, calls `rex_D3DSurface_GetDesc`, validates optional subrect, and later reaches `D3DSurface_LockRect`; this is the safer FM2 hook surface for texture-from-surface capture |
 | `D3D::CDevice::BlockOnSecondaryPosition` | `0x82371D60` | waits on secondary command buffer cursor with `D3D::CBlocker(D3DBLOCKTYPE_SECONDARY_OVERRUN)`; synchronization helper, not a render-state or present hook |
 
-Still unresolved after this pass:
+Closed Phase 1 unresolved items:
 
 | ReOdyssey hook | FM2 status |
 |---|---|
-| `rex_D3DDevice_BlockUntilIdle` | exact name absent in FM2 IDB |
-| `rex_BlockOnFence_CDevice_D3D_*` | exact ReOdyssey alias absent in FM2 IDB |
-| `rex_KickOff_CDevice_D3D_*` | exact name absent in FM2 IDB |
-| `rex_D3DDevice_SetPredication` | not yet located as a useful FM2-native-render hook |
-| `rex_D3DDevice_SetShaderGPRAllocation` | not yet located as a useful FM2-native-render hook |
+| `rex_D3DDevice_BlockUntilIdle` | exact name absent in FM2 IDB; no Phase 1 product hook |
+| `rex_BlockOnFence_CDevice_D3D_*` | exact ReOdyssey alias absent; FM2 has `D3D::CDevice::BlockOnSecondaryPosition` at `0x82371D60`, but it waits a different secondary-cursor condition and is not a substitute for native rendering |
+| `rex_KickOff_CDevice_D3D_*` | exact name absent; FM2 uses its own command-buffer batch/finalize and present paths |
+| `rex_D3DDevice_SetPredication` | exact name absent; no useful FM2 native-render hook located |
+| `rex_D3DDevice_SetShaderGPRAllocation` | exact name absent; no useful FM2 native-render hook located |
 
 Immediate code implication: do not build the FM2 native renderer around
 ReOdyssey raw imports or UE3 `RHI*` hooks. The FM2 pass should use the named
 `FM2_RenderContext_*` wrappers above for semantic render state, and the PM4
 emit/draw functions only as FM2-specific draw submission boundaries.
+
+#### Phase 1 closeout: manifest/code hook surface
+
+Conducted 2026-06-23 against FM2 `default.xex.i64` via IDA MCP.
+
+Phase 1 is now closed for the ReOdyssey hook-equivalence survey:
+
+- All ReOdyssey hook symbols in
+  `docs/FM2-reodyssey-hook-equivalence-map.md` are classified as direct FM2
+  XDK helpers, FM2 title-wrapper substitutes, PM4 substitutes, grouped/partial
+  substitutes, or absent/not useful for FM2.
+- Verified FM2 render-context packed-state helpers are now in
+  `FM2/fm2_manifest.toml`, so regenerated code exposes stable names instead of
+  `sub_8236EAF8`, `sub_8236F1F0`, `sub_8236F268`, `sub_8236F2D0`,
+  `sub_8236F340`, and `sub_8236F440` through `sub_8236F4A0`.
+- The remaining active helper imports used by `d3d_hooks.cpp` are also named in
+  the manifest: `FM2_D3DVertexBuffer_Lock` at `0x82369FA0` and
+  `FM2_D3DSurface_GetDesc` at `0x8236C0E8`.
+- `FM2/src/render/d3d_hooks.cpp` now hooks only verified FM2 call-through
+  boundaries. Each hook calls the generated FM2 body first through `__imp__*`,
+  then mirrors the defensible one-to-one state into Plume.
+- Regenerated code no longer exposes `sub_82369FA0` or `sub_8236C0E8` in the
+  active FM2 generated/hook surface; callers use the stable manifest names.
+- The present slot target under `FM2_D3D_TryPresentAndUpdateStatus` remains a
+  runtime vtable dispatch. Static analysis shows it calls vtable slot `+0x3C`
+  on the object at `present_chain + 0x18`; `FM2_D3D_TryPresentAndUpdateStatus`
+  remains the stable Phase 1 present boundary.
+
+Verification:
+
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2_codegen`
+  completed from `FM2/`.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed from
+  `FM2/`.
+- Root `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests`
+  passed.
+- `out/win-amd64/RelWithDebInfo/unit_tests.exe "[fm2][plume]"` passed with
+  729 assertions in 61 test cases.
 
 #### Summary: what differs from the ReOdyssey model
 

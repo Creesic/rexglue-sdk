@@ -74935,7 +74935,7 @@ loc_822281F0:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r11.u32 + 0);
 	// bl 0x82369fa0
 	ctx.lr = 0x82228238;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// lwz r11,0(r30)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 0);
 	// mr r27,r3

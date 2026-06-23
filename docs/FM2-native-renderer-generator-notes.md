@@ -2189,9 +2189,18 @@ Implemented scope:
   `FM2_RenderContext_SetVertexShaderState`,
   `FM2_RenderContext_BindVertexStream`,
   `FM2_RenderContext_BindIndexBuffer`,
-  `FM2_RenderContext_SetBoundSurface`, the current packed-state helpers named
-  `sub_8236EAF8` through `sub_8236F4A0`, and
+  `FM2_RenderContext_SetBoundSurface`, the verified packed-state helpers now
+  named `FM2_RenderContext_SetDepthStencilEnableState`,
+  `FM2_RenderContext_SetAlphaBlendEnableBits`,
+  `FM2_RenderContext_SetAlphaTestState`,
+  `FM2_RenderContext_SetDepthCompareBits`,
+  `FM2_RenderContext_SetColorWriteMaskBits`,
+  `FM2_RenderContext_SetClipPlane0Enable` through
+  `FM2_RenderContext_SetClipPlane3Enable`, and
   `FM2_D3D_TryPresentAndUpdateStatus`.
+- Named the remaining active generated helper imports used by this file:
+  `FM2_D3DVertexBuffer_Lock` at `0x82369FA0` and
+  `FM2_D3DSurface_GetDesc` at `0x8236C0E8`.
 - Removed stale ReOdyssey-style replacements for FM2 title wrappers whose
   physical prototypes do not match FM2, including the resource creation,
   lock/unlock, generated draw wrapper, and low-level emit-packet hooks.
@@ -2204,10 +2213,17 @@ Implemented scope:
 
 Verification:
 
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2_codegen`
+  passed from `FM2/`, regenerating the final helper names.
 - `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed from
   `FM2/`.
-- `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests` is not
-  available in this FM2 build tree; Ninja reports `unknown target 'unit_tests'`.
+- `rg` found no remaining `sub_82369FA0` or `sub_8236C0E8` references in
+  `FM2/generated` or `FM2/src/render/d3d_hooks.cpp`.
+- The FM2 sub-build has no local `unit_tests` target, but the root
+  `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests`
+  target passed.
+- `out/win-amd64/RelWithDebInfo/unit_tests.exe "[fm2][plume]"` passed with
+  729 assertions in 61 test cases.
 
 Current limitation:
 

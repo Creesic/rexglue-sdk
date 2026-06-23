@@ -47021,7 +47021,7 @@ loc_823CD618:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236c0e8
 	ctx.lr = 0x823CD624;
-	sub_8236C0E8(ctx, base);
+	FM2_D3DSurface_GetDesc(ctx, base);
 	// lwz r10,224(r1)
 	ctx.r10.u64 = REX_LOAD_U32(ctx.r1.u32 + 224);
 	// lwz r9,232(r1)

@@ -30530,7 +30530,7 @@ loc_82369F98:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82369FA0) {
+DEFINE_REX_FUNC(FM2_D3DVertexBuffer_Lock) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -35357,7 +35357,7 @@ loc_8236C0E0:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236C0E8) {
+DEFINE_REX_FUNC(FM2_D3DSurface_GetDesc) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -41923,7 +41923,7 @@ DEFINE_REX_FUNC(sub_8236EAE8) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236EAF8) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetDepthStencilEnableState) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,11572(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 11572);
@@ -42951,7 +42951,7 @@ DEFINE_REX_FUNC(sub_8236F1E0) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F1F0) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetAlphaBlendEnableBits) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10420(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10420);
@@ -42983,7 +42983,7 @@ DEFINE_REX_FUNC(sub_8236F218) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F228) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetCullEnableState) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,12176(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 12176);
@@ -43024,7 +43024,7 @@ DEFINE_REX_FUNC(sub_8236F260) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F268) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetAlphaTestState) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10420(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10420);
@@ -43056,7 +43056,7 @@ DEFINE_REX_FUNC(sub_8236F290) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F2A0) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetBlendModeBits) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10420(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10420);
@@ -43084,7 +43084,7 @@ DEFINE_REX_FUNC(sub_8236F2C0) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F2D0) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetDepthCompareBits) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10420(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10420);
@@ -43116,7 +43116,7 @@ DEFINE_REX_FUNC(sub_8236F2F8) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F308) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetStencilOpBits) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10420(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10420);
@@ -43148,7 +43148,7 @@ DEFINE_REX_FUNC(sub_8236F330) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F340) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetColorWriteMaskBits) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10420(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10420);
@@ -43176,7 +43176,7 @@ DEFINE_REX_FUNC(sub_8236F360) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F370) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetPolygonModeBits) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10420(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10420);
@@ -43268,7 +43268,7 @@ DEFINE_REX_FUNC(sub_8236F400) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F410) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetMiscStateBitsA) {
 	REX_FUNC_PROLOGUE();
 	// lwz r11,10420(r3)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r3.u32 + 10420);
@@ -43296,7 +43296,7 @@ DEFINE_REX_FUNC(sub_8236F430) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F440) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetClipPlane0Enable) {
 	REX_FUNC_PROLOGUE();
 	// stb r4,10371(r3)
 	REX_STORE_U8(ctx.r3.u32 + 10371, ctx.r4.u8);
@@ -43318,7 +43318,7 @@ DEFINE_REX_FUNC(sub_8236F458) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F460) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetClipPlane1Enable) {
 	REX_FUNC_PROLOGUE();
 	// stb r4,10370(r3)
 	REX_STORE_U8(ctx.r3.u32 + 10370, ctx.r4.u8);
@@ -43340,7 +43340,7 @@ DEFINE_REX_FUNC(sub_8236F478) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F480) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetClipPlane2Enable) {
 	REX_FUNC_PROLOGUE();
 	// stb r4,10369(r3)
 	REX_STORE_U8(ctx.r3.u32 + 10369, ctx.r4.u8);
@@ -43362,7 +43362,7 @@ DEFINE_REX_FUNC(sub_8236F498) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236F4A0) {
+DEFINE_REX_FUNC(FM2_RenderContext_SetClipPlane3Enable) {
 	REX_FUNC_PROLOGUE();
 	// stb r4,10367(r3)
 	REX_STORE_U8(ctx.r3.u32 + 10367, ctx.r4.u8);

@@ -40465,7 +40465,7 @@ loc_825D4D80:
 	ctx.r4.s64 = ctx.r1.s64 + 160;
 	// bl 0x8236c0e8
 	ctx.lr = 0x825D4D98;
-	sub_8236C0E8(ctx, base);
+	FM2_D3DSurface_GetDesc(ctx, base);
 	// lwz r11,184(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 184);
 	// cmplw cr6,r11,r31
@@ -40516,7 +40516,7 @@ loc_825D4D80:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r30.u32 + 10444);
 	// bl 0x8236c0e8
 	ctx.lr = 0x825D4DF8;
-	sub_8236C0E8(ctx, base);
+	FM2_D3DSurface_GetDesc(ctx, base);
 	// lwz r11,10440(r27)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r27.u32 + 10440);
 	// li r10,5120
@@ -42459,7 +42459,7 @@ DEFINE_REX_FUNC(FM2_Render_LiverySectionClearColorAndDraw) {
 	ctx.r4.s64 = ctx.r1.s64 + 704;
 	// bl 0x8236c0e8
 	ctx.lr = 0x825D5B00;
-	sub_8236C0E8(ctx, base);
+	FM2_D3DSurface_GetDesc(ctx, base);
 	// lis r10,-32256
 	ctx.r10.s64 = -2113929216;
 	// mulli r11,r29,12
@@ -43189,35 +43189,35 @@ loc_825D5F3C:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f2a0
 	ctx.lr = 0x825D5FD8;
-	sub_8236F2A0(ctx, base);
+	FM2_RenderContext_SetBlendModeBits(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f340
 	ctx.lr = 0x825D5FE4;
-	sub_8236F340(ctx, base);
+	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f308
 	ctx.lr = 0x825D5FF0;
-	sub_8236F308(ctx, base);
+	FM2_RenderContext_SetStencilOpBits(ctx, base);
 	// li r4,5
 	ctx.r4.s64 = 5;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f370
 	ctx.lr = 0x825D5FFC;
-	sub_8236F370(ctx, base);
+	FM2_RenderContext_SetPolygonModeBits(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f410
 	ctx.lr = 0x825D6008;
-	sub_8236F410(ctx, base);
+	FM2_RenderContext_SetMiscStateBitsA(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// mr r3,r30
@@ -43259,35 +43259,35 @@ loc_825D602C:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f2a0
 	ctx.lr = 0x825D6050;
-	sub_8236F2A0(ctx, base);
+	FM2_RenderContext_SetBlendModeBits(ctx, base);
 	// li r4,3
 	ctx.r4.s64 = 3;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f340
 	ctx.lr = 0x825D605C;
-	sub_8236F340(ctx, base);
+	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
 	// li r4,3
 	ctx.r4.s64 = 3;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f308
 	ctx.lr = 0x825D6068;
-	sub_8236F308(ctx, base);
+	FM2_RenderContext_SetStencilOpBits(ctx, base);
 	// li r4,4
 	ctx.r4.s64 = 4;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f370
 	ctx.lr = 0x825D6074;
-	sub_8236F370(ctx, base);
+	FM2_RenderContext_SetPolygonModeBits(ctx, base);
 	// li r4,3
 	ctx.r4.s64 = 3;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f410
 	ctx.lr = 0x825D6080;
-	sub_8236F410(ctx, base);
+	FM2_RenderContext_SetMiscStateBitsA(ctx, base);
 	// li r4,3
 	ctx.r4.s64 = 3;
 	// b 0x825d60e8
@@ -43318,35 +43318,35 @@ loc_825D6088:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f2a0
 	ctx.lr = 0x825D60B4;
-	sub_8236F2A0(ctx, base);
+	FM2_RenderContext_SetBlendModeBits(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f340
 	ctx.lr = 0x825D60C0;
-	sub_8236F340(ctx, base);
+	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f308
 	ctx.lr = 0x825D60CC;
-	sub_8236F308(ctx, base);
+	FM2_RenderContext_SetStencilOpBits(ctx, base);
 	// li r4,5
 	ctx.r4.s64 = 5;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f370
 	ctx.lr = 0x825D60D8;
-	sub_8236F370(ctx, base);
+	FM2_RenderContext_SetPolygonModeBits(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f410
 	ctx.lr = 0x825D60E4;
-	sub_8236F410(ctx, base);
+	FM2_RenderContext_SetMiscStateBitsA(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 loc_825D60E8:
@@ -43446,35 +43446,35 @@ loc_825D616C:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f2a0
 	ctx.lr = 0x825D6190;
-	sub_8236F2A0(ctx, base);
+	FM2_RenderContext_SetBlendModeBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f340
 	ctx.lr = 0x825D619C;
-	sub_8236F340(ctx, base);
+	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f308
 	ctx.lr = 0x825D61A8;
-	sub_8236F308(ctx, base);
+	FM2_RenderContext_SetStencilOpBits(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f370
 	ctx.lr = 0x825D61B4;
-	sub_8236F370(ctx, base);
+	FM2_RenderContext_SetPolygonModeBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f410
 	ctx.lr = 0x825D61C0;
-	sub_8236F410(ctx, base);
+	FM2_RenderContext_SetMiscStateBitsA(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r30
@@ -46619,7 +46619,7 @@ loc_825D76F0:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8236c0e8
 	ctx.lr = 0x825D7754;
-	sub_8236C0E8(ctx, base);
+	FM2_D3DSurface_GetDesc(ctx, base);
 	// lwz r3,404(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 404);
 	// bl 0x824e5a48
@@ -57873,7 +57873,7 @@ loc_825DC1D4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236eaf8
 	ctx.lr = 0x825DC200;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r31
@@ -57890,7 +57890,7 @@ loc_825DC210:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236eaf8
 	ctx.lr = 0x825DC21C;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// mr r3,r31
@@ -79084,124 +79084,6 @@ loc_825E4CEC:
 	__imp__RtlLeaveCriticalSection(ctx, base);
 	// mr r3,r31
 	ctx.r3.u64 = ctx.r31.u64;
-	// addi r1,r1,144
-	ctx.r1.s64 = ctx.r1.s64 + 144;
-	// b 0x824131f8
-	__restgprlr_28(ctx, base);
-	return;
-}
-
-DEFINE_REX_FUNC(sub_825E4D00) {
-	REX_FUNC_PROLOGUE();
-	uint32_t ea{};
-	// mflr r12
-	ctx.r12.u64 = ctx.lr;
-	// bl 0x824131a8
-	ctx.lr = 0x825E4D08;
-	__savegprlr_28(ctx, base);
-	// stwu r1,-144(r1)
-	ea = -144 + ctx.r1.u32;
-	REX_STORE_U32(ea, ctx.r1.u32);
-	ctx.r1.u32 = ea;
-	// mr r31,r3
-	ctx.r31.u64 = ctx.r3.u64;
-	// mr r30,r4
-	ctx.r30.u64 = ctx.r4.u64;
-	// addi r28,r31,44
-	ctx.r28.s64 = ctx.r31.s64 + 44;
-	// mr r3,r28
-	ctx.r3.u64 = ctx.r28.u64;
-	// bl 0x8294e2b8
-	ctx.lr = 0x825E4D20;
-	__imp__RtlEnterCriticalSection(ctx, base);
-	// addi r31,r31,72
-	ctx.r31.s64 = ctx.r31.s64 + 72;
-	// mr r6,r30
-	ctx.r6.u64 = ctx.r30.u64;
-	// addi r3,r1,88
-	ctx.r3.s64 = ctx.r1.s64 + 88;
-	// lwz r11,4(r31)
-	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
-	// stw r31,88(r1)
-	REX_STORE_U32(ctx.r1.u32 + 88, ctx.r31.u32);
-	// mr r10,r11
-	ctx.r10.u64 = ctx.r11.u64;
-	// stw r31,80(r1)
-	REX_STORE_U32(ctx.r1.u32 + 80, ctx.r31.u32);
-	// lwz r11,0(r11)
-	ctx.r11.u64 = REX_LOAD_U32(ctx.r11.u32 + 0);
-	// stw r10,84(r1)
-	REX_STORE_U32(ctx.r1.u32 + 84, ctx.r10.u32);
-	// ld r5,80(r1)
-	ctx.r5.u64 = REX_LOAD_U64(ctx.r1.u32 + 80);
-	// stw r11,92(r1)
-	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r11.u32);
-	// ld r4,88(r1)
-	ctx.r4.u64 = REX_LOAD_U64(ctx.r1.u32 + 88);
-	// bl 0x825e3490
-	ctx.lr = 0x825E4D54;
-	sub_825E3490(ctx, base);
-	// lwz r11,88(r1)
-	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 88);
-	// lwz r10,4(r31)
-	ctx.r10.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
-	// cmplwi cr6,r11,0
-	ctx.cr6.compare<uint32_t>(ctx.r11.u32, 0, ctx.xer);
-	// beq cr6,0x825e4d6c
-	if (ctx.cr6.eq) goto loc_825E4D6C;
-	// cmplw cr6,r11,r31
-	ctx.cr6.compare<uint32_t>(ctx.r11.u32, ctx.r31.u32, ctx.xer);
-	// beq cr6,0x825e4d70
-	if (ctx.cr6.eq) goto loc_825E4D70;
-loc_825E4D6C:
-	// twi 31,r0,22
-	ppc_trap(ctx, base, 22);
-loc_825E4D70:
-	// lwz r11,92(r1)
-	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 92);
-	// subf r11,r11,r10
-	ctx.r11.u64 = ctx.r10.u64 - ctx.r11.u64;
-	// cntlzw r11,r11
-	ctx.r11.u64 = ctx.r11.u32 == 0 ? 32 : __builtin_clz(ctx.r11.u32);
-	// rlwinm. r11,r11,27,31,31
-	ctx.r11.u64 = __builtin_rotateleft64(ctx.r11.u32 | (ctx.r11.u64 << 32), 27) & 0x1;
-	ctx.cr0.compare<int32_t>(ctx.r11.s32, 0, ctx.xer);
-	// beq 0x825e4db8
-	if (ctx.cr0.eq) goto loc_825E4DB8;
-	// mr r6,r30
-	ctx.r6.u64 = ctx.r30.u64;
-	// lwz r30,4(r31)
-	ctx.r30.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
-	// mr r3,r31
-	ctx.r3.u64 = ctx.r31.u64;
-	// mr r4,r30
-	ctx.r4.u64 = ctx.r30.u64;
-	// lwz r5,4(r30)
-	ctx.r5.u64 = REX_LOAD_U32(ctx.r30.u32 + 4);
-	// bl 0x8221d380
-	ctx.lr = 0x825E4D9C;
-	sub_8221D380(ctx, base);
-	// mr r29,r3
-	ctx.r29.u64 = ctx.r3.u64;
-	// li r4,1
-	ctx.r4.s64 = 1;
-	// mr r3,r31
-	ctx.r3.u64 = ctx.r31.u64;
-	// bl 0x8221d3d8
-	ctx.lr = 0x825E4DAC;
-	sub_8221D3D8(ctx, base);
-	// stw r29,4(r30)
-	REX_STORE_U32(ctx.r30.u32 + 4, ctx.r29.u32);
-	// lwz r11,4(r29)
-	ctx.r11.u64 = REX_LOAD_U32(ctx.r29.u32 + 4);
-	// stw r29,0(r11)
-	REX_STORE_U32(ctx.r11.u32 + 0, ctx.r29.u32);
-loc_825E4DB8:
-	// mr r3,r28
-	ctx.r3.u64 = ctx.r28.u64;
-	// bl 0x8294e2c8
-	ctx.lr = 0x825E4DC0;
-	__imp__RtlLeaveCriticalSection(ctx, base);
 	// addi r1,r1,144
 	ctx.r1.s64 = ctx.r1.s64 + 144;
 	// b 0x824131f8

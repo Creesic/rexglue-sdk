@@ -1192,7 +1192,7 @@ DEFINE_REX_FUNC(sub_82514168) {
 	ctx.r4.s64 = 0;
 	// bl 0x82369fa0
 	ctx.lr = 0x82514240;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// lis r11,-32256
 	ctx.r11.s64 = -2113929216;
 	// mr r4,r3
@@ -18819,28 +18819,28 @@ loc_8251B6C8:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f228
 	ctx.lr = 0x8251B704;
-	sub_8236F228(ctx, base);
+	FM2_RenderContext_SetCullEnableState(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f2a0
 	ctx.lr = 0x8251B710;
-	sub_8236F2A0(ctx, base);
+	FM2_RenderContext_SetBlendModeBits(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f268
 	ctx.lr = 0x8251B71C;
-	sub_8236F268(ctx, base);
+	FM2_RenderContext_SetAlphaTestState(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f340
 	ctx.lr = 0x8251B728;
-	sub_8236F340(ctx, base);
+	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
 	// lwz r11,4(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
 	// lwz r3,8(r31)
@@ -18849,14 +18849,14 @@ loc_8251B6C8:
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r11.u32 + 3296);
 	// bl 0x8236f440
 	ctx.lr = 0x8251B738;
-	sub_8236F440(ctx, base);
+	FM2_RenderContext_SetClipPlane0Enable(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f410
 	ctx.lr = 0x8251B744;
-	sub_8236F410(ctx, base);
+	FM2_RenderContext_SetMiscStateBitsA(ctx, base);
 	// lwz r11,4(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
 	// lwz r3,8(r31)
@@ -18865,14 +18865,14 @@ loc_8251B6C8:
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r11.u32 + 3296);
 	// bl 0x8236f4a0
 	ctx.lr = 0x8251B754;
-	sub_8236F4A0(ctx, base);
+	FM2_RenderContext_SetClipPlane3Enable(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f370
 	ctx.lr = 0x8251B760;
-	sub_8236F370(ctx, base);
+	FM2_RenderContext_SetPolygonModeBits(ctx, base);
 	// b 0x8251b8ac
 	goto loc_8251B8AC;
 loc_8251B764:
@@ -18908,49 +18908,49 @@ loc_8251B764:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f228
 	ctx.lr = 0x8251B7A0;
-	sub_8236F228(ctx, base);
+	FM2_RenderContext_SetCullEnableState(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f2a0
 	ctx.lr = 0x8251B7AC;
-	sub_8236F2A0(ctx, base);
+	FM2_RenderContext_SetBlendModeBits(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f340
 	ctx.lr = 0x8251B7B8;
-	sub_8236F340(ctx, base);
+	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f308
 	ctx.lr = 0x8251B7C4;
-	sub_8236F308(ctx, base);
+	FM2_RenderContext_SetStencilOpBits(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f2d0
 	ctx.lr = 0x8251B7D0;
-	sub_8236F2D0(ctx, base);
+	FM2_RenderContext_SetDepthCompareBits(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f460
 	ctx.lr = 0x8251B7DC;
-	sub_8236F460(ctx, base);
+	FM2_RenderContext_SetClipPlane1Enable(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f480
 	ctx.lr = 0x8251B7E8;
-	sub_8236F480(ctx, base);
+	FM2_RenderContext_SetClipPlane2Enable(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// b 0x8251b8a4
@@ -19012,49 +19012,49 @@ loc_8251B81C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f228
 	ctx.lr = 0x8251B858;
-	sub_8236F228(ctx, base);
+	FM2_RenderContext_SetCullEnableState(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f2a0
 	ctx.lr = 0x8251B864;
-	sub_8236F2A0(ctx, base);
+	FM2_RenderContext_SetBlendModeBits(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f340
 	ctx.lr = 0x8251B870;
-	sub_8236F340(ctx, base);
+	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f308
 	ctx.lr = 0x8251B87C;
-	sub_8236F308(ctx, base);
+	FM2_RenderContext_SetStencilOpBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f2d0
 	ctx.lr = 0x8251B888;
-	sub_8236F2D0(ctx, base);
+	FM2_RenderContext_SetDepthCompareBits(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f460
 	ctx.lr = 0x8251B894;
-	sub_8236F460(ctx, base);
+	FM2_RenderContext_SetClipPlane1Enable(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f480
 	ctx.lr = 0x8251B8A0;
-	sub_8236F480(ctx, base);
+	FM2_RenderContext_SetClipPlane2Enable(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 loc_8251B8A4:
@@ -19062,7 +19062,7 @@ loc_8251B8A4:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f440
 	ctx.lr = 0x8251B8AC;
-	sub_8236F440(ctx, base);
+	FM2_RenderContext_SetClipPlane0Enable(ctx, base);
 loc_8251B8AC:
 	// li r4,0
 	ctx.r4.s64 = 0;
@@ -19150,7 +19150,7 @@ loc_8251B914:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f1f0
 	ctx.lr = 0x8251B920;
-	sub_8236F1F0(ctx, base);
+	FM2_RenderContext_SetAlphaBlendEnableBits(ctx, base);
 	// b 0x8251b984
 	goto loc_8251B984;
 loc_8251B924:
@@ -19168,7 +19168,7 @@ loc_8251B934:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f1f0
 	ctx.lr = 0x8251B93C;
-	sub_8236F1F0(ctx, base);
+	FM2_RenderContext_SetAlphaBlendEnableBits(ctx, base);
 	// b 0x8251b978
 	goto loc_8251B978;
 loc_8251B940:
@@ -19190,7 +19190,7 @@ loc_8251B954:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f1f0
 	ctx.lr = 0x8251B960;
-	sub_8236F1F0(ctx, base);
+	FM2_RenderContext_SetAlphaBlendEnableBits(ctx, base);
 	// lis r11,-32256
 	ctx.r11.s64 = -2113929216;
 	// lfs f0,5288(r11)
@@ -19347,35 +19347,35 @@ loc_8251BA60:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f228
 	ctx.lr = 0x8251BA6C;
-	sub_8236F228(ctx, base);
+	FM2_RenderContext_SetCullEnableState(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f2a0
 	ctx.lr = 0x8251BA78;
-	sub_8236F2A0(ctx, base);
+	FM2_RenderContext_SetBlendModeBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f340
 	ctx.lr = 0x8251BA84;
-	sub_8236F340(ctx, base);
+	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f308
 	ctx.lr = 0x8251BA90;
-	sub_8236F308(ctx, base);
+	FM2_RenderContext_SetStencilOpBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f2d0
 	ctx.lr = 0x8251BA9C;
-	sub_8236F2D0(ctx, base);
+	FM2_RenderContext_SetDepthCompareBits(ctx, base);
 	// li r30,-1
 	ctx.r30.s64 = -1;
 	// lwz r3,8(r31)
@@ -19384,21 +19384,21 @@ loc_8251BA60:
 	ctx.r4.u64 = ctx.r30.u64;
 	// bl 0x8236f460
 	ctx.lr = 0x8251BAAC;
-	sub_8236F460(ctx, base);
+	FM2_RenderContext_SetClipPlane1Enable(ctx, base);
 	// mr r4,r30
 	ctx.r4.u64 = ctx.r30.u64;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f480
 	ctx.lr = 0x8251BAB8;
-	sub_8236F480(ctx, base);
+	FM2_RenderContext_SetClipPlane2Enable(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f440
 	ctx.lr = 0x8251BAC4;
-	sub_8236F440(ctx, base);
+	FM2_RenderContext_SetClipPlane0Enable(ctx, base);
 	// b 0x8251bb28
 	goto loc_8251BB28;
 loc_8251BAC8:
@@ -19408,56 +19408,56 @@ loc_8251BAC8:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f228
 	ctx.lr = 0x8251BAD4;
-	sub_8236F228(ctx, base);
+	FM2_RenderContext_SetCullEnableState(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f268
 	ctx.lr = 0x8251BAE0;
-	sub_8236F268(ctx, base);
+	FM2_RenderContext_SetAlphaTestState(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f340
 	ctx.lr = 0x8251BAEC;
-	sub_8236F340(ctx, base);
+	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f440
 	ctx.lr = 0x8251BAF8;
-	sub_8236F440(ctx, base);
+	FM2_RenderContext_SetClipPlane0Enable(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f2a0
 	ctx.lr = 0x8251BB04;
-	sub_8236F2A0(ctx, base);
+	FM2_RenderContext_SetBlendModeBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f410
 	ctx.lr = 0x8251BB10;
-	sub_8236F410(ctx, base);
+	FM2_RenderContext_SetMiscStateBitsA(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f4a0
 	ctx.lr = 0x8251BB1C;
-	sub_8236F4A0(ctx, base);
+	FM2_RenderContext_SetClipPlane3Enable(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);
 	// bl 0x8236f370
 	ctx.lr = 0x8251BB28;
-	sub_8236F370(ctx, base);
+	FM2_RenderContext_SetPolygonModeBits(ctx, base);
 loc_8251BB28:
 	// lwz r3,8(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 8);

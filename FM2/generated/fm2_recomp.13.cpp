@@ -52801,7 +52801,7 @@ DEFINE_REX_FUNC(FM2_D3D_CopySurfaceRectLocked) {
 	ctx.r27.u64 = ctx.r3.u64;
 	// bl 0x8236c0e8
 	ctx.lr = 0x82391E64;
-	sub_8236C0E8(ctx, base);
+	FM2_D3DSurface_GetDesc(ctx, base);
 	// li r6,0
 	ctx.r6.s64 = 0;
 	// li r5,0
@@ -53161,7 +53161,7 @@ DEFINE_REX_FUNC(FM2_D3D_GatherSurfaceMetadataForTextureCreate) {
 	ctx.r3.u64 = ctx.r16.u64;
 	// bl 0x8236c0e8
 	ctx.lr = 0x823920C8;
-	sub_8236C0E8(ctx, base);
+	FM2_D3DSurface_GetDesc(ctx, base);
 	// li r14,1
 	ctx.r14.s64 = 1;
 	// cmplwi cr6,r31,0

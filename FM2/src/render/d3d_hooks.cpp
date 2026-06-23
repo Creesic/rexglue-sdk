@@ -64,31 +64,31 @@ REX_IMPORT(__imp__FM2_RenderContext_SetBoundSurface,
 REX_IMPORT(__imp__FM2_D3D_TryPresentAndUpdateStatus,
            g_origFm2TryPresentAndUpdateStatus, void(uint32_t));
 
-// Current generated names for the FM2 render-context packed-state helpers.
-REX_IMPORT(__imp__sub_8236EAF8, g_origFm2SetDepthStencilEnableState,
-           void(uint32_t, uint32_t));
-REX_IMPORT(__imp__sub_8236F1F0, g_origFm2SetAlphaBlendEnableBits,
-           void(uint32_t, uint32_t));
-REX_IMPORT(__imp__sub_8236F268, g_origFm2SetAlphaTestState,
-           void(uint32_t, uint32_t));
-REX_IMPORT(__imp__sub_8236F2D0, g_origFm2SetDepthCompareBits,
-           void(uint32_t, uint32_t));
-REX_IMPORT(__imp__sub_8236F340, g_origFm2SetColorWriteMaskBits,
-           void(uint32_t, uint32_t));
-REX_IMPORT(__imp__sub_8236F440, g_origFm2SetClipPlane0Enable,
-           void(uint32_t, uint32_t));
-REX_IMPORT(__imp__sub_8236F460, g_origFm2SetClipPlane1Enable,
-           void(uint32_t, uint32_t));
-REX_IMPORT(__imp__sub_8236F480, g_origFm2SetClipPlane2Enable,
-           void(uint32_t, uint32_t));
-REX_IMPORT(__imp__sub_8236F4A0, g_origFm2SetClipPlane3Enable,
-           void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetDepthStencilEnableState,
+           g_origFm2SetDepthStencilEnableState, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetAlphaBlendEnableBits,
+           g_origFm2SetAlphaBlendEnableBits, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetAlphaTestState,
+           g_origFm2SetAlphaTestState, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetDepthCompareBits,
+           g_origFm2SetDepthCompareBits, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetColorWriteMaskBits,
+           g_origFm2SetColorWriteMaskBits, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane0Enable,
+           g_origFm2SetClipPlane0Enable, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane1Enable,
+           g_origFm2SetClipPlane1Enable, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane2Enable,
+           g_origFm2SetClipPlane2Enable, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane3Enable,
+           g_origFm2SetClipPlane3Enable, void(uint32_t, uint32_t));
 
-REX_IMPORT(__imp__sub_82369FA0, g_origVertexBufferLock,
+REX_IMPORT(__imp__FM2_D3DVertexBuffer_Lock, g_origVertexBufferLock,
            uint32_t(void *, uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_D3D_LockGpuBufferRaw, g_origIndexBufferLock,
            uint32_t(void *, uint32_t, uint32_t, uint32_t));
-REX_IMPORT(__imp__sub_8236C0E8, g_origSurfaceGetDesc, void(void *, void *));
+REX_IMPORT(__imp__FM2_D3DSurface_GetDesc, g_origSurfaceGetDesc,
+           void(void *, void *));
 
 namespace {
 
@@ -1168,14 +1168,16 @@ REX_HOOK(FM2_RenderContext_BindVertexStream, Fm2BindVertexStream);
 REX_HOOK(FM2_RenderContext_BindIndexBuffer, Fm2BindIndexBuffer);
 REX_HOOK(FM2_RenderContext_SetBoundSurface, Fm2SetBoundSurface);
 
-REX_HOOK(sub_8236EAF8, Fm2SetDepthStencilEnableState);
-REX_HOOK(sub_8236F1F0, Fm2SetAlphaBlendEnableBits);
-REX_HOOK(sub_8236F268, Fm2SetAlphaTestState);
-REX_HOOK(sub_8236F2D0, Fm2SetDepthCompareBits);
-REX_HOOK(sub_8236F340, Fm2SetColorWriteMaskBits);
-REX_HOOK(sub_8236F440, Fm2SetClipPlane0Enable);
-REX_HOOK(sub_8236F460, Fm2SetClipPlane1Enable);
-REX_HOOK(sub_8236F480, Fm2SetClipPlane2Enable);
-REX_HOOK(sub_8236F4A0, Fm2SetClipPlane3Enable);
+REX_HOOK(FM2_RenderContext_SetDepthStencilEnableState,
+         Fm2SetDepthStencilEnableState);
+REX_HOOK(FM2_RenderContext_SetAlphaBlendEnableBits,
+         Fm2SetAlphaBlendEnableBits);
+REX_HOOK(FM2_RenderContext_SetAlphaTestState, Fm2SetAlphaTestState);
+REX_HOOK(FM2_RenderContext_SetDepthCompareBits, Fm2SetDepthCompareBits);
+REX_HOOK(FM2_RenderContext_SetColorWriteMaskBits, Fm2SetColorWriteMaskBits);
+REX_HOOK(FM2_RenderContext_SetClipPlane0Enable, Fm2SetClipPlane0Enable);
+REX_HOOK(FM2_RenderContext_SetClipPlane1Enable, Fm2SetClipPlane1Enable);
+REX_HOOK(FM2_RenderContext_SetClipPlane2Enable, Fm2SetClipPlane2Enable);
+REX_HOOK(FM2_RenderContext_SetClipPlane3Enable, Fm2SetClipPlane3Enable);
 
 REX_HOOK(FM2_D3D_TryPresentAndUpdateStatus, Fm2Present);

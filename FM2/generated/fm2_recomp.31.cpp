@@ -65903,7 +65903,7 @@ loc_825A2E74:
 	ctx.r29.u64 = ctx.r3.u64;
 	// bl 0x8236c0e8
 	ctx.lr = 0x825A2E94;
-	sub_8236C0E8(ctx, base);
+	FM2_D3DSurface_GetDesc(ctx, base);
 	// li r6,0
 	ctx.r6.s64 = 0;
 	// li r5,0
@@ -79487,7 +79487,7 @@ DEFINE_REX_FUNC(sub_825A8888) {
 	ctx.r4.s64 = 0;
 	// bl 0x82369fa0
 	ctx.lr = 0x825A8994;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// lwz r11,4(r30)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r30.u32 + 4);
 	// mr r29,r3
@@ -79581,7 +79581,7 @@ loc_825A8A0C:
 	ctx.r4.s64 = 0;
 	// bl 0x82369fa0
 	ctx.lr = 0x825A8A40;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// mr r29,r3
 	ctx.r29.u64 = ctx.r3.u64;
 	// li r27,0
@@ -79774,7 +79774,7 @@ DEFINE_REX_FUNC(sub_825A8AF8) {
 	ctx.r4.s64 = 0;
 	// bl 0x82369fa0
 	ctx.lr = 0x825A8B88;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// mr r29,r3
 	ctx.r29.u64 = ctx.r3.u64;
 	// cmplwi cr6,r28,0
@@ -79853,7 +79853,7 @@ loc_825A8BF8:
 	ctx.r4.s64 = 0;
 	// bl 0x82369fa0
 	ctx.lr = 0x825A8C0C;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// lwz r11,0(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// lwz r10,8(r30)

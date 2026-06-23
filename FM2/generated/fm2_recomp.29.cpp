@@ -48032,7 +48032,7 @@ DEFINE_REX_FUNC(sub_82561F58) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r11.u32 + 0);
 	// bl 0x82369fa0
 	ctx.lr = 0x82561FB0;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// mr r14,r3
 	ctx.r14.u64 = ctx.r3.u64;
 loc_82561FB4:
@@ -48172,7 +48172,7 @@ loc_8256207C:
 	ctx.r23.u64 = REX_LOAD_U32(ctx.r11.u32 + 8);
 	// bl 0x82369fa0
 	ctx.lr = 0x825620A4;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// mr r21,r3
 	ctx.r21.u64 = ctx.r3.u64;
 loc_825620A8:
@@ -51225,7 +51225,7 @@ loc_825634C8:
 	ctx.r4.s64 = 0;
 	// bl 0x82369fa0
 	ctx.lr = 0x825634DC;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// lwz r10,344(r31)
 	ctx.r10.u64 = REX_LOAD_U32(ctx.r31.u32 + 344);
 	// lhz r11,180(r31)
@@ -62586,7 +62586,7 @@ loc_8256815C:
 	ctx.r4.s64 = 0;
 	// bl 0x8236eaf8
 	ctx.lr = 0x82568214;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// b 0x8256825c
@@ -62628,7 +62628,7 @@ loc_8256824C:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8236eaf8
 	ctx.lr = 0x82568258;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 loc_8256825C:

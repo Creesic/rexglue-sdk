@@ -25464,7 +25464,7 @@ loc_827BA3A4:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236eaf8
 	ctx.lr = 0x827BA424;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,6
 	ctx.r4.s64 = 6;
 	// lwz r3,7148(r31)
@@ -26540,7 +26540,7 @@ loc_827BAB14:
 	ctx.r3.u64 = __builtin_rotateleft32(ctx.r3.u32, 0);
 	// bl 0x82369fa0
 	ctx.lr = 0x827BAB3C;
-	sub_82369FA0(ctx, base);
+	FM2_D3DVertexBuffer_Lock(ctx, base);
 	// lwz r11,12(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 12);
 	// mr r5,r30
@@ -27639,7 +27639,7 @@ loc_827BB23C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236eaf8
 	ctx.lr = 0x827BB264;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,6
 	ctx.r4.s64 = 6;
 	// lwz r3,7148(r31)
@@ -28091,7 +28091,7 @@ loc_827BB528:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236f1f0
 	ctx.lr = 0x827BB554;
-	sub_8236F1F0(ctx, base);
+	FM2_RenderContext_SetAlphaBlendEnableBits(ctx, base);
 	// b 0x827bb564
 	goto loc_827BB564;
 loc_827BB558:
@@ -30231,7 +30231,7 @@ loc_827BC364:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236f1f0
 	ctx.lr = 0x827BC398;
-	sub_8236F1F0(ctx, base);
+	FM2_RenderContext_SetAlphaBlendEnableBits(ctx, base);
 loc_827BC398:
 	// li r4,0
 	ctx.r4.s64 = 0;
@@ -30246,7 +30246,7 @@ loc_827BC398:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236eaf8
 	ctx.lr = 0x827BC3B0;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,7148(r31)
@@ -31389,14 +31389,14 @@ DEFINE_REX_FUNC(sub_827BCAF8) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236f228
 	ctx.lr = 0x827BCB24;
-	sub_8236F228(ctx, base);
+	FM2_RenderContext_SetCullEnableState(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,7148(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236f268
 	ctx.lr = 0x827BCB30;
-	sub_8236F268(ctx, base);
+	FM2_RenderContext_SetAlphaTestState(ctx, base);
 	// lbz r11,464(r30)
 	ctx.r11.u64 = REX_LOAD_U8(ctx.r30.u32 + 464);
 	// cmplwi r11,0
@@ -31443,21 +31443,21 @@ DEFINE_REX_FUNC(sub_827BCAF8) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236f460
 	ctx.lr = 0x827BCB7C;
-	sub_8236F460(ctx, base);
+	FM2_RenderContext_SetClipPlane1Enable(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,7148(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236f440
 	ctx.lr = 0x827BCB88;
-	sub_8236F440(ctx, base);
+	FM2_RenderContext_SetClipPlane0Enable(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// lwz r3,7148(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236f340
 	ctx.lr = 0x827BCB94;
-	sub_8236F340(ctx, base);
+	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,7148(r31)
@@ -31484,7 +31484,7 @@ DEFINE_REX_FUNC(sub_827BCAF8) {
 	ctx.r4.s64 = 1;
 	// bl 0x8236eaf8
 	ctx.lr = 0x827BCBC4;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,7148(r31)
@@ -31508,7 +31508,7 @@ loc_827BCBE4:
 	ctx.r4.s64 = 0;
 	// bl 0x8236eaf8
 	ctx.lr = 0x827BCBEC;
-	sub_8236EAF8(ctx, base);
+	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 loc_827BCBF0:
@@ -31619,7 +31619,7 @@ loc_827BCBF0:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236f2a0
 	ctx.lr = 0x827BCCA4;
-	sub_8236F2A0(ctx, base);
+	FM2_RenderContext_SetBlendModeBits(ctx, base);
 	// li r4,12
 	ctx.r4.s64 = 12;
 	// addi r3,r1,80
@@ -31787,7 +31787,7 @@ loc_827BCDB0:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 7148);
 	// bl 0x8236f2a0
 	ctx.lr = 0x827BCDBC;
-	sub_8236F2A0(ctx, base);
+	FM2_RenderContext_SetBlendModeBits(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,7148(r31)
@@ -31823,7 +31823,7 @@ DEFINE_REX_FUNC(sub_827BCDE8) {
 	// lwz r3,7148(r11)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r11.u32 + 7148);
 	// b 0x8236f228
-	sub_8236F228(ctx, base);
+	FM2_RenderContext_SetCullEnableState(ctx, base);
 	return;
 }
 

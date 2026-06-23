@@ -433,3 +433,50 @@ native renderer product path around `FM2_Render_InstanceHybridDrawPath`, the
 render-context state mirror, and the present chain. Treat
 `FM2_Render_BuildDirectIndexedDrawBuffers` as a layout/discovery hook, not the
 main live draw hook.
+
+### FM2 native-renderer Phase 1 closeout (June 23)
+
+The ReOdyssey hook-equivalence pass is now closed for Phase 1. IDA37 confirms
+the useful FM2 equivalents are title wrappers or PM4 helpers, not raw ReOdyssey
+`sub_823C...` labels or UE3 `RHI*` functions.
+
+New manifest/codegen names added for the verified packed render-context state
+helpers:
+
+- `0x8236EAF8` = `FM2_RenderContext_SetDepthStencilEnableState`
+- `0x8236F1F0` = `FM2_RenderContext_SetAlphaBlendEnableBits`
+- `0x8236F228` = `FM2_RenderContext_SetCullEnableState`
+- `0x8236F268` = `FM2_RenderContext_SetAlphaTestState`
+- `0x8236F2A0` = `FM2_RenderContext_SetBlendModeBits`
+- `0x8236F2D0` = `FM2_RenderContext_SetDepthCompareBits`
+- `0x8236F308` = `FM2_RenderContext_SetStencilOpBits`
+- `0x8236F340` = `FM2_RenderContext_SetColorWriteMaskBits`
+- `0x8236F370` = `FM2_RenderContext_SetPolygonModeBits`
+- `0x8236F410` = `FM2_RenderContext_SetMiscStateBitsA`
+- `0x8236F440` = `FM2_RenderContext_SetClipPlane0Enable`
+- `0x8236F460` = `FM2_RenderContext_SetClipPlane1Enable`
+- `0x8236F480` = `FM2_RenderContext_SetClipPlane2Enable`
+- `0x8236F4A0` = `FM2_RenderContext_SetClipPlane3Enable`
+
+The active D3D hook imports also received stable manifest/codegen names:
+
+- `0x82369FA0` = `FM2_D3DVertexBuffer_Lock`
+- `0x8236C0E8` = `FM2_D3DSurface_GetDesc`
+
+Implementation note: only the one-to-one state mappings are mirrored in
+`FM2/src/render/d3d_hooks.cpp` today. `SetCullEnableState`,
+`SetBlendModeBits`, `SetStencilOpBits`, `SetPolygonModeBits`, and
+`SetMiscStateBitsA` are named for generated-code readability, but need a later
+semantic decode pass before they should drive Plume render state directly.
+
+Verification:
+
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2_codegen`
+  regenerated these names from `FM2/fm2_manifest.toml`.
+- `rg` found no remaining `sub_82369FA0` or `sub_8236C0E8` references in
+  `FM2/generated` or `FM2/src/render/d3d_hooks.cpp` after regeneration.
+- `cmake --build --preset win-amd64-relwithdebinfo --target fm2` passed.
+- Root `cmake --build --preset win-amd64-relwithdebinfo --target unit_tests`
+  passed.
+- `out/win-amd64/RelWithDebInfo/unit_tests.exe "[fm2][plume]"` passed with
+  729 assertions in 61 test cases.
