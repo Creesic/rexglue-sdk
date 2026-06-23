@@ -40,6 +40,7 @@ set(REXSYSTEM_SOURCES
     map_parser.cpp
     module.cpp
     function_dispatcher.cpp
+    bootstrap.cpp
     thread.cpp
     thread_state.cpp
     xex_module.cpp

@@ -20,6 +20,7 @@
 #include <fmt/format.h>
 #include <inja/inja.hpp>
 
+#include <rex/codegen/bootstrap_merge.h>
 #include <rex/codegen/function_graph.h>
 #include <rex/codegen/template_registry.h>
 #include <rex/filesystem.h>
@@ -226,6 +227,7 @@ bool CodegenWriter::write(bool force) {
                       static_cast<uint32_t>(analysisState().entryPoint), nullptr};
   if (runtime_)
     emitCtx.resolver = runtime_->export_resolver();
+  emitCtx.bootstrapSuggestions = &ctx_.bootstrapSuggestions();
 
   // Generate recomp files with size-based splitting
   REXCODEGEN_TRACE("Recompiling {} functions...", functions.size());
@@ -252,6 +254,12 @@ bool CodegenWriter::write(bool force) {
 
   SaveCurrentOutData();
   REXCODEGEN_TRACE("Recompilation complete.");
+
+  if (!ctx_.bootstrapSuggestions().empty()) {
+    const auto suggestions_path =
+        ctx_.configDir() / config().outDirectoryPath / "bootstrap_suggestions.toml";
+    WriteBootstrapSuggestionsToml(suggestions_path, ctx_.bootstrapSuggestions());
+  }
 
   // Generate sources.cmake
   REXCODEGEN_TRACE("Recompile: generating sources.cmake");

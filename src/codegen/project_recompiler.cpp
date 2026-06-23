@@ -21,6 +21,7 @@
 
 #include <rex/codegen/analyze.h>
 #include <rex/codegen/binary_view.h>
+#include <rex/codegen/bootstrap_merge.h>
 #include <rex/codegen/codegen.h>
 #include <rex/codegen/codegen_context.h>
 #include <rex/codegen/codegen_writer.h>
@@ -299,6 +300,9 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
     contexts.push_back({std::move(ctx), &targeted[i + 1], std::move(dll_display)});
   }
 
+  const auto discovered_path = configDir / "bootstrap_discovered.toml";
+  const auto& manifest_path = manifest_.manifestPath;
+
   std::vector<std::chrono::steady_clock::time_point> module_started_at(contexts.size());
   for (size_t i = 0; i < contexts.size(); ++i) {
     auto& entry = contexts[i];
@@ -306,6 +310,27 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
       opts.reporter->moduleStarted(entry.display_name, i, contexts.size());
     }
     module_started_at[i] = std::chrono::steady_clock::now();
+
+    const uint32_t image_base = entry.ctx.binary().baseAddress();
+    const uint32_t image_size = entry.ctx.binary().imageSize();
+    PruneFunctionsOutsideImage(entry.ctx.Config().functions, image_base, image_size);
+
+    if (i == 0 && !manifest_path.empty()) {
+      const auto suggestions_path =
+          configDir / entry.ctx.Config().outDirectoryPath / "bootstrap_suggestions.toml";
+      MergeBootstrapIntoManifest(manifest_path, "entrypoint", discovered_path, suggestions_path, {},
+                                 image_base, image_size,
+                                 entry.ctx.Config().bootstrapIgnoredFunctions);
+      const auto manifest_addrs = FilterBootstrapAddressesInImage(
+          LoadManifestFunctions(manifest_path, "entrypoint"), image_base, image_size);
+      for (uint32_t addr : manifest_addrs) {
+        if (entry.ctx.Config().bootstrapIgnoredFunctions.contains(addr)) {
+          continue;
+        }
+        entry.ctx.Config().functions.try_emplace(addr, FunctionConfig{});
+      }
+    }
+
     REXCODEGEN_TRACE("Analyzing '{}'...", entry.module->targetName);
     auto result = Analyze(entry.ctx, opts.reporter);
     if (!result) {
@@ -352,6 +377,16 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
                          writer.deletedFiles().end());
     writtenFiles_.insert(writtenFiles_.end(), writer.writtenFiles().begin(),
                          writer.writtenFiles().end());
+
+    if (i == 0 && !manifest_path.empty() && !entry.ctx.bootstrapSuggestions().empty()) {
+      const auto suggestions_path =
+          configDir / entry.ctx.Config().outDirectoryPath / "bootstrap_suggestions.toml";
+      MergeBootstrapIntoManifest(manifest_path, "entrypoint", discovered_path, suggestions_path,
+                                 entry.ctx.bootstrapSuggestions(), entry.ctx.binary().baseAddress(),
+                                 entry.ctx.binary().imageSize(),
+                                 entry.ctx.Config().bootstrapIgnoredFunctions);
+    }
+
     if (opts.reporter) {
       auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - module_started_at[i]);

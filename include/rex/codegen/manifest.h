@@ -46,6 +46,7 @@ struct ManifestConfig {
   std::optional<std::string> gameRoot;    ///< Game asset root, relative to manifestDir.
                                           ///< Set by `rexglue init` to anchor DLL guest paths.
   std::filesystem::path manifestDir;      ///< Directory containing the manifest
+  std::filesystem::path manifestPath;     ///< Absolute path to the manifest file
   BinaryConfig entrypoint;                ///< Entrypoint codegen settings (inline)
   std::vector<BinaryConfig> modules;      ///< DLL module codegen settings (inline)
 

@@ -1,0 +1,21 @@
+# Auto-discovered guest functions (bootstrap mode)
+[functions]
+0x82A56A98 = {}
+0x82A59000 = {}
+0x82A59020 = {}
+0x82A59040 = {}
+0x82A59060 = {}
+0x82A59080 = {}
+0x82A590A0 = {}
+0x82A590C0 = {}
+0x82A590E0 = {}
+0x82A59B00 = {}
+0x82A5E780 = {}
+0x82A5ECD8 = {}
+0x82A5F350 = {}
+0x82A5F370 = {}
+0x82A5F390 = {}
+0x82A5F3B0 = {}
+0x824D6868 = {}
+0x829CF100 = {}
+0x824C15D0 = {}

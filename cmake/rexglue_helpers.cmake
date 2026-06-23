@@ -33,6 +33,26 @@ function(rexglue_apply_target_settings target_name)
             target_compile_options(${target_name} PRIVATE -msse4.1)
         endif()
     endif()
+
+    # Title projects define their executable in the parent directory, so they do
+    # not inherit the SDK root add_compile_options() when built via add_subdirectory.
+    if(WIN32)
+        if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            target_compile_options(${target_name} PRIVATE
+                -fno-strict-aliasing
+                /fp:strict
+                $<$<COMPILE_LANGUAGE:CXX>:/EHsc>
+                $<$<COMPILE_LANGUAGE:CXX>:/EHa>
+                $<$<COMPILE_LANGUAGE:CXX>:/Zc:char8_t->
+            )
+        else()
+            target_compile_options(${target_name} PRIVATE
+                -fno-strict-aliasing
+                -ffp-model=strict
+                $<$<COMPILE_LANGUAGE:CXX>:-fno-char8_t>
+            )
+        endif()
+    endif()
 endfunction()
 
 #==========================================================

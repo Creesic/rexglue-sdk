@@ -84,8 +84,7 @@ bool build_bl(BuilderContext& ctx) {
 
     case TargetKind::Unknown:
       REXCODEGEN_ERROR("Unresolved bl target 0x{:08X} from 0x{:08X}", target, ctx.base);
-      ctx.println("\t// ERROR: unresolved bl target 0x{:08X}", target);
-      ctx.println("\tREX_FATAL(\"Unresolved call from 0x{:08X} to 0x{:08X}\");", ctx.base, target);
+      ctx.emit_bootstrap_or_fatal("call", target);
       break;
   }
   return true;
@@ -151,17 +150,13 @@ bool build_bctr(BuilderContext& ctx) {
             REXCODEGEN_ERROR(
                 "Jump target 0x{:08X} classified as function but not in graph at bctr 0x{:08X}",
                 label, ctx.base);
-            ctx.println(
-                "\t\tREX_FATAL(\"Jump target 0x{:08X} classified as function but not "
-                "in graph at bctr 0x{:08X}\");",
-                label, ctx.base);
+            ctx.emit_bootstrap_or_fatal("jump", label);
           }
           ctx.println("\t\treturn;");
           break;
         default:
           REXCODEGEN_ERROR("Jump target 0x{:08X} unresolved at bctr 0x{:08X}", label, ctx.base);
-          ctx.println("\t\tREX_FATAL(\"Jump target 0x{:08X} unresolved at bctr 0x{:08X}\");", label,
-                      ctx.base);
+          ctx.emit_bootstrap_or_fatal("jump", label);
           break;
       }
     }

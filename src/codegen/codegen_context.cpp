@@ -107,4 +107,10 @@ void CodegenContext::initDecoded() {
   decoded_->decode();
 }
 
+void CodegenContext::noteBootstrapSuggestion(uint32_t address) {
+  if (address != 0) {
+    bootstrapSuggestions_.insert(address);
+  }
+}
+
 }  // namespace rex::codegen

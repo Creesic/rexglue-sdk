@@ -380,6 +380,16 @@ void ApplyToml(const toml::table& toml, RecompilerConfig& cfg, const std::string
       }
     }
   }
+
+  // bootstrap_ignore_functions -> bootstrapIgnoredFunctions (set)
+  if (auto bootstrapIgnoreArray = toml["bootstrap_ignore_functions"].as_array()) {
+    for (auto& entry : *bootstrapIgnoreArray) {
+      if (auto addr = entry.value<int64_t>()) {
+        cfg.bootstrapIgnoredFunctions.insert(static_cast<uint32_t>(*addr));
+        REXCODEGEN_DEBUG("Loaded bootstrap ignore function at 0x{:08X}", *addr);
+      }
+    }
+  }
 }
 
 bool ApplyTableWithIncludes(const toml::table& tbl, const std::filesystem::path& base_dir,

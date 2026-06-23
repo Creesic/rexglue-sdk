@@ -24,6 +24,7 @@
 #include <fmt/format.h>
 #include <toml++/toml.hpp>
 
+#include <rex/codegen/bootstrap_merge.h>
 #include <rex/codegen/manifest.h>
 #include <rex/codegen/project_recompiler.h>
 #include <rex/logging.h>
@@ -159,8 +160,21 @@ void ReportStaleIncludes(const fs::path& manifest_path,
                                matches.size()));
 }
 
+void PrepareManifestBootstrapMerge(const fs::path& manifest_path) {
+  const fs::path project_dir = manifest_path.parent_path();
+  rex::codegen::MergeBootstrapIntoManifest(
+      manifest_path, "entrypoint", project_dir / "bootstrap_discovered.toml",
+      project_dir / "bootstrap_suggestions.toml", {}, 0, 0, {});
+}
+
+bool IsManifestTomlPath(const fs::path& path) {
+  const auto stem = path.stem().string();
+  return stem.size() >= 9 && std::string_view{stem}.substr(stem.size() - 9) == "_manifest";
+}
+
 Result<void> RecompileProject(const fs::path& manifest_path, const CliContext& ctx,
                               const std::vector<std::string>& targets) {
+  PrepareManifestBootstrapMerge(manifest_path);
   auto manifest = rex::codegen::ManifestConfig::Load(manifest_path);
   if (!manifest) {
     return Err<void>(rex::ErrorCategory::Config, "Failed to load manifest");
@@ -189,6 +203,7 @@ struct ManifestSummary {
 };
 
 rex::Result<ManifestSummary> LoadManifestSummary(const fs::path& manifest_path) {
+  PrepareManifestBootstrapMerge(manifest_path);
   auto manifest = rex::codegen::ManifestConfig::Load(manifest_path);
   if (!manifest) {
     return Err<ManifestSummary>(rex::ErrorCategory::Config, "Failed to load manifest");
@@ -274,12 +289,27 @@ Result<void> CodegenFromConfig(const std::string& config_path, const CliContext&
                                const std::vector<std::string>& targets) {
   REXLOG_TRACE("Generating code with config: {}", config_path);
 
+  const fs::path config_file = config_path;
+  if (IsManifestTomlPath(config_file)) {
+    PrepareManifestBootstrapMerge(config_file);
+  }
+
   toml::table parsed_tbl;
   try {
     parsed_tbl = toml::parse_file(config_path);
   } catch (const toml::parse_error& err) {
-    return Err<void>(rex::ErrorCategory::Config,
-                     fmt::format("Failed to parse {}: {}", config_path, err.what()));
+    if (IsManifestTomlPath(config_file)) {
+      PrepareManifestBootstrapMerge(config_file);
+      try {
+        parsed_tbl = toml::parse_file(config_path);
+      } catch (const toml::parse_error& retry_err) {
+        return Err<void>(rex::ErrorCategory::Config,
+                         fmt::format("Failed to parse {}: {}", config_path, retry_err.what()));
+      }
+    } else {
+      return Err<void>(rex::ErrorCategory::Config,
+                       fmt::format("Failed to parse {}: {}", config_path, err.what()));
+    }
   }
 
   std::vector<OverwriteEntry> pre_plan;

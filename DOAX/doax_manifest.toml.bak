@@ -1,0 +1,160 @@
+[entrypoint]
+file_path = 'assets/default.xex'
+includes = []
+longjmp_address = 0x829F1080
+out_directory_path = 'generated/default'
+setjmp_address = 0x829F12D0
+
+    [entrypoint.functions]
+    0x8271F580 = {}
+    0x82785670 = {}
+    0x829B96A8 = {}
+    0x82A1B3F0 = {}
+    0x82A1B410 = {}
+    0x82A1B430 = {}
+    0x82A1B450 = {}
+    0x82A1B470 = {}
+    0x82A1ECC0 = {}
+    0x82A49E58 = {}
+    0x82A49E78 = {}
+    0x82A49E98 = {}
+    0x82A49EB8 = {}
+    0x82A4A308 = {}
+    0x82A4A640 = {}
+    0x82A54F30 = {}
+    0x82A54F50 = {}
+    0x82A54F70 = {}
+    0x82A55220 = {}
+    0x82A568C8 = {}
+    0x82A568E8 = {}
+    0x82A56A78 = {}
+    0x82A56A98 = {}
+    0x82A59000 = {}
+    0x82A59020 = {}
+    0x82A59040 = {}
+    0x82A59060 = {}
+    0x82A59080 = {}
+    0x82A590A0 = {}
+    0x82A590C0 = {}
+    0x82A590E0 = {}
+    0x82A59B00 = {}
+    0x82A5E780 = {}
+    0x82A5ECD8 = {}
+    0x82A5F350 = {}
+    0x82A5F370 = {}
+    0x82A5F390 = {}
+    0x82A5F3B0 = {}
+    0x82A56A98 = {}
+    0x82A59000 = {}
+    0x82A59020 = {}
+    0x82A59040 = {}
+    0x82A59060 = {}
+    0x82A59080 = {}
+    0x82A590A0 = {}
+    0x82A590C0 = {}
+    0x82A590E0 = {}
+    0x82A59B00 = {}
+    0x82A5E780 = {}
+    0x82A5ECD8 = {}
+    0x82A5F350 = {}
+    0x82A5F370 = {}
+    0x82A5F390 = {}
+    0x82A5F3B0 = {}
+    0x82A59000 = {}
+    0x82A59020 = {}
+    0x82A59040 = {}
+    0x82A59060 = {}
+    0x82A59080 = {}
+    0x82A590A0 = {}
+    0x82A590C0 = {}
+    0x82A590E0 = {}
+    0x82A59B00 = {}
+    0x82A5E780 = {}
+    0x82A5ECD8 = {}
+    0x82A5F350 = {}
+    0x82A5F370 = {}
+    0x82A5F390 = {}
+    0x82A5F3B0 = {}
+    0x82A59000 = {}
+    0x82A59020 = {}
+    0x82A59040 = {}
+    0x82A59060 = {}
+    0x82A59080 = {}
+    0x82A590A0 = {}
+    0x82A590C0 = {}
+    0x82A590E0 = {}
+    0x82A59B00 = {}
+    0x82A5E780 = {}
+    0x82A5ECD8 = {}
+    0x82A5F350 = {}
+    0x82A5F370 = {}
+    0x82A5F390 = {}
+    0x82A5F3B0 = {}
+    0x82A59000 = {}
+    0x82A59020 = {}
+    0x82A59040 = {}
+    0x82A59060 = {}
+    0x82A59080 = {}
+    0x82A590A0 = {}
+    0x82A590C0 = {}
+    0x82A590E0 = {}
+    0x82A59B00 = {}
+    0x82A5E780 = {}
+    0x82A5ECD8 = {}
+    0x82A5F350 = {}
+    0x82A5F370 = {}
+    0x82A5F390 = {}
+    0x82A5F3B0 = {}
+    0x82A56A98 = {}
+    0x82A59000 = {}
+    0x82A59020 = {}
+    0x82A59040 = {}
+    0x82A59060 = {}
+    0x82A59080 = {}
+    0x82A590A0 = {}
+    0x82A590C0 = {}
+    0x82A590E0 = {}
+    0x82A59B00 = {}
+    0x82A5E780 = {}
+    0x82A5ECD8 = {}
+    0x82A5F350 = {}
+    0x82A5F370 = {}
+    0x82A5F390 = {}
+    0x82A5F3B0 = {}
+    
+
+
+        [entrypoint.functions.0x82A59000]
+
+        [entrypoint.functions.0x82A59020]
+
+        [entrypoint.functions.0x82A59040]
+
+        [entrypoint.functions.0x82A59060]
+
+        [entrypoint.functions.0x82A59080]
+
+        [entrypoint.functions.0x82A590A0]
+
+        [entrypoint.functions.0x82A590C0]
+
+        [entrypoint.functions.0x82A590E0]
+
+        [entrypoint.functions.0x82A59B00]
+
+        [entrypoint.functions.0x82A5E780]
+
+        [entrypoint.functions.0x82A5ECD8]
+
+        [entrypoint.functions.0x82A5F350]
+
+        [entrypoint.functions.0x82A5F370]
+
+        [entrypoint.functions.0x82A5F390]
+
+        [entrypoint.functions.0x82A5F3B0]
+
+[project]
+game_root = 'assets'
+name = 'doax'
+sdk_version = "0.8.0"

@@ -20,6 +20,7 @@
 #include <rex/memory.h>
 #include <rex/ppc/context.h>
 #include <rex/runtime.h>
+#include <rex/runtime/bootstrap.h>
 #include <rex/system/flags.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/thread_state.h>
@@ -105,6 +106,10 @@ void TraceGuestFunction(const char* name) {
 }
 
 static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
+  if (REXCVAR_GET(bootstrap_unregistered_functions)) {
+    RecordBootstrapGuestFunction(ctx.last_indirect_target, "indirect");
+    return;
+  }
   REX_FATAL(
       "Call to invalid or unregistered function at guest address 0x{:08X} "
       "(r1=0x{:08X}, r3=0x{:08X})",

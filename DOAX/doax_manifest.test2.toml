@@ -1,0 +1,20 @@
+﻿[project]
+name = "doax"
+sdk_version = "0.8.0"
+game_root = "assets"
+
+[entrypoint]
+file_path = "assets/default.xex"
+out_directory_path = "generated/default"
+includes = []
+
+setjmp_address = 0x829f12d0
+longjmp_address = 0x829f1080
+
+[entrypoint.functions]
+0x829B96A8 = { name = "DOAX_Unresolved_829B96A8" }
+0x8271F580 = { name = "DOAX_Unresolved_8271F580" }
+0x82785670 = { name = "DOAX_Unresolved_82785670" }
+
+[project]
+sdk_version = "0.8.0"

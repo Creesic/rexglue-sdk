@@ -39,7 +39,17 @@ namespace xam {
 using namespace rex::system;
 using namespace rex::system::xam;
 
+namespace {
+
+// Titles probe profile state with XUSER_INDEX_ANY (0xFF) before picking a slot.
+uint32_t ResolveUserIndex(uint32_t user_index) {
+  return (user_index & 0xFF) == 0xFF ? 0u : user_index;
+}
+
+}  // namespace
+
 i32 XamUserGetXUID_entry(u32 user_index, u32 type_mask, mapped_u64 xuid_ptr) {
+  user_index = ResolveUserIndex(user_index);
   assert_true(type_mask == 1 || type_mask == 2 || type_mask == 3 || type_mask == 4 ||
               type_mask == 7);
   if (!xuid_ptr) {
@@ -69,6 +79,7 @@ i32 XamUserGetXUID_entry(u32 user_index, u32 type_mask, mapped_u64 xuid_ptr) {
 }
 
 u32 XamUserGetSigninState_entry(u32 user_index) {
+  user_index = ResolveUserIndex(user_index);
   uint32_t signin_state = 0;
   if (user_index < 4) {
     if (user_index == 0) {
@@ -90,6 +101,7 @@ typedef struct {
 static_assert_size(X_USER_SIGNIN_INFO, 40);
 
 i32 XamUserGetSigninInfo_entry(u32 user_index, u32 flags, ppc_ptr_t<X_USER_SIGNIN_INFO> info) {
+  user_index = ResolveUserIndex(user_index);
   if (!info) {
     return X_E_INVALIDARG;
   }
@@ -107,6 +119,7 @@ i32 XamUserGetSigninInfo_entry(u32 user_index, u32 flags, ppc_ptr_t<X_USER_SIGNI
 }
 
 u32 XamUserGetName_entry(u32 user_index, mapped_string buffer, u32 buffer_len) {
+  user_index = ResolveUserIndex(user_index);
   if (user_index >= 4) {
     return X_E_INVALIDARG;
   }
@@ -122,6 +135,7 @@ u32 XamUserGetName_entry(u32 user_index, mapped_string buffer, u32 buffer_len) {
 }
 
 u32 XamUserGetGamerTag_entry(u32 user_index, mapped_wstring buffer, u32 buffer_len) {
+  user_index = ResolveUserIndex(user_index);
   if (user_index >= 4) {
     return X_E_INVALIDARG;
   }
@@ -152,6 +166,7 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index, ui
                                       be<uint32_t>* setting_ids, uint32_t unk,
                                       be<uint32_t>* buffer_size_ptr, uint8_t* buffer,
                                       XAM_OVERLAPPED* overlapped) {
+  user_index = ResolveUserIndex(user_index);
   if (!xuid_count) {
     assert_null(xuids);
   } else {
@@ -215,7 +230,7 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index, ui
   // 0xfffe07d1 = profile?
 
   if (!xuids && user_index) {
-    // Only support user 0.
+    // Only support user 0 (XUSER_INDEX_ANY is resolved above).
     if (overlapped) {
       REX_KERNEL_STATE()->CompleteOverlappedImmediate(
           REX_KERNEL_MEMORY()->HostToGuestVirtual(overlapped), X_ERROR_NO_SUCH_USER);
@@ -269,7 +284,7 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index, ui
     if (xuids) {
       out_setting->xuid = user_profile->xuid();
     } else {
-      out_setting->user_index = static_cast<uint32_t>(user_index);
+      out_setting->user_index = user_index;
     }
     out_setting->setting_id = setting_id;
 
