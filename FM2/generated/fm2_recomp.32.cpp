@@ -11073,7 +11073,7 @@ DEFINE_REX_FUNC(sub_825ADE20) {
 	ctx.r4.u64 = ctx.r30.u64;
 	// bl 0x8236cb28
 	ctx.lr = 0x825ADE54;
-	sub_8236CB28(ctx, base);
+	FM2_GpuCommandBuffer_BuildAndSubmit(ctx, base);
 	// li r3,1
 	ctx.r3.s64 = 1;
 	// addi r1,r1,112

@@ -37164,7 +37164,9 @@ DEFINE_REX_FUNC(FM2_FmodWrap_8236CB20) {
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8236CB28) {
+extern void FM2PlumeTraceVdSwap(PPCRegister& r3, PPCRegister& r4, PPCRegister& r8, PPCRegister& r9, PPCRegister& r10, PPCRegister& r1);
+
+DEFINE_REX_FUNC(FM2_GpuCommandBuffer_BuildAndSubmit) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -37489,6 +37491,7 @@ loc_8236CD28:
 	ctx.lr = 0x8236CD78;
 	__imp__VdSwap(ctx, base);
 	// addi r11,r30,256
+	FM2PlumeTraceVdSwap(ctx.r3, ctx.r4, ctx.r8, ctx.r9, ctx.r10, ctx.r1);
 	ctx.r11.s64 = ctx.r30.s64 + 256;
 	// stw r11,48(r31)
 	REX_STORE_U32(ctx.r31.u32 + 48, ctx.r11.u32);

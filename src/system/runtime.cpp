@@ -92,6 +92,7 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
   thread::EnableAffinityConfiguration();
 
   tool_mode_ = config.tool_mode;
+  mount_cache_root_ = config.mount_cache_root;
 
   // Create memory system first
   memory_ = std::make_unique<memory::Memory>();
@@ -306,6 +307,23 @@ bool Runtime::SetupVfs() {
     }
   }
 
+  if (mount_cache_root_ && !cache_root_.empty()) {
+    auto abs_cache_root = std::filesystem::absolute(cache_root_);
+    auto cache_mount = "\\Device\\Harddisk0\\CacheRoot";
+    auto cache_device =
+        std::make_unique<rex::filesystem::HostPathDevice>(cache_mount, abs_cache_root, false);
+    if (!cache_device->Initialize()) {
+      REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize cache host path device");
+      return false;
+    }
+    if (!file_system_->RegisterDevice(std::move(cache_device))) {
+      REXSYS_ERROR("Runtime::SetupVfs: Failed to register cache host path device");
+      return false;
+    }
+    file_system_->RegisterSymbolicLink("cache:", cache_mount);
+    REXSYS_INFO("  Mounted {} at cache:", abs_cache_root.string());
+  }
+
   // Setup NullDevice for raw HDD partition accesses
   // Cache/STFC code baked into games tries reading/writing to these
   // Using a NullDevice returns success to all IO requests, allowing games
@@ -320,9 +338,8 @@ bool Runtime::SetupVfs() {
     REXSYS_DEBUG("  Registered NullDevice for \\Device\\Harddisk0\\{{Partition0,Cache0,Cache1}}");
   }
 
-  // NOTE: Do NOT register a device for cache: paths
-  // Games handle "device not found" gracefully but don't handle actual device
-  // errors (like NAME_COLLISION) well. Let cache: fail cleanly.
+  // NOTE: Do NOT register cache: paths by default. Some games handle "device
+  // not found" gracefully but don't handle actual device errors well.
 
   return true;
 }

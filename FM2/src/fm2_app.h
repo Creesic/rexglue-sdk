@@ -42,6 +42,7 @@ class Fm2App : public rex::ReXApp {
 #if FM2_HAS_PLUME
     // ReOdyssey pattern: native Plume renderer owns presentation.
     config.graphics.reset();
+    config.mount_cache_root = true;
 #endif
   }
 

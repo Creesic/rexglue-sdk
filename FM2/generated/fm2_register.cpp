@@ -8732,7 +8732,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8236C8C8, FM2_FmodWrap_8236C8C8);
   registrar->SetFunction(0x8236C948, FM2_FmodWrap_8236C948);
   registrar->SetFunction(0x8236CB20, FM2_FmodWrap_8236CB20);
-  registrar->SetFunction(0x8236CB28, sub_8236CB28);
+  registrar->SetFunction(0x8236CB28, FM2_GpuCommandBuffer_BuildAndSubmit);
   registrar->SetFunction(0x8236D0C0, sub_8236D0C0);
   registrar->SetFunction(0x8236D0C8, sub_8236D0C8);
   registrar->SetFunction(0x8236D610, sub_8236D610);

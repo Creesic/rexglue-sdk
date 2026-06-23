@@ -15498,7 +15498,7 @@ loc_82381DA4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236cb28
 	ctx.lr = 0x82381DDC;
-	sub_8236CB28(ctx, base);
+	FM2_GpuCommandBuffer_BuildAndSubmit(ctx, base);
 loc_82381DDC:
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;

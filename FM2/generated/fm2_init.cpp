@@ -8740,7 +8740,7 @@ PPCFuncMapping PPCFuncMappings[] = {
 	{ 0x8236C8C8, FM2_FmodWrap_8236C8C8 },
 	{ 0x8236C948, FM2_FmodWrap_8236C948 },
 	{ 0x8236CB20, FM2_FmodWrap_8236CB20 },
-	{ 0x8236CB28, sub_8236CB28 },
+	{ 0x8236CB28, FM2_GpuCommandBuffer_BuildAndSubmit },
 	{ 0x8236D0C0, sub_8236D0C0 },
 	{ 0x8236D0C8, sub_8236D0C8 },
 	{ 0x8236D610, sub_8236D610 },

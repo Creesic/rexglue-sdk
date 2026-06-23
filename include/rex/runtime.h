@@ -64,6 +64,7 @@ struct RuntimeConfig {
   std::function<std::unique_ptr<system::IAudioSystem>(runtime::FunctionDispatcher*)> audio_factory;
   std::function<std::unique_ptr<system::IInputSystem>(bool tool_mode)> input_factory;
   std::function<void(Runtime*, system::KernelState*)> kernel_init;
+  bool mount_cache_root = false;
   bool tool_mode = false;
 };
 
@@ -172,6 +173,7 @@ class Runtime {
   ui::WindowedAppContext* app_context_ = nullptr;
   ui::Window* display_window_ = nullptr;
   ui::ImGuiDrawer* imgui_drawer_ = nullptr;
+  bool mount_cache_root_ = false;
   bool tool_mode_ = false;
   bool setup_complete_ = false;
 
