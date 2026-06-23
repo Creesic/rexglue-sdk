@@ -47,8 +47,8 @@ namespace {
 
 REXCVAR_DEFINE_STRING(
     fm2_plume_mode, "xenos", "FM2",
-    "FM2 Plume renderer mode: xenos, shadow, plume_clear")
-    .allowed({"xenos", "shadow", "plume_clear"});
+    "FM2 Plume renderer mode: xenos, shadow, plume_clear, plume_native")
+    .allowed({"xenos", "shadow", "plume_clear", "plume_native"});
 
 REXCVAR_DEFINE_BOOL(
     fm2_plume_trace_packets, false, "FM2",
@@ -371,6 +371,9 @@ fm2::native_renderer::Mode ParseMode(const std::string& value) {
   }
   if (value == "plume_clear") {
     return fm2::native_renderer::Mode::kPlumeClear;
+  }
+  if (value == "plume_native") {
+    return fm2::native_renderer::Mode::kPlumeNative;
   }
   return fm2::native_renderer::Mode::kXenos;
 }
@@ -1756,12 +1759,14 @@ const char* GetModeName(Mode mode) {
       return "shadow";
     case Mode::kPlumeClear:
       return "plume_clear";
+    case Mode::kPlumeNative:
+      return "plume_native";
   }
   return "xenos";
 }
 
 bool WantsReXGraphics() {
-  return GetMode() != Mode::kPlumeClear;
+  return GetMode() != Mode::kPlumeClear && GetMode() != Mode::kPlumeNative;
 }
 
 bool WantsDirectDebugReplay() {
@@ -1803,7 +1808,7 @@ bool Initialize(rex::ui::Window* window) {
   if (!CreatePlumeDeviceLocked()) {
     REXLOG_WARN("FM2 Plume initialization incomplete mode={}",
                 GetModeName(mode));
-    return mode != Mode::kPlumeClear;
+    return mode != Mode::kPlumeClear && mode != Mode::kPlumeNative;
   }
 
   const bool wants_direct_plume_submission =
@@ -1814,9 +1819,10 @@ bool Initialize(rex::ui::Window* window) {
   const bool wants_debug_replay_window =
       mode == Mode::kShadow && wants_direct_plume_submission &&
       (REXCVAR_GET(fm2_plume_debug_replay_window) || WantsCompareWindow());
-  if (mode == Mode::kPlumeClear) {
+  if (mode == Mode::kPlumeClear || mode == Mode::kPlumeNative) {
     if (!CreateSwapchainLocked(window)) {
-      REXLOG_WARN("FM2 Plume clear mode could not create swapchain");
+      REXLOG_WARN("FM2 Plume mode {} could not create swapchain",
+                  GetModeName(mode));
       return false;
     }
   } else if (wants_debug_replay_window) {
@@ -1850,7 +1856,7 @@ bool Initialize(rex::ui::Window* window) {
   g_plume_available.store(false, std::memory_order_relaxed);
   REXLOG_WARN("FM2 Plume mode {} requested, but this build has no Plume support",
               GetModeName(mode));
-  return mode != Mode::kPlumeClear;
+  return mode != Mode::kPlumeClear && mode != Mode::kPlumeNative;
 #endif
 }
 
@@ -1976,11 +1982,12 @@ bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
   }
 
   const Mode mode = GetMode();
-  if (mode != Mode::kPlumeClear && mode != Mode::kShadow) {
+  if (mode != Mode::kPlumeClear && mode != Mode::kPlumeNative &&
+      mode != Mode::kShadow) {
     g_debug_replay_failed.fetch_add(1, std::memory_order_relaxed);
     REXLOG_WARN(
-        "FM2 Plume debug replay requires fm2_plume_mode=shadow or "
-        "plume_clear; current mode={}",
+        "FM2 Plume debug replay requires fm2_plume_mode=shadow, "
+        "plume_clear, or plume_native; current mode={}",
         GetModeName(mode));
     return false;
   }
@@ -2009,6 +2016,22 @@ bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
 #endif
 }
 
+bool QueueDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
+                            const DirectDrawReplaySourceBytes& sources) {
+  if (!WantsDirectDebugReplay()) {
+    return false;
+  }
+  if (!REXCVAR_GET(fm2_plume_debug_replay_live_batch)) {
+    return SubmitDirectDebugReplay(plan, sources);
+  }
+#if FM2_HAS_PLUME && REX_PLATFORM_WIN32
+  std::scoped_lock lock(g_plume_mutex);
+  return QueueDebugReplayLocked(plan, sources);
+#else
+  return false;
+#endif
+}
+
 bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
                             const DirectDrawReplaySourceBytes& sources) {
   if (!REXCVAR_GET(fm2_plume_native_direct_draw)) {
@@ -2024,11 +2047,12 @@ bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
   }
 
   const Mode mode = GetMode();
-  if (mode != Mode::kPlumeClear && mode != Mode::kShadow) {
+  if (mode != Mode::kPlumeClear && mode != Mode::kPlumeNative &&
+      mode != Mode::kShadow) {
     g_native_direct_draw_failed.fetch_add(1, std::memory_order_relaxed);
     REXLOG_WARN(
-        "FM2 Plume native direct draw requires fm2_plume_mode=shadow or "
-        "plume_clear; current mode={}",
+        "FM2 Plume native direct draw requires fm2_plume_mode=shadow, "
+        "plume_clear, or plume_native; current mode={}",
         GetModeName(mode));
     return false;
   }
@@ -2202,12 +2226,13 @@ bool SubmitDirectDebugReplayBatchForReplayWindow(
   }
 
   const Mode mode = GetMode();
-  if (mode != Mode::kShadow && mode != Mode::kPlumeClear) {
+  if (mode != Mode::kShadow && mode != Mode::kPlumeClear &&
+      mode != Mode::kPlumeNative) {
     g_debug_replay_failed.fetch_add(submission_count,
                                     std::memory_order_relaxed);
     REXLOG_WARN(
-        "FM2 Plume debug replay batch requires fm2_plume_mode=shadow or "
-        "plume_clear; current mode={}",
+        "FM2 Plume debug replay batch requires fm2_plume_mode=shadow, "
+        "plume_clear, or plume_native; current mode={}",
         GetModeName(mode));
     return false;
   }

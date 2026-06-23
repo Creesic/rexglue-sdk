@@ -14,6 +14,11 @@ enum class Mode : uint8_t {
   kXenos,
   kShadow,
   kPlumeClear,
+  // kPlumeNative uses the same code path as kPlumeClear (disable ReX Xenos
+  // graphics, init Plume via shared Video::Init, enable mirror hooks) but
+  // signals production native-rendering intent. See
+  // docs/FM2-native-renderer-gap-analysis.md for the mode-transition plan.
+  kPlumeNative,
 };
 
 enum class DebugReplayFillMode : uint8_t {
@@ -137,6 +142,8 @@ bool FlushNativeDirectDrawOnPresent();
 bool FlushDebugReplayOnPresent();
 bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
                              const DirectDrawReplaySourceBytes& sources);
+bool QueueDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
+                            const DirectDrawReplaySourceBytes& sources);
 bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
                             const DirectDrawReplaySourceBytes& sources);
 struct DirectDrawReplaySubmission {

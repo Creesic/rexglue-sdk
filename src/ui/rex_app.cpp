@@ -35,6 +35,7 @@
 #include <rex/audio/sdl/sdl_audio_system.h>
 #if REX_PLATFORM_WIN32
 #include <rex/audio/xaudio2/xaudio2_audio_system.h>
+#include <windows.h>
 #endif
 #include <rex/input/input_system.h>
 #include <rex/kernel/init.h>
@@ -803,6 +804,9 @@ void ReXApp::OnClosing(ui::UIEvent& e) {
     runtime_->kernel_state()->TerminateTitle();
   }
   app_context().QuitFromUIThread();
+#if REX_PLATFORM_WIN32
+  ExitProcess(0);
+#endif
 }
 
 void ReXApp::OnDestroy() {

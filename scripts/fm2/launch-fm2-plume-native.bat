@@ -87,7 +87,6 @@ set FM2_ARGS=--fm2_plume_mode shadow ^
  --fm2_plume_debug_replay_side_by_side ^
  --fm2_plume_direct_replay_transform_source c36_mul_c28 ^
  --fm2_plume_debug_replay_transform_mode row_major_clip ^
- --fm2_plume_wireframe ^
  --mnk_mode ^
  --log_level info
 

@@ -10,6 +10,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/hash.h>
@@ -133,6 +134,17 @@ REX_IMPORT(__imp__FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup,
            void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
 
 namespace {
+
+// Writes directly to the FM2 clean log so traces appear alongside LogLine output.
+template <typename... Args>
+static void LogReplayDbg(const char* fmt, Args&&... args) {
+  FILE* f = std::fopen("C:\\temp\\fm2-clean.log", "a");
+  if (!f) return;
+  std::fprintf(f, fmt, std::forward<Args>(args)...);
+  std::fputc('\n', f);
+  std::fflush(f);
+  std::fclose(f);
+}
 
 using rr::GuestBaseTexture;
 using rr::GuestBuffer;
@@ -1763,10 +1775,24 @@ static void TryBuildAndSubmitDebugReplayForPm4Draw(uint32_t primType,
                                                    uint32_t gpuOffset,
                                                    uint32_t startIndex,
                                                    uint32_t indexCount) {
-  if (!nr::WantsDirectDebugReplay() || indexCount == 0) return;
+  static std::atomic<uint32_t> s_dbg_calls{0};
+  const uint32_t call_n = s_dbg_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+
+  if (!nr::WantsDirectDebugReplay() || indexCount == 0) {
+    if (call_n <= 4) {
+      LogReplayDbg("FM2_REPLAY_DBG n=%u SKIP wants=%d idxcnt=%u",
+                   call_n, (int)nr::WantsDirectDebugReplay(), indexCount);
+    }
+    return;
+  }
 
   const nr::NativeStateSnapshot snapshot = nr::SnapshotLastNativeState();
-  if (!snapshot.valid) return;
+  if (!snapshot.valid) {
+    if (call_n <= 4) {
+      LogReplayDbg("FM2_REPLAY_DBG n=%u SKIP snapshot_invalid", call_n);
+    }
+    return;
+  }
 
   // Locate slot 0 and slot 1 from the snapshot (populated by midasm hooks).
   const nr::NativeStateVertexStreamBinding *s0 = nullptr;
@@ -1776,17 +1802,44 @@ static void TryBuildAndSubmitDebugReplayForPm4Draw(uint32_t primType,
     if (s.slot == 0u && !s0) s0 = &s;
     else if (s.slot == 1u && !s1) s1 = &s;
   }
-  if (!s0 || s0->resource == 0 || s0->stride_bytes == 0) return;
-  if (!snapshot.index_buffer.valid || snapshot.index_buffer.resource == 0) return;
+  if (!s0 || s0->resource == 0 || s0->stride_bytes == 0) {
+    if (call_n <= 4) {
+      LogReplayDbg("FM2_REPLAY_DBG n=%u SKIP no_s0 s0=%p res=%08X stride=%u",
+                   call_n, (void*)s0,
+                   s0 ? s0->resource : 0u, s0 ? s0->stride_bytes : 0u);
+    }
+    return;
+  }
+  if (!snapshot.index_buffer.valid || snapshot.index_buffer.resource == 0) {
+    if (call_n <= 4) {
+      LogReplayDbg("FM2_REPLAY_DBG n=%u SKIP no_ib valid=%d res=%08X",
+                   call_n, (int)snapshot.index_buffer.valid,
+                   snapshot.index_buffer.resource);
+    }
+    return;
+  }
 
   // Decode stream-0 vertex buffer header (XDK vertex fetch constant layout).
   const auto *s0hdr =
       ghp::ToHost<const GuestD3DVertexBufferHeader>(s0->resource);
-  if (!s0hdr || (s0hdr->common.get() & 0xFu) != 1u) return;
+  if (!s0hdr || (s0hdr->common.get() & 0xFu) != 1u) {
+    if (call_n <= 4) {
+      LogReplayDbg("FM2_REPLAY_DBG n=%u SKIP s0hdr_type hdr=%p common=%08X",
+                   call_n, (void*)s0hdr,
+                   s0hdr ? s0hdr->common.get() : 0u);
+    }
+    return;
+  }
   const uint32_t s0_gpu_base = s0hdr->format0.get() & ~3u;
   const uint32_t s0_raw_size = s0hdr->format1.get() & 0x3FFFFFCu;
   const uint32_t s0_readable = s0_raw_size & nr::kD3DResourceByteSizeMask;
-  if (s0_gpu_base == 0 || s0_readable == 0) return;
+  if (s0_gpu_base == 0 || s0_readable == 0) {
+    if (call_n <= 4) {
+      LogReplayDbg("FM2_REPLAY_DBG n=%u SKIP s0_empty base=%08X readable=%u",
+                   call_n, s0_gpu_base, s0_readable);
+    }
+    return;
+  }
   const uint32_t s0_stride = s0->stride_bytes;
   const uint32_t s0_upload_base = nr::DirectDrawReplayUploadGuestBase(s0_gpu_base);
   const uint32_t s0_vcount = s0_readable / s0_stride;
@@ -1820,19 +1873,61 @@ static void TryBuildAndSubmitDebugReplayForPm4Draw(uint32_t primType,
     }
   }
 
+  // When stream1 is absent, synthesize a stride-12 position-only view from
+  // stream0 (first 12 bytes = float3 position of each vertex). Both debug
+  // replay pipeline layouts (kDebugRaw32Side12, kNativePosition28Side12)
+  // require stream1 stride=12.
+  std::vector<uint8_t> s1_synth_bytes;
+  if (!s1_valid && s0_stride >= 12u && s0_vcount > 0) {
+    const uint8_t* s0_ptr = ghp::ToHost<const uint8_t>(s0_upload_base);
+    if (s0_ptr) {
+      s1_synth_bytes.resize(s0_vcount * 12u);
+      for (uint32_t vi = 0; vi < s0_vcount; ++vi) {
+        std::memcpy(&s1_synth_bytes[vi * 12u], s0_ptr + vi * s0_stride, 12u);
+      }
+      s1_gpu_base    = s0_gpu_base;
+      s1_raw_size    = s0_raw_size;
+      s1_stride      = 12u;
+      s1_upload_base = s0_upload_base;
+      s1_vcount      = s0_vcount;
+      s1_view_bytes  = s0_vcount * 12u;
+      s1_hash_bytes  = s1_view_bytes;
+      s1_valid       = true;
+    }
+  }
+
   // Decode index buffer header.
   const auto *ihdr =
       ghp::ToHost<const GuestD3DIndexBufferHeader>(snapshot.index_buffer.resource);
-  if (!ihdr || (ihdr->common.get() & 0xFu) != 2u) return;
+  if (!ihdr || (ihdr->common.get() & 0xFu) != 2u) {
+    if (call_n <= 4) {
+      LogReplayDbg("FM2_REPLAY_DBG n=%u SKIP ihdr_type hdr=%p common=%08X",
+                   call_n, (void*)ihdr,
+                   ihdr ? ihdr->common.get() : 0u);
+    }
+    return;
+  }
   // D3DFORMAT in top 3 bits of common: 1=INDEX16, 6=INDEX32.
   const uint32_t d3d_idx_fmt = (ihdr->common.get() >> 29) & 0x7u;
   const uint32_t idx_desc_fmt = (d3d_idx_fmt == 6u) ? 2u : 1u;
   const uint32_t idx_elem_bytes = nr::DirectDrawIndexElementByteCount(idx_desc_fmt);
-  if (idx_elem_bytes == 0) return;
-  const uint32_t idx_gpu_base  = gpuOffset;
+  if (idx_elem_bytes == 0) {
+    if (call_n <= 4) {
+      LogReplayDbg("FM2_REPLAY_DBG n=%u SKIP idx_elem_zero d3dfmt=%u",
+                   call_n, d3d_idx_fmt);
+    }
+    return;
+  }
+  const uint32_t idx_gpu_base  = ihdr->address.get();
   const uint32_t idx_raw_size  = ihdr->size.get();
   const uint32_t idx_readable  = idx_raw_size & nr::kD3DResourceByteSizeMask;
-  if (idx_gpu_base == 0 || idx_readable == 0) return;
+  if (idx_gpu_base == 0 || idx_readable == 0) {
+    if (call_n <= 4) {
+      LogReplayDbg("FM2_REPLAY_DBG n=%u SKIP idx_empty base=%08X readable=%u",
+                   call_n, idx_gpu_base, idx_readable);
+    }
+    return;
+  }
   const uint32_t idx_upload_base = nr::DirectDrawReplayUploadGuestBase(idx_gpu_base);
   const uint32_t idx_view_bytes  = indexCount * idx_elem_bytes;
   const uint32_t idx_hash_bytes  =
@@ -1851,8 +1946,14 @@ static void TryBuildAndSubmitDebugReplayForPm4Draw(uint32_t primType,
   };
 
   uint64_t s0_hash = 0, s1_hash = 0, idx_hash = 0;
-  const bool s0_hash_ok  = hash_range(s0_upload_base, s0_hash_bytes, s0_hash);
-  const bool s1_hash_ok  = s1_valid && hash_range(s1_upload_base, s1_hash_bytes, s1_hash);
+  const bool s0_hash_ok = hash_range(s0_upload_base, s0_hash_bytes, s0_hash);
+  bool s1_hash_ok = false;
+  if (!s1_synth_bytes.empty()) {
+    s1_hash    = XXH3_64bits(s1_synth_bytes.data(), s1_synth_bytes.size());
+    s1_hash_ok = true;
+  } else {
+    s1_hash_ok = s1_valid && hash_range(s1_upload_base, s1_hash_bytes, s1_hash);
+  }
   const bool idx_hash_ok = hash_range(idx_upload_base, idx_hash_bytes, idx_hash);
 
   // Build per-buffer view summaries.
@@ -1877,14 +1978,34 @@ static void TryBuildAndSubmitDebugReplayForPm4Draw(uint32_t primType,
 
   const nr::DirectDrawDebugReplayPlan plan =
       nr::BuildDirectDrawDebugReplayPlan(packet, snapshot);
-  if (!plan.ready) return;
+  if (!plan.ready) {
+    if (call_n <= 4) {
+      LogReplayDbg("FM2_REPLAY_DBG n=%u SKIP plan_not_ready prim=%u topo=%d "
+                   "idx=%u s0base=%08X s0stride=%u s1valid=%d s1base=%08X "
+                   "s1stride=%u idxbase=%08X s0hash_ok=%d idxhash_ok=%d",
+                   call_n, primType, (int)topology,
+                   indexCount, s0_gpu_base, s0_stride,
+                   (int)s1_valid, s1_gpu_base, s1_stride,
+                   idx_gpu_base, (int)s0_hash_ok, (int)idx_hash_ok);
+    }
+    return;
+  }
+  if (call_n <= 4) {
+    LogReplayDbg("FM2_REPLAY_DBG n=%u SUBMIT prim=%u idx=%u s0base=%08X "
+                 "idxbase=%08X s0hash_ok=%d idxhash_ok=%d",
+                 call_n, primType, indexCount,
+                 s0_gpu_base, idx_gpu_base,
+                 (int)s0_hash_ok, (int)idx_hash_ok);
+  }
 
   const nr::DirectDrawReplaySourceBytes sources{
       .stream0 = ghp::ToHost<const uint8_t>(s0_upload_base),
-      .stream1 = s1_valid ? ghp::ToHost<const uint8_t>(s1_upload_base) : nullptr,
+      .stream1 = !s1_synth_bytes.empty()
+                     ? s1_synth_bytes.data()
+                     : (s1_valid ? ghp::ToHost<const uint8_t>(s1_upload_base) : nullptr),
       .index   = ghp::ToHost<const uint8_t>(idx_upload_base),
   };
-  nr::SubmitDirectDebugReplay(plan, sources);
+  nr::QueueDirectDebugReplay(plan, sources);
 }
 
 void Fm2EmitIndexedDrawPm4WithGpuOffset(uint32_t context, uint32_t primType,
@@ -1921,6 +2042,8 @@ void Fm2EmitIndexedDrawPm4WithVertexFormatSetup(uint32_t context,
 void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
                          PPCRegister &r9, PPCRegister &r10,
                          PPCRegister &r1) {
+  nr::FlushDebugReplayOnPresent();
+
   if (!ShouldMirrorPlumeRenderState()) {
     return;
   }
