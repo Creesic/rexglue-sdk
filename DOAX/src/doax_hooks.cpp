@@ -727,15 +727,13 @@ loc_824C05DC_hook:
 extern "C" REX_FUNC(sub_82783210) {
   const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
   const uint32_t target = static_cast<uint32_t>(ctx.r3.u64);
-  const bool sched_fiber_yield = caller_lr == kSchedulerFiberYieldLr;
+  // Guest-PC fiber swap does not restore PPC callee-saves (r14-r31). Work-fiber
+  // loops (sub_824C1548, sub_825A2560, ...) branch back after yield without
+  // re-running their register setup prologues.
   SchedulerFiberGprs saved_gprs{};
-  if (sched_fiber_yield) {
-    SaveSchedulerFiberGprs(ctx, saved_gprs);
-  }
+  SaveSchedulerFiberGprs(ctx, saved_gprs);
   DOAX_FiberContextSwitch(ctx, base);
-  if (sched_fiber_yield) {
-    RestoreSchedulerFiberGprs(ctx, saved_gprs);
-  }
+  RestoreSchedulerFiberGprs(ctx, saved_gprs);
   MaybeLogFiberYield(caller_lr, target, static_cast<uint32_t>(ctx.lr));
 }
 

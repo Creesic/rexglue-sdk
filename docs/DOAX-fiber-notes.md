@@ -218,4 +218,7 @@ dispatch runs (`flag2` kick). `r28` was `0` after fiber resume.
 with `lr=0x824C15F4`. Guest-PC fiber swap does not preserve those callee-saves across the
 round-trip.
 
-**Fix:** `sub_82783210` hook saves/restores `r14`–`r31` when `caller_lr==0x824C15F4`.
+**Fix:** `sub_82783210` hook saves/restores `r14`–`r31` around every fiber swap (PPC
+callee-saves the guest fiber path fails to preserve). Do not gate on a single `lr`
+value — multiple work fibers (`sub_824C1548`, `sub_825A2560`, …) loop with distinct
+return addresses (`0x824C15F4`, `0x825A25E0`, …).
