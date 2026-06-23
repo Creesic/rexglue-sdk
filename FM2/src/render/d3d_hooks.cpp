@@ -117,6 +117,12 @@ REXCVAR_DEFINE_BOOL(
 REXCVAR_DEFINE_UINT32(
     fm2_shader_resource_dump_limit, 128, "FM2",
     "Maximum unique FM2 shader resource payloads to dump in one run.");
+REXCVAR_DEFINE_BOOL(
+    fm2_plume_render_hook_trace, false, "FM2",
+    "Emit bounded diagnostics when FM2 native render hooks fire.");
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_render_hook_trace_limit, 128, "FM2",
+    "Maximum FM2 native render hook trace lines to emit per hook in one run; 0 is unlimited.");
 
 struct GuestRasterizerState {
   uint8_t pad0[8];
@@ -132,6 +138,18 @@ struct GuestLockedRect {
 
 template <typename T> T *AsFm2(T *p) {
   return rr::IsFm2Resource(p) ? p : nullptr;
+}
+
+uint32_t NextRenderHookTraceIndex(uint32_t &counter) {
+  if (!REXCVAR_GET(fm2_plume_render_hook_trace)) {
+    return 0;
+  }
+  const uint32_t index = ++counter;
+  const uint32_t limit = REXCVAR_GET(fm2_plume_render_hook_trace_limit);
+  if (limit != 0 && index > limit) {
+    return 0;
+  }
+  return index;
 }
 
 GuestDevice *DeviceForRenderContext(uint32_t renderContext) {
@@ -221,6 +239,11 @@ void BlockOnSecondaryPosition(GuestDevice * /*device*/, uint32_t /*position*/,
                               uint32_t /*flags*/) {}
 
 void Fm2Present(uint32_t presentChain) {
+  static uint32_t s_traceCount = 0;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=Fm2Present n={} presentChain=0x{:08X}",
+                n, presentChain);
+  }
   g_origFm2TryPresentAndUpdateStatus(presentChain);
   FlushImmediateVertices();
   Video::Present();
@@ -285,18 +308,44 @@ void Fm2RememberGuestDevice(GuestDevice *device) {
 void Fm2DrawIndexedVertices(GuestDevice *device, uint32_t primType,
                             int32_t baseVertexIndex, uint32_t startIndex,
                             uint32_t indexCount) {
+  static uint32_t s_traceCount = 0;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=Fm2DrawIndexedVertices n={} "
+                "device={} prim={} base={} start={} indices={}",
+                n, static_cast<const void *>(device), primType, baseVertexIndex,
+                startIndex, indexCount);
+  }
   Fm2RememberGuestDevice(device);
   DrawIndexedVertices(device, primType, baseVertexIndex, startIndex, indexCount);
 }
 
 void Fm2DrawVerticesUP(GuestDevice *device, uint32_t primType,
                        uint32_t vertexCount, void *data, uint32_t stride) {
+  static uint32_t s_traceCount = 0;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=Fm2DrawVerticesUP n={} device={} "
+                "prim={} vertices={} data={} stride={}",
+                n, static_cast<const void *>(device), primType, vertexCount,
+                data, stride);
+  }
   Fm2RememberGuestDevice(device);
   DrawVerticesUP(device, primType, vertexCount, data, stride);
 }
 
 void Swap(GuestDevice *device, rr::GuestBaseTexture *frontBuffer,
           void * /*params*/) {
+  static uint32_t s_traceCount = 0;
+  const bool isFm2 = rr::IsFm2Resource(frontBuffer);
+  const bool hasTexture = frontBuffer != nullptr && frontBuffer->texture != nullptr;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=Swap n={} device={} front={} "
+                "isFm2={} hasTexture={} size={}x{} format={}",
+                n, static_cast<const void *>(device),
+                static_cast<const void *>(frontBuffer), isFm2, hasTexture,
+                frontBuffer ? frontBuffer->width : 0,
+                frontBuffer ? frontBuffer->height : 0,
+                frontBuffer ? int(frontBuffer->format) : 0);
+  }
   FlushImmediateVertices();
   static bool s_ringSeeded = false;
   if (!s_ringSeeded && device != nullptr) {
@@ -345,9 +394,19 @@ CreateVertexDeclaration(rr::GuestVertexElement *elements) {
   return rr::CreateVertexDeclaration(elements);
 }
 GuestShader *CreateVertexShader(const uint32_t *function) {
+  static uint32_t s_traceCount = 0;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=CreateVertexShader n={} function={}",
+                n, static_cast<const void *>(function));
+  }
   return rr::CreateVertexShader(function);
 }
 GuestShader *CreatePixelShader(const uint32_t *function) {
+  static uint32_t s_traceCount = 0;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=CreatePixelShader n={} function={}",
+                n, static_cast<const void *>(function));
+  }
   return rr::CreatePixelShader(function);
 }
 
@@ -888,6 +947,12 @@ void SetPixelShaderNative(GuestDevice *device, GuestShader *shader) {
 
 void Fm2LoadPixelShaderResourceById(uint32_t outRef, uint32_t shaderId) {
   g_origFm2LoadPixelShaderResourceById(outRef, shaderId);
+  static uint32_t s_traceCount = 0;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=LoadPixelShaderResource n={} "
+                "outRef=0x{:08X} shaderId=0x{:08X} resource=0x{:08X}",
+                n, outRef, shaderId, ReadGuestU32At(outRef));
+  }
   DumpLoadedShaderResource(
       "pixel", outRef, shaderId,
       nr::kDirectDrawPixelShaderPayloadGpuBaseOffset,
@@ -896,6 +961,12 @@ void Fm2LoadPixelShaderResourceById(uint32_t outRef, uint32_t shaderId) {
 
 void Fm2LoadVertexShaderResourceById(uint32_t outRef, uint32_t shaderId) {
   g_origFm2LoadVertexShaderResourceById(outRef, shaderId);
+  static uint32_t s_traceCount = 0;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=LoadVertexShaderResource n={} "
+                "outRef=0x{:08X} shaderId=0x{:08X} resource=0x{:08X}",
+                n, outRef, shaderId, ReadGuestU32At(outRef));
+  }
   DumpLoadedShaderResource(
       "vertex", outRef, shaderId,
       nr::kDirectDrawVertexShaderPayloadGpuBaseOffset,

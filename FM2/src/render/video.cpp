@@ -11,6 +11,7 @@
 
 #include <plume_render_interface.h>
 #include <plume_render_interface_builders.h>
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include "render/guest_resources.h"
@@ -89,6 +90,24 @@ RenderWindow g_window{};
 
 // The guest's final front-buffer surface to blit this frame (D3DDevice_Swap).
 fm2::render::GuestBaseTexture *g_presentSource = nullptr;
+
+REXCVAR_DEFINE_BOOL(fm2_plume_video_present_trace, false, "FM2",
+                    "Emit bounded diagnostics from the active Plume present path.");
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_video_present_trace_limit, 128, "FM2",
+    "Maximum Plume present trace lines to emit in one run; 0 is unlimited.");
+
+uint32_t NextVideoPresentTraceIndex(uint32_t &counter) {
+  if (!REXCVAR_GET(fm2_plume_video_present_trace)) {
+    return 0;
+  }
+  const uint32_t index = ++counter;
+  const uint32_t limit = REXCVAR_GET(fm2_plume_video_present_trace_limit);
+  if (limit != 0 && index > limit) {
+    return 0;
+  }
+  return index;
+}
 
 void RebuildFramebuffers() {
   g_framebuffers.clear();
@@ -352,6 +371,18 @@ void ExecuteUpload(const std::function<void(RenderCommandList *)> &record) {
 } // namespace fm2::render
 
 void Video::Present() {
+  static uint32_t s_traceCount = 0;
+  const uint32_t traceIndex = NextVideoPresentTraceIndex(s_traceCount);
+  if (traceIndex != 0) {
+    REXGPU_INFO("FM2_PLUME_VIDEO_PRESENT n={} stage=entry initialized={} "
+                "swapchainValid={} frameOpen={} presentSource={} "
+                "presentTexture={}",
+                traceIndex, g_initialized, g_swapChainValid, g_frameOpen,
+                static_cast<const void *>(g_presentSource),
+                g_presentSource ? static_cast<const void *>(g_presentSource->texture)
+                                : nullptr);
+  }
+
   if (!g_initialized) {
     return;
   }
@@ -361,6 +392,11 @@ void Video::Present() {
   // sure a frame is open even if the guest issued nothing.
   fm2::render::EnsureFrameStarted();
   if (!g_frameOpen) {
+    if (traceIndex != 0) {
+      REXGPU_INFO("FM2_PLUME_VIDEO_PRESENT n={} stage=no_frame "
+                  "swapchainValid={} frameOpen={}",
+                  traceIndex, g_swapChainValid, g_frameOpen);
+    }
     return; // acquire failed this frame
   }
 
@@ -375,6 +411,27 @@ void Video::Present() {
   const bool blit = g_presentSource != nullptr &&
                     g_presentSource->texture != nullptr &&
                     blitPipeline != nullptr;
+  const fm2::render::GuestBaseTexture *presentSource = g_presentSource;
+  const bool hadPresentTexture =
+      presentSource != nullptr && presentSource->texture != nullptr;
+  const char *presentPath = blit ? "blit" : "clear";
+  if (traceIndex != 0) {
+    REXGPU_INFO("FM2_PLUME_VIDEO_PRESENT n={} stage=record path={} "
+                "backBufferIndex={} backBuffer={} framebuffer={} "
+                "source={} sourceTexture={} sourceSize={}x{} sourceFormat={} "
+                "sourceDescriptor={} blitPipeline={}",
+                traceIndex, presentPath, g_backBufferIndex,
+                static_cast<const void *>(backBuffer),
+                static_cast<const void *>(framebuffer),
+                static_cast<const void *>(presentSource),
+                hadPresentTexture ? static_cast<const void *>(presentSource->texture)
+                                  : nullptr,
+                presentSource ? presentSource->width : 0,
+                presentSource ? presentSource->height : 0,
+                presentSource ? int(presentSource->format) : 0,
+                presentSource ? presentSource->descriptorIndex : 0,
+                static_cast<const void *>(blitPipeline));
+  }
   if (blit) {
     if (g_presentSource->descriptorIndex == 0) {
       g_presentSource->descriptorIndex =
@@ -434,6 +491,11 @@ void Video::Present() {
 
   g_swapChainValid =
       g_swapChain->present(g_backBufferIndex, signalSemaphores, 1);
+  if (traceIndex != 0) {
+    REXGPU_INFO("FM2_PLUME_VIDEO_PRESENT n={} stage=presented path={} "
+                "swapchainValid={} backBufferIndex={}",
+                traceIndex, presentPath, g_swapChainValid, g_backBufferIndex);
+  }
 
   // Fully serialized for now; frame-in-flight pipelining comes later.
   g_queue->waitForCommandFence(g_commandFence.get());
