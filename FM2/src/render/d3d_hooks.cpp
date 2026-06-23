@@ -32,6 +32,8 @@ namespace nr = fm2::native_renderer;
 namespace fm2::render {
 GuestBuffer *CreateVertexBuffer(uint32_t length);
 GuestBuffer *CreateIndexBuffer(uint32_t length, uint32_t format);
+void RegisterBufferAlias(uint32_t guestAddr, GuestBuffer *buf);
+GuestBuffer *LookupBufferAlias(uint32_t guestAddr);
 GuestTexture *CreateTexture(uint32_t width, uint32_t height, uint32_t depth,
                             uint32_t levels, uint32_t usage, uint32_t format,
                             uint32_t pool, uint32_t type);
@@ -100,6 +102,10 @@ REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane2Enable,
 REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane3Enable,
            g_origFm2SetClipPlane3Enable, void(uint32_t, uint32_t));
 
+REX_IMPORT(__imp__FM2_D3DDevice_CreateVertexBuffer, g_origCreateVertexBuffer,
+           uint32_t(uint32_t));
+REX_IMPORT(__imp__FM2_D3DDevice_CreateIndexBuffer, g_origCreateIndexBuffer,
+           uint32_t(uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_D3DVertexBuffer_Lock, g_origVertexBufferLock,
            uint32_t(void *, uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_D3D_LockGpuBufferRaw, g_origIndexBufferLock,
@@ -296,20 +302,27 @@ void Fm2BindVertexStream(uint32_t renderContext, uint32_t slot,
   g_origFm2BindVertexStream(renderContext, slot, resource, byte_offset,
                             stride_bytes, dirty_mask);
   GuestDevice *device = DeviceForRenderContext(renderContext);
-  if (device == nullptr) {
+  if (device == nullptr)
     return;
-  }
-  SetStreamSourceNative(device, slot, ghp::ToHost<GuestBuffer>(resource),
-                        byte_offset, stride_bytes, dirty_mask);
+  // Prefer the native alias (uploaded Plume buffer); fall back to the raw XDK
+  // header path in SetStreamSourceNative which reads the guest data pointer.
+  GuestBuffer *buf = ghp::ToHost<GuestBuffer>(resource);
+  if (!rr::IsFm2Resource(buf))
+    if (GuestBuffer *alias = rr::LookupBufferAlias(resource))
+      buf = alias;
+  SetStreamSourceNative(device, slot, buf, byte_offset, stride_bytes, dirty_mask);
 }
 
 void Fm2BindIndexBuffer(uint32_t renderContext, uint32_t resource) {
   g_origFm2BindIndexBuffer(renderContext, resource);
   GuestDevice *device = DeviceForRenderContext(renderContext);
-  if (device == nullptr) {
+  if (device == nullptr)
     return;
-  }
-  SetIndicesNative(device, ghp::ToHost<GuestBuffer>(resource));
+  GuestBuffer *buf = ghp::ToHost<GuestBuffer>(resource);
+  if (!rr::IsFm2Resource(buf))
+    if (GuestBuffer *alias = rr::LookupBufferAlias(resource))
+      buf = alias;
+  SetIndicesNative(device, buf);
 }
 
 void Fm2SetBoundSurface(uint32_t renderContext, uint32_t surface,
@@ -483,15 +496,19 @@ struct GuestLockedTail {
 
 uint32_t VertexBufferLock(GuestBuffer *buffer, uint32_t offset, uint32_t size,
                           uint32_t flags) {
-  if (!rr::IsFm2Resource(buffer))
-    return g_origVertexBufferLock(buffer, offset, size, flags);
-  return rr::LockVertexBuffer(buffer, flags);
+  if (rr::IsFm2Resource(buffer))
+    return rr::LockVertexBuffer(buffer, flags);
+  if (GuestBuffer *native = rr::LookupBufferAlias(ghp::ToGuest(buffer)))
+    return rr::LockVertexBuffer(native, flags);
+  return g_origVertexBufferLock(buffer, offset, size, flags);
 }
 uint32_t IndexBufferLock(GuestBuffer *buffer, uint32_t offset, uint32_t size,
                          uint32_t flags) {
-  if (!rr::IsFm2Resource(buffer))
-    return g_origIndexBufferLock(buffer, offset, size, flags);
-  return rr::LockIndexBuffer(buffer, flags);
+  if (rr::IsFm2Resource(buffer))
+    return rr::LockIndexBuffer(buffer, flags);
+  if (GuestBuffer *native = rr::LookupBufferAlias(ghp::ToGuest(buffer)))
+    return rr::LockIndexBuffer(native, flags);
+  return g_origIndexBufferLock(buffer, offset, size, flags);
 }
 
 void XGSetVertexDeclaration(rr::GuestVertexElement *elements,
@@ -547,21 +564,25 @@ void LockSurface(GuestTexture *texture, uint32_t arrayIndex, uint32_t level,
 
 void UnlockResourceHook(rr::GuestResource *resource, uint32_t /*base*/,
                         uint32_t /*mip*/) {
-  if (!rr::IsFm2Resource(resource))
-    return; // genuine guest D3D resource: ignore
-  switch (resource->type) {
-  case rr::ResourceType::VertexBuffer:
-    rr::UnlockVertexBuffer(static_cast<GuestBuffer *>(resource));
-    break;
-  case rr::ResourceType::IndexBuffer:
-    rr::UnlockIndexBuffer(static_cast<GuestBuffer *>(resource));
-    break;
-  case rr::ResourceType::Texture:
-  case rr::ResourceType::VolumeTexture:
-    rr::UnlockTextureRect(static_cast<GuestTexture *>(resource));
-    break;
-  default:
-    break;
+  if (rr::IsFm2Resource(resource)) {
+    switch (resource->type) {
+    case rr::ResourceType::VertexBuffer:
+      rr::UnlockVertexBuffer(static_cast<GuestBuffer *>(resource)); break;
+    case rr::ResourceType::IndexBuffer:
+      rr::UnlockIndexBuffer(static_cast<GuestBuffer *>(resource)); break;
+    case rr::ResourceType::Texture:
+    case rr::ResourceType::VolumeTexture:
+      rr::UnlockTextureRect(static_cast<GuestTexture *>(resource)); break;
+    default: break;
+    }
+    return;
+  }
+  // XDK resource aliased by a creation hook: upload the staging data.
+  if (GuestBuffer *native = rr::LookupBufferAlias(ghp::ToGuest(resource))) {
+    if (native->type == rr::ResourceType::VertexBuffer)
+      rr::UnlockVertexBuffer(native);
+    else
+      rr::UnlockIndexBuffer(native);
   }
 }
 
@@ -1563,6 +1584,26 @@ void Fm2EmitIndexedDrawPm4Base(uint32_t /*context*/, uint32_t primType,
   DrawIndexedVertices(device, primType, 0, 0, indexCount);
 }
 
+// Aliased creation hooks: call the original XDK function (FM2 reads the result
+// as a genuine D3D resource), then create a shadow GuestBuffer backed by Plume
+// and register it in the alias map so Lock/Bind can use the native resource.
+uint32_t CreateVertexBufferAliased(uint32_t length) {
+  uint32_t xdkHandle = g_origCreateVertexBuffer(length);
+  if (!xdkHandle) return 0;
+  GuestBuffer *native = rr::CreateVertexBuffer(length);
+  if (native)
+    rr::RegisterBufferAlias(xdkHandle, native);
+  return xdkHandle;
+}
+uint32_t CreateIndexBufferAliased(uint32_t length, uint32_t format) {
+  uint32_t xdkHandle = g_origCreateIndexBuffer(length, format);
+  if (!xdkHandle) return 0;
+  GuestBuffer *native = rr::CreateIndexBuffer(length, format);
+  if (native)
+    rr::RegisterBufferAlias(xdkHandle, native);
+  return xdkHandle;
+}
+
 void Fm2EmitIndexedDrawPm4(uint32_t /*context*/, uint32_t primType,
                            uint32_t /*gpuOffset*/, uint32_t startIndex,
                            uint32_t indexCount) {
@@ -1643,17 +1684,13 @@ REX_HOOK(FM2_RenderContext_SetClipPlane3Enable, Fm2SetClipPlane3Enable);
 
 REX_HOOK(FM2_D3D_TryPresentAndUpdateStatus, Fm2Present);
 
-// Resource creation (NOT hooked: GuestBuffer/GuestTexture layout is C++/LE, but FM2
-// reads fields directly from resource objects using XDK D3DVertexBuffer offsets (BE).
-// Hooking creation returns objects with wrong layout → FM2 reads garbage pData → memcpy crash.
-// TODO: implement alias map (xdkGuestAddr → GuestBuffer*) so original XDK resources
-// are created for FM2 to read, while native Plume resources shadow them for Lock/Bind.
-// REX_HOOK(FM2_D3DDevice_CreateVertexBuffer, CreateVertexBuffer);
-// REX_HOOK(FM2_D3DDevice_CreateIndexBuffer, CreateIndexBuffer);
-// REX_HOOK(FM2_D3DDevice_CreateTexture, CreateTexture);
-// REX_HOOK(FM2_D3DDevice_CreateSurface, CreateSurface);
-// REX_HOOK(FM2_D3DDevice_CreateVertexDeclaration, CreateVertexDeclaration);
-// REX_HOOK(FM2_D3D_CreateTextureFromSurfaceLevelAuto, D3DXCreateTextureFromFileInMemory);
+// Resource creation: aliased hooks call the original XDK function so FM2 can
+// read the resource header safely, and also create a shadow Plume GuestBuffer
+// registered in the alias map for Lock/Bind hooks.
+REX_HOOK(FM2_D3DDevice_CreateVertexBuffer, CreateVertexBufferAliased);
+REX_HOOK(FM2_D3DDevice_CreateIndexBuffer, CreateIndexBufferAliased);
+// Texture/Surface/VertexDeclaration: existing TranslateGuest* / LookupAlias
+// paths already handle these lazily — no creation hooks needed for now.
 REX_HOOK(FM2_Render_AllocGpuPassMemoryBlock, Fm2AllocGpuPassMemoryBlock);
 REX_HOOK(FM2_D3D_CreateGpuMemoryBlock, Fm2CreateGpuMemoryBlock);
 

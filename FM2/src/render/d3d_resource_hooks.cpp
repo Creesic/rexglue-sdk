@@ -418,6 +418,30 @@ GuestVertexDeclaration *LookupVertexDeclarationAlias(uint32_t guestAddress) {
 }
 
 // ---------------------------------------------------------------------------
+// Buffer alias map: maps XDK D3DVertexBuffer/IndexBuffer guest addresses to
+// native GuestBuffers so Lock/Bind hooks can find the right Plume resource
+// without needing to read or write the XDK struct layout directly.
+// ---------------------------------------------------------------------------
+
+static std::mutex g_bufferAliasMutex;
+static std::unordered_map<uint32_t, GuestBuffer *> g_bufferAliases;
+
+void RegisterBufferAlias(uint32_t guestAddr, GuestBuffer *buf) {
+  if (!guestAddr || buf == nullptr)
+    return;
+  std::lock_guard lock(g_bufferAliasMutex);
+  g_bufferAliases[guestAddr] = buf;
+}
+
+GuestBuffer *LookupBufferAlias(uint32_t guestAddr) {
+  if (!guestAddr)
+    return nullptr;
+  std::lock_guard lock(g_bufferAliasMutex);
+  auto it = g_bufferAliases.find(guestAddr);
+  return it != g_bufferAliases.end() ? it->second : nullptr;
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor getters (read-back of buffer/surface metadata)
 // ---------------------------------------------------------------------------
 
