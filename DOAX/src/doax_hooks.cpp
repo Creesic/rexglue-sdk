@@ -13,7 +13,7 @@ namespace {
 
 constexpr uint32_t kGuestFiberSwapAddress = 0x82785670u;
 
-// Global scheduler flag in .bss (lis -31940 / addi -29192 in sub_824C08B8).
+// Global scheduler flag in .bss (lis -31940 / addi -29192 in DOAX_SchedulerDrainWake).
 constexpr uint32_t kDoaxSchedulerFlagAddr =
     static_cast<uint32_t>(static_cast<int32_t>(-2093219840 + -29192));
 
@@ -21,11 +21,11 @@ constexpr uint32_t kDoaxSchedulerFlagAddr =
 constexpr bool kSkipLicenseWarning = true;
 constexpr bool kSkipNinjaViHdMovie = true;
 
-// Work-queue globals (lis -31926 / addi 12888 in sub_824C05B8).
+// Work-queue globals (lis -31926 / addi 12888 in DOAX_WorkQueueDispatchLoop).
 constexpr int64_t kDoaxWorkQueueSegBase = -2092302336;
 constexpr int64_t kDoaxWorkQueueTableBase = kDoaxWorkQueueSegBase + 12888;
 
-// Work-queue dispatcher (sub_824C05B8) hang probe — grep log for "DOAX wq-probe".
+// Work-queue dispatcher (DOAX_WorkQueueDispatchLoop) hang probe — grep log for "DOAX wq-probe".
 constexpr uint32_t kWorkQueueProbeLogInterval = 10'000;
 constexpr uint32_t kWorkQueueProbeLogCap = 150;
 constexpr uint32_t kWorkQueueProbeBootLines = 8;
@@ -96,6 +96,43 @@ MenuProbeState g_menu_probe;
 FiberYieldProbeState g_fiber_yield_probe;
 uint32_t g_menu_scene_probe_logs = 0;
 uint32_t g_movie_probe_logs = 0;
+bool g_suppress_menu_kick = false;
+bool g_suppress_boot_work_fiber = false;
+uint32_t g_menu_select_logs = 0;
+uint32_t g_boot_fiber_suppress_logs = 0;
+uint32_t g_menu_scene_transition_logs = 0;
+uint32_t g_island_scene_load_logs = 0;
+constexpr uint32_t kMenuSelectLogCap = 8;
+constexpr uint32_t kBootFiberSuppressLogCap = 8;
+constexpr uint32_t kMenuSceneTransitionLogCap = 16;
+constexpr uint32_t kIslandSceneLoadLogCap = 8;
+constexpr uint32_t kTravelCase3ProbeLogCap = 128;
+constexpr uint32_t kTravelOverlayGuardLogCap = 48;
+constexpr uint32_t kTravelCompleteLogCap = 16;
+constexpr uint32_t kDoaxIslandGameplayPresentIndex = 3u;
+constexpr uint32_t kTravelFadeMilestoneTimeline = 30u;
+constexpr uint32_t kTravelFastCompleteDf0Threshold = 40u;
+
+// Menu work-fiber / travel transition globals (IDA: DOAX_MenuWorkFiberLoop case 3).
+constexpr uint32_t kDoaxMenuFiberDebAddr = 0x833B8DEBu;
+constexpr uint32_t kDoaxMenuFiberDefAddr = 0x833B8DEFu;
+constexpr uint32_t kDoaxMenuFiberDeaAddr = 0x833B8DEAu;
+constexpr uint32_t kDoaxMenuItemIdByteAddr = 0x833B8DECu;
+constexpr uint32_t kDoaxIslandOverlayFlagAddr = 0x833B8514u;
+constexpr uint32_t kDoaxPresentStateIndexAddr = 0x833B84C8u;
+constexpr uint32_t kDoaxMenuTransitionDf0Addr = 0x833B8DF0u;
+constexpr uint32_t kDoaxMenuTransitionDf4Addr = 0x833B8DF4u;
+
+constexpr uint32_t kMenuSceneTransitionLabel12Lr = 0x824C1770u;
+constexpr uint32_t kMenuSceneTransitionLabel34Lr = 0x824C191Cu;
+constexpr uint32_t kMenuWorkFiberCase3 = 3u;
+
+bool g_travel_overlay_guard = false;
+bool g_travel_fade_complete = false;
+uint32_t g_travel_case3_probe_logs = 0;
+uint32_t g_travel_overlay_guard_logs = 0;
+uint32_t g_travel_complete_logs = 0;
+uint8_t* g_doax_hook_guest_base = nullptr;
 
 SchedulerSnapshot ReadSchedulerSnapshot(uint8_t* base);
 
@@ -209,8 +246,15 @@ void MaybeLogSchedulerSnapshot(const char* site, const SchedulerSnapshot& snap) 
       snap.flag7, snap.word8, snap.word12);
 }
 
-// sub_824C0928 only dispatches menu work through loc_824C0A5C when flag2!=0.
+// DOAX_SchedulerDrainDispatch only dispatches menu work through loc_824C0A5C when flag2!=0.
+// Arm flag2 after CEF0 whenever the drain left it cleared. Scene-bring-up modes
+// (2/2, 3/3, 2/0) need this during initial boot — restricting to menu-idle 5/1
+// alone prevented the four-option screen. After the player confirms a menu item,
+// g_suppress_menu_kick stops re-arming so the post-selection transition can finish.
 void ArmSchedulerDispatchAfterMenuInit(uint8_t* base, uint32_t caller_lr) {
+  if (g_suppress_menu_kick) {
+    return;
+  }
   const SchedulerSnapshot before = ReadSchedulerSnapshot(base);
   if (before.flag0 == 0 || before.flag2 != 0) {
     return;
@@ -220,6 +264,244 @@ void ArmSchedulerDispatchAfterMenuInit(uint8_t* base, uint32_t caller_lr) {
   REXKRNL_WARN(
       "DOAX menu-kick: armed flag2 after CEF0 lr=0x{:08X} mode={}/{} -> {}/{}",
       caller_lr, before.flag4, before.flag5, after.flag4, after.flag5);
+}
+
+bool IsMenuWorkFiberConfirm(uint32_t caller_lr) {
+  switch (caller_lr) {
+    case 0x824C16A4u:
+    case 0x824C17FCu:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool IsPostMenuConfirmSceneTransition(uint32_t caller_lr) {
+  // LABEL_12 in DOAX_MenuWorkFiberLoop (case 1/2) and LABEL_34 else path.
+  // Do not use DOAX_MenuItemConfirm (0x824C16A4): case 0 calls it during menu bring-up.
+  switch (caller_lr) {
+    case 0x824C176Cu:
+    case kMenuSceneTransitionLabel12Lr:
+    case 0x824C1918u:
+    case kMenuSceneTransitionLabel34Lr:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool IsLabel34SceneTransition(uint32_t caller_lr) {
+  return caller_lr == 0x824C1918u || caller_lr == kMenuSceneTransitionLabel34Lr;
+}
+
+struct MenuTravelProbeState {
+  uint8_t deb = 0;
+  uint8_t def = 0;
+  uint8_t dea = 0;
+  uint8_t overlay = 0;
+  uint8_t menu_item = 0;
+  uint32_t present_idx = 0;
+  uint32_t df0 = 0;
+  uint32_t df4 = 0;
+};
+
+MenuTravelProbeState ReadMenuTravelProbeState(uint8_t* base) {
+  MenuTravelProbeState state;
+  state.deb = REX_LOAD_U8(kDoaxMenuFiberDebAddr);
+  state.def = REX_LOAD_U8(kDoaxMenuFiberDefAddr);
+  state.dea = REX_LOAD_U8(kDoaxMenuFiberDeaAddr);
+  state.overlay = REX_LOAD_U8(kDoaxIslandOverlayFlagAddr);
+  state.menu_item = REX_LOAD_U8(kDoaxMenuItemIdByteAddr);
+  state.present_idx = REX_LOAD_U32(kDoaxPresentStateIndexAddr);
+  state.df0 = REX_LOAD_U32(kDoaxMenuTransitionDf0Addr);
+  state.df4 = REX_LOAD_U32(kDoaxMenuTransitionDf4Addr);
+  return state;
+}
+
+bool ShouldHoldTravelMenuPresentState(uint8_t* base) {
+  if (g_travel_fade_complete) {
+    return false;
+  }
+  const uint32_t timeline = REX_LOAD_U32(kDoaxMenuTransitionDf4Addr);
+  // dword_833B8DF4 holds the fade timeline; near completion allow present index 3.
+  if (timeline != 0xFFFFFFFFu && timeline <= kTravelFadeMilestoneTimeline) {
+    return false;
+  }
+  return true;
+}
+
+void ApplyTravelTransitionGuards(uint8_t* base, const char* site) {
+  g_travel_overlay_guard = true;
+  const uint32_t before_present = REX_LOAD_U32(kDoaxPresentStateIndexAddr);
+  const uint8_t before_overlay = REX_LOAD_U8(kDoaxIslandOverlayFlagAddr);
+  if (ShouldHoldTravelMenuPresentState(base) && before_present != 1) {
+    REX_STORE_U32(kDoaxPresentStateIndexAddr, 1);
+  }
+  if (before_overlay == 0) {
+    REX_STORE_U8(kDoaxIslandOverlayFlagAddr, 1);
+  }
+  if (g_travel_overlay_guard_logs < kTravelOverlayGuardLogCap) {
+    ++g_travel_overlay_guard_logs;
+    REXKRNL_WARN(
+        "DOAX travel-guard: arm site={} present {}->{} overlay {}->1",
+        site, before_present,
+        ShouldHoldTravelMenuPresentState(base) ? 1u : before_present, before_overlay);
+  }
+}
+
+void EnforceTravelOverlayGuard(uint8_t* base, const char* site) {
+  if (!g_travel_overlay_guard || g_travel_fade_complete) {
+    return;
+  }
+  bool restored = false;
+  if (ShouldHoldTravelMenuPresentState(base) &&
+      REX_LOAD_U32(kDoaxPresentStateIndexAddr) != 1) {
+    REX_STORE_U32(kDoaxPresentStateIndexAddr, 1);
+    restored = true;
+  }
+  if (REX_LOAD_U8(kDoaxIslandOverlayFlagAddr) == 0) {
+    REX_STORE_U8(kDoaxIslandOverlayFlagAddr, 1);
+    restored = true;
+  }
+  if (restored && g_travel_overlay_guard_logs < kTravelOverlayGuardLogCap) {
+    ++g_travel_overlay_guard_logs;
+    const MenuTravelProbeState state = ReadMenuTravelProbeState(base);
+    REXKRNL_WARN(
+        "DOAX travel-guard: restore site={} deb={} def={} dea={} overlay={} present={} "
+        "df0={} df4={}",
+        site, state.deb, state.def, state.dea, state.overlay, state.present_idx, state.df0,
+        state.df4);
+  }
+}
+
+void ArmTravelFadeMilestone(uint8_t* base, int32_t timeline, const char* site) {
+  if (!g_travel_overlay_guard || g_travel_fade_complete) {
+    return;
+  }
+  if (REX_LOAD_U8(kDoaxMenuFiberDeaAddr) != kMenuWorkFiberCase3) {
+    return;
+  }
+  if (timeline < 0) {
+    return;
+  }
+  if (REX_LOAD_U8(kDoaxMenuFiberDefAddr) != 0) {
+    return;
+  }
+  REX_STORE_U8(kDoaxMenuFiberDefAddr, 1);
+  if (g_travel_complete_logs < kTravelCompleteLogCap) {
+    ++g_travel_complete_logs;
+    REXKRNL_WARN("DOAX travel-complete: milestone site={} timeline={} def=1", site, timeline);
+  }
+}
+
+void CompleteTravelFade(uint8_t* base, int32_t timeline, const char* site) {
+  if (!g_travel_overlay_guard || g_travel_fade_complete) {
+    return;
+  }
+  if (timeline > 0) {
+    return;
+  }
+  g_travel_fade_complete = true;
+  g_travel_overlay_guard = false;
+  const uint32_t before_present = REX_LOAD_U32(kDoaxPresentStateIndexAddr);
+  if (REX_LOAD_U8(kDoaxMenuFiberDefAddr) == 0) {
+    REX_STORE_U8(kDoaxMenuFiberDefAddr, 1);
+  }
+  REX_STORE_U32(kDoaxPresentStateIndexAddr, kDoaxIslandGameplayPresentIndex);
+  if (g_travel_complete_logs < kTravelCompleteLogCap) {
+    ++g_travel_complete_logs;
+    const MenuTravelProbeState state = ReadMenuTravelProbeState(base);
+    REXKRNL_WARN(
+        "DOAX travel-complete: fade-done site={} timeline={} present {}->{} deb={} def={} "
+        "dea={} overlay={} df0={} df4={}",
+        site, timeline, before_present, kDoaxIslandGameplayPresentIndex, state.deb, state.def,
+        state.dea, state.overlay, state.df0, state.df4);
+  }
+}
+
+void MaybeFastCompleteTravelFade(uint8_t* base, const char* site) {
+  if (!g_travel_overlay_guard || g_travel_fade_complete) {
+    return;
+  }
+  if (REX_LOAD_U8(kDoaxMenuFiberDeaAddr) != kMenuWorkFiberCase3) {
+    return;
+  }
+  const uint32_t df0 = REX_LOAD_U32(kDoaxMenuTransitionDf0Addr);
+  if (df0 < kTravelFastCompleteDf0Threshold) {
+    return;
+  }
+  CompleteTravelFade(base, 0, site);
+}
+
+void MaybeLogTravelCase3Probe(uint8_t* base, const char* site, int32_t ready, int32_t fade,
+                              int32_t timeline, uint32_t caller_lr) {
+  if (!g_travel_overlay_guard) {
+    return;
+  }
+  const MenuTravelProbeState state = ReadMenuTravelProbeState(base);
+  if (state.dea != kMenuWorkFiberCase3 && caller_lr != kSchedulerFiberYieldLr) {
+    return;
+  }
+  if (g_travel_case3_probe_logs >= kTravelCase3ProbeLogCap) {
+    return;
+  }
+  ++g_travel_case3_probe_logs;
+  REXKRNL_WARN(
+      "DOAX travel-case3-probe site={} deb={} def={} dea={} overlay={} item={} present={} "
+      "df0={} df4={} ready={} fade={} timeline={} lr=0x{:08X}",
+      site, state.deb, state.def, state.dea, state.overlay, state.menu_item, state.present_idx,
+      state.df0, state.df4, ready, fade, timeline, caller_lr);
+}
+
+constexpr uint32_t kMenuPostConfirmCleanupLr = 0x824C17FCu;
+constexpr uint32_t kDoaxTravelMenuItemId = 15u;
+constexpr uint32_t kMenuItemConfirmCase0Arg = 30u;
+constexpr uint32_t kMenuIdleSchedulerMode4 = 5u;
+constexpr uint32_t kMenuIdleSchedulerMode5 = 1u;
+
+void ArmBootFiberSuppress(uint8_t* base, const char* site, uint32_t lr, uint32_t detail) {
+  if (g_suppress_boot_work_fiber) {
+    ApplyTravelTransitionGuards(base, site);
+    return;
+  }
+  g_suppress_boot_work_fiber = true;
+  ApplyTravelTransitionGuards(base, site);
+  REXKRNL_WARN("DOAX travel-transition: arm boot-fiber-suppress site={} detail={} lr=0x{:08X}",
+               site, detail, lr);
+}
+
+// Arm boot-fiber suppress for Travel without firing during CEF0 bring-up (modes 2/2,
+// 3/3, 2/0). Case 0 calls DOAX_MenuItemConfirm(item, 30) at lr=0x824C16A4; Travel is
+// item 15. Post-confirm cleanup passes arg 0 (lr=0x824C17FC when byte_833B8DEB>1).
+void MaybeArmBootFiberForTravel(uint8_t* base, const char* site, uint32_t lr,
+                                uint32_t detail, uint32_t item_id, uint32_t arg2) {
+  if (g_suppress_boot_work_fiber) {
+    return;
+  }
+  if (arg2 == 0) {
+    ArmBootFiberSuppress(base, site, lr, detail);
+    return;
+  }
+  if (item_id != kDoaxTravelMenuItemId || arg2 != kMenuItemConfirmCase0Arg ||
+      lr != 0x824C16A4u) {
+    return;
+  }
+  const SchedulerSnapshot snap = ReadSchedulerSnapshot(base);
+  const bool idle_menu =
+      snap.flag4 == kMenuIdleSchedulerMode4 && snap.flag5 == kMenuIdleSchedulerMode5;
+  const bool confirm_frame = snap.flag4 == 2 && snap.flag5 == 2;
+  if (idle_menu || confirm_frame) {
+    ArmBootFiberSuppress(base, site, lr, item_id);
+  }
+}
+
+void MaybeLogMenuSelection(uint32_t caller_lr, uint32_t item_id, uint32_t cursor) {
+  if (g_menu_select_logs >= kMenuSelectLogCap) {
+    return;
+  }
+  ++g_menu_select_logs;
+  REXKRNL_WARN("DOAX menu-select: confirm lr=0x{:08X} cursor={} item_id={}", caller_lr,
+               cursor, item_id);
 }
 
 void MaybeLogMenuProbe(const char* site, uint32_t caller_lr) {
@@ -337,16 +619,21 @@ void PreserveSchedulerExceptBytes45(uint8_t* base, const SchedulerSnapshot& befo
   }
 }
 
-// Temporary experiment: sub_824C08B8 clears flag0 but wake path may not re-arm it.
+// Temporary experiment: DOAX_SchedulerDrainWake clears flag0 but wake path may not re-arm it.
 void ApplyFlag0SafetyNet(uint8_t* base, const SchedulerSnapshot& before,
                          SchedulerSnapshot& after) {
+  // Post-Travel scene transition may legitimately clear flag0. Restoring it keeps
+  // the drain dispatching stale boot-movie work (lr=0x8250A104).
+  if (g_suppress_boot_work_fiber) {
+    return;
+  }
   if (before.flag0 == 0 || after.flag0 != 0) {
     return;
   }
   const uint32_t sched = kDoaxSchedulerFlagAddr;
   REX_STORE_U8(sched + 0, before.flag0);
   after.flag0 = before.flag0;
-  // After sub_824C08B8 wake (flag1==2), flag2 must be non-zero for the
+  // After DOAX_SchedulerDrainWake wake (flag1==2), flag2 must be non-zero for the
   // loc_824C0A5C virtual-dispatch path; wake may not re-arm it after fiber bugs.
   if (after.flag1 == 2 && after.flag2 == 0) {
     REX_STORE_U8(sched + 2, 1);
@@ -547,16 +834,16 @@ extern "C" REX_FUNC(DOAX_FiberContextSwitch) {
 }
 
 //=============================================================================
-// Work-queue wake helper (0x8258CE60). Called from sub_824C08B8 with r31
+// Work-queue wake helper (0x8258CE60). Called from DOAX_SchedulerDrainWake with r31
 // holding a global flag pointer; the function may trigger nested fiber swaps via
 // sub_827831B0. Guest epilogue `ld r31,-16(r1)` can load 0 when r1/stack state
 // does not match the saved slot after a fiber round-trip, so preserve the
 // caller's r31 on the host stack and restore it after the generated body runs.
 //=============================================================================
-extern "C" REX_FUNC(sub_8258CE60) {
+extern "C" REX_FUNC(DOAX_WorkQueueSlotWake) {
   const uint64_t caller_r31 = ctx.r31.u64;
   const uint64_t caller_r30 = ctx.r30.u64;
-  __imp__sub_8258CE60(ctx, base);
+  __imp__DOAX_WorkQueueSlotWake(ctx, base);
   if (caller_r31 != 0) {
     ctx.r31.u64 = caller_r31;
   } else {
@@ -569,8 +856,8 @@ extern "C" REX_FUNC(sub_8258CE60) {
 
 //=============================================================================
 // Active-slot wake (0x8258CDF8). Loads queue_head from 0x834A3254, ORs bit 8 on
-// the work entry, then fiber-swaps via sub_82783210(r3=queue_head). This is the
-// dispatch step inside sub_824C08B8's sub_8258CE60(1) wake.
+// the work entry, then fiber-swaps via DOAX_FiberYield(r3=queue_head). This is the
+// dispatch step inside DOAX_SchedulerDrainWake's DOAX_WorkQueueSlotWake(1) wake.
 //=============================================================================
 extern "C" REX_FUNC(sub_8258CDF8) {
   REX_FUNC_PROLOGUE(sub_8258CDF8);
@@ -599,7 +886,7 @@ extern "C" REX_FUNC(sub_8258CDF8) {
   ctx.r11.u64 = ctx.r10.u64 | 8;
   REX_STORE_U32(ctx.r31.u32 + 0, ctx.r11.u32);
   ctx.lr = 0x8258CE4C;
-  sub_82783210(ctx, base);
+  DOAX_FiberYield(ctx, base);
   ctx.r31.u64 = work_entry;
   if (g_cdf8_wake_logs < kCdf8WakeLogCap) {
     ++g_cdf8_wake_logs;
@@ -618,8 +905,8 @@ extern "C" REX_FUNC(sub_8258CDF8) {
 // swaps can leave r31 clobbered even though the original game relied on ABI
 // callee-save across the call.
 //=============================================================================
-extern "C" REX_FUNC(sub_824C08B8) {
-  REX_FUNC_PROLOGUE(sub_824C08B8);
+extern "C" REX_FUNC(DOAX_SchedulerDrainWake) {
+  REX_FUNC_PROLOGUE(DOAX_SchedulerDrainWake);
   uint32_t ea{};
   ctx.r12.u64 = ctx.lr;
   REX_STORE_U32(ctx.r1.u32 + -8, ctx.r12.u32);
@@ -645,7 +932,7 @@ extern "C" REX_FUNC(sub_824C08B8) {
   ctx.r31.u64 = kDoaxSchedulerFlagAddr;
   ctx.r3.s64 = 1;
   ctx.lr = 0x824C0908;
-  sub_8258CE60(ctx, base);
+  DOAX_WorkQueueSlotWake(ctx, base);
   ctx.r31.u64 = kDoaxSchedulerFlagAddr;
   ctx.r11.s64 = 0;
   REX_STORE_U8(ctx.r31.u32 + 0, ctx.r11.u8);
@@ -660,25 +947,25 @@ loc_824C0910_hook:
 // Scheduler vtable index helper (0x824C06D8). Only bytes +4/+5 are updated;
 // fiber paths that clobber r8 can corrupt the rest of the scheduler header.
 //=============================================================================
-extern "C" REX_FUNC(sub_824C06D8) {
+extern "C" REX_FUNC(DOAX_SchedulerFiberSwap) {
   const SchedulerSnapshot before = ReadSchedulerSnapshot(base);
-  __imp__sub_824C06D8(ctx, base);
+  __imp__DOAX_SchedulerFiberSwap(ctx, base);
   PreserveSchedulerExceptBytes45(base, before);
 }
 
 //=============================================================================
 // Work-queue drain (0x824C0928). Returns immediately when scheduler flag[0]==0.
-// Virtual bctrl paths and sub_824C08B8 can clobber callee-saves across fiber
-// swaps; preserve the dispatcher's r29-r31 when called from sub_824C05B8.
+// Virtual bctrl paths and DOAX_SchedulerDrainWake can clobber callee-saves across fiber
+// swaps; preserve the dispatcher's r29-r31 when called from DOAX_WorkQueueDispatchLoop.
 //=============================================================================
-extern "C" REX_FUNC(sub_824C0928) {
+extern "C" REX_FUNC(DOAX_SchedulerDrainDispatch) {
   const uint64_t caller_lr = ctx.lr;
   const uint64_t caller_r29 = ctx.r29.u64;
   const uint64_t caller_r30 = ctx.r30.u64;
   const uint64_t caller_r31 = ctx.r31.u64;
   const SchedulerSnapshot before = ReadSchedulerSnapshot(base);
   const auto drain_start = ProbeClock::now();
-  __imp__sub_824C0928(ctx, base);
+  __imp__DOAX_SchedulerDrainDispatch(ctx, base);
   const uint64_t drain_us = ProbeElapsedUs(drain_start);
   const bool reg_clobber = (caller_r29 != 0 && ctx.r29.u64 == 0) ||
                            (caller_r30 != 0 && ctx.r30.u64 == 0) ||
@@ -692,12 +979,12 @@ extern "C" REX_FUNC(sub_824C0928) {
 
 //=============================================================================
 // Work-queue dispatcher loop (0x824C05B8). r29/r30/r31 point at globals
-// (lis -31926); each iteration yields via sub_82783210 then drains work in
-// sub_824C0928. Fiber round-trips can zero those registers before the loop
+// (lis -31926); each iteration yields via DOAX_FiberYield then drains work in
+// DOAX_SchedulerDrainDispatch. Fiber round-trips can zero those registers before the loop
 // head reloads, so re-materialize them every iteration.
 //=============================================================================
-extern "C" REX_FUNC(sub_824C05B8) {
-  REX_FUNC_PROLOGUE(sub_824C05B8);
+extern "C" REX_FUNC(DOAX_WorkQueueDispatchLoop) {
+  REX_FUNC_PROLOGUE(DOAX_WorkQueueDispatchLoop);
   uint32_t ea{};
   ctx.r12.u64 = ctx.lr;
   ctx.lr = 0x824C05C0;
@@ -726,11 +1013,11 @@ loc_824C05DC_hook:
   {
     const auto yield_start = ProbeClock::now();
     ctx.lr = 0x824C0600;
-    sub_82783210(ctx, base);
+    DOAX_FiberYield(ctx, base);
     const uint64_t yield_us = ProbeElapsedUs(yield_start);
     const auto drain_start = ProbeClock::now();
     ctx.lr = 0x824C0604;
-    sub_824C0928(ctx, base);
+    DOAX_SchedulerDrainDispatch(ctx, base);
     const uint64_t drain_us = ProbeElapsedUs(drain_start);
     ProbeWorkQueueIteration(ctx, probe_slot, probe_queue_head, probe_work_item, yield_us,
                             drain_us);
@@ -741,12 +1028,12 @@ loc_824C05DC_hook:
 //=============================================================================
 // Fiber yield shim (0x82783210). Log dispatcher/cdf8/work-queue yields.
 //=============================================================================
-extern "C" REX_FUNC(sub_82783210) {
+extern "C" REX_FUNC(DOAX_FiberYield) {
   const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
   const uint32_t target = static_cast<uint32_t>(ctx.r3.u64);
   // Guest-PC fiber swap does not restore PPC callee-saves (r14-r31). Work-fiber
   // loops (sub_824C1548 @ lr=0x824C15F4, sub_825A2560 @ lr=0x825A25E0,
-  // sub_824C0928 inner loop @ lr=0x824C0C3C, ...) branch back after yield
+  // DOAX_SchedulerDrainDispatch inner loop @ lr=0x824C0C3C, ...) branch back after yield
   // without re-running their register setup prologues. Do not restore on the
   // hooked dispatcher/cdf8 yields — those paths re-materialize globals after.
   SchedulerFiberGprs saved_gprs{};
@@ -757,6 +1044,11 @@ extern "C" REX_FUNC(sub_82783210) {
   DOAX_FiberContextSwitch(ctx, base);
   if (preserve_gprs) {
     RestoreSchedulerFiberGprs(ctx, saved_gprs);
+  }
+  if (caller_lr == kSchedulerFiberYieldLr) {
+    EnforceTravelOverlayGuard(base, "menu-fiber-yield");
+    MaybeFastCompleteTravelFade(base, "menu-fiber-yield");
+    MaybeLogTravelCase3Probe(base, "menu-fiber-yield", -1, -1, -1, caller_lr);
   }
   MaybeLogFiberYield(caller_lr, target, static_cast<uint32_t>(ctx.lr));
 }
@@ -800,12 +1092,208 @@ extern "C" REX_FUNC(sub_8274B650) {
 }
 
 //=============================================================================
+// Menu item confirm (0x82671308). Work-fiber menu cases call this before scene
+// transition; suppress flag2 re-arm until the transition can finish.
+//=============================================================================
+extern "C" REX_FUNC(DOAX_MenuItemConfirm) {
+  const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
+  const uint32_t item_id = static_cast<uint32_t>(ctx.r3.u64);
+  const uint32_t arg2 = static_cast<uint32_t>(ctx.r4.u64);
+  if (caller_lr == kMenuPostConfirmCleanupLr) {
+    uint32_t cursor = 0xFFFFFFFFu;
+    if (ctx.r28.u32 != 0) {
+      cursor = REX_LOAD_U8(ctx.r28.u32 + 16147);
+    }
+    MaybeArmBootFiberForTravel(base, "menu-post-confirm", caller_lr, item_id, item_id,
+                               arg2);
+    g_suppress_menu_kick = true;
+    MaybeLogMenuSelection(caller_lr, item_id, cursor);
+    MaybeLogSchedulerSnapshot("menu-post-confirm", ReadSchedulerSnapshot(base));
+  } else if (IsMenuWorkFiberConfirm(caller_lr)) {
+    uint32_t cursor = 0xFFFFFFFFu;
+    if (ctx.r28.u32 != 0) {
+      cursor = REX_LOAD_U8(ctx.r28.u32 + 16147);
+    }
+    g_suppress_menu_kick = true;
+    MaybeArmBootFiberForTravel(base, "menu-travel-confirm", caller_lr, item_id, item_id,
+                               arg2);
+    MaybeLogMenuSelection(caller_lr, item_id, cursor);
+  }
+  __imp__DOAX_MenuItemConfirm(ctx, base);
+}
+
+//=============================================================================
+// Menu work-fiber loop (0x824C1548). On exit clears byte_833B8514 then cdf8.
+//=============================================================================
+extern "C" REX_FUNC(DOAX_MenuWorkFiberLoop) {
+  g_doax_hook_guest_base = base;
+  __imp__DOAX_MenuWorkFiberLoop(ctx, base);
+  if (g_travel_overlay_guard) {
+    EnforceTravelOverlayGuard(base, "menu-fiber-exit");
+    if (g_travel_overlay_guard_logs < kTravelOverlayGuardLogCap) {
+      ++g_travel_overlay_guard_logs;
+      const MenuTravelProbeState state = ReadMenuTravelProbeState(base);
+      REXKRNL_WARN(
+          "DOAX travel-guard: menu-fiber-return deb={} def={} dea={} overlay={} present={}",
+          state.deb, state.def, state.dea, state.overlay, state.present_idx);
+    }
+  }
+}
+
+extern "C" REX_FUNC(DOAX_MenuPreTransitionHook) {
+  const uint32_t arg2 = static_cast<uint32_t>(ctx.r4.u64);
+  __imp__DOAX_MenuPreTransitionHook(ctx, base);
+  if (g_travel_overlay_guard && arg2 == kTravelFadeMilestoneTimeline) {
+    REX_STORE_U8(kDoaxMenuFiberDefAddr, 1);
+    if (g_travel_complete_logs < kTravelCompleteLogCap) {
+      ++g_travel_complete_logs;
+      REXKRNL_WARN("DOAX travel-complete: MenuPreTransitionHook(0, 30) def=1");
+    }
+  }
+}
+
+//=============================================================================
+// Menu scene transition (0x824C1958). Called from LABEL_12 after the menu
+// work-fiber validates a selection — this is the real Travel handoff, not the
+// case-0 idle calls to DOAX_MenuItemConfirm during CEF0 bring-up.
+//=============================================================================
+extern "C" REX_FUNC(DOAX_MenuSceneTransition) {
+  const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
+  const uint32_t scene_id = static_cast<uint32_t>(ctx.r3.u64);
+  if (g_menu_scene_transition_logs < kMenuSceneTransitionLogCap) {
+    ++g_menu_scene_transition_logs;
+    REXKRNL_WARN("DOAX scene-transition: enter scene_id={} lr=0x{:08X} expected={} label34={}",
+                 scene_id, caller_lr, IsPostMenuConfirmSceneTransition(caller_lr),
+                 IsLabel34SceneTransition(caller_lr));
+  }
+  ArmBootFiberSuppress(base, "scene-transition", caller_lr, scene_id);
+  MaybeLogSchedulerSnapshot("scene-transition", ReadSchedulerSnapshot(base));
+  __imp__DOAX_MenuSceneTransition(ctx, base);
+  if (g_travel_fade_complete) {
+    return;
+  }
+  EnforceTravelOverlayGuard(base, "scene-transition-return");
+}
+
+//=============================================================================
+// Island scene load (0x82538048). Menu work-fiber case 3; fallback arm if
+// scene-transition hook never logged (observed when lr-gated suppress missed).
+//=============================================================================
+extern "C" REX_FUNC(DOAX_IslandSceneLoad) {
+  const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
+  if (g_suppress_menu_kick) {
+    ArmBootFiberSuppress(base, "island-scene-load", caller_lr, 0);
+  }
+  if (g_island_scene_load_logs < kIslandSceneLoadLogCap) {
+    ++g_island_scene_load_logs;
+    REXKRNL_WARN("DOAX island-scene-load: lr=0x{:08X} menu_kick={} boot_suppress={}",
+                 caller_lr, g_suppress_menu_kick, g_suppress_boot_work_fiber);
+  }
+  __imp__DOAX_IslandSceneLoad(ctx, base);
+  EnforceTravelOverlayGuard(base, "island-scene-load-return");
+}
+
+//=============================================================================
+// Menu transition fade / ready probes (case 3 gate, IDA 0x824C1814).
+//=============================================================================
+extern "C" REX_FUNC(DOAX_MenuTransitionReadyCheck) {
+  __imp__DOAX_MenuTransitionReadyCheck(ctx, base);
+  const int32_t ready = static_cast<int32_t>(ctx.r3.u64);
+  MaybeLogTravelCase3Probe(base, "ready-check", ready, -1, -1,
+                           static_cast<uint32_t>(ctx.lr));
+}
+
+extern "C" REX_FUNC(DOAX_MenuTransitionFadeAlpha) {
+  __imp__DOAX_MenuTransitionFadeAlpha(ctx, base);
+  const int32_t fade = static_cast<int32_t>(ctx.r3.u64);
+  MaybeLogTravelCase3Probe(base, "fade-alpha", -1, fade, -1, static_cast<uint32_t>(ctx.lr));
+}
+
+extern "C" REX_FUNC(DOAX_MenuTransitionTimeline) {
+  __imp__DOAX_MenuTransitionTimeline(ctx, base);
+  const int32_t timeline = static_cast<int32_t>(ctx.r3.u64);
+  MaybeLogTravelCase3Probe(base, "timeline", -1, -1, timeline, static_cast<uint32_t>(ctx.lr));
+  ArmTravelFadeMilestone(base, timeline, "timeline");
+  MaybeFastCompleteTravelFade(base, "timeline-df0");
+  CompleteTravelFade(base, timeline, "timeline");
+}
+
+//=============================================================================
+// Boot intro work-fiber loop (0x8250A0B8). Resume lr=0x8250A104.
+//=============================================================================
+extern "C" REX_FUNC(DOAX_BootWorkFiberLoop) {
+  if (g_suppress_boot_work_fiber) {
+    if (g_boot_fiber_suppress_logs < kBootFiberSuppressLogCap) {
+      ++g_boot_fiber_suppress_logs;
+      REXKRNL_WARN("DOAX boot-fiber-suppress: skip DOAX_BootWorkFiberLoop lr=0x{:08X}",
+                   static_cast<uint32_t>(ctx.lr));
+    }
+    return;
+  }
+  __imp__DOAX_BootWorkFiberLoop(ctx, base);
+}
+
+//=============================================================================
+// Boot intro work-fiber body (0x8250A568). Fiber resumes at 0x8250A104 directly
+// into this function — loop-level suppress never runs. The body vtable dispatch
+// at 0x8250A6BC tears down island even when present-state update is blocked.
+//=============================================================================
+extern "C" REX_FUNC(DOAX_BootWorkFiberBody) {
+  if (g_suppress_boot_work_fiber && !g_travel_fade_complete) {
+    if (g_boot_fiber_suppress_logs < kBootFiberSuppressLogCap) {
+      ++g_boot_fiber_suppress_logs;
+      REXKRNL_WARN("DOAX boot-fiber-suppress: skip DOAX_BootWorkFiberBody lr=0x{:08X}",
+                   static_cast<uint32_t>(ctx.lr));
+    }
+    EnforceTravelOverlayGuard(base, "boot-fiber-body-skip");
+    MaybeFastCompleteTravelFade(base, "boot-fiber-body-skip");
+    return;
+  }
+  __imp__DOAX_BootWorkFiberBody(ctx, base);
+  if (g_travel_overlay_guard) {
+    EnforceTravelOverlayGuard(base, "boot-fiber-body-return");
+  }
+}
+
+//=============================================================================
+// Boot present-state helper (0x8250BEB0). DOAX_BootWorkFiberBody may call DOAX_BootMovieReplayTeardown
+// when byte_833BB763 != 5, replaying boot movie / scheduler drain.
+//=============================================================================
+extern "C" REX_FUNC(DOAX_BootPresentStateUpdate) {
+  if (g_suppress_boot_work_fiber && !g_travel_fade_complete) {
+    if (g_boot_fiber_suppress_logs < kBootFiberSuppressLogCap) {
+      ++g_boot_fiber_suppress_logs;
+      REXKRNL_WARN("DOAX boot-fiber-suppress: skip DOAX_BootPresentStateUpdate lr=0x{:08X}",
+                   static_cast<uint32_t>(ctx.lr));
+    }
+    return;
+  }
+  __imp__DOAX_BootPresentStateUpdate(ctx, base);
+}
+
+//=============================================================================
+// Boot movie replay teardown (0x8250A728). Calls DOAX_SchedulerDrainWake and resets scene
+// slots — observed to collapse island (draws~1300 -> 37) after Travel confirm.
+//=============================================================================
+extern "C" REX_FUNC(DOAX_BootMovieReplayTeardown) {
+  if (g_suppress_boot_work_fiber) {
+    if (g_boot_fiber_suppress_logs < kBootFiberSuppressLogCap) {
+      ++g_boot_fiber_suppress_logs;
+      REXKRNL_WARN("DOAX boot-fiber-suppress: skip DOAX_BootMovieReplayTeardown lr=0x{:08X}",
+                   static_cast<uint32_t>(ctx.lr));
+    }
+    return;
+  }
+  __imp__DOAX_BootMovieReplayTeardown(ctx, base);
+}
+
+//=============================================================================
 // Main-menu state setup (0x8258CEF0). Four menu slots (li r7,4).
 //=============================================================================
-extern "C" REX_FUNC(sub_8258CEF0) {
+extern "C" REX_FUNC(DOAX_MainMenuRegisterSlots) {
   const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
   MaybeLogMenuProbe("CEF0-enter", caller_lr);
-  __imp__sub_8258CEF0(ctx, base);
+  __imp__DOAX_MainMenuRegisterSlots(ctx, base);
   ArmSchedulerDispatchAfterMenuInit(base, caller_lr);
   MaybeLogMenuProbe("CEF0-return", caller_lr);
 }
@@ -813,12 +1301,12 @@ extern "C" REX_FUNC(sub_8258CEF0) {
 //=============================================================================
 // Main-menu island scene bring-up (0x8258E000). Calls CEF0 then scene setup.
 //=============================================================================
-extern "C" REX_FUNC(sub_8258E000) {
+extern "C" REX_FUNC(DOAX_IslandSceneBringUp) {
   if (g_menu_scene_probe_logs < kMenuSceneProbeLogCap) {
     ++g_menu_scene_probe_logs;
     MaybeLogSchedulerSnapshot("E000-enter", ReadSchedulerSnapshot(base));
   }
-  __imp__sub_8258E000(ctx, base);
+  __imp__DOAX_IslandSceneBringUp(ctx, base);
   if (g_menu_scene_probe_logs < kMenuSceneProbeLogCap) {
     MaybeLogSchedulerSnapshot("E000-return", ReadSchedulerSnapshot(base));
   }
@@ -883,6 +1371,46 @@ bool DOAX_SkipLicenseWarningIntro() {
     REXKRNL_WARN(
         "DOAX: skipping license warning intro block (0x8250AAA8 -> 0x8250AAFC)");
     logged = true;
+  }
+  return true;
+}
+
+//=============================================================================
+// Midasm: LABEL_34 byte_833B8DEB decrement — keep menu fiber alive during Travel.
+//=============================================================================
+void DOAX_GuardMenuFiberDebAfterDecrement(PPCRegister& /*r31*/) {
+  if (!g_travel_overlay_guard || g_doax_hook_guest_base == nullptr) {
+    return;
+  }
+  uint8_t* base = g_doax_hook_guest_base;
+  if (REX_LOAD_U8(kDoaxMenuFiberDebAddr) != 0) {
+    return;
+  }
+  REX_STORE_U8(kDoaxMenuFiberDebAddr, 1);
+  if (g_travel_overlay_guard_logs < kTravelOverlayGuardLogCap) {
+    ++g_travel_overlay_guard_logs;
+    const MenuTravelProbeState state = ReadMenuTravelProbeState(base);
+    REXKRNL_WARN(
+        "DOAX travel-guard: prevent deb=0 deb={} def={} dea={} overlay={}",
+        state.deb, state.def, state.dea, state.overlay);
+  }
+}
+
+//=============================================================================
+// Midasm: menu fiber exit overlay clear (0x824C1948 stb byte_833B8514).
+//=============================================================================
+bool DOAX_SkipIslandOverlayClearOnTravel() {
+  if (!g_travel_overlay_guard) {
+    return false;
+  }
+  if (g_travel_overlay_guard_logs < kTravelOverlayGuardLogCap) {
+    ++g_travel_overlay_guard_logs;
+    const MenuTravelProbeState state =
+        g_doax_hook_guest_base != nullptr ? ReadMenuTravelProbeState(g_doax_hook_guest_base)
+                                          : MenuTravelProbeState{};
+    REXKRNL_WARN(
+        "DOAX travel-guard: skip overlay-clear deb={} def={} dea={} overlay={}",
+        state.deb, state.def, state.dea, state.overlay);
   }
   return true;
 }

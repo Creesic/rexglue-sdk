@@ -209,6 +209,100 @@ exploration camera works, menu UI work never runs, and a stale boot-movie work i
 `flag2=1` when `flag0!=0 && flag2==0` after menu init. Grep `DOAX menu-kick`. Also added
 `sched-probe` on `sub_8258E000` and `movie-probe` on `DOAX_PlayMovie` / ninja skip.
 
+**Regression (2026-06-23):** Unconditional menu-kick on every CEF0 call (whenever `flag2==0`)
+re-arms menu dispatch during scene-bring-up modes `2/2`, `3/3`, `2/0`, trapping
+`sub_8258E000` in a `5/1→2/2→3/3→2/0→5/1` loop after confirming a menu item (black screen,
+`PlayMovie` replay, `824C15F4` fiber spin). Log showed 800+ `menu-kick` lines per session.
+
+**Fix:** Re-arm `flag2` after CEF0 for all scene-bring-up modes when `flag2==0` (boot needs
+modes `2/2`/`3/3`/`2/0`, not just menu-idle `5/1`). On any work-fiber menu confirm
+(`sub_82671308`, LR `0x824C16A4`/`0x824C17FC`), set `g_suppress_menu_kick`. Travel uses
+table item id **15**, not highlight index 0. Grep `DOAX menu-select`.
+
+## Travel black screen after menu confirm (2026-06-23)
+
+**Observed:** Confirming Travel (`item_id=15`) starts island load (`ups.dat`, GPU
+`draws≈1300`), then within ~2s collapses to `draws=37` black screen. A on the black
+screen plays UI confirm sound but B cannot return to menu.
+
+**Log evidence (`doax-clean.log`, session 14:04:08):**
+
+| Signal | Finding |
+|--------|---------|
+| `menu-select` | `cursor=0 item_id=15` at 14:04:08.947 |
+| `gpf` fiber resume | `lr=0x8250A104` (boot work-fiber loop in `sub_8250A0B8`) interleaved with confirm |
+| GPU | `draws=1310` at 14:04:10, back to `draws=37` at 14:04:11 |
+| `ups.dat` / `rds.dat` | Open immediately after confirm — Travel transition does start |
+
+**Interpretation:** Menu work-fiber (`sub_824C1548`) enters case 1→2→3 scene transition
+(`sub_824C1958`, `sub_82538048`), but the **boot intro work-fiber** (`sub_8250A0B8` /
+`sub_8250A568`, resume `lr=0x8250A104`) is still queued and keeps running during/after
+confirm. That replays boot movie / present state and tears down the island scene back to
+the idle `draws=37` splash.
+
+**Fix experiment (`DOAX/src/doax_hooks.cpp`):**
+
+1. On **scene transition** (`sub_824C1958`, caller `lr=0x824C176C` or `0x824C1918`) and
+   **post-confirm cleanup** (`sub_82671308`, caller `lr=0x824C17FC`, arg 0), set
+   `g_suppress_boot_work_fiber`. Do **not** arm from case-0 `sub_82671308` @
+   `0x824C16A4` (menu bring-up).
+2. Block boot replay chain when suppressed: `sub_8250A0B8`, `sub_8250A568`,
+   `sub_8250BEB0`, **`sub_8250A728`** (IDA: calls `sub_824C08B8`, resets scene —
+   matches `draws~1300 → 37` cliff).
+3. Skip `ApplyFlag0SafetyNet` while `g_suppress_boot_work_fiber` (grep
+   `DOAX travel-transition`).
+
+**IDA teardown chain (2026-06-23):** `sub_8250A568` → `sub_8250BEB0` (when
+`byte_833BB763 != 5`) → `sub_8250A728` → `sub_824C08B8` / `sub_8258CE60` work-queue
+wake. That replays boot movie state and tears down the Travel island scene.
+
+**Regression (2026-06-23):** Arming `g_suppress_boot_work_fiber` from `sub_82671308`
+at `lr=0x824C16A4` fired during case-0 menu bring-up (before user confirm), suppressed
+`sub_8250A568` too early, and caused **black after press start** (never reached four-option
+menu). Moved suppress arm to `sub_824C1958` @ `lr=0x824C176C` only.
+
+**Log follow-up (2026-06-23, `doax-clean.log` 14:39/14:45):** `DOAX menu-select`
+`item_id=15` and `ups.dat` open, but **`DOAX travel-transition` never logged** — boot-fiber
+suppress never armed; island `draws≈1316` still collapses to `draws=37` ~2s later.
+`DOAX_MenuSceneTransition` / `lr=0x824C17FC` hooks did not fire (or LR gate missed).
+
+**Fix (2026-06-23):** Arm boot-fiber suppress on:
+
+1. Any `DOAX_MenuSceneTransition` entry (only two xrefs in menu fiber).
+2. `DOAX_MenuItemConfirm` Travel row at menu-idle scheduler `5/1`: `item_id=15`, `arg2=30`,
+   `lr=0x824C16A4` (case 0 confirm frame — not CEF0 bring-up modes `2/2`/`3/3`/`2/0`).
+3. `DOAX_MenuItemConfirm` with `arg2=0` (post-confirm cleanup when reached).
+4. Fallback: `DOAX_IslandSceneLoad` when `g_suppress_menu_kick` is already set.
+
+Grep `DOAX scene-transition`, `DOAX island-scene-load`, `DOAX boot-fiber-suppress`,
+`DOAX travel-case3-probe`, `DOAX travel-guard`.
+
+**Log follow-up (2026-06-23, session 15:11):** Boot-fiber suppress arms correctly;
+case-3 fade runs full ~900-tick countdown (`overlay=1`, `present=1`, `def=0` throughout).
+Island GPU peaks `draws≈1287` then decays during fade. At timeline completion
+(`lr=0x824C191C` LABEL_34) `draws` cliff to `37`. Root cause: `byte_833B8DEF` never
+reaches 1 (timeline can skip exactly 30), so LABEL_34 takes the
+`DOAX_MenuSceneTransition(item,1)` else path instead of the deb/case-0 completion path.
+Forcing `dword_833B84C8==1` via travel-guard also blocks
+`DOAX_BootPresentStateUpdate`'s `dword_833B84C8==3` island-gameplay handoff.
+
+**Fix (2026-06-23):** grep `DOAX travel-complete`. When timeline is in `(0,30]`, set
+`byte_833B8DEF=1`. When timeline hits 0, set `dword_833B84C8=3`, clear travel guard,
+allow `DOAX_BootPresentStateUpdate` to run. Remove LABEL_34 scene-transition skip.
+Stop forcing `present=1` once timeline `<=30`.
+
+**Log follow-up (2026-06-23, session 15:21):** Prior fix never logged
+`DOAX travel-complete`. Cliff at `df0≈48` / `timeline≈853` (~2s after confirm), not at
+fade end. `DOAX_BootWorkFiberBody` still ran on fiber resume (`lr=0x8250A104`) — loop-level
+suppress at `0x8250A0B8` never re-enters. Body vtable dispatch at `0x8250A6BC` tears down
+island without hitting `DOAX_BootMovieReplayTeardown` hook.
+
+**Fix (2026-06-23, session 15:21+):** Skip entire `DOAX_BootWorkFiberBody` while
+`g_suppress_boot_work_fiber && !g_travel_fade_complete`. Fast-complete travel at
+`df0>=40` (`DOAX travel-complete: fade-done site=timeline-df0` or `menu-fiber-yield`).
+Arm `byte_833B8DEF=1` on first case-3 timeline tick (any `timeline>=0`). Grep
+`skip DOAX_BootWorkFiberBody`, `travel-complete`.
+
 ## Scheduler fiber GPR clobber (2026-06-23)
 
 **Symptom:** AV reading `0x100003F13` in `sub_824C1548` at `lbz r11,16147(r28)` once menu
