@@ -185,3 +185,37 @@ to `0x824C15D0`.
    that function and returns (loop restart) instead of bootstrap.
 
 Re-run `doax_codegen` after SDK/manifest changes. Do not hand-edit generated `doax_recomp.*.cpp`.
+
+## Main-menu wrong-state (2026-06-23)
+
+**Observed:** Island background renders, D-pad moves the **camera** (island view), no four-option
+menu UI, then `promotion_video.sfd` / boot-movie path fires again within ~1s of scene load.
+
+**Log evidence (`doax-clean.log`):**
+
+| Signal | Finding |
+|--------|---------|
+| `menu-probe` / `CEF0` | Runs 4× per scene load from `sub_8258E000` (`lr=0x8258E03C`) — menu slot registration happens |
+| `input-probe GetState` | Only during CEF0 bursts (~42 total); no ongoing menu input polling |
+| `drain-probe` | Scheduler stuck `flag0=1 flag2=0 flag4/5=5/1`; `w8`/`w12` counters increment forever |
+| Boot movie replay | ~1s after island load, fiber resumes at `0x8250A104` → license/ninja skip → `promotion_video.sfd` |
+
+**Interpretation:** `sub_8258E000` brings up the **island scene** (camera + 3D) and calls
+`sub_8258CEF0` to register four menu work-queue slots, but `sub_824C0928` never enters the
+`loc_824C0A5C` dispatch path because **`flag2` stays 0**. The game is in a hybrid state: island
+exploration camera works, menu UI work never runs, and a stale boot-movie work item still fires.
+
+**Experiment (2026-06-23):** `ArmSchedulerDispatchAfterMenuInit` in the `sub_8258CEF0` hook sets
+`flag2=1` when `flag0!=0 && flag2==0` after menu init. Grep `DOAX menu-kick`. Also added
+`sched-probe` on `sub_8258E000` and `movie-probe` on `DOAX_PlayMovie` / ninja skip.
+
+## Scheduler fiber GPR clobber (2026-06-23)
+
+**Symptom:** AV reading `0x100003F13` in `sub_824C1548` at `lbz r11,16147(r28)` once menu
+dispatch runs (`flag2` kick). `r28` was `0` after fiber resume.
+
+**Cause:** `sub_824C1548` sets `r14`–`r31` in its prologue, then yields via `sub_82783210`
+with `lr=0x824C15F4`. Guest-PC fiber swap does not preserve those callee-saves across the
+round-trip.
+
+**Fix:** `sub_82783210` hook saves/restores `r14`–`r31` when `caller_lr==0x824C15F4`.

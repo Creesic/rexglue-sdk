@@ -67,6 +67,8 @@ constexpr uint32_t kInputProbeLogCap = 48;
 constexpr uint32_t kInputProbeBootLines = 16;
 constexpr uint32_t kInputProbeInterval = 500;
 constexpr uint32_t kMenuProbeLogCap = 8;
+constexpr uint32_t kMenuSceneProbeLogCap = 4;
+constexpr uint32_t kMovieProbeLogCap = 8;
 constexpr uint32_t kFiberYieldDispatcherLogCap = 48;
 constexpr uint32_t kFiberYieldWorkQueueLogCap = 8;
 
@@ -92,6 +94,8 @@ struct FiberYieldProbeState {
 InputProbeState g_input_probe;
 MenuProbeState g_menu_probe;
 FiberYieldProbeState g_fiber_yield_probe;
+uint32_t g_menu_scene_probe_logs = 0;
+uint32_t g_movie_probe_logs = 0;
 
 SchedulerSnapshot ReadSchedulerSnapshot(uint8_t* base);
 
@@ -116,6 +120,91 @@ void MaybeLogInputProbe(const char* site, uint32_t user, uint32_t result, uint32
       site, probe.get_state_calls, user, result, buttons, caller_lr);
 }
 
+constexpr uint32_t kSchedulerFiberYieldLr = 0x824C15F4u;
+
+struct SchedulerFiberGprs {
+  uint64_t r14 = 0;
+  uint64_t r15 = 0;
+  uint64_t r16 = 0;
+  uint64_t r17 = 0;
+  uint64_t r18 = 0;
+  uint64_t r19 = 0;
+  uint64_t r20 = 0;
+  uint64_t r21 = 0;
+  uint64_t r22 = 0;
+  uint64_t r23 = 0;
+  uint64_t r24 = 0;
+  uint64_t r25 = 0;
+  uint64_t r26 = 0;
+  uint64_t r27 = 0;
+  uint64_t r28 = 0;
+  uint64_t r29 = 0;
+  uint64_t r30 = 0;
+  uint64_t r31 = 0;
+};
+
+void SaveSchedulerFiberGprs(PPCContext& ctx, SchedulerFiberGprs& saved) {
+  saved.r14 = ctx.r14.u64;
+  saved.r15 = ctx.r15.u64;
+  saved.r16 = ctx.r16.u64;
+  saved.r17 = ctx.r17.u64;
+  saved.r18 = ctx.r18.u64;
+  saved.r19 = ctx.r19.u64;
+  saved.r20 = ctx.r20.u64;
+  saved.r21 = ctx.r21.u64;
+  saved.r22 = ctx.r22.u64;
+  saved.r23 = ctx.r23.u64;
+  saved.r24 = ctx.r24.u64;
+  saved.r25 = ctx.r25.u64;
+  saved.r26 = ctx.r26.u64;
+  saved.r27 = ctx.r27.u64;
+  saved.r28 = ctx.r28.u64;
+  saved.r29 = ctx.r29.u64;
+  saved.r30 = ctx.r30.u64;
+  saved.r31 = ctx.r31.u64;
+}
+
+void RestoreSchedulerFiberGprs(PPCContext& ctx, const SchedulerFiberGprs& saved) {
+  ctx.r14.u64 = saved.r14;
+  ctx.r15.u64 = saved.r15;
+  ctx.r16.u64 = saved.r16;
+  ctx.r17.u64 = saved.r17;
+  ctx.r18.u64 = saved.r18;
+  ctx.r19.u64 = saved.r19;
+  ctx.r20.u64 = saved.r20;
+  ctx.r21.u64 = saved.r21;
+  ctx.r22.u64 = saved.r22;
+  ctx.r23.u64 = saved.r23;
+  ctx.r24.u64 = saved.r24;
+  ctx.r25.u64 = saved.r25;
+  ctx.r26.u64 = saved.r26;
+  ctx.r27.u64 = saved.r27;
+  ctx.r28.u64 = saved.r28;
+  ctx.r29.u64 = saved.r29;
+  ctx.r30.u64 = saved.r30;
+  ctx.r31.u64 = saved.r31;
+}
+
+void MaybeLogSchedulerSnapshot(const char* site, const SchedulerSnapshot& snap) {
+  REXKRNL_WARN(
+      "DOAX sched-probe site={} f0-7={:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X} w8={} w12={}",
+      site, snap.flag0, snap.flag1, snap.flag2, snap.flag3, snap.flag4, snap.flag5, snap.flag6,
+      snap.flag7, snap.word8, snap.word12);
+}
+
+// sub_824C0928 only dispatches menu work through loc_824C0A5C when flag2!=0.
+void ArmSchedulerDispatchAfterMenuInit(uint8_t* base, uint32_t caller_lr) {
+  const SchedulerSnapshot before = ReadSchedulerSnapshot(base);
+  if (before.flag0 == 0 || before.flag2 != 0) {
+    return;
+  }
+  REX_STORE_U8(kDoaxSchedulerFlagAddr + 2, 1);
+  const SchedulerSnapshot after = ReadSchedulerSnapshot(base);
+  REXKRNL_WARN(
+      "DOAX menu-kick: armed flag2 after CEF0 lr=0x{:08X} mode={}/{} -> {}/{}",
+      caller_lr, before.flag4, before.flag5, after.flag4, after.flag5);
+}
+
 void MaybeLogMenuProbe(const char* site, uint32_t caller_lr) {
   auto& probe = g_menu_probe;
   if (probe.log_count >= kMenuProbeLogCap) {
@@ -128,7 +217,7 @@ void MaybeLogMenuProbe(const char* site, uint32_t caller_lr) {
 
 void MaybeLogFiberYield(uint32_t caller_lr, uint32_t target, uint32_t resume_lr) {
   auto& probe = g_fiber_yield_probe;
-  if (caller_lr == 0x824C0600 || caller_lr == 0x8258CE4C) {
+  if (caller_lr == 0x824C0600 || caller_lr == 0x8258CE4C || caller_lr == kSchedulerFiberYieldLr) {
     if (probe.dispatcher_log_count >= kFiberYieldDispatcherLogCap) {
       return;
     }
@@ -638,7 +727,15 @@ loc_824C05DC_hook:
 extern "C" REX_FUNC(sub_82783210) {
   const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
   const uint32_t target = static_cast<uint32_t>(ctx.r3.u64);
+  const bool sched_fiber_yield = caller_lr == kSchedulerFiberYieldLr;
+  SchedulerFiberGprs saved_gprs{};
+  if (sched_fiber_yield) {
+    SaveSchedulerFiberGprs(ctx, saved_gprs);
+  }
   DOAX_FiberContextSwitch(ctx, base);
+  if (sched_fiber_yield) {
+    RestoreSchedulerFiberGprs(ctx, saved_gprs);
+  }
   MaybeLogFiberYield(caller_lr, target, static_cast<uint32_t>(ctx.lr));
 }
 
@@ -684,9 +781,38 @@ extern "C" REX_FUNC(sub_8274B650) {
 // Main-menu state setup (0x8258CEF0). Four menu slots (li r7,4).
 //=============================================================================
 extern "C" REX_FUNC(sub_8258CEF0) {
-  MaybeLogMenuProbe("CEF0-enter", static_cast<uint32_t>(ctx.lr));
+  const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
+  MaybeLogMenuProbe("CEF0-enter", caller_lr);
   __imp__sub_8258CEF0(ctx, base);
-  MaybeLogMenuProbe("CEF0-return", static_cast<uint32_t>(ctx.lr));
+  ArmSchedulerDispatchAfterMenuInit(base, caller_lr);
+  MaybeLogMenuProbe("CEF0-return", caller_lr);
+}
+
+//=============================================================================
+// Main-menu island scene bring-up (0x8258E000). Calls CEF0 then scene setup.
+//=============================================================================
+extern "C" REX_FUNC(sub_8258E000) {
+  if (g_menu_scene_probe_logs < kMenuSceneProbeLogCap) {
+    ++g_menu_scene_probe_logs;
+    MaybeLogSchedulerSnapshot("E000-enter", ReadSchedulerSnapshot(base));
+  }
+  __imp__sub_8258E000(ctx, base);
+  if (g_menu_scene_probe_logs < kMenuSceneProbeLogCap) {
+    MaybeLogSchedulerSnapshot("E000-return", ReadSchedulerSnapshot(base));
+  }
+}
+
+//=============================================================================
+// Movie playback probes — grep log for "DOAX movie-probe".
+//=============================================================================
+extern "C" REX_FUNC(DOAX_PlayMovie) {
+  if (g_movie_probe_logs < kMovieProbeLogCap) {
+    ++g_movie_probe_logs;
+    REXKRNL_WARN("DOAX movie-probe PlayMovie r3={} r4={} lr=0x{:08X}",
+                 static_cast<uint32_t>(ctx.r3.u64), static_cast<uint32_t>(ctx.r4.u64),
+                 static_cast<uint32_t>(ctx.lr));
+  }
+  __imp__DOAX_PlayMovie(ctx, base);
 }
 
 //=============================================================================
@@ -718,10 +844,10 @@ bool DOAX_SkipNinjaViHdMovie() {
   if (!kSkipNinjaViHdMovie) {
     return false;
   }
-  static bool logged = false;
-  if (!logged) {
-    REXKRNL_WARN("DOAX: skipping ninja_vi_hd.sfd playback");
-    logged = true;
+  static uint32_t skip_logs = 0;
+  if (skip_logs < kMovieProbeLogCap) {
+    ++skip_logs;
+    REXKRNL_WARN("DOAX movie-probe SkipNinjaViHd (midasm) log={}", skip_logs);
   }
   return true;
 }
