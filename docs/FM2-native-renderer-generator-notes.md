@@ -2233,3 +2233,93 @@ Current limitation:
   above. The next clean product step is to add a small native-renderer API that
   consumes the recorded live draw state and submits through the existing
   `SubmitNativeDirectDraw`/native batch path.
+
+### 2026-06-23 Phase 2 Shader Cache Seed
+
+Phase 2 has started with the smallest offline shader-cache slice:
+
+- Built ReOdyssey's vendored `XenosRecomp` from
+  `C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp` into the
+  local scratch build directory `.cache/xenosrecomp-clangcl-build`.
+- The first configure attempt picked MSYS GCC and failed in `dxc-bin` because
+  architecture detection produced an empty string. The working scratch
+  configure used the same `clang-cl` toolchain as this repo and passed
+  `-DCMAKE_OSX_ARCHITECTURES=AMD64`, which the `dxc-bin` CMake file reads
+  before `CMAKE_SYSTEM_PROCESSOR`.
+- Ran the generated tool in directory-cache mode against `FM2/assets`, not the
+  single XEX path. `XenosRecomp` only emits `shader_cache.cpp` in directory
+  mode; single-file mode emits HLSL for one shader container.
+- The output replaced the placeholder `FM2/generated/shader_cache.cpp`.
+- Added `scripts/fm2/Update-FM2ShaderCache.ps1` as the tracked regeneration
+  wrapper. By default it expects `ReOdyssey` next to this repo; pass
+  `-ReOdysseyRoot` if the reference checkout lives elsewhere. The raw commands
+  below are the expanded form of that script.
+
+Commands used:
+
+```powershell
+cmake -S C:\Users\Tera\Documents\GitHub\ReOdyssey\thirdparty\XenosRecomp `
+  -B .cache\xenosrecomp-clangcl-build `
+  -G Ninja `
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+  -DCMAKE_OSX_ARCHITECTURES=AMD64 `
+  -DCMAKE_C_COMPILER="C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe" `
+  -DCMAKE_CXX_COMPILER="C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe"
+
+cmake --build .cache\xenosrecomp-clangcl-build --target XenosRecomp --config RelWithDebInfo
+
+.cache\xenosrecomp-clangcl-build\XenosRecomp\XenosRecomp.exe `
+  FM2\assets `
+  .cache\fm2_shader_cache_candidate.cpp `
+  C:\Users\Tera\Documents\GitHub\ReOdyssey\thirdparty\XenosRecomp\XenosRecomp\shader_common.h `
+  -j 8
+
+$cacheText = Get-Content -LiteralPath .cache\fm2_shader_cache_candidate.cpp -Raw
+$cacheText = $cacheText -replace '("[^"]*") \},', '$1, nullptr },'
+Set-Content -LiteralPath .cache\fm2_shader_cache_candidate.cpp `
+  -Value $cacheText -NoNewline -Encoding utf8
+
+Copy-Item -LiteralPath .cache\fm2_shader_cache_candidate.cpp `
+  -Destination FM2\generated\shader_cache.cpp -Force
+```
+
+Preferred repeatable command after the initial tool build exists:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\fm2\Update-FM2ShaderCache.ps1 -SkipBuild
+```
+
+First pass cache contents:
+
+- `g_shaderCacheEntryCount = 58`.
+- `g_dxilCacheDecompressedSize = 235568`.
+- `g_spirvCacheDecompressedSize = 20292`.
+- Entries are sorted by hash and have normalized `/` source filenames.
+- All generated entries currently have `spec_constants_mask = 0`.
+- The discovered shaders come from `FM2/assets/Media/tracks/...` files in this
+  pass; this does not prove that all live gameplay shaders are covered.
+
+Code/test changes:
+
+- Added `tests/unit/fm2/shader_cache_test.cpp` to assert the generated cache is
+  nonempty, sorted by hash, has bounded DXIL/SPIR-V offsets, and uses normalized
+  `FM2/assets/...` filenames.
+- Added `FM2/generated/shader_cache.cpp` to the root unit test target so the
+  test validates the same generated cache compiled into FM2.
+- `scripts/fm2/Update-FM2ShaderCache.ps1` post-processes generated cache
+  entries to append the FM2/ReOdyssey runtime `guest_shader` back-pointer as
+  `nullptr`. ReOdyssey's `XenosRecomp` output omits that local runtime field,
+  and adding it in the generated `.cpp` keeps the cache warning-clean without
+  relying on ignored `FM2/generated/shader_cache.h` edits.
+- `FM2/generated` remains ignored by git; the script is the durable source of
+  truth for refreshing the generated cache in a clean workspace.
+
+Verification:
+
+- The new `[fm2][plume][shader-cache]` test failed before replacing the
+  placeholder cache with `g_shaderCacheEntryCount == 0`.
+- After replacing the cache, the same test passed with 469 assertions in 1 test
+  case.
+- The immediate next runtime check is to run FM2 with shader-cache miss logging
+  enabled and verify whether live menu/gameplay shaders hit this cache or dump
+  additional `missed_shaders/*.bin` containers for a second XenosRecomp pass.

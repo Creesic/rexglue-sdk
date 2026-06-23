@@ -346,6 +346,22 @@ Alternative: adapt `src/graphics/`'s existing runtime shader translator to
 produce the same format. Either way the output is: a map from microcode hash →
 native shader blob, with spec-constant variants for alpha test etc.
 
+Phase 2 seed status, 2026-06-23:
+
+- ReOdyssey's `XenosRecomp` was built in `.cache/xenosrecomp-clangcl-build`.
+- Directory-cache mode was run against `FM2/assets`, producing
+  `FM2/generated/shader_cache.cpp`.
+- `scripts/fm2/Update-FM2ShaderCache.ps1` now wraps that build/run flow for
+  repeatable local regeneration, defaulting to a sibling `ReOdyssey` checkout
+  and appending the FM2 runtime `guest_shader` back-pointer in generated
+  entries.
+- The first generated cache contains 58 shaders, with 235568 bytes of
+  decompressed DXIL and 20292 bytes of decompressed SPIR-V.
+- `tests/unit/fm2/shader_cache_test.cpp` now guards the generated cache shape:
+  nonempty, sorted hashes, bounded blob offsets, and normalized filenames.
+- This is a seed cache, not the final shader set. The next pass must run FM2 and
+  collect any live `missed_shaders/*.bin` dumps from menu/gameplay paths.
+
 ### Phase 3 — Render layer
 
 Port/adapt ReOdyssey's render layer to FM2:
