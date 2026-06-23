@@ -6,6 +6,7 @@
 
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -15,8 +16,11 @@
 #include <vector>
 
 #include <rex/cvar.h>
+#include <rex/graphics/graphics_system.h>
+#include <rex/graphics/registers.h>
 #include <rex/logging.h>
 #include <rex/platform.h>
+#include <rex/runtime.h>
 #include <rex/ui/window.h>
 
 #ifndef FM2_HAS_PLUME
@@ -146,6 +150,12 @@ REXCVAR_DEFINE_STRING(
     "FM2 Plume debug replay pipeline topology override: auto, "
     "triangle_list, or triangle_strip")
     .allowed({"auto", "triangle_list", "triangle_strip"});
+
+REXCVAR_DEFINE_STRING(
+    fm2_plume_direct_replay_transform_source, "scan", "FM2",
+    "VS float constant slot used as VP matrix for the debug replay: "
+    "scan, c0, c21, c25, c25_mul_c21, c28, c36_mul_c28")
+    .allowed({"scan", "c0", "c21", "c25", "c25_mul_c21", "c28", "c36_mul_c28"});
 
 std::atomic<bool> g_initialized{false};
 std::atomic<bool> g_plume_available{false};
@@ -2290,6 +2300,21 @@ Stats GetStatsSnapshot() {
     out.last_args = g_last_args;
   }
   return out;
+}
+
+DirectDrawDebugReplayTransform BuildLastVSDebugReplayTransform() {
+  // Read VS float constants from Xenia's GPU register file. Xenia populates
+  // these from PM4 LOAD_ALU_CONSTANT/SET_SHADER_CONSTANTS packets at draw time,
+  // so they are always current and host-endian (byteswapped on PM4 processing).
+  auto* runtime = rex::Runtime::instance();
+  if (!runtime || !runtime->graphics_system()) return {};
+  auto* gs = static_cast<rex::graphics::GraphicsSystem*>(runtime->graphics_system());
+  if (!gs) return {};
+  const rex::graphics::RegisterFile* rf = gs->register_file();
+  if (!rf) return {};
+  const uint32_t* regs = &rf->values[rex::graphics::XE_GPU_REG_SHADER_CONSTANT_000_X];
+  const std::string source = REXCVAR_GET(fm2_plume_direct_replay_transform_source);
+  return BuildDirectDrawDebugReplayTransformFromSource(regs, 256u, source);
 }
 
 }  // namespace fm2::native_renderer

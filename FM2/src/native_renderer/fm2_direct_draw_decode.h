@@ -1380,24 +1380,65 @@ inline DirectDrawDebugReplayTransform MultiplyDirectDrawReplayRowMajorTransforms
   return out;
 }
 
+inline bool IsDirectDrawTransformNonTrivial(const DirectDrawDebugReplayTransform& t) {
+  if (!t.valid) return false;
+  for (uint32_t r = 0; r < kDirectDrawDebugReplayTransformRowCount; ++r)
+    for (uint32_t c = 0; c < kDirectDrawDebugReplayTransformColumnCount; ++c)
+      if (std::abs(t.rows[r][c]) > 1e-4f) return true;
+  return false;
+}
+
 inline DirectDrawDebugReplayTransform BuildDirectDrawDebugReplayTransformFromSource(
     const uint32_t* constant_registers, uint32_t constant_count,
     std::string_view source) {
-  const DirectDrawDebugReplayTransform c28 =
-      BuildDirectDrawDebugReplayTransformFromConstants(
-          constant_registers, constant_count,
-          kDirectDrawDebugReplayWorldTransformFirstConstant);
   if (source == "c0") {
     return BuildDirectDrawDebugReplayTransformFromConstants(
         constant_registers, constant_count, 0u);
   }
+  if (source == "c21") {
+    return BuildDirectDrawDebugReplayTransformFromConstants(
+        constant_registers, constant_count, 21u);
+  }
+  if (source == "c25") {
+    return BuildDirectDrawDebugReplayTransformFromConstants(
+        constant_registers, constant_count, 25u);
+  }
+  if (source == "c25_mul_c21") {
+    const DirectDrawDebugReplayTransform c21 =
+        BuildDirectDrawDebugReplayTransformFromConstants(
+            constant_registers, constant_count, 21u);
+    const DirectDrawDebugReplayTransform c25 =
+        BuildDirectDrawDebugReplayTransformFromConstants(
+            constant_registers, constant_count, 25u);
+    return MultiplyDirectDrawReplayRowMajorTransforms(c25, c21, 25u);
+  }
   if (source == "c36_mul_c28") {
+    const DirectDrawDebugReplayTransform c28 =
+        BuildDirectDrawDebugReplayTransformFromConstants(
+            constant_registers, constant_count,
+            kDirectDrawDebugReplayWorldTransformFirstConstant);
     const DirectDrawDebugReplayTransform c36 =
         BuildDirectDrawDebugReplayTransformFromConstants(
             constant_registers, constant_count, 36u);
     return MultiplyDirectDrawReplayRowMajorTransforms(c36, c28, 36u);
   }
-  return c28;
+  if (source == "scan") {
+    // Scan VS constants 0..constant_count-4, return the first 4-row block that
+    // is finite and non-trivial (at least one element > 1e-4). This finds the
+    // VP/WVP matrix without requiring prior knowledge of which slot the game uses.
+    const uint32_t limit = constant_count >= 4u ? constant_count - 4u : 0u;
+    for (uint32_t start = 0; start <= limit; ++start) {
+      const DirectDrawDebugReplayTransform candidate =
+          BuildDirectDrawDebugReplayTransformFromConstants(
+              constant_registers, constant_count, start);
+      if (IsDirectDrawTransformNonTrivial(candidate)) return candidate;
+    }
+    return {};
+  }
+  // default: c28
+  return BuildDirectDrawDebugReplayTransformFromConstants(
+      constant_registers, constant_count,
+      kDirectDrawDebugReplayWorldTransformFirstConstant);
 }
 
 inline DirectDrawFloat4ConstantStats AnalyzeDirectDrawFloat4ConstantStats(

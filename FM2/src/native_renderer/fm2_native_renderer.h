@@ -144,6 +144,7 @@ bool SubmitDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
                              const DirectDrawReplaySourceBytes& sources);
 bool QueueDirectDebugReplay(const DirectDrawDebugReplayPlan& plan,
                             const DirectDrawReplaySourceBytes& sources);
+DirectDrawDebugReplayTransform BuildLastVSDebugReplayTransform();
 bool SubmitNativeDirectDraw(const DirectDrawDebugReplayPlan& plan,
                             const DirectDrawReplaySourceBytes& sources);
 struct DirectDrawReplaySubmission {

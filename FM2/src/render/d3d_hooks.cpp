@@ -1771,10 +1771,12 @@ void SubmitNativeIndexedDrawPm4(uint32_t primType, uint32_t startIndex,
 // replay draw to the side-by-side replay window (shadow mode only).
 // Mirrors the UnleashedRecomp/ReOdyssey pattern: hook the draw call and read
 // prior stream/index state from the recorder populated by midasm hooks.
-static void TryBuildAndSubmitDebugReplayForPm4Draw(uint32_t primType,
+static void TryBuildAndSubmitDebugReplayForPm4Draw(uint32_t context,
+                                                   uint32_t primType,
                                                    uint32_t gpuOffset,
                                                    uint32_t startIndex,
                                                    uint32_t indexCount) {
+  (void)context;
   static std::atomic<uint32_t> s_dbg_calls{0};
   const uint32_t call_n = s_dbg_calls.fetch_add(1, std::memory_order_relaxed) + 1;
 
@@ -1976,7 +1978,7 @@ static void TryBuildAndSubmitDebugReplayForPm4Draw(uint32_t primType,
                                               indexCount, sv0, sv1, svi,
                                               empty_shader, empty_shader);
 
-  const nr::DirectDrawDebugReplayPlan plan =
+  nr::DirectDrawDebugReplayPlan plan =
       nr::BuildDirectDrawDebugReplayPlan(packet, snapshot);
   if (!plan.ready) {
     if (call_n <= 4) {
@@ -1998,6 +2000,8 @@ static void TryBuildAndSubmitDebugReplayForPm4Draw(uint32_t primType,
                  (int)s0_hash_ok, (int)idx_hash_ok);
   }
 
+  plan.transform = nr::BuildLastVSDebugReplayTransform();
+
   const nr::DirectDrawReplaySourceBytes sources{
       .stream0 = ghp::ToHost<const uint8_t>(s0_upload_base),
       .stream1 = !s1_synth_bytes.empty()
@@ -2015,8 +2019,8 @@ void Fm2EmitIndexedDrawPm4WithGpuOffset(uint32_t context, uint32_t primType,
   if (!ShouldMirrorPlumeRenderState()) {
     g_origFm2EmitIndexedDrawPm4PacketsWithGpuOffset(
         context, primType, gpuOffset, startIndex, indexCount);
-    TryBuildAndSubmitDebugReplayForPm4Draw(primType, gpuOffset, startIndex,
-                                          indexCount);
+    TryBuildAndSubmitDebugReplayForPm4Draw(context, primType, gpuOffset,
+                                          startIndex, indexCount);
     return;
   }
   SubmitNativeIndexedDrawPm4(primType, startIndex, indexCount);
@@ -2030,8 +2034,8 @@ void Fm2EmitIndexedDrawPm4WithVertexFormatSetup(uint32_t context,
   if (!ShouldMirrorPlumeRenderState()) {
     g_origFm2EmitIndexedDrawPm4WithVertexFormatSetup(
         context, primType, gpuOffset, startIndex, indexCount);
-    TryBuildAndSubmitDebugReplayForPm4Draw(primType, gpuOffset, startIndex,
-                                          indexCount);
+    TryBuildAndSubmitDebugReplayForPm4Draw(context, primType, gpuOffset,
+                                          startIndex, indexCount);
     return;
   }
   SubmitNativeIndexedDrawPm4(primType, startIndex, indexCount);
