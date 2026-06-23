@@ -298,6 +298,13 @@ void BuilderContext::emit_conditional_branch(bool not_, std::string_view cond) {
           println("\t\treturn;");
           println("\t}}");
         }
+      } else if (const auto* targetFn = graph().getFunction(target)) {
+        // Manifest split left a backward branch to an outer loop head without a
+        // recorded tail-call edge; restart that function instead of bootstrap.
+        println("\tif ({}{}.{}) {{", not_ ? "!" : "", cr(insn.operands[0]), cond);
+        println("\t\t{}(ctx, base);", targetFn->name());
+        println("\t\treturn;");
+        println("\t}}");
       } else {
         println("\tif ({}{}.{}) {{", not_ ? "!" : "", cr(insn.operands[0]), cond);
         emit_bootstrap_or_fatal("branch", target);

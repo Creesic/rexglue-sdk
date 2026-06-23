@@ -47,7 +47,6 @@ setjmp_address = 0x829F12D0
     0x824D6868 = {}
     0x829CF100 = {}
     0x824C15D0 = {}
-    0x824C1714 = {}
     0x8250AA48 = { name = "DOAX_PlayNinjaViHdMovie" }
     0x8250AC08 = { name = "DOAX_BootEnterWarningMode" }
     0x8250AC50 = { name = "DOAX_BootWarningDismiss" }

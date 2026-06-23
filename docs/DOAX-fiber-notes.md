@@ -168,15 +168,20 @@ post-fiber preservation on those two functions; keep callee-save `r31`/`r30` res
 **Symptom:** `BootstrapOrFatal` / `Unresolved branch from 0x824C193C to 0x824C15D0` inside
 `sub_824C15D0` (scheduler work-fiber main loop at `queue_head`).
 
-**Cause:** Listing `0x824C193C` as a separate manifest function splits it from `sub_824C15D0`.
-The backward `bne` at `0x824C193C` then classifies as a tail-call to another function and
-codegen emits `BootstrapOrFatal` instead of `goto loc_824C15D0`.
+**Cause:** Listing a mid-loop manifest entry such as `0x824C1714` (or `0x824C193C`)
+splits the scheduler fiber loop out of `sub_824C15D0`. The backward `bne` at
+`0x824C193C` then classifies as a tail-call to another function; if the graph
+has no tail-call edge, codegen emits `BootstrapOrFatal` instead of looping back
+to `0x824C15D0`.
 
 **Durable fix:**
 
-1. Do **not** list `0x824C193C` under `[entrypoint.functions]` (split entry breaks backward-branch
-   classification against gap-fill chunks).
-2. SDK codegen (`emit_conditional_branch`): when the branch target equals the function entry
-   currently being emitted, emit `goto loc_<target>` instead of `BootstrapOrFatal`.
+1. Do **not** list `0x824C1714` or `0x824C193C` under `[entrypoint.functions]`
+   (split entries break backward-branch classification).
+2. SDK codegen (`emit_conditional_branch`): when the branch target equals the
+   function entry currently being emitted, emit `goto loc_<target>` instead of
+   `BootstrapOrFatal`.
+3. SDK fallback: unresolved conditional branch to a known function entry calls
+   that function and returns (loop restart) instead of bootstrap.
 
 Re-run `doax_codegen` after SDK/manifest changes. Do not hand-edit generated `doax_recomp.*.cpp`.
