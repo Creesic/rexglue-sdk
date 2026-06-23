@@ -576,6 +576,30 @@ uint32_t ReadGuestU32(const void *p) {
   return p ? reinterpret_cast<const rex::be<uint32_t> *>(p)->get() : 0;
 }
 
+bool IsReadableGuestRange(uint32_t guestAddress, uint32_t byteCount) {
+  if (guestAddress == 0 || byteCount == 0)
+    return false;
+
+  const uint32_t lastAddress = guestAddress + byteCount - 1u;
+  if (lastAddress < guestAddress)
+    return false;
+
+  auto *memory = ghp::GuestMemory();
+  auto *heap = memory ? memory->LookupHeap(guestAddress) : nullptr;
+  if (heap == nullptr)
+    return false;
+
+  const rex::memory::PageAccess access =
+      heap->QueryRangeAccess(guestAddress, lastAddress);
+  return access != rex::memory::PageAccess::kNoAccess;
+}
+
+uint32_t ReadGuestU32At(uint32_t guestAddress) {
+  if (!IsReadableGuestRange(guestAddress, sizeof(uint32_t)))
+    return 0;
+  return ReadGuestU32(ghp::ToHost<const void>(guestAddress));
+}
+
 bool IsPlausibleShaderPayloadByteCount(uint32_t byteCount) {
   return byteCount >= nr::kXenosUcodeInstructionByteStride &&
          byteCount <= 0x10000u && (byteCount & 3u) == 0;
@@ -621,45 +645,69 @@ void DumpLoadedShaderResource(const char *kind, uint32_t outRef,
   if (!REXCVAR_GET(fm2_shader_resource_dump))
     return;
 
-  const auto *outRefHost = ghp::ToHost<const uint8_t>(outRef);
-  const uint32_t shaderResource = ReadGuestU32(outRefHost);
+  const uint32_t shaderResource = ReadGuestU32At(outRef);
   if (shaderResource == 0) {
-    REXGPU_WARN("FM2 {} shader resource id=0x{:08X}: null output ref 0x{:08X}",
-                kind, shaderId, outRef);
+    REXGPU_WARN(
+        "FM2 {} shader resource id=0x{:08X}: null/unreadable output ref "
+        "0x{:08X}",
+        kind, shaderId, outRef);
     return;
   }
 
-  const auto *shaderHost = ghp::ToHost<const uint8_t>(shaderResource);
-  if (shaderHost == nullptr) {
+  if (!IsReadableGuestRange(shaderResource, 0x4Cu)) {
     REXGPU_WARN(
-        "FM2 {} shader resource id=0x{:08X}: invalid resource 0x{:08X}",
+        "FM2 {} shader resource id=0x{:08X}: unreadable resource 0x{:08X}",
         kind, shaderId, shaderResource);
     return;
   }
 
-  const uint32_t payloadBase = ReadGuestU32(shaderHost + payloadBaseOffset);
+  uint32_t shaderObject = shaderResource;
+  uint32_t payloadBase = ReadGuestU32At(shaderObject + payloadBaseOffset);
+  uint32_t resolvedObject = 0;
+  if (payloadBase == 0) {
+    resolvedObject =
+        ReadGuestU32At(shaderResource + nr::kDirectDrawStateHandleResolvedObjectOffset);
+    if (resolvedObject != 0 && IsReadableGuestRange(resolvedObject, 0x40u)) {
+      const uint32_t resolvedPayloadBase =
+          ReadGuestU32At(resolvedObject + payloadBaseOffset);
+      if (resolvedPayloadBase != 0) {
+        shaderObject = resolvedObject;
+        payloadBase = resolvedPayloadBase;
+      }
+    }
+  }
+
   if (payloadBase == 0) {
     REXGPU_WARN(
         "FM2 {} shader resource id=0x{:08X}: null payload field +0x{:02X} "
-        "resource=0x{:08X}",
-        kind, shaderId, payloadBaseOffset, shaderResource);
+        "resource=0x{:08X} resolved=0x{:08X}",
+        kind, shaderId, payloadBaseOffset, shaderResource, resolvedObject);
+    return;
+  }
+
+  const uint32_t sizeField =
+      ReadGuestU32At(shaderObject + nr::kDirectDrawPixelShaderPayloadByteCountOffset);
+  const uint32_t knownPayloadBytes = ChooseShaderPayloadByteCount(sizeField);
+  uint32_t payloadDumpBytes = nr::BoundedShaderPayloadDumpByteCount(
+      nr::kDirectDrawShaderByteDumpMax, knownPayloadBytes);
+  if (!IsReadableGuestRange(payloadBase, payloadDumpBytes)) {
+    const uint32_t smallerPayloadDumpBytes =
+        nr::BoundedShaderPayloadDumpByteCount(256u, knownPayloadBytes);
+    if (smallerPayloadDumpBytes != payloadDumpBytes &&
+        IsReadableGuestRange(payloadBase, smallerPayloadDumpBytes)) {
+      payloadDumpBytes = smallerPayloadDumpBytes;
+    }
+  }
+
+  if (payloadDumpBytes == 0 || !IsReadableGuestRange(payloadBase, payloadDumpBytes)) {
+    REXGPU_WARN(
+        "FM2 {} shader resource id=0x{:08X}: invalid payload 0x{:08X} "
+        "object=0x{:08X} knownBytes=0x{:X} sizeField=0x{:08X}",
+        kind, shaderId, payloadBase, shaderObject, knownPayloadBytes, sizeField);
     return;
   }
 
   const auto *payloadHost = ghp::ToHost<const uint8_t>(payloadBase);
-  const uint32_t sizeField =
-      ReadGuestU32(shaderHost + nr::kDirectDrawPixelShaderPayloadByteCountOffset);
-  const uint32_t knownPayloadBytes = ChooseShaderPayloadByteCount(sizeField);
-  const uint32_t payloadDumpBytes = nr::BoundedShaderPayloadDumpByteCount(
-      nr::kDirectDrawShaderByteDumpMax, knownPayloadBytes);
-  if (payloadHost == nullptr || payloadDumpBytes == 0) {
-    REXGPU_WARN(
-        "FM2 {} shader resource id=0x{:08X}: invalid payload 0x{:08X} "
-        "knownBytes=0x{:X} sizeField=0x{:08X}",
-        kind, shaderId, payloadBase, knownPayloadBytes, sizeField);
-    return;
-  }
-
   const uint64_t payloadHash = XXH3_64bits(payloadHost, payloadDumpBytes);
   static std::mutex s_dumpMutex;
   static std::unordered_set<uint64_t> s_dumpedPayloads;
@@ -673,12 +721,17 @@ void DumpLoadedShaderResource(const char *kind, uint32_t outRef,
     s_dumpedPayloads.insert(payloadHash);
   }
 
-  const auto *ucodeHost = payloadHost + ucodeOffset;
   const uint32_t ucodeDumpBytes = nr::BoundedShaderUcodeDumpByteCount(
       payloadDumpBytes, knownPayloadBytes, ucodeOffset);
   nr::DirectDrawShaderUcodeCandidate candidate;
-  if (ucodeDumpBytes >= nr::kXenosUcodeControlFlowPairDwordCount *
-                             sizeof(uint32_t)) {
+  const uint32_t ucodeBase = payloadBase + ucodeOffset;
+  const bool canScanUcode =
+      ucodeBase >= payloadBase &&
+      IsReadableGuestRange(ucodeBase, ucodeDumpBytes) &&
+      ucodeDumpBytes >=
+          nr::kXenosUcodeControlFlowPairDwordCount * sizeof(uint32_t);
+  if (canScanUcode) {
+    const auto *ucodeHost = ghp::ToHost<const uint8_t>(ucodeBase);
     candidate = nr::FindXenosUcodeCandidate(
         reinterpret_cast<const uint32_t *>(ucodeHost), ucodeDumpBytes / 4u);
   }
@@ -712,14 +765,14 @@ void DumpLoadedShaderResource(const char *kind, uint32_t outRef,
 
   REXGPU_WARN(
       "FM2 {} shader resource captured id=0x{:08X} resource=0x{:08X} "
-      "payload=0x{:08X} sizeField=0x{:08X} knownBytes=0x{:X} "
+      "object=0x{:08X} payload=0x{:08X} sizeField=0x{:08X} knownBytes=0x{:X} "
       "dumpBytes=0x{:X} payloadHash=0x{:016X} candidate={} "
       "candidateOffset=0x{:X} candidateBytes=0x{:X} ucodeHash=0x{:016X} "
       "payloadFile={} ucodeFile={}",
-      kind, shaderId, shaderResource, payloadBase, sizeField, knownPayloadBytes,
-      payloadDumpBytes, payloadHash, candidate.valid, candidate.byte_offset,
-      candidate.valid ? candidate.bounds.total_used_bytes : 0u, ucodeHash,
-      wrotePayload ? payloadPath.string() : "<write-failed>",
+      kind, shaderId, shaderResource, shaderObject, payloadBase, sizeField,
+      knownPayloadBytes, payloadDumpBytes, payloadHash, candidate.valid,
+      candidate.byte_offset, candidate.valid ? candidate.bounds.total_used_bytes : 0u,
+      ucodeHash, wrotePayload ? payloadPath.string() : "<write-failed>",
       wroteUcode ? ucodePath.string() : "<none>");
 }
 
