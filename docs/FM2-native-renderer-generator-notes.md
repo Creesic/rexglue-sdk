@@ -6,6 +6,12 @@ Branch context: `FM2_WIN_Plume`
 This note tracks the idea of using Plume for a title-native renderer path, with
 FM2 as the first prototype. It is meant to be updated as we learn durable facts.
 
+> Cross-reference: `docs/FM2-native-renderer-gap-analysis.md` (2026-06-23)
+> documents the cross-repo comparison (FM2 vs ReOdyssey vs UnleashedRecomp),
+> the shared `render/` module lineage, and the mirror-vs-replace architectural
+> gap. Read that first for the structural picture before the FM2-internal
+> prototype details below.
+
 ## Current Conclusion
 
 UnleashedRecomp has a native renderer, but not a universal Xbox 360 renderer.

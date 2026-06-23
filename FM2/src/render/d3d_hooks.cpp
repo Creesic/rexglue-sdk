@@ -1755,6 +1755,138 @@ void SubmitNativeIndexedDrawPm4(uint32_t primType, uint32_t startIndex,
   DrawIndexedVertices(device, primType, 0, startIndex, indexCount);
 }
 
+// Decode the current native state snapshot + PM4 draw args and submit a debug
+// replay draw to the side-by-side replay window (shadow mode only).
+// Mirrors the UnleashedRecomp/ReOdyssey pattern: hook the draw call and read
+// prior stream/index state from the recorder populated by midasm hooks.
+static void TryBuildAndSubmitDebugReplayForPm4Draw(uint32_t primType,
+                                                   uint32_t gpuOffset,
+                                                   uint32_t startIndex,
+                                                   uint32_t indexCount) {
+  if (!nr::WantsDirectDebugReplay() || indexCount == 0) return;
+
+  const nr::NativeStateSnapshot snapshot = nr::SnapshotLastNativeState();
+  if (!snapshot.valid) return;
+
+  // Locate slot 0 and slot 1 from the snapshot (populated by midasm hooks).
+  const nr::NativeStateVertexStreamBinding *s0 = nullptr;
+  const nr::NativeStateVertexStreamBinding *s1 = nullptr;
+  for (const auto &s : snapshot.streams) {
+    if (!s.valid) continue;
+    if (s.slot == 0u && !s0) s0 = &s;
+    else if (s.slot == 1u && !s1) s1 = &s;
+  }
+  if (!s0 || s0->resource == 0 || s0->stride_bytes == 0) return;
+  if (!snapshot.index_buffer.valid || snapshot.index_buffer.resource == 0) return;
+
+  // Decode stream-0 vertex buffer header (XDK vertex fetch constant layout).
+  const auto *s0hdr =
+      ghp::ToHost<const GuestD3DVertexBufferHeader>(s0->resource);
+  if (!s0hdr || (s0hdr->common.get() & 0xFu) != 1u) return;
+  const uint32_t s0_gpu_base = s0hdr->format0.get() & ~3u;
+  const uint32_t s0_raw_size = s0hdr->format1.get() & 0x3FFFFFCu;
+  const uint32_t s0_readable = s0_raw_size & nr::kD3DResourceByteSizeMask;
+  if (s0_gpu_base == 0 || s0_readable == 0) return;
+  const uint32_t s0_stride = s0->stride_bytes;
+  const uint32_t s0_upload_base = nr::DirectDrawReplayUploadGuestBase(s0_gpu_base);
+  const uint32_t s0_vcount = s0_readable / s0_stride;
+  const uint32_t s0_view_bytes = s0_vcount * s0_stride;
+  const uint32_t s0_hash_bytes =
+      (s0_view_bytes != 0 && s0_view_bytes < s0_readable) ? s0_view_bytes
+                                                           : s0_readable;
+
+  // Decode stream-1 (optional — plan.ready will be false if absent).
+  uint32_t s1_gpu_base = 0, s1_raw_size = 0, s1_stride = 0;
+  uint32_t s1_upload_base = 0, s1_vcount = 0, s1_view_bytes = 0, s1_hash_bytes = 0;
+  bool s1_valid = false;
+  if (s1 && s1->resource != 0 && s1->stride_bytes != 0) {
+    const auto *s1hdr =
+        ghp::ToHost<const GuestD3DVertexBufferHeader>(s1->resource);
+    if (s1hdr && (s1hdr->common.get() & 0xFu) == 1u) {
+      const uint32_t base = s1hdr->format0.get() & ~3u;
+      const uint32_t raw  = s1hdr->format1.get() & 0x3FFFFFCu;
+      const uint32_t readable = raw & nr::kD3DResourceByteSizeMask;
+      if (base != 0 && readable != 0) {
+        s1_gpu_base    = base;
+        s1_raw_size    = raw;
+        s1_stride      = s1->stride_bytes;
+        s1_upload_base = nr::DirectDrawReplayUploadGuestBase(s1_gpu_base);
+        s1_vcount      = readable / s1_stride;
+        s1_view_bytes  = s1_vcount * s1_stride;
+        s1_hash_bytes  = (s1_view_bytes != 0 && s1_view_bytes < readable)
+                             ? s1_view_bytes : readable;
+        s1_valid = true;
+      }
+    }
+  }
+
+  // Decode index buffer header.
+  const auto *ihdr =
+      ghp::ToHost<const GuestD3DIndexBufferHeader>(snapshot.index_buffer.resource);
+  if (!ihdr || (ihdr->common.get() & 0xFu) != 2u) return;
+  // D3DFORMAT in top 3 bits of common: 1=INDEX16, 6=INDEX32.
+  const uint32_t d3d_idx_fmt = (ihdr->common.get() >> 29) & 0x7u;
+  const uint32_t idx_desc_fmt = (d3d_idx_fmt == 6u) ? 2u : 1u;
+  const uint32_t idx_elem_bytes = nr::DirectDrawIndexElementByteCount(idx_desc_fmt);
+  if (idx_elem_bytes == 0) return;
+  const uint32_t idx_gpu_base  = gpuOffset;
+  const uint32_t idx_raw_size  = ihdr->size.get();
+  const uint32_t idx_readable  = idx_raw_size & nr::kD3DResourceByteSizeMask;
+  if (idx_gpu_base == 0 || idx_readable == 0) return;
+  const uint32_t idx_upload_base = nr::DirectDrawReplayUploadGuestBase(idx_gpu_base);
+  const uint32_t idx_view_bytes  = indexCount * idx_elem_bytes;
+  const uint32_t idx_hash_bytes  =
+      (idx_view_bytes != 0 && idx_view_bytes < idx_readable) ? idx_view_bytes
+                                                              : idx_readable;
+
+  // Hash each buffer range (guest memory; BigEndian bytes, swapped on upload).
+  const auto hash_range = [](uint32_t upload_base, uint32_t byte_count,
+                              uint64_t &out_hash) -> bool {
+    if (upload_base == 0 || byte_count == 0) return false;
+    if (!IsReadableGuestRange(upload_base, byte_count)) return false;
+    const auto *ptr = ghp::ToHost<const uint8_t>(upload_base);
+    if (!ptr) return false;
+    out_hash = XXH3_64bits(ptr, byte_count);
+    return true;
+  };
+
+  uint64_t s0_hash = 0, s1_hash = 0, idx_hash = 0;
+  const bool s0_hash_ok  = hash_range(s0_upload_base, s0_hash_bytes, s0_hash);
+  const bool s1_hash_ok  = s1_valid && hash_range(s1_upload_base, s1_hash_bytes, s1_hash);
+  const bool idx_hash_ok = hash_range(idx_upload_base, idx_hash_bytes, idx_hash);
+
+  // Build per-buffer view summaries.
+  const nr::DirectDrawBufferViewSummary sv0 = nr::BuildDirectDrawBufferViewSummary(
+      s0_gpu_base, s0_raw_size, s0_vcount, s0_stride, false, s0_hash_ok, s0_hash);
+  const nr::DirectDrawBufferViewSummary sv1 =
+      s1_valid ? nr::BuildDirectDrawBufferViewSummary(s1_gpu_base, s1_raw_size,
+                                                      s1_vcount, s1_stride, false,
+                                                      s1_hash_ok, s1_hash)
+               : nr::BuildDirectDrawBufferViewSummary(0u, 0u, 0u, 0u, false, false, 0u);
+  const nr::DirectDrawBufferViewSummary svi = nr::BuildDirectDrawBufferViewSummary(
+      idx_gpu_base, idx_raw_size, indexCount, idx_desc_fmt, true,
+      idx_hash_ok, idx_hash);
+
+  const nr::DirectDrawReplayTopology topology =
+      nr::DirectDrawReplayTopologyFromDirectIfacePrimitiveType(primType);
+  const nr::DirectDrawShaderKeySummary empty_shader{};
+  const nr::DirectDrawIndexedPacketSummary packet =
+      nr::BuildDirectDrawIndexedPacketSummary(0u, topology, startIndex,
+                                              indexCount, sv0, sv1, svi,
+                                              empty_shader, empty_shader);
+
+  const nr::DirectDrawDebugReplayPlan plan =
+      nr::BuildDirectDrawDebugReplayPlan(packet, snapshot);
+  if (!plan.ready) return;
+
+  const nr::DirectDrawReplaySourceBytes sources{
+      .stream0 = ghp::ToHost<const uint8_t>(s0_upload_base),
+      .stream1 = s1_valid ? ghp::ToHost<const uint8_t>(s1_upload_base) : nullptr,
+      .index   = ghp::ToHost<const uint8_t>(idx_upload_base),
+  };
+  nr::SubmitDirectDebugReplay(plan, sources);
+}
+
 void Fm2EmitIndexedDrawPm4WithGpuOffset(uint32_t context, uint32_t primType,
                                         uint32_t gpuOffset,
                                         uint32_t startIndex,
@@ -1762,6 +1894,8 @@ void Fm2EmitIndexedDrawPm4WithGpuOffset(uint32_t context, uint32_t primType,
   if (!ShouldMirrorPlumeRenderState()) {
     g_origFm2EmitIndexedDrawPm4PacketsWithGpuOffset(
         context, primType, gpuOffset, startIndex, indexCount);
+    TryBuildAndSubmitDebugReplayForPm4Draw(primType, gpuOffset, startIndex,
+                                          indexCount);
     return;
   }
   SubmitNativeIndexedDrawPm4(primType, startIndex, indexCount);
@@ -1775,6 +1909,8 @@ void Fm2EmitIndexedDrawPm4WithVertexFormatSetup(uint32_t context,
   if (!ShouldMirrorPlumeRenderState()) {
     g_origFm2EmitIndexedDrawPm4WithVertexFormatSetup(
         context, primType, gpuOffset, startIndex, indexCount);
+    TryBuildAndSubmitDebugReplayForPm4Draw(primType, gpuOffset, startIndex,
+                                          indexCount);
     return;
   }
   SubmitNativeIndexedDrawPm4(primType, startIndex, indexCount);
