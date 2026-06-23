@@ -20,6 +20,7 @@
 #include <rex/system.h>
 
 #if FM2_HAS_PLUME
+#include "native_renderer/fm2_native_renderer.h"
 #include "render/video.h"
 #endif
 
@@ -40,8 +41,11 @@ class Fm2App : public rex::ReXApp {
     config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
 #endif
 #if FM2_HAS_PLUME
-    // ReOdyssey pattern: native Plume renderer owns presentation.
-    config.graphics.reset();
+    // ReOdyssey-style Plume ownership only applies to Plume-only mode.
+    // Shadow/xenos modes still need the legacy ReX graphics backend alive.
+    if (!fm2::native_renderer::WantsReXGraphics()) {
+      config.graphics.reset();
+    }
     config.mount_cache_root = true;
 #endif
   }
@@ -49,7 +53,11 @@ class Fm2App : public rex::ReXApp {
   void OnPreLaunchModule() override {
 #if FM2_HAS_PLUME
     if (auto* w = window()) {
-      if (!Video::Init(w->GetNativeWindowHandle(), 1280, 720)) {
+      if (fm2::native_renderer::WantsReXGraphics()) {
+        if (!fm2::native_renderer::Initialize(w)) {
+          REXLOG_ERROR("FM2 native Plume renderer failed to initialize");
+        }
+      } else if (!Video::Init(w->GetNativeWindowHandle(), 1280, 720)) {
         REXLOG_ERROR("FM2 native Plume renderer failed to initialize");
       }
     }
@@ -58,7 +66,11 @@ class Fm2App : public rex::ReXApp {
 
   void OnShutdown() override {
 #if FM2_HAS_PLUME
-    Video::Shutdown();
+    if (fm2::native_renderer::WantsReXGraphics()) {
+      fm2::native_renderer::Shutdown();
+    } else {
+      Video::Shutdown();
+    }
 #endif
   }
 

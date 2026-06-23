@@ -17,6 +17,7 @@
 #include <rex/logging.h>
 
 #include "native_renderer/fm2_direct_draw_decode.h"
+#include "native_renderer/fm2_native_renderer.h"
 #include "render/guest_device.h"
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
@@ -74,6 +75,11 @@ REX_IMPORT(__imp__FM2_RenderContext_SetBoundSurface,
            g_origFm2SetBoundSurface, void(uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_D3D_TryPresentAndUpdateStatus,
            g_origFm2TryPresentAndUpdateStatus, void(uint32_t));
+REX_IMPORT(__imp__FM2_GpuCommandBuffer_BuildAndSubmit,
+           g_origFm2GpuCommandBufferBuildAndSubmit,
+           void(uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_ProducerProgressGuard_82369340,
+           g_origFm2ProducerProgressGuard, uint32_t(uint32_t));
 REX_IMPORT(__imp__FM2_Render_LoadPixelShaderResourceById,
            g_origFm2LoadPixelShaderResourceById, void(uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_Render_LoadVertexShaderResourceById,
@@ -112,6 +118,19 @@ REX_IMPORT(__imp__FM2_D3D_LockGpuBufferRaw, g_origIndexBufferLock,
            uint32_t(void *, uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_D3DSurface_GetDesc, g_origSurfaceGetDesc,
            void(void *, void *));
+REX_IMPORT(__imp__FM2_D3DSurface_LockRect, g_origSurfaceLockRect,
+           void(rr::GuestTexture *, void *, void *, uint32_t));
+REX_IMPORT(__imp__FM2_D3DResource_UnlockResource, g_origUnlockResource,
+           void(rr::GuestResource *, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3D_EmitIndexedDrawPm4Packets,
+           g_origFm2EmitIndexedDrawPm4Packets,
+           void(uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset,
+           g_origFm2EmitIndexedDrawPm4PacketsWithGpuOffset,
+           void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup,
+           g_origFm2EmitIndexedDrawPm4WithVertexFormatSetup,
+           void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
 
 namespace {
 
@@ -138,6 +157,9 @@ REXCVAR_DEFINE_UINT32(
 REXCVAR_DEFINE_BOOL(
     fm2_plume_vdswap_present, true, "FM2",
     "Mirror FM2's VdSwap frontbuffer into the active Plume swapchain.");
+REXCVAR_DEFINE_BOOL(
+    fm2_plume_bypass_prod_guard_wait, false, "FM2",
+    "Experiment: make FM2 producer-progress guard report ready in Plume mode.");
 
 struct GuestRasterizerState {
   uint8_t pad0[8];
@@ -166,6 +188,12 @@ uint32_t NextRenderHookTraceIndex(uint32_t &counter) {
   }
   return index;
 }
+
+bool ShouldMirrorPlumeRenderState() {
+  return !nr::WantsReXGraphics();
+}
+
+uint32_t ReadGuestU32At(uint32_t guestAddress);
 
 GuestDevice *DeviceForRenderContext(uint32_t renderContext) {
   if (renderContext != 0) {
@@ -260,12 +288,69 @@ void Fm2Present(uint32_t presentChain) {
                 n, presentChain);
   }
   g_origFm2TryPresentAndUpdateStatus(presentChain);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
   FlushImmediateVertices();
   Video::Present();
 }
 
+void Fm2GpuCommandBufferBuildAndSubmit(uint32_t commandBuffer, uint32_t arg4,
+                                       uint32_t arg5) {
+  static uint32_t s_traceCount = 0;
+  const uint32_t n = NextRenderHookTraceIndex(s_traceCount);
+  const uint32_t cursorBefore = ReadGuestU32At(commandBuffer + 48u);
+  const uint32_t kickThreshold = ReadGuestU32At(commandBuffer + 56u);
+  const uint32_t ringBase = ReadGuestU32At(commandBuffer + 10768u);
+  const uint32_t skipVdSwapFlag = ReadGuestU32At(commandBuffer + 21156u);
+  const uint32_t pendingStart = ReadGuestU32At(commandBuffer + 21240u);
+  const uint32_t pendingEnd = ReadGuestU32At(commandBuffer + 21244u);
+  const uint32_t pendingEnabled = ReadGuestU32At(commandBuffer + 21248u);
+  if (n != 0) {
+    REXGPU_INFO(
+        "FM2_PLUME_RENDER_HOOK hook=GpuBuildSubmit n={} stage=entry "
+        "cmd=0x{:08X} r4=0x{:08X} r5=0x{:08X} cursor=0x{:08X} "
+        "kick=0x{:08X} ring=0x{:08X} skipVdSwapFlag=0x{:08X} "
+        "pending={}->{} enabled=0x{:08X}",
+        n, commandBuffer, arg4, arg5, cursorBefore, kickThreshold, ringBase,
+        skipVdSwapFlag, pendingStart, pendingEnd, pendingEnabled);
+  }
+
+  g_origFm2GpuCommandBufferBuildAndSubmit(commandBuffer, arg4, arg5);
+
+  if (n != 0) {
+    const uint32_t cursorAfter = ReadGuestU32At(commandBuffer + 48u);
+    const uint32_t lastStatus = ReadGuestU32At(commandBuffer + 21288u);
+    const uint32_t flags = ReadGuestU32At(commandBuffer + 21896u);
+    REXGPU_INFO(
+        "FM2_PLUME_RENDER_HOOK hook=GpuBuildSubmit n={} stage=exit "
+        "cmd=0x{:08X} cursor=0x{:08X}->0x{:08X} lastStatus=0x{:08X} "
+        "flags=0x{:08X}",
+        n, commandBuffer, cursorBefore, cursorAfter, lastStatus, flags);
+  }
+}
+
+uint32_t Fm2ProducerProgressGuard(uint32_t state) {
+  if (!ShouldMirrorPlumeRenderState() ||
+      !REXCVAR_GET(fm2_plume_bypass_prod_guard_wait)) {
+    return g_origFm2ProducerProgressGuard(state);
+  }
+
+  static uint32_t s_traceCount = 0;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO(
+        "FM2_PLUME_RENDER_HOOK hook=ProducerProgressGuard n={} "
+        "state=0x{:08X} bypass_return=0",
+        n, state);
+  }
+  return 0;
+}
+
 void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shader) {
   g_origFm2SetPixelShaderState(renderContext, shader);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
   static uint32_t s_traceCount = 0;
   if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
     REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=SetPixelShaderState n={} "
@@ -282,6 +367,9 @@ void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shader) {
 
 void Fm2SetVertexShaderState(uint32_t renderContext, uint32_t shader) {
   g_origFm2SetVertexShaderState(renderContext, shader);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
   static uint32_t s_traceCount = 0;
   if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
     REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=SetVertexShaderState n={} "
@@ -301,6 +389,9 @@ void Fm2BindVertexStream(uint32_t renderContext, uint32_t slot,
                          uint32_t stride_bytes, uint64_t dirty_mask) {
   g_origFm2BindVertexStream(renderContext, slot, resource, byte_offset,
                             stride_bytes, dirty_mask);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
   GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr)
     return;
@@ -315,6 +406,9 @@ void Fm2BindVertexStream(uint32_t renderContext, uint32_t slot,
 
 void Fm2BindIndexBuffer(uint32_t renderContext, uint32_t resource) {
   g_origFm2BindIndexBuffer(renderContext, resource);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
   GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr)
     return;
@@ -328,6 +422,9 @@ void Fm2BindIndexBuffer(uint32_t renderContext, uint32_t resource) {
 void Fm2SetBoundSurface(uint32_t renderContext, uint32_t surface,
                         uint32_t surfaceArg) {
   g_origFm2SetBoundSurface(renderContext, surface, surfaceArg);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
   GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr || surface == 0) {
     return;
@@ -475,7 +572,11 @@ uint32_t IndexBufferLock(GuestBuffer *buffer, uint32_t offset, uint32_t size,
                          uint32_t flags);
 
 void SurfaceLockRect(GuestTexture *texture, GuestLockedRect *lockedRect,
-                     void * /*rect*/, uint32_t /*flags*/) {
+                     void *rect, uint32_t flags) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    g_origSurfaceLockRect(texture, lockedRect, rect, flags);
+    return;
+  }
   if (!rr::IsFm2Resource(texture))
     return; // genuine guest surface: ignore
   uint32_t pitch = 0, bits = 0;
@@ -496,6 +597,9 @@ struct GuestLockedTail {
 
 uint32_t VertexBufferLock(GuestBuffer *buffer, uint32_t offset, uint32_t size,
                           uint32_t flags) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    return g_origVertexBufferLock(buffer, offset, size, flags);
+  }
   if (rr::IsFm2Resource(buffer))
     return rr::LockVertexBuffer(buffer, flags);
   if (GuestBuffer *native = rr::LookupBufferAlias(ghp::ToGuest(buffer)))
@@ -504,6 +608,9 @@ uint32_t VertexBufferLock(GuestBuffer *buffer, uint32_t offset, uint32_t size,
 }
 uint32_t IndexBufferLock(GuestBuffer *buffer, uint32_t offset, uint32_t size,
                          uint32_t flags) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    return g_origIndexBufferLock(buffer, offset, size, flags);
+  }
   if (rr::IsFm2Resource(buffer))
     return rr::LockIndexBuffer(buffer, flags);
   if (GuestBuffer *native = rr::LookupBufferAlias(ghp::ToGuest(buffer)))
@@ -562,8 +669,12 @@ void LockSurface(GuestTexture *texture, uint32_t arrayIndex, uint32_t level,
     *pTailOffset = 0;
 }
 
-void UnlockResourceHook(rr::GuestResource *resource, uint32_t /*base*/,
-                        uint32_t /*mip*/) {
+void UnlockResourceHook(rr::GuestResource *resource, uint32_t base,
+                        uint32_t mip) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    g_origUnlockResource(resource, base, mip);
+    return;
+  }
   if (rr::IsFm2Resource(resource)) {
     switch (resource->type) {
     case rr::ResourceType::VertexBuffer:
@@ -930,6 +1041,9 @@ void DumpLoadedShaderResource(const char *kind, uint32_t outRef,
 uint32_t Fm2AllocGpuPassMemoryBlock(uint32_t shaderContainer) {
   const uint32_t shaderObject =
       g_origFm2AllocGpuPassMemoryBlock(shaderContainer);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return shaderObject;
+  }
   if (shaderObject != 0) {
     RegisterShaderAliasFromContainer("AllocGpuPassMemoryBlock", shaderObject,
                                      shaderContainer, false);
@@ -939,6 +1053,9 @@ uint32_t Fm2AllocGpuPassMemoryBlock(uint32_t shaderContainer) {
 
 uint32_t Fm2CreateGpuMemoryBlock(uint32_t shaderContainer) {
   const uint32_t shaderObject = g_origFm2CreateGpuMemoryBlock(shaderContainer);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return shaderObject;
+  }
   if (shaderObject != 0) {
     RegisterShaderAliasFromContainer("CreateGpuMemoryBlock", shaderObject,
                                      shaderContainer, true);
@@ -1058,6 +1175,9 @@ void SetPixelShaderNative(GuestDevice *device, GuestShader *shader) {
 
 void Fm2LoadPixelShaderResourceById(uint32_t outRef, uint32_t shaderId) {
   g_origFm2LoadPixelShaderResourceById(outRef, shaderId);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
   static uint32_t s_traceCount = 0;
   if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
     REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=LoadPixelShaderResource n={} "
@@ -1072,6 +1192,9 @@ void Fm2LoadPixelShaderResourceById(uint32_t outRef, uint32_t shaderId) {
 
 void Fm2LoadVertexShaderResourceById(uint32_t outRef, uint32_t shaderId) {
   g_origFm2LoadVertexShaderResourceById(outRef, shaderId);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
   static uint32_t s_traceCount = 0;
   if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
     REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=LoadVertexShaderResource n={} "
@@ -1383,6 +1506,9 @@ RENDER_STATE_HOOK(RsZEnable, D3DRS_ZENABLE)
 
 void MirrorFm2RenderState(uint32_t renderContext, uint32_t state,
                           uint32_t value) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
   GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr)
     return;
@@ -1391,6 +1517,9 @@ void MirrorFm2RenderState(uint32_t renderContext, uint32_t state,
 }
 
 void MirrorFm2ClipPlanes(uint32_t renderContext) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
   GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr)
     return;
@@ -1485,6 +1614,10 @@ void SetPendingClipPlanes(GuestDevice *device, uint64_t dirtyMask) {
 }
 
 void SurfaceGetDesc(GuestSurface *surface, GuestSurfaceDesc *desc) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    g_origSurfaceGetDesc(surface, desc);
+    return;
+  }
   if (!rr::IsFm2Resource(surface)) {
     g_origSurfaceGetDesc(surface, desc);
     return;
@@ -1576,9 +1709,14 @@ void RHIDrawIndexedPrimitiveUP(GuestDevice *device, uint32_t primType,
 // FM2_D3D_EmitIndexedDrawPm4Packets:              (context, primType, indexBufferBase, indexCount)
 // FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset: (context, primType, gpuOffset, startIndex, indexCount)
 // FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup:(context, primType, gpuOffset, startIndex, indexCount)
-void Fm2EmitIndexedDrawPm4Base(uint32_t /*context*/, uint32_t primType,
-                               uint32_t /*indexBufferBase*/,
+void Fm2EmitIndexedDrawPm4Base(uint32_t context, uint32_t primType,
+                               uint32_t indexBufferBase,
                                uint32_t indexCount) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    g_origFm2EmitIndexedDrawPm4Packets(context, primType, indexBufferBase,
+                                       indexCount);
+    return;
+  }
   GuestDevice *device = rr::GetActiveGuestDevice();
   if (device == nullptr) return;
   DrawIndexedVertices(device, primType, 0, 0, indexCount);
@@ -1589,6 +1727,9 @@ void Fm2EmitIndexedDrawPm4Base(uint32_t /*context*/, uint32_t primType,
 // and register it in the alias map so Lock/Bind can use the native resource.
 uint32_t CreateVertexBufferAliased(uint32_t length) {
   uint32_t xdkHandle = g_origCreateVertexBuffer(length);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return xdkHandle;
+  }
   if (!xdkHandle) return 0;
   GuestBuffer *native = rr::CreateVertexBuffer(length);
   if (native)
@@ -1597,6 +1738,9 @@ uint32_t CreateVertexBufferAliased(uint32_t length) {
 }
 uint32_t CreateIndexBufferAliased(uint32_t length, uint32_t format) {
   uint32_t xdkHandle = g_origCreateIndexBuffer(length, format);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return xdkHandle;
+  }
   if (!xdkHandle) return 0;
   GuestBuffer *native = rr::CreateIndexBuffer(length, format);
   if (native)
@@ -1604,12 +1748,36 @@ uint32_t CreateIndexBufferAliased(uint32_t length, uint32_t format) {
   return xdkHandle;
 }
 
-void Fm2EmitIndexedDrawPm4(uint32_t /*context*/, uint32_t primType,
-                           uint32_t /*gpuOffset*/, uint32_t startIndex,
-                           uint32_t indexCount) {
+void SubmitNativeIndexedDrawPm4(uint32_t primType, uint32_t startIndex,
+                                uint32_t indexCount) {
   GuestDevice *device = rr::GetActiveGuestDevice();
   if (device == nullptr) return;
   DrawIndexedVertices(device, primType, 0, startIndex, indexCount);
+}
+
+void Fm2EmitIndexedDrawPm4WithGpuOffset(uint32_t context, uint32_t primType,
+                                        uint32_t gpuOffset,
+                                        uint32_t startIndex,
+                                        uint32_t indexCount) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    g_origFm2EmitIndexedDrawPm4PacketsWithGpuOffset(
+        context, primType, gpuOffset, startIndex, indexCount);
+    return;
+  }
+  SubmitNativeIndexedDrawPm4(primType, startIndex, indexCount);
+}
+
+void Fm2EmitIndexedDrawPm4WithVertexFormatSetup(uint32_t context,
+                                                uint32_t primType,
+                                                uint32_t gpuOffset,
+                                                uint32_t startIndex,
+                                                uint32_t indexCount) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    g_origFm2EmitIndexedDrawPm4WithVertexFormatSetup(
+        context, primType, gpuOffset, startIndex, indexCount);
+    return;
+  }
+  SubmitNativeIndexedDrawPm4(primType, startIndex, indexCount);
 }
 
 } // namespace
@@ -1617,6 +1785,10 @@ void Fm2EmitIndexedDrawPm4(uint32_t /*context*/, uint32_t primType,
 void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
                          PPCRegister &r9, PPCRegister &r10,
                          PPCRegister &r1) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
+
   auto readGuestU32 = [](uint32_t guestAddress) -> uint32_t {
     auto *value = ghp::ToHost<rex::be<uint32_t>>(guestAddress);
     return value != nullptr ? value->get() : 0;
@@ -1683,6 +1855,9 @@ REX_HOOK(FM2_RenderContext_SetClipPlane2Enable, Fm2SetClipPlane2Enable);
 REX_HOOK(FM2_RenderContext_SetClipPlane3Enable, Fm2SetClipPlane3Enable);
 
 REX_HOOK(FM2_D3D_TryPresentAndUpdateStatus, Fm2Present);
+REX_HOOK(FM2_GpuCommandBuffer_BuildAndSubmit,
+         Fm2GpuCommandBufferBuildAndSubmit);
+REX_HOOK(FM2_ProducerProgressGuard_82369340, Fm2ProducerProgressGuard);
 
 // Resource creation: aliased hooks call the original XDK function so FM2 can
 // read the resource header safely, and also create a shadow Plume GuestBuffer
@@ -1703,5 +1878,7 @@ REX_HOOK(FM2_D3DSurface_GetDesc, SurfaceGetDesc);
 
 // PM4 indexed draw emitters → native Plume draw calls
 REX_HOOK(FM2_D3D_EmitIndexedDrawPm4Packets, Fm2EmitIndexedDrawPm4Base);
-REX_HOOK(FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset, Fm2EmitIndexedDrawPm4);
-REX_HOOK(FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup, Fm2EmitIndexedDrawPm4);
+REX_HOOK(FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset,
+         Fm2EmitIndexedDrawPm4WithGpuOffset);
+REX_HOOK(FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup,
+         Fm2EmitIndexedDrawPm4WithVertexFormatSetup);
