@@ -218,7 +218,8 @@ dispatch runs (`flag2` kick). `r28` was `0` after fiber resume.
 with `lr=0x824C15F4`. Guest-PC fiber swap does not preserve those callee-saves across the
 round-trip.
 
-**Fix:** `sub_82783210` hook saves/restores `r14`–`r31` around every fiber swap (PPC
-callee-saves the guest fiber path fails to preserve). Do not gate on a single `lr`
-value — multiple work fibers (`sub_824C1548`, `sub_825A2560`, …) loop with distinct
-return addresses (`0x824C15F4`, `0x825A25E0`, …).
+**Fix:** `sub_82783210` hook saves/restores `r14`–`r31` around fiber swap for **work-fiber
+loop yields** (e.g. `lr=0x824C15F4`, `0x825A25E0`, `0x824C0C3C`). **Do not** restore on
+hooked infrastructure yields (`lr=0x824C0600` dispatcher, `0x8258CE4C` cdf8 wake) — those
+paths reload globals after return; universal restore wedged the scheduler again (black
+screen, no menu draws).

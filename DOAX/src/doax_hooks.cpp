@@ -121,6 +121,23 @@ void MaybeLogInputProbe(const char* site, uint32_t user, uint32_t result, uint32
 }
 
 constexpr uint32_t kSchedulerFiberYieldLr = 0x824C15F4u;
+constexpr uint32_t kMenuWorkFiberYieldLr = 0x825A25E0u;
+constexpr uint32_t kDrainInnerFiberYieldLr = 0x824C0C3Cu;
+constexpr uint32_t kDispatcherFiberYieldLr = 0x824C0600u;
+constexpr uint32_t kCdf8FiberYieldLr = 0x8258CE4Cu;
+
+// Fiber yields from the hooked dispatcher/cdf8 paths reload their own callee-saves
+// after return. Restoring r14-r31 there undoes legitimate post-swap state and
+// leaves the scheduler wedged (black screen, flag2 never dispatches menu work).
+bool NeedsFiberCalleeSavePreserve(uint32_t caller_lr) {
+  switch (caller_lr) {
+    case kDispatcherFiberYieldLr:
+    case kCdf8FiberYieldLr:
+      return false;
+    default:
+      return true;
+  }
+}
 
 struct SchedulerFiberGprs {
   uint64_t r14 = 0;
@@ -728,12 +745,19 @@ extern "C" REX_FUNC(sub_82783210) {
   const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
   const uint32_t target = static_cast<uint32_t>(ctx.r3.u64);
   // Guest-PC fiber swap does not restore PPC callee-saves (r14-r31). Work-fiber
-  // loops (sub_824C1548, sub_825A2560, ...) branch back after yield without
-  // re-running their register setup prologues.
+  // loops (sub_824C1548 @ lr=0x824C15F4, sub_825A2560 @ lr=0x825A25E0,
+  // sub_824C0928 inner loop @ lr=0x824C0C3C, ...) branch back after yield
+  // without re-running their register setup prologues. Do not restore on the
+  // hooked dispatcher/cdf8 yields — those paths re-materialize globals after.
   SchedulerFiberGprs saved_gprs{};
-  SaveSchedulerFiberGprs(ctx, saved_gprs);
+  const bool preserve_gprs = NeedsFiberCalleeSavePreserve(caller_lr);
+  if (preserve_gprs) {
+    SaveSchedulerFiberGprs(ctx, saved_gprs);
+  }
   DOAX_FiberContextSwitch(ctx, base);
-  RestoreSchedulerFiberGprs(ctx, saved_gprs);
+  if (preserve_gprs) {
+    RestoreSchedulerFiberGprs(ctx, saved_gprs);
+  }
   MaybeLogFiberYield(caller_lr, target, static_cast<uint32_t>(ctx.lr));
 }
 
