@@ -3,14 +3,20 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <iterator>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 
+#include <rex/cvar.h>
+#include <rex/hash.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#include "native_renderer/fm2_direct_draw_decode.h"
 #include "render/guest_device.h"
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
@@ -21,6 +27,7 @@
 
 namespace rr = fm2::render;
 namespace ghp = fm2::ghp;
+namespace nr = fm2::native_renderer;
 
 namespace fm2::render {
 GuestBuffer *CreateVertexBuffer(uint32_t length);
@@ -63,6 +70,10 @@ REX_IMPORT(__imp__FM2_RenderContext_SetBoundSurface,
            g_origFm2SetBoundSurface, void(uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_D3D_TryPresentAndUpdateStatus,
            g_origFm2TryPresentAndUpdateStatus, void(uint32_t));
+REX_IMPORT(__imp__FM2_Render_LoadPixelShaderResourceById,
+           g_origFm2LoadPixelShaderResourceById, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_Render_LoadVertexShaderResourceById,
+           g_origFm2LoadVertexShaderResourceById, void(uint32_t, uint32_t));
 
 REX_IMPORT(__imp__FM2_RenderContext_SetDepthStencilEnableState,
            g_origFm2SetDepthStencilEnableState, void(uint32_t, uint32_t));
@@ -99,6 +110,13 @@ using rr::GuestShader;
 using rr::GuestSurface;
 using rr::GuestTexture;
 using rr::GuestVertexDeclaration;
+
+REXCVAR_DEFINE_BOOL(
+    fm2_shader_resource_dump, false, "FM2",
+    "Dump FM2 shader resource payloads loaded through title shader IDs.");
+REXCVAR_DEFINE_UINT32(
+    fm2_shader_resource_dump_limit, 128, "FM2",
+    "Maximum unique FM2 shader resource payloads to dump in one run.");
 
 struct GuestRasterizerState {
   uint8_t pad0[8];
@@ -558,6 +576,153 @@ uint32_t ReadGuestU32(const void *p) {
   return p ? reinterpret_cast<const rex::be<uint32_t> *>(p)->get() : 0;
 }
 
+bool IsPlausibleShaderPayloadByteCount(uint32_t byteCount) {
+  return byteCount >= nr::kXenosUcodeInstructionByteStride &&
+         byteCount <= 0x10000u && (byteCount & 3u) == 0;
+}
+
+uint32_t ChooseShaderPayloadByteCount(uint32_t guestEndianSizeField) {
+  if (IsPlausibleShaderPayloadByteCount(guestEndianSizeField))
+    return guestEndianSizeField;
+
+  const uint32_t littleEndianCandidate =
+      nr::DirectDrawLittleEndianValueFromGuestDword(guestEndianSizeField);
+  if (IsPlausibleShaderPayloadByteCount(littleEndianCandidate))
+    return littleEndianCandidate;
+
+  return 0;
+}
+
+bool WriteBinaryFile(const std::filesystem::path &path, const void *data,
+                     size_t size) {
+  try {
+    std::filesystem::create_directories(path.parent_path());
+    FILE *f = nullptr;
+#if defined(_MSC_VER)
+    if (fopen_s(&f, path.string().c_str(), "wb") != 0)
+      f = nullptr;
+#else
+    f = std::fopen(path.string().c_str(), "wb");
+#endif
+    if (f != nullptr) {
+      const bool ok = std::fwrite(data, 1, size, f) == size;
+      std::fclose(f);
+      return ok;
+    }
+  } catch (const std::filesystem::filesystem_error &e) {
+    REXGPU_WARN("FM2 shader resource dump path error: {}", e.what());
+  }
+  return false;
+}
+
+void DumpLoadedShaderResource(const char *kind, uint32_t outRef,
+                              uint32_t shaderId, uint32_t payloadBaseOffset,
+                              uint32_t ucodeOffset) {
+  if (!REXCVAR_GET(fm2_shader_resource_dump))
+    return;
+
+  const auto *outRefHost = ghp::ToHost<const uint8_t>(outRef);
+  const uint32_t shaderResource = ReadGuestU32(outRefHost);
+  if (shaderResource == 0) {
+    REXGPU_WARN("FM2 {} shader resource id=0x{:08X}: null output ref 0x{:08X}",
+                kind, shaderId, outRef);
+    return;
+  }
+
+  const auto *shaderHost = ghp::ToHost<const uint8_t>(shaderResource);
+  if (shaderHost == nullptr) {
+    REXGPU_WARN(
+        "FM2 {} shader resource id=0x{:08X}: invalid resource 0x{:08X}",
+        kind, shaderId, shaderResource);
+    return;
+  }
+
+  const uint32_t payloadBase = ReadGuestU32(shaderHost + payloadBaseOffset);
+  if (payloadBase == 0) {
+    REXGPU_WARN(
+        "FM2 {} shader resource id=0x{:08X}: null payload field +0x{:02X} "
+        "resource=0x{:08X}",
+        kind, shaderId, payloadBaseOffset, shaderResource);
+    return;
+  }
+
+  const auto *payloadHost = ghp::ToHost<const uint8_t>(payloadBase);
+  const uint32_t sizeField =
+      ReadGuestU32(shaderHost + nr::kDirectDrawPixelShaderPayloadByteCountOffset);
+  const uint32_t knownPayloadBytes = ChooseShaderPayloadByteCount(sizeField);
+  const uint32_t payloadDumpBytes = nr::BoundedShaderPayloadDumpByteCount(
+      nr::kDirectDrawShaderByteDumpMax, knownPayloadBytes);
+  if (payloadHost == nullptr || payloadDumpBytes == 0) {
+    REXGPU_WARN(
+        "FM2 {} shader resource id=0x{:08X}: invalid payload 0x{:08X} "
+        "knownBytes=0x{:X} sizeField=0x{:08X}",
+        kind, shaderId, payloadBase, knownPayloadBytes, sizeField);
+    return;
+  }
+
+  const uint64_t payloadHash = XXH3_64bits(payloadHost, payloadDumpBytes);
+  static std::mutex s_dumpMutex;
+  static std::unordered_set<uint64_t> s_dumpedPayloads;
+  {
+    std::lock_guard lock(s_dumpMutex);
+    if (s_dumpedPayloads.contains(payloadHash))
+      return;
+    const uint32_t limit = REXCVAR_GET(fm2_shader_resource_dump_limit);
+    if (limit != 0 && s_dumpedPayloads.size() >= limit)
+      return;
+    s_dumpedPayloads.insert(payloadHash);
+  }
+
+  const auto *ucodeHost = payloadHost + ucodeOffset;
+  const uint32_t ucodeDumpBytes = nr::BoundedShaderUcodeDumpByteCount(
+      payloadDumpBytes, knownPayloadBytes, ucodeOffset);
+  nr::DirectDrawShaderUcodeCandidate candidate;
+  if (ucodeDumpBytes >= nr::kXenosUcodeControlFlowPairDwordCount *
+                             sizeof(uint32_t)) {
+    candidate = nr::FindXenosUcodeCandidate(
+        reinterpret_cast<const uint32_t *>(ucodeHost), ucodeDumpBytes / 4u);
+  }
+
+  const std::filesystem::path dumpDir =
+      std::filesystem::path("missed_shaders") / "fm2_shader_resources";
+  char payloadName[128];
+  std::snprintf(payloadName, sizeof(payloadName),
+                "%s_%08X_%016llX_payload.bin", kind, shaderId,
+                static_cast<unsigned long long>(payloadHash));
+  const std::filesystem::path payloadPath = dumpDir / payloadName;
+  const bool wrotePayload =
+      WriteBinaryFile(payloadPath, payloadHost, payloadDumpBytes);
+
+  bool wroteUcode = false;
+  uint64_t ucodeHash = 0;
+  std::filesystem::path ucodePath;
+  if (candidate.valid) {
+    const uint32_t candidateByteOffset = ucodeOffset + candidate.byte_offset;
+    const auto *candidateHost = payloadHost + candidateByteOffset;
+    ucodeHash = XXH3_64bits(candidateHost, candidate.bounds.total_used_bytes);
+    char ucodeName[128];
+    std::snprintf(ucodeName, sizeof(ucodeName),
+                  "%s_%08X_%016llX_ucode_o%04X.bin", kind, shaderId,
+                  static_cast<unsigned long long>(ucodeHash),
+                  candidateByteOffset);
+    ucodePath = dumpDir / ucodeName;
+    wroteUcode = WriteBinaryFile(ucodePath, candidateHost,
+                                 candidate.bounds.total_used_bytes);
+  }
+
+  REXGPU_WARN(
+      "FM2 {} shader resource captured id=0x{:08X} resource=0x{:08X} "
+      "payload=0x{:08X} sizeField=0x{:08X} knownBytes=0x{:X} "
+      "dumpBytes=0x{:X} payloadHash=0x{:016X} candidate={} "
+      "candidateOffset=0x{:X} candidateBytes=0x{:X} ucodeHash=0x{:016X} "
+      "payloadFile={} ucodeFile={}",
+      kind, shaderId, shaderResource, payloadBase, sizeField, knownPayloadBytes,
+      payloadDumpBytes, payloadHash, candidate.valid, candidate.byte_offset,
+      candidate.valid ? candidate.bounds.total_used_bytes : 0u, ucodeHash,
+      wrotePayload ? payloadPath.string() : "<write-failed>",
+      wroteUcode ? ucodePath.string() : "<none>");
+}
+
 void WriteGuestU32(void *p, uint32_t value) {
   if (p)
     *reinterpret_cast<rex::be<uint32_t> *>(p) = value;
@@ -666,6 +831,22 @@ void SetVertexShaderNative(GuestDevice *device, GuestShader *shader) {
 void SetPixelShaderNative(GuestDevice *device, GuestShader *shader) {
   FlushImmediateVertices();
   rr::SetPixelShader(device, ResolveShader(shader));
+}
+
+void Fm2LoadPixelShaderResourceById(uint32_t outRef, uint32_t shaderId) {
+  g_origFm2LoadPixelShaderResourceById(outRef, shaderId);
+  DumpLoadedShaderResource(
+      "pixel", outRef, shaderId,
+      nr::kDirectDrawPixelShaderPayloadGpuBaseOffset,
+      nr::kDirectDrawPixelShaderPayloadUcodeOffset);
+}
+
+void Fm2LoadVertexShaderResourceById(uint32_t outRef, uint32_t shaderId) {
+  g_origFm2LoadVertexShaderResourceById(outRef, shaderId);
+  DumpLoadedShaderResource(
+      "vertex", outRef, shaderId,
+      nr::kDirectDrawVertexShaderPayloadGpuBaseOffset,
+      nr::kDirectDrawVertexShaderPayloadUcodeOffset);
 }
 
 void SetVertexShaderConstantFN(GuestDevice *device, uint32_t startRegister,
@@ -1167,6 +1348,10 @@ REX_HOOK(FM2_RenderContext_SetVertexShaderState, Fm2SetVertexShaderState);
 REX_HOOK(FM2_RenderContext_BindVertexStream, Fm2BindVertexStream);
 REX_HOOK(FM2_RenderContext_BindIndexBuffer, Fm2BindIndexBuffer);
 REX_HOOK(FM2_RenderContext_SetBoundSurface, Fm2SetBoundSurface);
+REX_HOOK(FM2_Render_LoadPixelShaderResourceById,
+         Fm2LoadPixelShaderResourceById);
+REX_HOOK(FM2_Render_LoadVertexShaderResourceById,
+         Fm2LoadVertexShaderResourceById);
 
 REX_HOOK(FM2_RenderContext_SetDepthStencilEnableState,
          Fm2SetDepthStencilEnableState);

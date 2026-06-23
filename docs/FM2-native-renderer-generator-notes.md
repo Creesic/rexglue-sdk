@@ -2323,3 +2323,21 @@ Verification:
 - The immediate next runtime check is to run FM2 with shader-cache miss logging
   enabled and verify whether live menu/gameplay shaders hit this cache or dump
   additional `missed_shaders/*.bin` containers for a second XenosRecomp pass.
+
+Runtime check follow-up, 2026-06-23:
+
+- Black-screen FM2 runs from `FM2/out/build/win-amd64-relwithdebinfo/fm2.exe`
+  produced no `missed_shaders` directory under the repo or under
+  `C:\Users\Tera\Documents\GitHub`.
+- Recent logs `fm2_173.log` through `fm2_175.log` contain `Video::Init`
+  Plume device/swapchain setup and `Runtime initialized without graphics system
+  (native rendering mode)`, but no `Shader cache MISS`, `CreateShader:`, or
+  native draw skip lines.
+- This does not prove the 58-entry shader cache is complete. The miss dumper is
+  attached to the ReOdyssey-style `CreateVertexShader`/`CreatePixelShader`
+  helper path in `FM2/src/render/d3d_resource_hooks.cpp`, while FM2's documented
+  shader surface is the title resource path
+  `FM2_Render_Load*ShaderResourceById` / `FM2_Render_GetOrCreate*ShaderResourceById`.
+- Next evidence step: hook or trace the FM2 shader resource load path and dump
+  the resolved payload/microcode range from the loaded resource object, then
+  feed confirmed shader containers into the XenosRecomp cache flow.
