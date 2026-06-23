@@ -47,8 +47,9 @@ ruleset: update it when we learn a durable project lesson.
 
 After copy/paste or moving the repo, stale CMake caches and absolute paths in
 local presets/config are the usual failures. See `docs/portable-workspace.md`.
-Run `rex-repair` from `scripts/PSReX` (or let `rex-configure` / `rex-cmake` auto-repair
-on failure). Title projects should use relative XEX paths and
+Run `rex-repair` from `scripts/PSReX` via PowerShell 7 (`pwsh`; Windows PowerShell
+5.1 is insufficient), or let `rex-configure` / `rex-cmake` auto-repair on failure.
+Title projects should use relative XEX paths and
 `${sourceDir}/../out/install/...` for the SDK prefix.
 
 ## Build Workflow
@@ -132,3 +133,62 @@ After rebuilding the SDK/runtime, make sure FM2 is using the fresh
 - Avoid sweeping reformatting or unrelated cleanup.
 - Third-party directories may have their own rules. Do not modify `thirdparty/`
   unless the task truly requires it.
+
+## Learned User Preferences
+
+- Run `rexglue init` and `rexglue codegen` with the installed SDK binary
+  (`../out/install/win-amd64/bin/rexglue.exe` from `DOAX/`), not in-tree build
+  artifacts or absolute repo-root paths.
+- Pass relative paths when initializing a title from its project directory
+  (`assets/default.xex`, `--game-root assets`).
+- Run PSReX repair/setup scripts with PowerShell 7 (`pwsh`); Windows PowerShell
+  5.1 is insufficient.
+- Use `${projectDir}/assets` for `--game_data_root` in `DOAX/.vs/launch.vs.json`,
+  not `${workspaceRoot}\assets`.
+- Use `DOAX/scripts/bootstrap-codegen-loop.cmd` to run the bootstrap/codegen loop
+  from Explorer; the script pauses on exit unless `-NoPause` is passed.
+
+## Learned Workspace Facts
+
+- Active title project is `DOAX/` (Dead or Alive Xtreme); FM2 paths and notes in
+  this guide are legacy from the parent `ReXGlue080` copy.
+- After copying or moving the repo, run portable workspace repair before building
+  titles.
+- DOAX generated output lives in `DOAX/generated/`; manifest source is
+  `DOAX/doax_manifest.toml`; use a `DOAX_` prefix for title-specific symbol
+  names.
+- Title executables in the parent `DOAX/CMakeLists.txt` do not inherit SDK root
+  `add_compile_options()` from `add_subdirectory`; Windows `/EHsc` and related
+  flags are applied via `rexglue_apply_target_settings()` in
+  `cmake/rexglue_helpers.cmake`.
+- Stock `rexglue init` CMake presets use plain `clang++` without SSSE3; this
+  workspace's `DOAX/CMakePresets.json` needs local `clang-cl` and
+  `-march=x86-64-v3` on Windows — re-running `init --force` resets that preset.
+- DOAX build output is `DOAX/out/build/win-amd64-relwithdebinfo/doax.exe`; sync
+  fresh `rexruntimerd.dll` after SDK rebuilds.
+- Game assets and `default.xex` live under `DOAX/assets/`; manifest `game_root`
+  is `assets`.
+- Bootstrap bring-up (ported from ReXGlue080FM4): `--bootstrap_unregistered_functions=1`
+  and `--bootstrap_functions_log=DOAX/bootstrap_discovered.toml`; `rexglue codegen`
+  merges into `[entrypoint.functions]` via line-based `bootstrap_merge.cpp` (toml++
+  `out << tbl` emits dotted `[entrypoint.functions.0x...]` headers). Loop:
+  `DOAX/scripts/bootstrap-codegen-loop.ps1` runs the game first, reports new unique
+  addresses after the window closes, then merge/codegen/build **only** when the
+  session recorded new addresses (or `-ForceCodegen`). It does not codegen just
+  because manifest timestamps changed.
+- After manifest or codegen changes, rebuild `doax.exe`; entrypoint registration
+  is `PPCFuncMappings` in `doax_init.cpp` (not `doax_RegisterFunctions`).
+  `[entrypoint.functions]` entries need `name` or bare stubs can crash codegen
+  Write; `codegen_command.cpp` repairs/merges manifest and compacts duplicate
+  `bootstrap_discovered.toml` before parse.
+- DOAX boot order is warning → ninja → opening (`0x823F58E0` table). Warning is
+  `spWarn.xpr` sprite UI via scheduler mode 2 (`DOAX_BootEnterWarningMode` →
+  `sub_824C0770(2)` → `sub_824C1350(2)`), not SFD playback; per-frame path is
+  `DOAX_BootWarningDismiss` → `DOAX_WarningScreenUpdate` → `sub_82666EB0` at
+  `0x8250BC3C`.
+- DOAX boot skips: ninja midasm `0x8250AB1C`→`0x8250ABA4` works. Do not
+  auto-skip opening via `DOAX_PlayMovie` early return (breaks A-button skip). Do
+  not fake scheduler dismiss bytes `byte_833B8DF9`/`byte_833B8DFE` (black screen
+  after opening). Safe warning skip: skip `sub_824C1350(2)` queue plus draw hook
+  `0x8250BC3C`→`0x8250BC48`; midasm `jump_address_on_true` must land in the same
+  generated function.
