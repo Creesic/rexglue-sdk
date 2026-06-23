@@ -7325,7 +7325,7 @@ loc_825E7D58:
 	ctx.r7.s64 = static_cast<int64_t>(ctx.r11.u64 * static_cast<uint64_t>(3));
 	// bl 0x827317a0
 	ctx.lr = 0x825E7DA0;
-	sub_827317A0(ctx, base);
+	FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset(ctx, base);
 	// lwz r11,4(r27)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r27.u32 + 4);
 	// addi r24,r24,1

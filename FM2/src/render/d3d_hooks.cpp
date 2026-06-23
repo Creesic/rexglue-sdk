@@ -76,6 +76,10 @@ REX_IMPORT(__imp__FM2_Render_LoadPixelShaderResourceById,
            g_origFm2LoadPixelShaderResourceById, void(uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_Render_LoadVertexShaderResourceById,
            g_origFm2LoadVertexShaderResourceById, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_Render_AllocGpuPassMemoryBlock,
+           g_origFm2AllocGpuPassMemoryBlock, uint32_t(uint32_t));
+REX_IMPORT(__imp__FM2_D3D_CreateGpuMemoryBlock,
+           g_origFm2CreateGpuMemoryBlock, uint32_t(uint32_t));
 
 REX_IMPORT(__imp__FM2_RenderContext_SetDepthStencilEnableState,
            g_origFm2SetDepthStencilEnableState, void(uint32_t, uint32_t));
@@ -256,6 +260,13 @@ void Fm2Present(uint32_t presentChain) {
 
 void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shader) {
   g_origFm2SetPixelShaderState(renderContext, shader);
+  static uint32_t s_traceCount = 0;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=SetPixelShaderState n={} "
+                "renderContext=0x{:08X} shader=0x{:08X} alias=0x{:08X}",
+                n, renderContext, shader,
+                ghp::ToGuest(rr::LookupShaderAlias(shader)));
+  }
   GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr || shader == 0) {
     return;
@@ -265,6 +276,13 @@ void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shader) {
 
 void Fm2SetVertexShaderState(uint32_t renderContext, uint32_t shader) {
   g_origFm2SetVertexShaderState(renderContext, shader);
+  static uint32_t s_traceCount = 0;
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook=SetVertexShaderState n={} "
+                "renderContext=0x{:08X} shader=0x{:08X} alias=0x{:08X}",
+                n, renderContext, shader,
+                ghp::ToGuest(rr::LookupShaderAlias(shader)));
+  }
   GuestDevice *device = DeviceForRenderContext(renderContext);
   if (device == nullptr || shader == 0) {
     return;
@@ -664,6 +682,54 @@ uint32_t ReadGuestU32At(uint32_t guestAddress) {
   return ReadGuestU32(ghp::ToHost<const void>(guestAddress));
 }
 
+uint32_t ReadShaderContainerByteCount(uint32_t shaderContainer) {
+  if (!IsReadableGuestRange(shaderContainer, 12u))
+    return 0;
+
+  const uint32_t headerBytes = ReadGuestU32At(shaderContainer + 4u);
+  const uint32_t payloadBytes = ReadGuestU32At(shaderContainer + 8u);
+  if (headerBytes < 12u || payloadBytes == 0)
+    return 0;
+
+  const uint32_t totalBytes = headerBytes + payloadBytes;
+  if (totalBytes < headerBytes || totalBytes > 0x40000u)
+    return 0;
+  if (!IsReadableGuestRange(shaderContainer, totalBytes))
+    return 0;
+  return totalBytes;
+}
+
+GuestShader *RegisterShaderAliasFromContainer(const char *hook,
+                                              uint32_t guestShaderObject,
+                                              uint32_t shaderContainer,
+                                              bool vertexShader) {
+  const uint32_t byteCount = ReadShaderContainerByteCount(shaderContainer);
+  static uint32_t s_traceCount = 0;
+  if (byteCount == 0) {
+    if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+      REXGPU_WARN("FM2_PLUME_RENDER_HOOK hook={} n={} shader=0x{:08X} "
+                  "container=0x{:08X} invalid shader container",
+                  hook, n, guestShaderObject, shaderContainer);
+    }
+    return nullptr;
+  }
+
+  const auto *function = ghp::ToHost<const uint32_t>(shaderContainer);
+  GuestShader *shader = vertexShader ? rr::CreateVertexShader(function)
+                                     : rr::CreatePixelShader(function);
+  rr::RegisterShaderAlias(guestShaderObject, shader);
+
+  if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
+    const uint64_t hash = XXH3_64bits(function, byteCount);
+    REXGPU_INFO("FM2_PLUME_RENDER_HOOK hook={} n={} shader=0x{:08X} "
+                "container=0x{:08X} bytes=0x{:X} type={} hash=0x{:016X} "
+                "alias=0x{:08X}",
+                hook, n, guestShaderObject, shaderContainer, byteCount,
+                vertexShader ? "vertex" : "pixel", hash, ghp::ToGuest(shader));
+  }
+  return shader;
+}
+
 bool IsPlausibleShaderPayloadByteCount(uint32_t byteCount) {
   return byteCount >= nr::kXenosUcodeInstructionByteStride &&
          byteCount <= 0x10000u && (byteCount & 3u) == 0;
@@ -838,6 +904,25 @@ void DumpLoadedShaderResource(const char *kind, uint32_t outRef,
       candidate.byte_offset, candidate.valid ? candidate.bounds.total_used_bytes : 0u,
       ucodeHash, wrotePayload ? payloadPath.string() : "<write-failed>",
       wroteUcode ? ucodePath.string() : "<none>");
+}
+
+uint32_t Fm2AllocGpuPassMemoryBlock(uint32_t shaderContainer) {
+  const uint32_t shaderObject =
+      g_origFm2AllocGpuPassMemoryBlock(shaderContainer);
+  if (shaderObject != 0) {
+    RegisterShaderAliasFromContainer("AllocGpuPassMemoryBlock", shaderObject,
+                                     shaderContainer, false);
+  }
+  return shaderObject;
+}
+
+uint32_t Fm2CreateGpuMemoryBlock(uint32_t shaderContainer) {
+  const uint32_t shaderObject = g_origFm2CreateGpuMemoryBlock(shaderContainer);
+  if (shaderObject != 0) {
+    RegisterShaderAliasFromContainer("CreateGpuMemoryBlock", shaderObject,
+                                     shaderContainer, true);
+  }
+  return shaderObject;
 }
 
 void WriteGuestU32(void *p, uint32_t value) {
@@ -1466,6 +1551,26 @@ void RHIDrawIndexedPrimitiveUP(GuestDevice *device, uint32_t primType,
                              vertexStride);
 }
 
+// PM4 indexed draw emitters → replaced with native Plume draw calls.
+// FM2_D3D_EmitIndexedDrawPm4Packets:              (context, primType, indexBufferBase, indexCount)
+// FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset: (context, primType, gpuOffset, startIndex, indexCount)
+// FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup:(context, primType, gpuOffset, startIndex, indexCount)
+void Fm2EmitIndexedDrawPm4Base(uint32_t /*context*/, uint32_t primType,
+                               uint32_t /*indexBufferBase*/,
+                               uint32_t indexCount) {
+  GuestDevice *device = rr::GetActiveGuestDevice();
+  if (device == nullptr) return;
+  DrawIndexedVertices(device, primType, 0, 0, indexCount);
+}
+
+void Fm2EmitIndexedDrawPm4(uint32_t /*context*/, uint32_t primType,
+                           uint32_t /*gpuOffset*/, uint32_t startIndex,
+                           uint32_t indexCount) {
+  GuestDevice *device = rr::GetActiveGuestDevice();
+  if (device == nullptr) return;
+  DrawIndexedVertices(device, primType, 0, startIndex, indexCount);
+}
+
 } // namespace
 
 void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
@@ -1544,6 +1649,8 @@ REX_HOOK(FM2_D3DDevice_CreateIndexBuffer, CreateIndexBuffer);
 REX_HOOK(FM2_D3DDevice_CreateTexture, CreateTexture);
 REX_HOOK(FM2_D3DDevice_CreateSurface, CreateSurface);
 REX_HOOK(FM2_D3DDevice_CreateVertexDeclaration, CreateVertexDeclaration);
+REX_HOOK(FM2_Render_AllocGpuPassMemoryBlock, Fm2AllocGpuPassMemoryBlock);
+REX_HOOK(FM2_D3D_CreateGpuMemoryBlock, Fm2CreateGpuMemoryBlock);
 REX_HOOK(FM2_D3D_CreateTextureFromSurfaceLevelAuto, D3DXCreateTextureFromFileInMemory);
 
 // Lock / unlock
@@ -1552,3 +1659,8 @@ REX_HOOK(FM2_D3D_LockGpuBufferRaw, IndexBufferLock);
 REX_HOOK(FM2_D3DSurface_LockRect, SurfaceLockRect);
 REX_HOOK(FM2_D3DResource_UnlockResource, UnlockResourceHook);
 REX_HOOK(FM2_D3DSurface_GetDesc, SurfaceGetDesc);
+
+// PM4 indexed draw emitters → native Plume draw calls
+REX_HOOK(FM2_D3D_EmitIndexedDrawPm4Packets, Fm2EmitIndexedDrawPm4Base);
+REX_HOOK(FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset, Fm2EmitIndexedDrawPm4);
+REX_HOOK(FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup, Fm2EmitIndexedDrawPm4);

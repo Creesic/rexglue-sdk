@@ -50063,7 +50063,7 @@ DEFINE_REX_FUNC(sub_82760568) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236bfc0
 	ctx.lr = 0x827605AC;
-	sub_8236BFC0(ctx, base);
+	FM2_D3DDevice_CreateSurface(ctx, base);
 	// lis r8,11552
 	ctx.r8.s64 = 757071872;
 	// stw r3,0(r30)
@@ -50086,7 +50086,7 @@ DEFINE_REX_FUNC(sub_82760568) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236bea0
 	ctx.lr = 0x827605D8;
-	sub_8236BEA0(ctx, base);
+	FM2_D3DDevice_CreateTexture(ctx, base);
 	// stw r3,0(r29)
 	REX_STORE_U32(ctx.r29.u32 + 0, ctx.r3.u32);
 	// addi r1,r1,128
@@ -50322,7 +50322,7 @@ loc_827606B8:
 	ctx.r3.s64 = 64;
 	// bl 0x8236bea0
 	ctx.lr = 0x82760754;
-	sub_8236BEA0(ctx, base);
+	FM2_D3DDevice_CreateTexture(ctx, base);
 	// stw r3,28(r29)
 	REX_STORE_U32(ctx.r29.u32 + 28, ctx.r3.u32);
 	// li r7,0

@@ -56522,7 +56522,7 @@ DEFINE_REX_FUNC(FM2_D3D_CreateVertexDeclarationFromElements) {
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236e240
 	ctx.lr = 0x8259F034;
-	sub_8236E240(ctx, base);
+	FM2_D3DDevice_CreateVertexDeclaration(ctx, base);
 	// cmplwi r3,0
 	ctx.cr0.compare<uint32_t>(ctx.r3.u32, 0, ctx.xer);
 	// stw r3,76(r31)
@@ -56705,7 +56705,7 @@ DEFINE_REX_FUNC(sub_8259F128) {
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236e538
 	ctx.lr = 0x8259F164;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// cmplwi r3,0
 	ctx.cr0.compare<uint32_t>(ctx.r3.u32, 0, ctx.xer);
 	// stw r3,72(r31)
@@ -56783,7 +56783,7 @@ DEFINE_REX_FUNC(sub_8259F1B0) {
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236e648
 	ctx.lr = 0x8259F1EC;
-	sub_8236E648(ctx, base);
+	FM2_D3D_CreateGpuMemoryBlock(ctx, base);
 	// cmplwi r3,0
 	ctx.cr0.compare<uint32_t>(ctx.r3.u32, 0, ctx.xer);
 	// stw r3,72(r31)
@@ -64215,7 +64215,7 @@ loc_825A2318:
 	ctx.r3.u64 = ctx.r28.u64;
 	// bl 0x82369ed8
 	ctx.lr = 0x825A2344;
-	sub_82369ED8(ctx, base);
+	FM2_D3DDevice_CreateVertexBuffer(ctx, base);
 	// stw r3,0(r31)
 	REX_STORE_U32(ctx.r31.u32 + 0, ctx.r3.u32);
 	// addi r1,r1,128
@@ -64317,7 +64317,7 @@ DEFINE_REX_FUNC(sub_825A2398) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236bea0
 	ctx.lr = 0x825A23E0;
-	sub_8236BEA0(ctx, base);
+	FM2_D3DDevice_CreateTexture(ctx, base);
 	// stw r3,0(r29)
 	REX_STORE_U32(ctx.r29.u32 + 0, ctx.r3.u32);
 	// bl 0x8236bc38
@@ -64742,7 +64742,7 @@ DEFINE_REX_FUNC(FM2_D3D_CreateTextureWrapper) {
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236bea0
 	ctx.lr = 0x825A26A0;
-	sub_8236BEA0(ctx, base);
+	FM2_D3DDevice_CreateTexture(ctx, base);
 	// cmplwi r3,0
 	ctx.cr0.compare<uint32_t>(ctx.r3.u32, 0, ctx.xer);
 	// stw r3,4(r31)
@@ -64925,7 +64925,7 @@ loc_825A27A8:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8236a000
 	ctx.lr = 0x825A27C8;
-	sub_8236A000(ctx, base);
+	FM2_D3DDevice_CreateIndexBuffer(ctx, base);
 	// stw r3,0(r30)
 	REX_STORE_U32(ctx.r30.u32 + 0, ctx.r3.u32);
 loc_825A27CC:
@@ -65914,7 +65914,7 @@ loc_825A2E74:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8236c180
 	ctx.lr = 0x825A2EA8;
-	sub_8236C180(ctx, base);
+	FM2_D3DSurface_LockRect(ctx, base);
 	// lwz r11,0(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// li r5,1

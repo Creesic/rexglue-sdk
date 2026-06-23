@@ -35447,7 +35447,7 @@ loc_823C8350:
 	ctx.r3.s64 = ctx.r30.s64 + 8;
 	// bl 0x8236e648
 	ctx.lr = 0x823C8358;
-	sub_8236E648(ctx, base);
+	FM2_D3D_CreateGpuMemoryBlock(ctx, base);
 	// cmplwi r3,0
 	ctx.cr0.compare<uint32_t>(ctx.r3.u32, 0, ctx.xer);
 	// stw r3,0(r30)
@@ -35486,7 +35486,7 @@ loc_823C8398:
 	ctx.r3.s64 = ctx.r30.s64 + 8;
 	// bl 0x8236e538
 	ctx.lr = 0x823C83A0;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// cmplwi r3,0
 	ctx.cr0.compare<uint32_t>(ctx.r3.u32, 0, ctx.xer);
 	// stw r3,0(r30)

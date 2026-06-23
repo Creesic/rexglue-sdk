@@ -25991,7 +25991,7 @@ DEFINE_REX_FUNC(FM2_MovieRenderer_InitScreenShaderResources) {
 	ctx.r3.s64 = ctx.r11.s64 + 17304;
 	// bl 0x8236e240
 	ctx.lr = 0x827BA7A0;
-	sub_8236E240(ctx, base);
+	FM2_D3DDevice_CreateVertexDeclaration(ctx, base);
 	// lis r11,-32235
 	ctx.r11.s64 = -2112552960;
 	// addi r30,r11,15200
@@ -26006,7 +26006,7 @@ DEFINE_REX_FUNC(FM2_MovieRenderer_InitScreenShaderResources) {
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236e648
 	ctx.lr = 0x827BA7BC;
-	sub_8236E648(ctx, base);
+	FM2_D3D_CreateGpuMemoryBlock(ctx, base);
 	// addi r11,r30,560
 	ctx.r11.s64 = ctx.r30.s64 + 560;
 	// stw r3,4(r31)
@@ -26015,7 +26015,7 @@ DEFINE_REX_FUNC(FM2_MovieRenderer_InitScreenShaderResources) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e538
 	ctx.lr = 0x827BA7CC;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// stw r3,0(r31)
 	REX_STORE_U32(ctx.r31.u32 + 0, ctx.r3.u32);
 	// addi r1,r1,112
@@ -26527,7 +26527,7 @@ loc_827BAB14:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x82369ed8
 	ctx.lr = 0x827BAB24;
-	sub_82369ED8(ctx, base);
+	FM2_D3DDevice_CreateVertexBuffer(ctx, base);
 	// stw r3,80(r31)
 	REX_STORE_U32(ctx.r31.u32 + 80, ctx.r3.u32);
 	// li r6,0
@@ -26579,7 +26579,7 @@ loc_827BAB14:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236a000
 	ctx.lr = 0x827BAB84;
-	sub_8236A000(ctx, base);
+	FM2_D3DDevice_CreateIndexBuffer(ctx, base);
 	// stw r3,84(r31)
 	REX_STORE_U32(ctx.r31.u32 + 84, ctx.r3.u32);
 	// li r6,0
@@ -27401,7 +27401,7 @@ loc_827BB008:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r28.u32 + 7148);
 	// bl 0x827317a0
 	ctx.lr = 0x827BB0E0;
-	sub_827317A0(ctx, base);
+	FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset(ctx, base);
 	// lbz r11,456(r30)
 	ctx.r11.u64 = REX_LOAD_U8(ctx.r30.u32 + 456);
 	// cmplwi r11,0
@@ -28463,7 +28463,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.s64 = ctx.r31.s64 + 8116;
 	// bl 0x8236e240
 	ctx.lr = 0x827BB7AC;
-	sub_8236E240(ctx, base);
+	FM2_D3DDevice_CreateVertexDeclaration(ctx, base);
 	// lis r11,-32091
 	ctx.r11.s64 = -2103115776;
 	// addi r10,r31,820
@@ -28476,14 +28476,14 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r10.u64;
 	// bl 0x8236e240
 	ctx.lr = 0x827BB7C4;
-	sub_8236E240(ctx, base);
+	FM2_D3DDevice_CreateVertexDeclaration(ctx, base);
 	// stw r3,52(r30)
 	REX_STORE_U32(ctx.r30.u32 + 52, ctx.r3.u32);
 	// mr r3,r31
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236e648
 	ctx.lr = 0x827BB7D0;
-	sub_8236E648(ctx, base);
+	FM2_D3D_CreateGpuMemoryBlock(ctx, base);
 	// addi r11,r31,1760
 	ctx.r11.s64 = ctx.r31.s64 + 1760;
 	// stw r3,0(r30)
@@ -28492,7 +28492,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e538
 	ctx.lr = 0x827BB7E0;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// addi r11,r31,856
 	ctx.r11.s64 = ctx.r31.s64 + 856;
 	// stw r3,8(r30)
@@ -28501,7 +28501,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e648
 	ctx.lr = 0x827BB7F0;
-	sub_8236E648(ctx, base);
+	FM2_D3D_CreateGpuMemoryBlock(ctx, base);
 	// addi r11,r31,2112
 	ctx.r11.s64 = ctx.r31.s64 + 2112;
 	// stw r3,4(r30)
@@ -28510,7 +28510,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e538
 	ctx.lr = 0x827BB800;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// addi r11,r31,2552
 	ctx.r11.s64 = ctx.r31.s64 + 2552;
 	// stw r3,12(r30)
@@ -28519,7 +28519,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e648
 	ctx.lr = 0x827BB810;
-	sub_8236E648(ctx, base);
+	FM2_D3D_CreateGpuMemoryBlock(ctx, base);
 	// addi r11,r31,4152
 	ctx.r11.s64 = ctx.r31.s64 + 4152;
 	// stw r3,16(r30)
@@ -28528,7 +28528,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e538
 	ctx.lr = 0x827BB820;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// addi r11,r31,5224
 	ctx.r11.s64 = ctx.r31.s64 + 5224;
 	// stw r3,24(r30)
@@ -28537,7 +28537,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e538
 	ctx.lr = 0x827BB830;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// addi r11,r31,6608
 	ctx.r11.s64 = ctx.r31.s64 + 6608;
 	// stw r3,32(r30)
@@ -28546,7 +28546,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e538
 	ctx.lr = 0x827BB840;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// addi r11,r31,3312
 	ctx.r11.s64 = ctx.r31.s64 + 3312;
 	// stw r3,40(r30)
@@ -28555,7 +28555,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e648
 	ctx.lr = 0x827BB850;
-	sub_8236E648(ctx, base);
+	FM2_D3D_CreateGpuMemoryBlock(ctx, base);
 	// addi r11,r31,4648
 	ctx.r11.s64 = ctx.r31.s64 + 4648;
 	// stw r3,20(r30)
@@ -28564,7 +28564,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e538
 	ctx.lr = 0x827BB860;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// addi r11,r31,5880
 	ctx.r11.s64 = ctx.r31.s64 + 5880;
 	// stw r3,28(r30)
@@ -28573,7 +28573,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e538
 	ctx.lr = 0x827BB870;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// addi r11,r31,7328
 	ctx.r11.s64 = ctx.r31.s64 + 7328;
 	// stw r3,36(r30)
@@ -28582,7 +28582,7 @@ DEFINE_REX_FUNC(sub_827BB788) {
 	ctx.r3.u64 = ctx.r11.u64;
 	// bl 0x8236e538
 	ctx.lr = 0x827BB880;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// stw r3,44(r30)
 	REX_STORE_U32(ctx.r30.u32 + 44, ctx.r3.u32);
 	// addi r1,r1,112
@@ -30594,7 +30594,7 @@ DEFINE_REX_FUNC(FM2_MovieRenderer_InitMovieShaderResources) {
 	ctx.r3.s64 = ctx.r31.s64 + 848;
 	// bl 0x8236e648
 	ctx.lr = 0x827BC604;
-	sub_8236E648(ctx, base);
+	FM2_D3D_CreateGpuMemoryBlock(ctx, base);
 	// lis r11,-32091
 	ctx.r11.s64 = -2103115776;
 	// addi r10,r31,1300
@@ -30607,14 +30607,14 @@ DEFINE_REX_FUNC(FM2_MovieRenderer_InitMovieShaderResources) {
 	ctx.r3.u64 = ctx.r10.u64;
 	// bl 0x8236e240
 	ctx.lr = 0x827BC61C;
-	sub_8236E240(ctx, base);
+	FM2_D3DDevice_CreateVertexDeclaration(ctx, base);
 	// stw r3,0(r30)
 	REX_STORE_U32(ctx.r30.u32 + 0, ctx.r3.u32);
 	// mr r3,r31
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236e538
 	ctx.lr = 0x827BC628;
-	sub_8236E538(ctx, base);
+	FM2_Render_AllocGpuPassMemoryBlock(ctx, base);
 	// stw r3,4(r30)
 	REX_STORE_U32(ctx.r30.u32 + 4, ctx.r3.u32);
 	// addi r1,r1,112
@@ -44881,7 +44881,7 @@ DEFINE_REX_FUNC(sub_827C23C0) {
 	if (ctx.r26.s32 == 0 || ctx.r26.u32 < 0u) ppc_trap(ctx, base, 0);
 	// bl 0x8236bea0
 	ctx.lr = 0x827C2460;
-	sub_8236BEA0(ctx, base);
+	FM2_D3DDevice_CreateTexture(ctx, base);
 	// cmplwi r3,0
 	ctx.cr0.compare<uint32_t>(ctx.r3.u32, 0, ctx.xer);
 	// stw r3,12(r31)
@@ -68395,61 +68395,6 @@ loc_827CBEF4:
 	ctx.r1.s64 = ctx.r1.s64 + 144;
 	// b 0x824131f0
 	__restgprlr_26(ctx, base);
-	return;
-}
-
-DEFINE_REX_FUNC(sub_827CBF00) {
-	REX_FUNC_PROLOGUE();
-	uint32_t ea{};
-	// mflr r12
-	ctx.r12.u64 = ctx.lr;
-	// stw r12,-8(r1)
-	REX_STORE_U32(ctx.r1.u32 + -8, ctx.r12.u32);
-	// std r30,-24(r1)
-	REX_STORE_U64(ctx.r1.u32 + -24, ctx.r30.u64);
-	// std r31,-16(r1)
-	REX_STORE_U64(ctx.r1.u32 + -16, ctx.r31.u64);
-	// stwu r1,-112(r1)
-	ea = -112 + ctx.r1.u32;
-	REX_STORE_U32(ea, ctx.r1.u32);
-	ctx.r1.u32 = ea;
-	// lis r11,-32235
-	ctx.r11.s64 = -2112552960;
-	// mr r31,r3
-	ctx.r31.u64 = ctx.r3.u64;
-	// addi r11,r11,27892
-	ctx.r11.s64 = ctx.r11.s64 + 27892;
-	// mr r30,r4
-	ctx.r30.u64 = ctx.r4.u64;
-	// stw r11,0(r31)
-	REX_STORE_U32(ctx.r31.u32 + 0, ctx.r11.u32);
-	// bl 0x827cbce8
-	ctx.lr = 0x827CBF2C;
-	sub_827CBCE8(ctx, base);
-	// clrlwi. r11,r30,31
-	ctx.r11.u64 = ctx.r30.u32 & 0x1;
-	ctx.cr0.compare<int32_t>(ctx.r11.s32, 0, ctx.xer);
-	// beq 0x827cbf3c
-	if (ctx.cr0.eq) goto loc_827CBF3C;
-	// mr r3,r31
-	ctx.r3.u64 = ctx.r31.u64;
-	// bl 0x823636e0
-	ctx.lr = 0x827CBF3C;
-	sub_823636E0(ctx, base);
-loc_827CBF3C:
-	// mr r3,r31
-	ctx.r3.u64 = ctx.r31.u64;
-	// addi r1,r1,112
-	ctx.r1.s64 = ctx.r1.s64 + 112;
-	// lwz r12,-8(r1)
-	ctx.r12.u64 = REX_LOAD_U32(ctx.r1.u32 + -8);
-	// mtlr r12
-	ctx.lr = ctx.r12.u64;
-	// ld r30,-24(r1)
-	ctx.r30.u64 = REX_LOAD_U64(ctx.r1.u32 + -24);
-	// ld r31,-16(r1)
-	ctx.r31.u64 = REX_LOAD_U64(ctx.r1.u32 + -16);
-	// blr 
 	return;
 }
 

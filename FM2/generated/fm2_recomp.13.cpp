@@ -23538,7 +23538,7 @@ loc_823853E0:
 	ctx.r6.u64 = ctx.r19.u64;
 	// bl 0x8236bea0
 	ctx.lr = 0x823853F4;
-	sub_8236BEA0(ctx, base);
+	FM2_D3DDevice_CreateTexture(ctx, base);
 	// mr. r26,r3
 	ctx.r26.u64 = ctx.r3.u64;
 	ctx.cr0.compare<int32_t>(ctx.r26.s32, 0, ctx.xer);
@@ -27164,7 +27164,7 @@ loc_82386D4C:
 	ctx.r3.u64 = ctx.r4.u64;
 	// bl 0x8236bea0
 	ctx.lr = 0x82386DA0;
-	sub_8236BEA0(ctx, base);
+	FM2_D3DDevice_CreateTexture(ctx, base);
 	// cmplwi r3,0
 	ctx.cr0.compare<uint32_t>(ctx.r3.u32, 0, ctx.xer);
 	// stw r3,0(r29)
@@ -29785,7 +29785,7 @@ loc_82387F18:
 	ctx.r6.u64 = ctx.r20.u64;
 	// bl 0x8236bea0
 	ctx.lr = 0x82387F30;
-	sub_8236BEA0(ctx, base);
+	FM2_D3DDevice_CreateTexture(ctx, base);
 	// mr. r17,r3
 	ctx.r17.u64 = ctx.r3.u64;
 	ctx.cr0.compare<int32_t>(ctx.r17.s32, 0, ctx.xer);
@@ -29833,7 +29833,7 @@ loc_82387F60:
 	ctx.r5.s64 = 1;
 	// bl 0x8236bea0
 	ctx.lr = 0x82387F84;
-	sub_8236BEA0(ctx, base);
+	FM2_D3DDevice_CreateTexture(ctx, base);
 	// mr. r17,r3
 	ctx.r17.u64 = ctx.r3.u64;
 	ctx.cr0.compare<int32_t>(ctx.r17.s32, 0, ctx.xer);
@@ -52812,7 +52812,7 @@ DEFINE_REX_FUNC(FM2_D3D_CopySurfaceRectLocked) {
 	ctx.r3.u64 = ctx.r27.u64;
 	// bl 0x8236c180
 	ctx.lr = 0x82391E78;
-	sub_8236C180(ctx, base);
+	FM2_D3DSurface_LockRect(ctx, base);
 	// li r6,0
 	ctx.r6.s64 = 0;
 	// li r5,0
@@ -52823,7 +52823,7 @@ DEFINE_REX_FUNC(FM2_D3D_CopySurfaceRectLocked) {
 	ctx.r3.u64 = ctx.r26.u64;
 	// bl 0x8236c180
 	ctx.lr = 0x82391E8C;
-	sub_8236C180(ctx, base);
+	FM2_D3DSurface_LockRect(ctx, base);
 	// lwz r11,96(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 96);
 	// rlwinm r11,r11,0,26,22
@@ -53375,7 +53375,7 @@ loc_82392214:
 	ctx.r3.u64 = ctx.r31.u8 & 0x20 ? 0 : (ctx.r29.u32 << (ctx.r31.u8 & 0x3F));
 	// bl 0x8236bea0
 	ctx.lr = 0x82392258;
-	sub_8236BEA0(ctx, base);
+	FM2_D3DDevice_CreateTexture(ctx, base);
 	// cmplwi r3,0
 	ctx.cr0.compare<uint32_t>(ctx.r3.u32, 0, ctx.xer);
 	// stw r3,12(r22)
@@ -53677,7 +53677,7 @@ loc_82392470:
 	ctx.r3.u64 = ctx.r27.u64;
 	// bl 0x8236c180
 	ctx.lr = 0x82392480;
-	sub_8236C180(ctx, base);
+	FM2_D3DSurface_LockRect(ctx, base);
 	// li r3,0
 	ctx.r3.s64 = 0;
 	// bl 0x824e5a48
@@ -53703,7 +53703,7 @@ loc_8239249C:
 	ctx.r3.u64 = ctx.r27.u64;
 	// bl 0x8236c180
 	ctx.lr = 0x823924AC;
-	sub_8236C180(ctx, base);
+	FM2_D3DSurface_LockRect(ctx, base);
 loc_823924AC:
 	// cmpwi cr6,r24,0
 	ctx.cr6.compare<int32_t>(ctx.r24.s32, 0, ctx.xer);

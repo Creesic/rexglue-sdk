@@ -4095,14 +4095,14 @@ loc_825155CC:
 	ctx.r3.s64 = ctx.r28.s64 + -396;
 	// bl 0x8236e648
 	ctx.lr = 0x825155F4;
-	sub_8236E648(ctx, base);
+	FM2_D3D_CreateGpuMemoryBlock(ctx, base);
 	// stw r3,-4(r29)
 	REX_STORE_U32(ctx.r29.u32 + -4, ctx.r3.u32);
 	// mr r3,r28
 	ctx.r3.u64 = ctx.r28.u64;
 	// bl 0x8236e240
 	ctx.lr = 0x82515600;
-	sub_8236E240(ctx, base);
+	FM2_D3DDevice_CreateVertexDeclaration(ctx, base);
 	// li r11,1
 	ctx.r11.s64 = 1;
 	// stw r3,0(r29)
@@ -5408,7 +5408,7 @@ DEFINE_REX_FUNC(FM2_D3D_CreateDepthStencilSurfaceAndTexture) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236bfc0
 	ctx.lr = 0x82515E64;
-	sub_8236BFC0(ctx, base);
+	FM2_D3DDevice_CreateSurface(ctx, base);
 	// lis r8,11552
 	ctx.r8.s64 = 757071872;
 	// stw r3,0(r29)
@@ -5431,7 +5431,7 @@ DEFINE_REX_FUNC(FM2_D3D_CreateDepthStencilSurfaceAndTexture) {
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236bea0
 	ctx.lr = 0x82515E90;
-	sub_8236BEA0(ctx, base);
+	FM2_D3DDevice_CreateTexture(ctx, base);
 	// stw r3,0(r28)
 	REX_STORE_U32(ctx.r28.u32 + 0, ctx.r3.u32);
 	// addi r1,r1,144

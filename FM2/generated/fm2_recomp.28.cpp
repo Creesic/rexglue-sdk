@@ -20804,7 +20804,7 @@ DEFINE_REX_FUNC(FM2_Render_CreateCrowdSpriteVertexDeclaration) {
 	REX_STORE_U8(ctx.r1.u32 + 126, ctx.r11.u8);
 	// bl 0x8236e240
 	ctx.lr = 0x82537774;
-	sub_8236E240(ctx, base);
+	FM2_D3DDevice_CreateVertexDeclaration(ctx, base);
 	// mr. r29,r3
 	ctx.r29.u64 = ctx.r3.u64;
 	ctx.cr0.compare<int32_t>(ctx.r29.s32, 0, ctx.xer);

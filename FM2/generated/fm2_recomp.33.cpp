@@ -38821,7 +38821,7 @@ loc_825D4230:
 	ctx.r7.u64 = ctx.r11.u64 + ctx.r9.u64;
 	// bl 0x827317a0
 	ctx.lr = 0x825D42A0;
-	sub_827317A0(ctx, base);
+	FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r28
@@ -41468,7 +41468,7 @@ loc_825D5408:
 	REX_STORE_U32(ctx.r11.u32 + 4, ctx.r31.u32);
 	// bl 0x8236bfc0
 	ctx.lr = 0x825D544C;
-	sub_8236BFC0(ctx, base);
+	FM2_D3DDevice_CreateSurface(ctx, base);
 	// addi r11,r1,84
 	ctx.r11.s64 = ctx.r1.s64 + 84;
 	// stw r25,80(r1)
@@ -41501,7 +41501,7 @@ loc_825D5408:
 	REX_STORE_U32(ctx.r23.u32 + 10440, ctx.r11.u32);
 	// bl 0x8236bfc0
 	ctx.lr = 0x825D548C;
-	sub_8236BFC0(ctx, base);
+	FM2_D3DDevice_CreateSurface(ctx, base);
 	// lis r11,-32096
 	ctx.r11.s64 = -2103443456;
 	// stw r3,10444(r11)
@@ -41538,7 +41538,7 @@ loc_825D54A4:
 	ctx.r3.u64 = ctx.r28.u64;
 	// bl 0x8236bfc0
 	ctx.lr = 0x825D54D0;
-	sub_8236BFC0(ctx, base);
+	FM2_D3DDevice_CreateSurface(ctx, base);
 	// stw r3,10448(r31)
 	REX_STORE_U32(ctx.r31.u32 + 10448, ctx.r3.u32);
 loc_825D54D4:
@@ -46527,7 +46527,7 @@ loc_825D7630:
 	REX_STORE_U32(ctx.r11.u32 + 4, ctx.r28.u32);
 	// bl 0x8236bfc0
 	ctx.lr = 0x825D76AC;
-	sub_8236BFC0(ctx, base);
+	FM2_D3DDevice_CreateSurface(ctx, base);
 	// addi r11,r1,356
 	ctx.r11.s64 = ctx.r1.s64 + 356;
 	// rotlwi r10,r3,0
@@ -46556,7 +46556,7 @@ loc_825D7630:
 	REX_STORE_U32(ctx.r24.u32 + 10440, ctx.r10.u32);
 	// bl 0x8236bfc0
 	ctx.lr = 0x825D76E4;
-	sub_8236BFC0(ctx, base);
+	FM2_D3DDevice_CreateSurface(ctx, base);
 	// stw r3,10444(r23)
 	REX_STORE_U32(ctx.r23.u32 + 10444, ctx.r3.u32);
 	// addi r3,r1,832
@@ -69119,7 +69119,7 @@ loc_825E0BD8:
 	ctx.r4.u64 = ctx.r30.u64;
 	// bl 0x8236bfc0
 	ctx.lr = 0x825E0C44;
-	sub_8236BFC0(ctx, base);
+	FM2_D3DDevice_CreateSurface(ctx, base);
 	// cmplwi r3,0
 	ctx.cr0.compare<uint32_t>(ctx.r3.u32, 0, ctx.xer);
 	// stw r3,164(r31)
