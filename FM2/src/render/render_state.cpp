@@ -1,8 +1,11 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cfloat>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -232,28 +235,169 @@ const char *PipelineRejectReasonName(PipelineRejectReason reason) {
   return "unknown";
 }
 
-void LogDrawSkip(const char *drawName, uint32_t primitiveType, uint32_t count) {
-  static uint32_t s_logs = 0;
-  if (s_logs++ >= 32)
+// Diagnostic: per-second draw-outcome tally written straight to the FM2 clean
+// log. LogDrawSkip's REXGPU_WARN sink does NOT reach C:\temp\fm2-clean.log
+// (only REXGPU_INFO does), so route a counted copy through the proven channel
+// here. `skipped=false` means the draw reached drawIndexed/drawInstanced.
+void DrawOutcomeTally(bool skipped) {
+  static std::atomic<uint64_t> s_ok{0};
+  static std::atomic<uint64_t> s_okColor{0};
+  static std::atomic<uint64_t> s_okPS{0};
+  static std::atomic<uint64_t> s_skip{0};
+  static std::atomic<uint64_t>
+      s_reason[int(PipelineRejectReason::CreateFailed) + 1]{};
+  static std::atomic<uint64_t> s_lastSec{0};
+  if (skipped) {
+    s_skip.fetch_add(1, std::memory_order_relaxed);
+    const int r = int(g_lastPipelineRejectReason);
+    if (r >= 0 && r < int(std::size(s_reason)))
+      s_reason[r].fetch_add(1, std::memory_order_relaxed);
+  } else {
+    s_ok.fetch_add(1, std::memory_order_relaxed);
+    // Split: does this successful draw actually write color, or is it a
+    // depth-only prepass draw (colorWrite=0)? If nearly all successes are
+    // depth-only, the screen stays at its clear color despite ok>0.
+    if (g_pipelineState.colorWriteEnable != 0)
+      s_okColor.fetch_add(1, std::memory_order_relaxed);
+    // okPS: successful draws that have a pixel shader. The depth prepass has no
+    // PS; the forward color pass does. okPS>0 with okColor==0 means color draws
+    // ARE succeeding but are wrongly forced depth-only (stale color-write).
+    if (g_pipelineState.pixelShader != nullptr)
+      s_okPS.fetch_add(1, std::memory_order_relaxed);
+    // First N successes: dump the bound RT/DS + formats so we can see whether a
+    // real COLOR target is bound (vs only a depth surface, which would explain a
+    // depth-buffer-looking present).
+    static std::atomic<uint32_t> s_dump{0};
+    if (s_dump.fetch_add(1, std::memory_order_relaxed) < 24) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(
+            f,
+            "FM2_OK_STATE rt=%p rtFmt=%d ds=%p dsFmt=%d colorWrite=0x%X "
+            "ps=%p\n",
+            (void *)g_renderTarget,
+            g_renderTarget ? (int)g_renderTarget->format
+                           : (int)RenderFormat::UNKNOWN,
+            (void *)g_depthStencil,
+            g_depthStencil ? (int)g_depthStencil->format
+                           : (int)RenderFormat::UNKNOWN,
+            g_pipelineState.colorWriteEnable, (void *)g_pipelineState.pixelShader);
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
+  using clock = std::chrono::steady_clock;
+  const uint64_t nowSec = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          clock::now().time_since_epoch())
+          .count());
+  uint64_t last = s_lastSec.load(std::memory_order_relaxed);
+  if (last == 0) {
+    s_lastSec.store(nowSec, std::memory_order_relaxed);
     return;
+  }
+  if (nowSec == last ||
+      !s_lastSec.compare_exchange_strong(last, nowSec,
+                                         std::memory_order_relaxed)) {
+    return;
+  }
+  const uint64_t ok = s_ok.exchange(0, std::memory_order_relaxed);
+  const uint64_t okColor = s_okColor.exchange(0, std::memory_order_relaxed);
+  const uint64_t okPS = s_okPS.exchange(0, std::memory_order_relaxed);
+  const uint64_t sk = s_skip.exchange(0, std::memory_order_relaxed);
+  const auto take = [&](PipelineRejectReason reason) {
+    return (unsigned long long)s_reason[int(reason)].exchange(
+        0, std::memory_order_relaxed);
+  };
+  if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+    std::fprintf(f,
+                 "FM2_DRAW_OUTCOME sec=%llu ok=%llu okColor=%llu okPS=%llu "
+                 "skip=%llu no_attach=%llu "
+                 "missing_vs=%llu missing_vs_cache=%llu missing_host_vs=%llu "
+                 "missing_decl=%llu create_fail=%llu\n",
+                 (unsigned long long)nowSec, (unsigned long long)ok,
+                 (unsigned long long)okColor, (unsigned long long)okPS,
+                 (unsigned long long)sk,
+                 take(PipelineRejectReason::NoAttachments),
+                 take(PipelineRejectReason::MissingVertexShader),
+                 take(PipelineRejectReason::MissingVertexShaderCache),
+                 take(PipelineRejectReason::MissingHostVertexShader),
+                 take(PipelineRejectReason::MissingVertexDeclaration),
+                 take(PipelineRejectReason::CreateFailed));
+    std::fflush(f);
+    std::fclose(f);
+  }
+}
 
-  REXGPU_WARN("{} skipped: reason={} prim={} count={} vs={} vsHash=0x{:016X} "
-              "ps={} psHash=0x{:016X} "
-              "decl={} rt={} ds={} colorWrite=0x{:X} zEnable={}",
-              drawName, PipelineRejectReasonName(g_lastPipelineRejectReason),
-              primitiveType, count, (const void *)g_pipelineState.vertexShader,
-              g_pipelineState.vertexShader &&
-                      g_pipelineState.vertexShader->shaderCacheEntry
-                  ? g_pipelineState.vertexShader->shaderCacheEntry->hash
-                  : 0,
-              (const void *)g_pipelineState.pixelShader,
-              g_pipelineState.pixelShader &&
-                      g_pipelineState.pixelShader->shaderCacheEntry
-                  ? g_pipelineState.pixelShader->shaderCacheEntry->hash
-                  : 0,
-              (const void *)g_pipelineState.vertexDeclaration,
-              (const void *)g_renderTarget, (const void *)g_depthStencil,
-              g_pipelineState.colorWriteEnable, g_pipelineState.zEnable);
+void LogDrawSkip(const char *drawName, uint32_t primitiveType, uint32_t count) {
+  DrawOutcomeTally(/*skipped=*/true);
+  // Decisive skip-state snapshot to the proven clean-log channel (REXGPU_WARN
+  // below does not reach C:\temp\fm2-clean.log). Reports the pre-sanitize
+  // pipeline formats + gating flags so we can tell *why* attachments dropped:
+  // colorWrite=0 (RT dropped), z/stencil off (DS dropped), or UNKNOWN surface
+  // format. First 24 only, to avoid flooding.
+  {
+    static std::atomic<uint32_t> s_snap{0};
+    if (s_snap.fetch_add(1, std::memory_order_relaxed) < 24) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(
+            f,
+            "FM2_DRAW_SKIP_STATE %s reason=%s colorWrite=0x%X zEnable=%d "
+            "stencilEnable=%d rtFmt=%d dsFmt=%d rt=%p rtFmtTex=%d ds=%p\n",
+            drawName, PipelineRejectReasonName(g_lastPipelineRejectReason),
+            g_pipelineState.colorWriteEnable, (int)g_pipelineState.zEnable,
+            (int)g_pipelineState.stencilEnable,
+            (int)g_pipelineState.renderTargetFormat,
+            (int)g_pipelineState.depthStencilFormat, (void *)g_renderTarget,
+            g_renderTarget ? (int)g_renderTarget->format
+                           : (int)RenderFormat::UNKNOWN,
+            (void *)g_depthStencil);
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
+  static uint32_t s_total = 0;
+  static uint32_t s_perReason[int(PipelineRejectReason::CreateFailed) + 1] = {};
+  int reasonIdx = int(g_lastPipelineRejectReason);
+  bool inBounds =
+      reasonIdx >= 0 && reasonIdx < int(std::size(s_perReason));
+  uint32_t reasonCount = inBounds ? s_perReason[reasonIdx]++ : 0;
+  uint32_t total = s_total++;
+
+  // Log first 8 of each reject reason individually so no reason is silently swamped.
+  if (reasonCount < 8) {
+    REXGPU_WARN("{} skipped: reason={} prim={} count={} vs={} vsHash=0x{:016X} "
+                "ps={} psHash=0x{:016X} "
+                "decl={} rt={} ds={} colorWrite=0x{:X} zEnable={}",
+                drawName, PipelineRejectReasonName(g_lastPipelineRejectReason),
+                primitiveType, count, (const void *)g_pipelineState.vertexShader,
+                g_pipelineState.vertexShader &&
+                        g_pipelineState.vertexShader->shaderCacheEntry
+                    ? g_pipelineState.vertexShader->shaderCacheEntry->hash
+                    : 0,
+                (const void *)g_pipelineState.pixelShader,
+                g_pipelineState.pixelShader &&
+                        g_pipelineState.pixelShader->shaderCacheEntry
+                    ? g_pipelineState.pixelShader->shaderCacheEntry->hash
+                    : 0,
+                (const void *)g_pipelineState.vertexDeclaration,
+                (const void *)g_renderTarget, (const void *)g_depthStencil,
+                g_pipelineState.colorWriteEnable, g_pipelineState.zEnable);
+  }
+  // Periodic summary so we can see cumulative counts without flooding.
+  if ((total & 63) == 63) {
+    REXGPU_WARN("draw skip summary (total={}): no_attach={} missing_vs={} "
+                "missing_vs_cache={} missing_host_vs={} missing_decl={} "
+                "create_fail={}",
+                total + 1,
+                s_perReason[int(PipelineRejectReason::NoAttachments)],
+                s_perReason[int(PipelineRejectReason::MissingVertexShader)],
+                s_perReason[int(PipelineRejectReason::MissingVertexShaderCache)],
+                s_perReason[int(PipelineRejectReason::MissingHostVertexShader)],
+                s_perReason[int(PipelineRejectReason::MissingVertexDeclaration)],
+                s_perReason[int(PipelineRejectReason::CreateFailed)]);
+  }
 }
 
 const char *KnownDeclarationName(GuestVertexDeclaration *declaration) {
@@ -702,6 +846,8 @@ struct UploadAllocator {
                            RenderBufferFlag::INDEX));
       buf.memory = reinterpret_cast<uint8_t *>(buf.buffer->map());
     }
+    if (buf.memory == nullptr)
+      return {buf.buffer.get(), 0, nullptr};
     uint64_t at = offset;
     offset += size;
     return {buf.buffer.get(), at, buf.memory + at};
@@ -710,6 +856,8 @@ struct UploadAllocator {
   template <bool ByteSwap, typename T>
   UploadResult allocateCopy(const T *src, uint64_t size, uint64_t alignment) {
     UploadResult result = allocate(size, alignment);
+    if (result.memory == nullptr)
+      return result;
     if constexpr (ByteSwap) {
       T *dst = reinterpret_cast<T *>(result.memory);
       for (uint64_t i = 0; i < size / sizeof(T); ++i)
@@ -726,6 +874,8 @@ UploadAllocator g_uploadAllocator;
 UploadResult UploadGuestVertexData(const void *data, uint32_t size,
                                    uint64_t alignment) {
   UploadResult result = g_uploadAllocator.allocate(size, alignment);
+  if (result.memory == nullptr)
+    return result;
   const uint8_t *srcBytes = reinterpret_cast<const uint8_t *>(data);
   uint8_t *dstBytes = result.memory;
 
@@ -744,6 +894,8 @@ UploadResult UploadGuestVertexData(const void *data, uint32_t size,
 }
 
 void SetRootDescriptor(const UploadResult &allocation, uint32_t index) {
+  if (allocation.memory == nullptr)
+    return;
   CommandList()->setGraphicsRootDescriptor(
       allocation.buffer->at(allocation.offset), index);
 }
@@ -1855,6 +2007,15 @@ void FlushSamplerStates(GuestDevice *device) {
 }
 
 void FlushRenderState(GuestDevice *device) {
+  // Forza programs per-draw color-write through its PM4 draw-list node, which the
+  // native renderer doesn't decode -- so the mirrored/context color-write is stale
+  // (0) for forward-pass draws and they would render depth-only, leaving the screen
+  // at its clear color. A draw with a pixel shader is a color pass (Forza's depth
+  // prepass is position-only with NO pixel shader), so enable color writes for it.
+  if (g_pipelineState.pixelShader != nullptr &&
+      g_pipelineState.colorWriteEnable == 0 && g_renderTarget != nullptr) {
+    g_pipelineState.colorWriteEnable = uint32_t(RenderColorWriteEnable::ALL);
+  }
 
   GuestBaseTexture *renderTarget =
       g_pipelineState.colorWriteEnable ? g_renderTarget : nullptr;
@@ -1999,6 +2160,27 @@ void SyncVertexDeclarationFromDevice(GuestDevice *device) {
   if (device == nullptr)
     return;
   uint32_t guestDeclaration = device->vertexDeclaration.get();
+  // DIAG: settle whether the per-draw vertex declaration bind (guest device
+  // +0x2E24) is set at draw time. First 24 only.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 24) {
+      GuestVertexDeclaration *resolved = nullptr;
+      if (guestDeclaration != 0) {
+        resolved = ghp::ToHost<GuestVertexDeclaration>(guestDeclaration);
+        if (!IsFm2Resource(resolved))
+          resolved = LookupVertexDeclarationAlias(guestDeclaration);
+      }
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_SYNC_DECL guestDecl=0x%08X resolved=%p inElems=%u\n",
+                     guestDeclaration, (void *)resolved,
+                     resolved ? resolved->inputElementCount : 0u);
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
   if (guestDeclaration == 0)
     return;
   GuestVertexDeclaration *declaration =
@@ -3049,6 +3231,8 @@ void SetImplicitRenderTarget(GuestBaseTexture *renderTarget) {
   SetRenderTargetInternal(renderTarget);
 }
 
+GuestBaseTexture *GetCurrentColorRenderTarget() { return g_renderTarget; }
+
 void SetDepthStencilSurface(GuestDevice * /*device*/,
                             GuestSurface *depthStencil) {
   SetDirtyValue(g_dirtyStates.renderTargetAndDepthStencil, g_depthStencil,
@@ -3226,6 +3410,7 @@ void DrawPrimitive(GuestDevice *device, uint32_t primitiveType,
       SetVertexDeclaration(device, previousDeclaration);
     return;
   }
+  DrawOutcomeTally(/*skipped=*/false);
 
   RenderCommandList *commandList = CommandList();
   if (indexCount > 0)
@@ -3289,6 +3474,7 @@ void DrawIndexedPrimitive(GuestDevice *device, uint32_t primitiveType,
       SetVertexDeclaration(device, previousDeclaration);
     return;
   }
+  DrawOutcomeTally(/*skipped=*/false);
 
   CommandList()->drawIndexedInstanced(primitiveCount, 1, startIndex,
                                       baseVertexIndex, 0);
@@ -3350,6 +3536,7 @@ void DrawPrimitiveUP(GuestDevice *device, uint32_t primitiveType,
       SetVertexDeclaration(device, previousDeclaration);
     return;
   }
+  DrawOutcomeTally(/*skipped=*/false);
 
   if (indexCount != 0)
     CommandList()->drawIndexedInstanced(indexCount, 1, 0, 0, 0);
@@ -3461,6 +3648,7 @@ void DrawIndexedPrimitiveUP(GuestDevice *device, uint32_t primitiveType,
       SetVertexDeclaration(device, previousDeclaration);
     return;
   }
+  DrawOutcomeTally(/*skipped=*/false);
 
   CommandList()->drawIndexedInstanced(indexCount, 1, 0,
                                       -int32_t(minVertexIndex), 0);

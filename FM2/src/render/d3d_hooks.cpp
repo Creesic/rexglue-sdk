@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -8,6 +10,7 @@
 #include <filesystem>
 #include <iterator>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -16,6 +19,9 @@
 #include <rex/hash.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xevent.h>
+#include <rex/system/util/object_table.h>
 
 #include "native_renderer/fm2_direct_draw_decode.h"
 #include "native_renderer/fm2_native_renderer.h"
@@ -30,6 +36,9 @@
 namespace rr = fm2::render;
 namespace ghp = fm2::ghp;
 namespace nr = fm2::native_renderer;
+
+// Win32 thread-id without pulling in <windows.h> (avoids min/max macro clashes).
+extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId(void);
 
 namespace fm2::render {
 GuestBuffer *CreateVertexBuffer(uint32_t length);
@@ -79,6 +88,28 @@ REX_IMPORT(__imp__FM2_D3D_TryPresentAndUpdateStatus,
 REX_IMPORT(__imp__FM2_GpuCommandBuffer_BuildAndSubmit,
            g_origFm2GpuCommandBufferBuildAndSubmit,
            void(uint32_t, uint32_t, uint32_t));
+// Guest render-worker per-frame dispatch (sub_82288948), called in an infinite
+// loop by sub_82289640 on a guest XThread. In plume_native the present triggers
+// (FMOD pump bit / sub_825ADE20) never fire, so we drive Video::Present() from
+// here — same thread that records draws into g_commandList (no cross-thread race).
+REX_IMPORT(__imp__sub_82288948, g_origRenderWorkerFrame, void(uint32_t));
+// FM2_RenderContext_SetActivePassId (sub_8236E228): stores the active vertex
+// declaration handle at renderContext+11540, read by FM2_D3D_EmitDrawListStatePackets
+// at draw time. Forza binds the per-draw vertex declaration here (a D3DVERTEXELEMENT9
+// declaration created via D3DDevice_CreateVertexDeclaration), NOT via the standard
+// D3DDevice_SetVertexDeclaration that writes the device field -- so device+0x2E24 is
+// always 0 in plume_native and every draw fails with missing_decl. Hook it to feed
+// device->vertexDeclaration so the existing Sync/alias path resolves the layout.
+REX_IMPORT(__imp__sub_8236E228, g_origSetActivePassId, void(uint32_t, uint32_t));
+// Frame-sync gate: the guest game-loop thread (sub_822172E8) blocks each frame on
+// FM2_Win32_WaitForSingleObject(dword_829C24C0,-1) when in vsync frame-sync mode.
+// FM2_SignalGate pulses that event to advance the loop, but its normal trigger is
+// dead in plume_native (no Xenia GPU/vblank), so the game never advances/renders.
+// We pulse it ourselves (rate-limited) from the per-frame present hook.
+REX_IMPORT(__imp__FM2_SignalGate_8220A4E8, g_origSignalGate, void(uint32_t));
+REX_IMPORT(__imp__FM2_FmodIrqSubmit_8236C688,
+           g_origFm2FmodIrqSubmit8236C688,
+           void(uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_ProducerProgressGuard_82369340,
            g_origFm2ProducerProgressGuard, uint32_t(uint32_t));
 REX_IMPORT(__imp__FM2_Render_LoadPixelShaderResourceById,
@@ -132,6 +163,10 @@ REX_IMPORT(__imp__FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset,
 REX_IMPORT(__imp__FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup,
            g_origFm2EmitIndexedDrawPm4WithVertexFormatSetup,
            void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+// Forza's PM4 draw-list interpreter (walks command nodes, dispatches opcodes).
+// Hooked only to count whether the 3D-scene draw path runs in plume_native.
+REX_IMPORT(__imp__FM2_Render_WalkAndDispatchPm4DrawList,
+           g_origWalkAndDispatchPm4DrawList, void(uint32_t));
 
 namespace {
 
@@ -154,6 +189,11 @@ using rr::GuestSurface;
 using rr::GuestTexture;
 using rr::GuestVertexDeclaration;
 
+REXCVAR_DEFINE_UINT32(
+    fm2_plume_gate_pulse_hz, 1000, "FM2",
+    "plume_native: rate (Hz) to pulse the guest frame-sync gate so the game loop "
+    "advances in every state. Default 1000 (far above any real framerate, so "
+    "effectively uncapped) without pinning a core; 0 = truly unlimited spin.");
 REXCVAR_DEFINE_BOOL(
     fm2_shader_resource_dump, false, "FM2",
     "Dump FM2 shader resource payloads loaded through title shader IDs.");
@@ -170,8 +210,9 @@ REXCVAR_DEFINE_BOOL(
     fm2_plume_vdswap_present, true, "FM2",
     "Mirror FM2's VdSwap frontbuffer into the active Plume swapchain.");
 REXCVAR_DEFINE_BOOL(
-    fm2_plume_bypass_prod_guard_wait, false, "FM2",
-    "Experiment: make FM2 producer-progress guard report ready in Plume mode.");
+    fm2_plume_bypass_prod_guard_wait, true, "FM2",
+    "Make FM2 producer-progress guard report ready in Plume mode (required in "
+    "plume_native/plume_clear: no Xenia GPU backend to advance completion fences).");
 
 struct GuestRasterizerState {
   uint8_t pad0[8];
@@ -203,6 +244,129 @@ uint32_t NextRenderHookTraceIndex(uint32_t &counter) {
 
 bool ShouldMirrorPlumeRenderState() {
   return !nr::WantsReXGraphics();
+}
+
+// Per-second present diagnostics: prove which hook drives present, on which
+// thread, and whether it has a valid present source. One line per second.
+struct PresentDiagSlot {
+  std::atomic<uint64_t> calls{0};
+  std::atomic<uint64_t> withSource{0};
+  std::atomic<uint32_t> lastTid{0};
+  std::atomic<uint64_t> lastSec{0};
+};
+
+void CountPresentDiag(const char *label, PresentDiagSlot &slot,
+                      const rr::GuestBaseTexture *presentSource) {
+  slot.calls.fetch_add(1, std::memory_order_relaxed);
+  if (presentSource != nullptr && presentSource->texture != nullptr) {
+    slot.withSource.fetch_add(1, std::memory_order_relaxed);
+  }
+  slot.lastTid.store(static_cast<uint32_t>(::GetCurrentThreadId()),
+                     std::memory_order_relaxed);
+  using clock = std::chrono::steady_clock;
+  const uint64_t nowSec = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(clock::now().time_since_epoch())
+          .count());
+  uint64_t last = slot.lastSec.load(std::memory_order_relaxed);
+  if (last == 0) {
+    slot.lastSec.store(nowSec, std::memory_order_relaxed);
+    return;
+  }
+  if (nowSec == last ||
+      !slot.lastSec.compare_exchange_strong(last, nowSec, std::memory_order_relaxed)) {
+    return;
+  }
+  const uint64_t calls = slot.calls.exchange(0, std::memory_order_relaxed);
+  const uint64_t withSrc = slot.withSource.exchange(0, std::memory_order_relaxed);
+  LogReplayDbg("FM2_PRESENT_DIAG sec=%llu hook=%s calls=%llu with_source=%llu tid=%u src=%p",
+               (unsigned long long)nowSec, label, (unsigned long long)calls,
+               (unsigned long long)withSrc,
+               slot.lastTid.load(std::memory_order_relaxed),
+               (const void *)presentSource);
+}
+
+// Per-second tally of native draw device availability. The PM4 draw emitters
+// rely on the global active guest device (set by the Set* render-context hooks);
+// if it is null the draw silently bails before opening a frame. This proves
+// whether that is happening in steady state.
+struct DrawDeviceSlot {
+  std::atomic<uint64_t> ok{0};
+  std::atomic<uint64_t> nullDev{0};
+  std::atomic<uint64_t> lastSec{0};
+};
+void CountDrawDevice(const char *label, DrawDeviceSlot &slot, bool deviceOk) {
+  (deviceOk ? slot.ok : slot.nullDev).fetch_add(1, std::memory_order_relaxed);
+  using clock = std::chrono::steady_clock;
+  const uint64_t nowSec = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          clock::now().time_since_epoch())
+          .count());
+  uint64_t last = slot.lastSec.load(std::memory_order_relaxed);
+  if (last == 0) {
+    slot.lastSec.store(nowSec, std::memory_order_relaxed);
+    return;
+  }
+  if (nowSec == last ||
+      !slot.lastSec.compare_exchange_strong(last, nowSec,
+                                            std::memory_order_relaxed)) {
+    return;
+  }
+  const uint64_t ok = slot.ok.exchange(0, std::memory_order_relaxed);
+  const uint64_t nul = slot.nullDev.exchange(0, std::memory_order_relaxed);
+  LogReplayDbg("FM2_DRAW_DEVICE sec=%llu hook=%s ok=%llu null=%llu",
+               (unsigned long long)nowSec, label, (unsigned long long)ok,
+               (unsigned long long)nul);
+}
+
+// Host-side pulse of the guest frame-sync event (handle stored at guest
+// dword_829C24C0). Looks the handle up in the kernel object table and pulses the
+// event directly. SAFE from any (native) thread: touches only host kernel
+// objects, never recompiled guest code (calling guest code from a native thread
+// crashes — no guest thread context). The event ref is cached to avoid object-
+// table lock contention when pulsing at a high/unlimited rate.
+void HostPulseFrameSyncGate() {
+  auto *handlePtr = ghp::ToHost<rex::be<uint32_t>>(0x829C24C0u);
+  if (handlePtr == nullptr)
+    return;
+  const uint32_t handle = handlePtr->get();
+  if (handle == 0)
+    return;
+  static uint32_t s_cachedHandle = 0;
+  static rex::system::object_ref<rex::system::XEvent> s_ev;
+  if (handle != s_cachedHandle || !s_ev) {
+    auto *ks = rex::system::kernel_state();
+    if (ks == nullptr)
+      return;
+    s_ev = ks->object_table()->LookupObject<rex::system::XEvent>(handle);
+    s_cachedHandle = handle;
+  }
+  if (s_ev)
+    s_ev->Pulse(0, false);
+}
+
+// Persistent frame-sync gate driver: a dedicated thread pulses the gate so the
+// guest game loop advances in EVERY game state (not just while the loading-screen
+// frame loop runs). Safe because it pulses host-side (HostPulseFrameSyncGate).
+// Rate via fm2_plume_gate_pulse_hz (0 = unlimited / uncapped framerate).
+void StartGatePulseThreadOnce() {
+  static std::once_flag s_once;
+  std::call_once(s_once, [] {
+    std::thread([] {
+      static PresentDiagSlot s_gateThreadSlot;
+      for (;;) {
+        if (ShouldMirrorPlumeRenderState()) {
+          HostPulseFrameSyncGate();
+          CountPresentDiag("GateThread", s_gateThreadSlot, nullptr);
+        }
+        const uint32_t hz = REXCVAR_GET(fm2_plume_gate_pulse_hz);
+        if (hz == 0) {
+          std::this_thread::yield();
+        } else {
+          std::this_thread::sleep_for(std::chrono::microseconds(1000000u / hz));
+        }
+      }
+    }).detach();
+  });
 }
 
 uint32_t ReadGuestU32At(uint32_t guestAddress);
@@ -304,6 +468,11 @@ void Fm2Present(uint32_t presentChain) {
     return;
   }
   FlushImmediateVertices();
+  // Diagnostic only: confirmed FM2_D3D_TryPresentAndUpdateStatus does NOT fire in
+  // plume_native, so present is driven from Fm2GpuCommandBufferBuildAndSubmit
+  // instead. Leave this so we notice if that ever changes.
+  static PresentDiagSlot s_fm2PresentSlot;
+  CountPresentDiag("Fm2Present", s_fm2PresentSlot, nullptr);
   Video::Present();
 }
 
@@ -328,6 +497,23 @@ void Fm2GpuCommandBufferBuildAndSubmit(uint32_t commandBuffer, uint32_t arg4,
         skipVdSwapFlag, pendingStart, pendingEnd, pendingEnabled);
   }
 
+  if (ShouldMirrorPlumeRenderState()) {
+    // plume_native / plume_clear: the Xenia CP thread is disabled, so the
+    // original body would crash kicking the GPU ring buffer. Skip it, but
+    // replicate the midasm FM2PlumeTraceVdSwap that normally runs at the end of
+    // the original (0x8236CD78): set the present source from the last-bound
+    // color render target and present. This is the game/render thread that
+    // records draws into g_commandList, so present is correctly same-threaded.
+    rr::GuestBaseTexture *presentSource = rr::GetCurrentColorRenderTarget();
+    if (presentSource != nullptr && presentSource->texture != nullptr) {
+      rr::SetPresentSource(presentSource);
+    }
+    static PresentDiagSlot s_gpuCmdBufSlot;
+    CountPresentDiag("GpuCmdBuf", s_gpuCmdBufSlot, presentSource);
+    Video::Present();
+    return;
+  }
+
   g_origFm2GpuCommandBufferBuildAndSubmit(commandBuffer, arg4, arg5);
 
   if (n != 0) {
@@ -340,6 +526,16 @@ void Fm2GpuCommandBufferBuildAndSubmit(uint32_t commandBuffer, uint32_t arg4,
         "flags=0x{:08X}",
         n, commandBuffer, cursorBefore, cursorAfter, lastStatus, flags);
   }
+}
+
+
+void Fm2FmodIrqSubmitSafe(uint32_t device, uint32_t flags) {
+  // In plume_native / plume_clear mode the Xenia GPU IRQ infrastructure is not
+  // running, so the original would crash. Skip it entirely.
+  if (ShouldMirrorPlumeRenderState()) {
+    return;
+  }
+  g_origFm2FmodIrqSubmit8236C688(device, flags);
 }
 
 uint32_t Fm2ProducerProgressGuard(uint32_t state) {
@@ -441,13 +637,58 @@ void Fm2SetBoundSurface(uint32_t renderContext, uint32_t surface,
   if (device == nullptr || surface == 0) {
     return;
   }
-  SetRenderTargetNative(device, 0, ghp::ToHost<GuestSurface>(surface));
+  // FM2_RenderContext_SetBoundSurface is the guest equivalent of BOTH
+  // SetRenderTarget and SetDepthStencilSurface (per IDA). Classify the resource
+  // and route depth surfaces to the depth slot instead of always binding color
+  // index 0 -- otherwise depth is never bound and depth-tested draws sanitize to
+  // depthStencilFormat=UNKNOWN.
+  GuestSurface *gs = ghp::ToHost<GuestSurface>(surface);
+  rr::GuestBaseTexture *tex = AsFm2(gs);
+  if (tex == nullptr && gs != nullptr)
+    tex = rr::TranslateGuestSurface(gs);
+  if (tex != nullptr && tex->type == rr::ResourceType::DepthStencil) {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 8) {
+      LogReplayDbg("FM2_BOUND_DEPTH surface=0x%08X tex=%p", surface,
+                   (void *)tex);
+    }
+    // tex is already resolved + confirmed DepthStencil; bind it directly via the
+    // native setter (the local d3d_hooks wrapper would just re-translate).
+    rr::SetDepthStencilSurface(device, static_cast<GuestSurface *>(tex));
+  } else {
+    SetRenderTargetNative(device, 0, gs);
+  }
 }
 
 void Fm2RememberGuestDevice(GuestDevice *device) {
   if (device != nullptr) {
     rr::SetActiveGuestDevice(device);
   }
+}
+
+// Forza binds the per-draw vertex declaration via SetActivePassId(ctx, declHandle)
+// (the "pass id" is a D3DVERTEXELEMENT9 declaration created with
+// D3DDevice_CreateVertexDeclaration). The standard D3D device declaration field
+// (GuestDevice +0x2E24) is never written, so SyncVertexDeclarationFromDevice sees 0
+// and every PM4 draw fails missing_decl. Mirror the handle into device->vertexDeclaration
+// so the existing Sync + LookupVertexDeclarationAlias auto-create path resolves the
+// input layout. declHandle==0 or non-declaration values are harmless: Sync early-returns
+// on 0, and the alias fallback validates element count (1..64) before building.
+void Fm2SetActivePassId(uint32_t renderContext, uint32_t passId) {
+  g_origSetActivePassId(renderContext, passId);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
+  GuestDevice *device = DeviceForRenderContext(renderContext);
+  if (device == nullptr) {
+    return;
+  }
+  static std::atomic<uint32_t> s_n{0};
+  if (s_n.fetch_add(1, std::memory_order_relaxed) < 16) {
+    LogReplayDbg("FM2_SET_PASSID renderContext=0x%08X passId=0x%08X", renderContext,
+                 passId);
+  }
+  device->vertexDeclaration = passId;
 }
 
 void Fm2DrawIndexedVertices(GuestDevice *device, uint32_t primType,
@@ -1717,6 +1958,28 @@ void RHIDrawIndexedPrimitiveUP(GuestDevice *device, uint32_t primType,
                              vertexStride);
 }
 
+// FM2 keeps the live color-write mask in the render context (== D3D CDevice) at
+// offset 10420, bits 14-16 -- guest FM2_RenderContext_SetColorWriteMaskBits packs
+// (value << 14) & 0x1C000. The PM4 draw emitters bypass the RenderContext Set*
+// hook path, so the native renderer's mirrored colorWriteEnable goes stale
+// (observed stuck at 0 -> every draw sanitized to no color attachment ->
+// rejected NoAttachments). Read the mask live per draw and push it into the
+// native mirror so the bound color RT is actually used.
+void ApplyLiveColorWriteFromContext(GuestDevice *device, uint32_t context) {
+  if (context == 0)
+    return;
+  const uint32_t rs = ReadGuestU32At(context + 10420u);
+  const uint32_t cw = (rs >> 14) & 0x7u; // 3-bit RGB write-enable field
+  static std::atomic<uint32_t> s_n{0};
+  if (s_n.fetch_add(1, std::memory_order_relaxed) < 24) {
+    LogReplayDbg("FM2_LIVE_COLORWRITE ctx=0x%08X rs=0x%08X cw=0x%X", context, rs,
+                 cw);
+  }
+  // Any nonzero live mask means the game wants color output for this draw; map
+  // to a full RGBA write so the color attachment is kept and written.
+  rr::SetRenderState(device, rr::D3DRS_COLORWRITEENABLE, cw ? 0xFu : 0u);
+}
+
 // PM4 indexed draw emitters → replaced with native Plume draw calls.
 // FM2_D3D_EmitIndexedDrawPm4Packets:              (context, primType, indexBufferBase, indexCount)
 // FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset: (context, primType, gpuOffset, startIndex, indexCount)
@@ -1729,8 +1992,13 @@ void Fm2EmitIndexedDrawPm4Base(uint32_t context, uint32_t primType,
                                        indexCount);
     return;
   }
+  static PresentDiagSlot s_drawEmitSlot;
+  CountPresentDiag("DrawEmit", s_drawEmitSlot, nullptr);
   GuestDevice *device = rr::GetActiveGuestDevice();
+  static DrawDeviceSlot s_drawEmitDevSlot;
+  CountDrawDevice("DrawEmit", s_drawEmitDevSlot, device != nullptr);
   if (device == nullptr) return;
+  ApplyLiveColorWriteFromContext(device, context);
   DrawIndexedVertices(device, primType, 0, 0, indexCount);
 }
 
@@ -1749,10 +2017,15 @@ uint32_t CreateVertexBufferAliased(uint32_t length) {
   return xdkHandle;
 }
 
-void SubmitNativeIndexedDrawPm4(uint32_t primType, uint32_t startIndex,
-                                uint32_t indexCount) {
+void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
+                                uint32_t startIndex, uint32_t indexCount) {
+  static PresentDiagSlot s_drawSubmitSlot;
+  CountPresentDiag("DrawSubmit", s_drawSubmitSlot, nullptr);
   GuestDevice *device = rr::GetActiveGuestDevice();
+  static DrawDeviceSlot s_drawSubmitDevSlot;
+  CountDrawDevice("DrawSubmit", s_drawSubmitDevSlot, device != nullptr);
   if (device == nullptr) return;
+  ApplyLiveColorWriteFromContext(device, context);
   DrawIndexedVertices(device, primType, 0, startIndex, indexCount);
 }
 
@@ -2012,7 +2285,7 @@ void Fm2EmitIndexedDrawPm4WithGpuOffset(uint32_t context, uint32_t primType,
                                           startIndex, indexCount);
     return;
   }
-  SubmitNativeIndexedDrawPm4(primType, startIndex, indexCount);
+  SubmitNativeIndexedDrawPm4(context, primType, startIndex, indexCount);
 }
 
 void Fm2EmitIndexedDrawPm4WithVertexFormatSetup(uint32_t context,
@@ -2027,7 +2300,7 @@ void Fm2EmitIndexedDrawPm4WithVertexFormatSetup(uint32_t context,
                                           startIndex, indexCount);
     return;
   }
-  SubmitNativeIndexedDrawPm4(primType, startIndex, indexCount);
+  SubmitNativeIndexedDrawPm4(context, primType, startIndex, indexCount);
 }
 
 } // namespace
@@ -2055,10 +2328,17 @@ void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
   const uint32_t width = readGuestU32(widthPtr);
   const uint32_t height = readGuestU32(heightPtr);
 
-  rr::GuestTexture *frontBuffer =
-      rr::TranslateGuestTextureFetch(ghp::ToHost<void>(fetchAddress), true);
+  // In plume_native mode, draws go to GPU-side GuestSurface textures, so
+  // TranslateGuestTextureFetch (which reads stale guest CPU memory) produces
+  // a blank texture. Use the last-bound color render target instead, since
+  // all rendering is complete by the time VdSwap fires.
+  rr::GuestBaseTexture *presentSource = rr::GetCurrentColorRenderTarget();
+  if (presentSource == nullptr || presentSource->texture == nullptr) {
+    presentSource =
+        rr::TranslateGuestTextureFetch(ghp::ToHost<void>(fetchAddress), true);
+  }
   const bool hasTexture =
-      frontBuffer != nullptr && frontBuffer->texture != nullptr;
+      presentSource != nullptr && presentSource->texture != nullptr;
 
   static uint32_t s_traceCount = 0;
   if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
@@ -2066,7 +2346,7 @@ void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
                 "fetch=0x{:08X} frontbuffer=0x{:08X} textureFormat=0x{:08X} "
                 "colorSpace=0x{:08X} size={}x{} source={} hasTexture={}",
                 n, r3.u32, fetchAddress, frontbufferAddress, textureFormat,
-                colorSpace, width, height, static_cast<const void *>(frontBuffer),
+                colorSpace, width, height, static_cast<const void *>(presentSource),
                 hasTexture);
   }
 
@@ -2075,8 +2355,13 @@ void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
   }
 
   if (hasTexture) {
-    rr::SetPresentSource(frontBuffer);
+    rr::SetPresentSource(presentSource);
   }
+  // FM2PlumeTraceVdSwap fires inside FM2_GpuCommandBuffer_BuildAndSubmit
+  // (0x8236CB28), NOT inside FM2_D3D_TryPresentAndUpdateStatus (0x824F83D8).
+  // Fm2Present hooks TryPresentAndUpdateStatus but that function is NOT on the
+  // FMOD pump path that drives VdSwap, so Video::Present() would never be
+  // called without doing it here.
   Video::Present();
 }
 
@@ -2098,6 +2383,7 @@ REX_HOOK_RAW(FM2_RenderContext_BindVertexStream) {
 }
 REX_HOOK(FM2_RenderContext_BindIndexBuffer, Fm2BindIndexBuffer);
 REX_HOOK(FM2_RenderContext_SetBoundSurface, Fm2SetBoundSurface);
+REX_HOOK(sub_8236E228, Fm2SetActivePassId);
 REX_HOOK(FM2_Render_LoadPixelShaderResourceById,
          Fm2LoadPixelShaderResourceById);
 REX_HOOK(FM2_Render_LoadVertexShaderResourceById,
@@ -2118,6 +2404,28 @@ REX_HOOK(FM2_RenderContext_SetClipPlane3Enable, Fm2SetClipPlane3Enable);
 REX_HOOK(FM2_D3D_TryPresentAndUpdateStatus, Fm2Present);
 REX_HOOK(FM2_GpuCommandBuffer_BuildAndSubmit,
          Fm2GpuCommandBufferBuildAndSubmit);
+// Render-worker per-frame dispatch (guest sub_82288948), called in an infinite
+// loop by sub_82289640. RAW hook: the original needs its full PPC context
+// (r13 thread base, etc.); auto-marshaling would isolate it and trap. After the
+// original builds the frame, present on this same thread (the one recording into
+// g_commandList) in plume_native/plume_clear, where no other present trigger fires.
+REX_HOOK_RAW(sub_82288948) {
+  g_origRenderWorkerFrame.fn(ctx, base);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
+  rr::GuestBaseTexture *presentSource = rr::GetCurrentColorRenderTarget();
+  static PresentDiagSlot s_renderWorkerSlot;
+  CountPresentDiag("RenderWorker", s_renderWorkerSlot, presentSource);
+  if (presentSource != nullptr && presentSource->texture != nullptr) {
+    rr::SetPresentSource(presentSource);
+    Video::Present();
+  }
+  // Ensure the persistent host-side gate driver is running (starts once; keeps
+  // pulsing in every game state even after this loading-screen loop ends).
+  StartGatePulseThreadOnce();
+}
+REX_HOOK(FM2_FmodIrqSubmit_8236C688, Fm2FmodIrqSubmitSafe);
 REX_HOOK(FM2_ProducerProgressGuard_82369340, Fm2ProducerProgressGuard);
 
 REX_HOOK(FM2_D3DDevice_CreateVertexBuffer, CreateVertexBufferAliased);
@@ -2151,3 +2459,12 @@ REX_HOOK(FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset,
          Fm2EmitIndexedDrawPm4WithGpuOffset);
 REX_HOOK(FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup,
          Fm2EmitIndexedDrawPm4WithVertexFormatSetup);
+
+// Diagnostic: count how often Forza's PM4 draw-list interpreter runs. Confirms
+// whether the 3D-scene render path executes in plume_native (vs only the
+// loading/wait-screen frame loop). RAW hook: preserve full context for original.
+REX_HOOK_RAW(FM2_Render_WalkAndDispatchPm4DrawList) {
+  static PresentDiagSlot s_walkSlot;
+  CountPresentDiag("WalkDispatch", s_walkSlot, nullptr);
+  g_origWalkAndDispatchPm4DrawList.fn(ctx, base);
+}

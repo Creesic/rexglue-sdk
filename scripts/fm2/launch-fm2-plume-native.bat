@@ -80,7 +80,7 @@ rem   --fm2_plume_native_direct_draw 1
 rem   --fm2_plume_native_direct_draw_limit 0
 rem   --fm2_plume_native_direct_draw_live_batch 1
 rem   --fm2_plume_native_direct_draw_live_batch_size 16
-set FM2_ARGS=--fm2_plume_mode shadow ^
+set FM2_ARGS=--fm2_plume_mode plume_native ^
  --fm2_plume_debug_replay 1 ^
  --fm2_plume_debug_replay_limit 0 ^
  --fm2_plume_debug_replay_window ^

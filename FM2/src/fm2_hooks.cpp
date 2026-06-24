@@ -3139,6 +3139,13 @@ void FM2FmodPumpThread82381D60(PPCRegister& r26) {
   MaybeEmitSigPerSec();
 }
 
+void FM2FmodPumpForceGpuBit82381DBC(PPCRegister& r11) {
+  // Bit-forcing disabled: FM2_GpuCommandBuffer_BuildAndSubmit crashes in
+  // plume_native (Xenia CP disabled). Video::Present() is driven by Fm2Present
+  // on the game render thread instead; pump runs normally without GPU submit.
+  (void)r11;
+}
+
 void FM2FmodPumpWaitPrep82381DE4(PPCRegister& r29) {
   auto& d = SigDiag();
   d.fmod_pump_waitprep_81de4_hits.fetch_add(1, std::memory_order_relaxed);

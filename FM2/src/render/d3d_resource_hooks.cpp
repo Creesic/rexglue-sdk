@@ -139,6 +139,10 @@ static uint32_t LockBuffer(GuestBuffer *buffer, uint32_t flags) {
 template <typename T> static void UploadBufferSwapped(GuestBuffer *buffer) {
   if (buffer->lockedReadOnly || buffer->mappedMemory == nullptr)
     return;
+  // The native Plume buffer may not exist (guest buffer created via a path that
+  // didn't allocate a backing, or aliasing failed). Mapping it would null-deref.
+  if (!buffer->buffer)
+    return;
 
   const T *src = reinterpret_cast<const T *>(buffer->mappedMemory);
   const size_t count = buffer->dataSize / sizeof(T);
@@ -149,12 +153,18 @@ template <typename T> static void UploadBufferSwapped(GuestBuffer *buffer) {
   };
 
   if (Device()->getCapabilities().gpuUploadHeap) {
-    swapInto(reinterpret_cast<T *>(buffer->buffer->map()));
+    T *dest = reinterpret_cast<T *>(buffer->buffer->map());
+    if (dest == nullptr)
+      return;
+    swapInto(dest);
     buffer->buffer->unmap();
   } else {
     auto upload = Device()->createBuffer(
         RenderBufferDesc::UploadBuffer(buffer->dataSize));
-    swapInto(reinterpret_cast<T *>(upload->map()));
+    T *dest = reinterpret_cast<T *>(upload->map());
+    if (dest == nullptr)
+      return;
+    swapInto(dest);
     upload->unmap();
     RenderBuffer *dst = buffer->buffer.get();
     RenderBuffer *srcBuf = upload.get();

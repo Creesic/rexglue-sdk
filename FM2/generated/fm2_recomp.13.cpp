@@ -15420,6 +15420,8 @@ loc_82381D4C:
 
 extern void FM2FmodPumpThread82381D60(PPCRegister& r26);
 
+extern void FM2FmodPumpForceGpuBit82381DBC(PPCRegister& r11);
+
 extern void FM2FmodPumpWaitPrep82381DE4(PPCRegister& r29);
 
 extern void FM2FmodPumpWaitResult82381DFC(PPCRegister& r3);
@@ -15481,6 +15483,7 @@ loc_82381DA4:
 	// lbz r11,10814(r31)
 	ctx.r11.u64 = REX_LOAD_U8(ctx.r31.u32 + 10814);
 	// rlwinm. r11,r11,0,29,29
+	FM2FmodPumpForceGpuBit82381DBC(ctx.r11);
 	ctx.r11.u64 = __builtin_rotateleft64(ctx.r11.u32 | (ctx.r11.u64 << 32), 0) & 0x4;
 	ctx.cr0.compare<int32_t>(ctx.r11.s32, 0, ctx.xer);
 	// beq 0x82381ddc

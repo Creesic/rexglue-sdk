@@ -3,7 +3,10 @@
 #include "video.h"
 
 #include <array>
+#include <atomic>
 #include <cassert>
+#include <chrono>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -91,7 +94,7 @@ RenderWindow g_window{};
 // The guest's final front-buffer surface to blit this frame (D3DDevice_Swap).
 fm2::render::GuestBaseTexture *g_presentSource = nullptr;
 
-REXCVAR_DEFINE_BOOL(fm2_plume_video_present_trace, false, "FM2",
+REXCVAR_DEFINE_BOOL(fm2_plume_video_present_trace, true, "FM2",
                     "Emit bounded diagnostics from the active Plume present path.");
 REXCVAR_DEFINE_UINT32(
     fm2_plume_video_present_trace_limit, 128, "FM2",
@@ -372,6 +375,49 @@ void ExecuteUpload(const std::function<void(RenderCommandList *)> &record) {
 
 void Video::Present() {
   static uint32_t s_traceCount = 0;
+  static std::atomic<uint64_t> s_callCount{0};
+  const uint64_t callN = ++s_callCount;
+  if (callN <= 5) {
+    // Write first few calls to the diagnostic log so we know this is reached.
+    if (FILE* f = fopen("C:\\temp\\fm2-videopresent.log", "a")) {
+      fprintf(f, "Video::Present n=%llu init=%d swapValid=%d frameOpen=%d src=%p\n",
+              (unsigned long long)callN, (int)g_initialized, (int)g_swapChainValid,
+              (int)g_frameOpen, (void*)g_presentSource);
+      fclose(f);
+    }
+  }
+  // Per-second tally of frameOpen-at-entry (proven clean-log channel). Tells us
+  // in steady state whether guest draws opened the frame before present, or the
+  // frame is only ever opened inside present (=> empty blit => black screen).
+  {
+    static std::atomic<uint64_t> s_open{0};
+    static std::atomic<uint64_t> s_closed{0};
+    static std::atomic<uint64_t> s_lastSec{0};
+    (g_frameOpen ? s_open : s_closed).fetch_add(1, std::memory_order_relaxed);
+    using clock = std::chrono::steady_clock;
+    const uint64_t nowSec = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            clock::now().time_since_epoch())
+            .count());
+    uint64_t last = s_lastSec.load(std::memory_order_relaxed);
+    if (last != 0 && nowSec != last &&
+        s_lastSec.compare_exchange_strong(last, nowSec,
+                                          std::memory_order_relaxed)) {
+      const uint64_t open = s_open.exchange(0, std::memory_order_relaxed);
+      const uint64_t closed = s_closed.exchange(0, std::memory_order_relaxed);
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_PRESENT_FRAMEOPEN sec=%llu open=%llu closed=%llu\n",
+                     (unsigned long long)nowSec, (unsigned long long)open,
+                     (unsigned long long)closed);
+        std::fflush(f);
+        std::fclose(f);
+      }
+    } else if (last == 0) {
+      s_lastSec.store(nowSec, std::memory_order_relaxed);
+    }
+  }
+
   const uint32_t traceIndex = NextVideoPresentTraceIndex(s_traceCount);
   if (traceIndex != 0) {
     REXGPU_INFO("FM2_PLUME_VIDEO_PRESENT n={} stage=entry initialized={} "

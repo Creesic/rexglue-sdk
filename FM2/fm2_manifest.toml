@@ -491,6 +491,12 @@ registers = ["r26"]
 after_instruction = false
 
 [[entrypoint.midasm_hook]]
+address = 0x82381DBC
+name = "FM2FmodPumpForceGpuBit82381DBC"
+registers = ["r11"]
+after_instruction = false
+
+[[entrypoint.midasm_hook]]
 address = 0x82381DE4
 name = "FM2FmodPumpWaitPrep82381DE4"
 registers = ["r29"]

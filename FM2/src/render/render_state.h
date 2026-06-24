@@ -41,6 +41,7 @@ void SetScissorRect(GuestDevice *device, GuestRect *rect);
 void SetRenderTarget(GuestDevice *device, uint32_t index,
                      GuestBaseTexture *renderTarget);
 void SetImplicitRenderTarget(GuestBaseTexture *renderTarget);
+GuestBaseTexture *GetCurrentColorRenderTarget();
 void SetDepthStencilSurface(GuestDevice *device, GuestSurface *depthStencil);
 
 void Clear(GuestDevice *device, uint32_t flags, const float *color, float z);
