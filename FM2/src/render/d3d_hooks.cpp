@@ -1748,17 +1748,6 @@ uint32_t CreateVertexBufferAliased(uint32_t length) {
     rr::RegisterBufferAlias(xdkHandle, native);
   return xdkHandle;
 }
-uint32_t CreateIndexBufferAliased(uint32_t length, uint32_t format) {
-  uint32_t xdkHandle = g_origCreateIndexBuffer(length, format);
-  if (!ShouldMirrorPlumeRenderState()) {
-    return xdkHandle;
-  }
-  if (!xdkHandle) return 0;
-  GuestBuffer *native = rr::CreateIndexBuffer(length, format);
-  if (native)
-    rr::RegisterBufferAlias(xdkHandle, native);
-  return xdkHandle;
-}
 
 void SubmitNativeIndexedDrawPm4(uint32_t primType, uint32_t startIndex,
                                 uint32_t indexCount) {
@@ -2094,10 +2083,19 @@ void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
 // ===========================================================================
 // FM2 native renderer hooks: call generated FM2 bodies, then mirror state.
 // ===========================================================================
-
 REX_HOOK(FM2_RenderContext_SetPixelShaderState, Fm2SetPixelShaderState);
 REX_HOOK(FM2_RenderContext_SetVertexShaderState, Fm2SetVertexShaderState);
-REX_HOOK(FM2_RenderContext_BindVertexStream, Fm2BindVertexStream);
+// REX_HOOK_RAW: forward full PPCContext to original in passthrough mode.
+// uint64_t dirty_mask (arg 5) spans r8:r9 in 32-bit PPC ABI; the standard
+// REX_HOOK arg-translation reads only ctx.r8.u32 and zeroes r9 in the
+// auto-isolating call, silently discarding the low 32 bits of dirty_mask.
+REX_HOOK_RAW(FM2_RenderContext_BindVertexStream) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    g_origFm2BindVertexStream.fn(ctx, base);
+    return;
+  }
+  rex::ppc::HostToGuestFunction<Fm2BindVertexStream>(ctx, base);
+}
 REX_HOOK(FM2_RenderContext_BindIndexBuffer, Fm2BindIndexBuffer);
 REX_HOOK(FM2_RenderContext_SetBoundSurface, Fm2SetBoundSurface);
 REX_HOOK(FM2_Render_LoadPixelShaderResourceById,
@@ -2122,13 +2120,22 @@ REX_HOOK(FM2_GpuCommandBuffer_BuildAndSubmit,
          Fm2GpuCommandBufferBuildAndSubmit);
 REX_HOOK(FM2_ProducerProgressGuard_82369340, Fm2ProducerProgressGuard);
 
-// Resource creation: aliased hooks call the original XDK function so FM2 can
-// read the resource header safely, and also create a shadow Plume GuestBuffer
-// registered in the alias map for Lock/Bind hooks.
 REX_HOOK(FM2_D3DDevice_CreateVertexBuffer, CreateVertexBufferAliased);
-REX_HOOK(FM2_D3DDevice_CreateIndexBuffer, CreateIndexBufferAliased);
-// Texture/Surface/VertexDeclaration: existing TranslateGuest* / LookupAlias
-// paths already handle these lazily — no creation hooks needed for now.
+REX_HOOK_RAW(FM2_D3DDevice_CreateIndexBuffer) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    g_origCreateIndexBuffer.fn(ctx, base);
+    return;
+  }
+  uint32_t length = ctx.r3.u32;
+  uint32_t format = ctx.r4.u32;
+  uint32_t xdkHandle = g_origCreateIndexBuffer(length, format);
+  ctx.r3.u32 = xdkHandle;
+  if (!xdkHandle) return;
+  GuestBuffer *native = rr::CreateIndexBuffer(length, format);
+  if (native)
+    rr::RegisterBufferAlias(xdkHandle, native);
+}
+
 REX_HOOK(FM2_Render_AllocGpuPassMemoryBlock, Fm2AllocGpuPassMemoryBlock);
 REX_HOOK(FM2_D3D_CreateGpuMemoryBlock, Fm2CreateGpuMemoryBlock);
 
@@ -2139,7 +2146,6 @@ REX_HOOK(FM2_D3DSurface_LockRect, SurfaceLockRect);
 REX_HOOK(FM2_D3DResource_UnlockResource, UnlockResourceHook);
 REX_HOOK(FM2_D3DSurface_GetDesc, SurfaceGetDesc);
 
-// PM4 indexed draw emitters → native Plume draw calls
 REX_HOOK(FM2_D3D_EmitIndexedDrawPm4Packets, Fm2EmitIndexedDrawPm4Base);
 REX_HOOK(FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset,
          Fm2EmitIndexedDrawPm4WithGpuOffset);
