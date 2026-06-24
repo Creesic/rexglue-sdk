@@ -20,8 +20,200 @@ constexpr int64_t kDoaxWorkQueueTableBase = kDoaxWorkQueueSegBase + 12888;
 
 constexpr uint32_t kSchedulerHeaderBytes = 16;
 
+constexpr uint32_t kDoaxBootPresentByteAddr = 0x833BB763u;
+constexpr uint8_t kDoaxMainMenuReadyPresent = 5u;
+
+constexpr uint32_t kDoaxMenuFiberDeaAddr = 0x833B8DEAu;
+constexpr uint32_t kDoaxMenuFiberDebAddr = 0x833B8DEBu;
+constexpr uint32_t kDoaxMenuFiberDefAddr = 0x833B8DEFu;
+constexpr uint32_t kDoaxIslandOverlayFlagAddr = 0x833B8514u;
+constexpr uint32_t kDoaxPresentStateIndexAddr = 0x833B84C8u;
+
 constexpr uint32_t kDispatcherFiberYieldLr = 0x824C0600u;
 constexpr uint32_t kCdf8FiberYieldLr = 0x8258CE4Cu;
+constexpr uint32_t kMenuWorkFiberYieldLr = 0x824C15F4u;
+
+constexpr uint32_t kMenuFiberProbeLogCap = 16;
+constexpr uint32_t kMenuFiberYieldLogCap = 48;
+constexpr uint32_t kCef0ProbeLogCap = 8;
+constexpr uint32_t kDrainMenuProbeLogCap = 32;
+constexpr uint32_t kDrainStuckProbeInterval = 200;
+
+struct SchedulerSnapshot {
+  uint8_t flag0 = 0;
+  uint8_t flag1 = 0;
+  uint8_t flag2 = 0;
+  uint8_t flag3 = 0;
+  uint8_t flag4 = 0;
+  uint8_t flag5 = 0;
+  uint8_t flag6 = 0;
+  uint8_t flag7 = 0;
+  uint32_t word8 = 0;
+  uint32_t word12 = 0;
+};
+
+struct MenuFiberGlobals {
+  uint8_t dea = 0;
+  uint8_t deb = 0;
+  uint8_t def = 0;
+  uint8_t overlay = 0;
+  uint8_t present = 0;
+};
+
+struct MenuFiberProbeState {
+  uint32_t enter_count = 0;
+  uint32_t log_count = 0;
+};
+
+struct MenuFiberYieldProbeState {
+  uint32_t log_count = 0;
+};
+
+struct Cef0ProbeState {
+  uint32_t call_count = 0;
+  uint32_t log_count = 0;
+};
+
+struct DrainMenuProbeState {
+  uint64_t call_count = 0;
+  uint32_t log_count = 0;
+  uint64_t stuck_calls_since_log = 0;
+};
+
+MenuFiberProbeState g_menu_fiber_probe;
+MenuFiberYieldProbeState g_menu_fiber_yield_probe;
+Cef0ProbeState g_cef0_probe;
+DrainMenuProbeState g_drain_menu_probe;
+
+SchedulerSnapshot ReadSchedulerSnapshot(uint8_t* base) {
+  SchedulerSnapshot snap{};
+  const uint32_t sched = kDoaxSchedulerFlagAddr;
+  snap.flag0 = REX_LOAD_U8(sched + 0);
+  snap.flag1 = REX_LOAD_U8(sched + 1);
+  snap.flag2 = REX_LOAD_U8(sched + 2);
+  snap.flag3 = REX_LOAD_U8(sched + 3);
+  snap.flag4 = REX_LOAD_U8(sched + 4);
+  snap.flag5 = REX_LOAD_U8(sched + 5);
+  snap.flag6 = REX_LOAD_U8(sched + 6);
+  snap.flag7 = REX_LOAD_U8(sched + 7);
+  snap.word8 = REX_LOAD_U32(sched + 8);
+  snap.word12 = REX_LOAD_U32(sched + 12);
+  return snap;
+}
+
+MenuFiberGlobals ReadMenuFiberGlobals(uint8_t* base) {
+  (void)base;
+  MenuFiberGlobals g{};
+  g.dea = REX_LOAD_U8(kDoaxMenuFiberDeaAddr);
+  g.deb = REX_LOAD_U8(kDoaxMenuFiberDebAddr);
+  g.def = REX_LOAD_U8(kDoaxMenuFiberDefAddr);
+  g.overlay = REX_LOAD_U8(kDoaxIslandOverlayFlagAddr);
+  g.present = REX_LOAD_U8(kDoaxPresentStateIndexAddr);
+  return g;
+}
+
+void LogSchedulerFlags(const char* prefix, const SchedulerSnapshot& snap) {
+  REXKRNL_WARN(
+      "{} f0-7={:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X} w8={} w12={}", prefix,
+      snap.flag0, snap.flag1, snap.flag2, snap.flag3, snap.flag4, snap.flag5, snap.flag6,
+      snap.flag7, snap.word8, snap.word12);
+}
+
+void LogMenuFiberGlobals(const char* prefix, const MenuFiberGlobals& g) {
+  REXKRNL_WARN("{} dea={} deb={} def={} overlay={} present={}", prefix, g.dea, g.deb, g.def,
+               g.overlay, g.present);
+}
+
+void MaybeLogMenuFiberSite(const char* site, uint8_t* base, const PPCContext& ctx) {
+  if (g_menu_fiber_probe.log_count >= kMenuFiberProbeLogCap) {
+    return;
+  }
+  ++g_menu_fiber_probe.log_count;
+  const SchedulerSnapshot sched = ReadSchedulerSnapshot(base);
+  const MenuFiberGlobals globals = ReadMenuFiberGlobals(base);
+  REXKRNL_WARN(
+      "DOAX menu-fiber-probe site={} enter={} r28=0x{:08X} r30=0x{:08X} r31=0x{:08X} "
+      "boot_present={}",
+      site, g_menu_fiber_probe.enter_count, ctx.r28.u32, ctx.r30.u32, ctx.r31.u32,
+      REX_LOAD_U8(kDoaxBootPresentByteAddr));
+  LogSchedulerFlags("DOAX menu-fiber-probe sched", sched);
+  LogMenuFiberGlobals("DOAX menu-fiber-probe", globals);
+}
+
+void MaybeLogMenuFiberYield(uint8_t* base, uint32_t yield_index, uint64_t r28_before,
+                            uint64_t r28_after, bool preserved_gprs) {
+  if (g_menu_fiber_yield_probe.log_count >= kMenuFiberYieldLogCap) {
+    return;
+  }
+  ++g_menu_fiber_yield_probe.log_count;
+  const SchedulerSnapshot sched = ReadSchedulerSnapshot(base);
+  const MenuFiberGlobals globals = ReadMenuFiberGlobals(base);
+  REXKRNL_WARN(
+      "DOAX menu-fiber-yield n={} r28 0x{:08X}->0x{:08X} gpr_preserve={} boot_present={}",
+      yield_index, static_cast<uint32_t>(r28_before), static_cast<uint32_t>(r28_after),
+      preserved_gprs ? 1 : 0, REX_LOAD_U8(kDoaxBootPresentByteAddr));
+  LogSchedulerFlags("DOAX menu-fiber-yield sched", sched);
+  LogMenuFiberGlobals("DOAX menu-fiber-yield", globals);
+}
+
+void MaybeLogCef0Probe(uint8_t* base, uint32_t caller_lr, const char* phase) {
+  if (g_cef0_probe.log_count >= kCef0ProbeLogCap) {
+    return;
+  }
+  ++g_cef0_probe.log_count;
+  const SchedulerSnapshot sched = ReadSchedulerSnapshot(base);
+  REXKRNL_WARN("DOAX cef0-probe phase={} call={} lr=0x{:08X} boot_present={}", phase,
+               g_cef0_probe.call_count, caller_lr, REX_LOAD_U8(kDoaxBootPresentByteAddr));
+  LogSchedulerFlags("DOAX cef0-probe sched", sched);
+  LogMenuFiberGlobals("DOAX cef0-probe", ReadMenuFiberGlobals(base));
+}
+
+bool IsStuckMainMenuDrain(const SchedulerSnapshot& snap) {
+  return snap.flag0 != 0 && snap.flag2 == 0 && snap.flag4 == 5 && snap.flag5 == 1;
+}
+
+void MaybeLogDrainMenuProbe(uint8_t* base, const SchedulerSnapshot& before,
+                            const SchedulerSnapshot& after, uint32_t caller_lr,
+                            const char* reason) {
+  if (g_drain_menu_probe.log_count >= kDrainMenuProbeLogCap) {
+    return;
+  }
+  ++g_drain_menu_probe.log_count;
+  REXKRNL_WARN(
+      "DOAX drain-menu-probe call={} reason={} caller_lr=0x{:08X} boot_present={}",
+      g_drain_menu_probe.call_count, reason, caller_lr,
+      REX_LOAD_U8(kDoaxBootPresentByteAddr));
+  LogSchedulerFlags("DOAX drain-menu-probe before", before);
+  LogSchedulerFlags("DOAX drain-menu-probe after ", after);
+  LogMenuFiberGlobals("DOAX drain-menu-probe", ReadMenuFiberGlobals(base));
+}
+
+void ProbeDrainMenuDispatch(uint8_t* base, const SchedulerSnapshot& before,
+                            const SchedulerSnapshot& after, uint32_t caller_lr) {
+  auto& probe = g_drain_menu_probe;
+  ++probe.call_count;
+
+  const bool boot_present =
+      REX_LOAD_U8(kDoaxBootPresentByteAddr) == kDoaxMainMenuReadyPresent;
+  const bool menu_armed = before.flag2 != 0 || after.flag2 != 0;
+  const bool flag2_cleared = before.flag2 != 0 && after.flag2 == 0;
+  const bool stuck = boot_present && IsStuckMainMenuDrain(after);
+
+  if (menu_armed) {
+    MaybeLogDrainMenuProbe(base, before, after, caller_lr,
+                           flag2_cleared ? "flag2_cleared" : "flag2_active");
+    probe.stuck_calls_since_log = 0;
+    return;
+  }
+
+  if (stuck) {
+    ++probe.stuck_calls_since_log;
+    if (probe.call_count <= 8 || probe.stuck_calls_since_log >= kDrainStuckProbeInterval) {
+      probe.stuck_calls_since_log = 0;
+      MaybeLogDrainMenuProbe(base, before, after, caller_lr, "stuck_flag2_zero");
+    }
+  }
+}
 
 struct SchedulerFiberGprs {
   uint64_t r14 = 0;
@@ -179,6 +371,10 @@ extern "C" REX_FUNC(DOAX_FiberContextSwitch) {
 
 extern "C" REX_FUNC(DOAX_FiberYield) {
   const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
+  const bool is_menu_fiber_yield = caller_lr == kMenuWorkFiberYieldLr;
+  const uint64_t r28_before = ctx.r28.u64;
+  static uint32_t menu_fiber_yield_index = 0;
+
   SchedulerFiberGprs saved_gprs{};
   const bool preserve_gprs = NeedsFiberCalleeSavePreserve(caller_lr);
   if (preserve_gprs) {
@@ -187,6 +383,12 @@ extern "C" REX_FUNC(DOAX_FiberYield) {
   DOAX_FiberContextSwitch(ctx, base);
   if (preserve_gprs) {
     RestoreSchedulerFiberGprs(ctx, saved_gprs);
+  }
+
+  if (is_menu_fiber_yield) {
+    ++menu_fiber_yield_index;
+    MaybeLogMenuFiberYield(base, menu_fiber_yield_index, r28_before, ctx.r28.u64,
+                           preserve_gprs);
   }
 }
 
@@ -249,8 +451,26 @@ extern "C" REX_FUNC(DOAX_SchedulerDrainDispatch) {
   const uint64_t caller_r29 = ctx.r29.u64;
   const uint64_t caller_r30 = ctx.r30.u64;
   const uint64_t caller_r31 = ctx.r31.u64;
+  const SchedulerSnapshot before = ReadSchedulerSnapshot(base);
   __imp__DOAX_SchedulerDrainDispatch(ctx, base);
+  const SchedulerSnapshot after = ReadSchedulerSnapshot(base);
+  ProbeDrainMenuDispatch(base, before, after, static_cast<uint32_t>(caller_lr));
   RestoreDrainCallerRegs(ctx, caller_lr, caller_r29, caller_r30, caller_r31);
+}
+
+extern "C" REX_FUNC(DOAX_MainMenuRegisterSlots) {
+  const uint32_t caller_lr = static_cast<uint32_t>(ctx.lr);
+  ++g_cef0_probe.call_count;
+  MaybeLogCef0Probe(base, caller_lr, "before");
+  __imp__DOAX_MainMenuRegisterSlots(ctx, base);
+  MaybeLogCef0Probe(base, caller_lr, "after");
+}
+
+extern "C" REX_FUNC(DOAX_MenuWorkFiberLoop) {
+  ++g_menu_fiber_probe.enter_count;
+  MaybeLogMenuFiberSite("enter", base, ctx);
+  __imp__DOAX_MenuWorkFiberLoop(ctx, base);
+  MaybeLogMenuFiberSite("exit", base, ctx);
 }
 
 extern "C" REX_FUNC(DOAX_WorkQueueDispatchLoop) {

@@ -52,7 +52,7 @@ setjmp_address = 0x829F12D0
     0x824C0928 = { name = "DOAX_SchedulerDrainDispatch" }
     0x824C13D8 = {}
     0x824C1460 = {}
-    0x824C1548 = {}
+    0x824C1548 = { name = "DOAX_MenuWorkFiberLoop" }
     0x824C15D0 = {}
     0x824195C8 = {}
     0x824C1958 = {}
@@ -73,7 +73,7 @@ setjmp_address = 0x829F12D0
     0x8250C468 = {}
     0x82538048 = {}
     0x8258CE60 = { name = "DOAX_WorkQueueSlotWake" }
-    0x8258CEF0 = {}
+    0x8258CEF0 = { name = "DOAX_MainMenuRegisterSlots" }
     0x8258E000 = {}
     0x82670880 = {}
     0x82671250 = {}
