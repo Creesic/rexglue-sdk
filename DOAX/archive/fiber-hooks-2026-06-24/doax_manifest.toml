@@ -1,0 +1,111 @@
+[entrypoint]
+file_path = 'assets/default.xex'
+includes = []
+longjmp_address = 0x829F1080
+out_directory_path = 'generated/default'
+setjmp_address = 0x829F12D0
+
+    [entrypoint.functions]
+    0x8271F580 = {}
+    0x82783210 = { name = "DOAX_FiberYield" }
+    0x82785670 = { name = "DOAX_FiberContextSwitch" }
+    0x829B96A8 = {}
+    0x82A1B3F0 = {}
+    0x82A1B410 = {}
+    0x82A1B430 = {}
+    0x82A1B450 = {}
+    0x82A1B470 = {}
+    0x82A1ECC0 = {}
+    0x82A49E58 = {}
+    0x82A49E78 = {}
+    0x82A49E98 = {}
+    0x82A49EB8 = {}
+    0x82A4A308 = {}
+    0x82A4A640 = {}
+    0x82A54F30 = {}
+    0x82A54F50 = {}
+    0x82A54F70 = {}
+    0x82A55220 = {}
+    0x82A568C8 = {}
+    0x82A568E8 = {}
+    0x82A56A78 = {}
+    0x82A56A98 = {}
+    0x82A59000 = {}
+    0x82A59020 = {}
+    0x82A59040 = {}
+    0x82A59060 = {}
+    0x82A59080 = {}
+    0x82A590A0 = {}
+    0x82A590C0 = {}
+    0x82A590E0 = {}
+    0x82A59B00 = {}
+    0x82A5E780 = {}
+    0x82A5ECD8 = {}
+    0x82A5F350 = {}
+    0x82A5F370 = {}
+    0x82A5F390 = {}
+    0x82A5F3B0 = {}
+    0x824C05B8 = { name = "DOAX_WorkQueueDispatchLoop" }
+    0x824C06D8 = { name = "DOAX_SchedulerFiberSwap" }
+    0x824C0770 = { name = "DOAX_BootMovieStateAdvance" }
+    0x824C08B8 = { name = "DOAX_SchedulerDrainWake" }
+    0x824C0928 = { name = "DOAX_SchedulerDrainDispatch" }
+    0x824C13D8 = { name = "DOAX_MenuTransitionOverlaySetup" }
+    0x824C1460 = { name = "DOAX_MenuPreTransitionHook" }
+    0x824C1548 = { name = "DOAX_MenuWorkFiberLoop" }
+    0x824C15D0 = {}
+    0x824195C8 = { name = "DOAX_MenuTransitionTimeline" }
+    0x824C1958 = { name = "DOAX_MenuSceneTransition" }
+    0x824D6868 = {}
+    0x824DA790 = { name = "DOAX_MenuTransitionFadeAlpha" }
+    0x824DA868 = { name = "DOAX_MenuTransitionReadyCheck" }
+    0x829CF100 = {}
+    0x8250A0B8 = { name = "DOAX_BootWorkFiberLoop" }
+    0x8250A118 = { name = "DOAX_BootWorkFiberInit" }
+    0x8250A568 = { name = "DOAX_BootWorkFiberBody" }
+    0x8250A728 = { name = "DOAX_BootMovieReplayTeardown" }
+    0x8250AA48 = { name = "DOAX_PlayNinjaViHdMovie" }
+    0x8250AC08 = { name = "DOAX_BootEnterWarningMode" }
+    0x8250AC50 = { name = "DOAX_BootWarningDismiss" }
+    0x8250AC98 = { name = "DOAX_BootWarningFrame" }
+    0x8250BB60 = { name = "DOAX_WarningScreenUpdate" }
+    0x8250BEB0 = { name = "DOAX_BootPresentStateUpdate" }
+    0x8250C468 = { name = "DOAX_BootMovieGateCheck" }
+    0x82538048 = { name = "DOAX_IslandSceneLoad" }
+    0x8258CE60 = { name = "DOAX_WorkQueueSlotWake" }
+    0x8258CEF0 = { name = "DOAX_MainMenuRegisterSlots" }
+    0x8258E000 = { name = "DOAX_IslandSceneBringUp" }
+    0x82670880 = { name = "DOAX_MenuItemSetup" }
+    0x82671250 = { name = "DOAX_MenuValidateSelection" }
+    0x82671308 = { name = "DOAX_MenuItemConfirm" }
+    0x826B0CD8 = { name = "DOAX_PlayMovie" }
+    0x826B0E30 = { name = "DOAX_IsMovieFinished" }
+    0x826B23C0 = { name = "DOAX_StartSfdPlayback" }
+
+[[entrypoint.midasm_hook]]
+address = 0x8250AAA8
+name = "DOAX_SkipLicenseWarningIntro"
+jump_address_on_true = 0x8250AAFC
+
+[[entrypoint.midasm_hook]]
+address = 0x8250AB1C
+name = "DOAX_SkipNinjaViHdMovie"
+jump_address_on_true = 0x8250ABA4
+
+# Menu work-fiber LABEL_34: keep byte_833B8DEB alive during Travel fade completion.
+[[entrypoint.midasm_hook]]
+address = 0x824C1900
+name = "DOAX_GuardMenuFiberDebAfterDecrement"
+registers = ["r31"]
+after_instruction = true
+
+# Menu work-fiber exit: do not clear byte_833B8514 (island overlay) during Travel.
+[[entrypoint.midasm_hook]]
+address = 0x824C1948
+name = "DOAX_SkipIslandOverlayClearOnTravel"
+jump_address_on_true = 0x824C194C
+
+[project]
+game_root = 'assets'
+name = 'doax'
+sdk_version = "0.8.0"
