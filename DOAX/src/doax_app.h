@@ -9,6 +9,8 @@
 #include <rex/filesystem.h>
 #include <rex/rex_app.h>
 
+#include "doax_hooks.h"
+
 class DoaxApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -17,6 +19,10 @@ class DoaxApp : public rex::ReXApp {
       rex::ui::WindowedAppContext& ctx) {
     return std::unique_ptr<DoaxApp>(new DoaxApp(ctx, "doax",
         PPCImageConfig));
+  }
+
+  void OnPostSetup() override {
+    InstallDoaxGuestPcFiber(PPCImageConfig);
   }
 
   // Portable game root: DOAX/assets relative to doax.exe in out/build/<preset>/.

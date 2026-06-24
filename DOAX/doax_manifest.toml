@@ -7,8 +7,8 @@ setjmp_address = 0x829F12D0
 
     [entrypoint.functions]
     0x8271F580 = {}
-    0x82783210 = {}
-    0x82785670 = {}
+    0x82783210 = { name = "DOAX_FiberYield" }
+    0x82785670 = { name = "DOAX_FiberContextSwitch" }
     0x829B96A8 = {}
     0x82A1B3F0 = {}
     0x82A1B410 = {}
