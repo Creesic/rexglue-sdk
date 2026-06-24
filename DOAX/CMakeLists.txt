@@ -24,6 +24,14 @@ endif()
 
 rexglue_setup_target(doax)
 
+# Visual Studio debugger hints (optional; doax_app.h resolves assets without this).
+if(WIN32)
+    set_target_properties(doax PROPERTIES
+        VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:doax>"
+        VS_DEBUGGER_COMMAND_ARGUMENTS "--game_data_root=${CMAKE_CURRENT_SOURCE_DIR}/assets"
+    )
+endif()
+
 # In-tree SDK builds emit generated headers under the rexglue-sdk binary dir.
 target_include_directories(doax PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/rexglue-sdk/include

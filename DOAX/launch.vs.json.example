@@ -1,0 +1,20 @@
+{
+  "version": "0.2.1",
+  "defaults": {},
+  "configurations": [
+    {
+      "type": "default",
+      "project": "CMakeLists.txt",
+      "projectTarget": "doax.exe",
+      "name": "doax.exe",
+      "currentDir": "${projectDir}/out/build/win-amd64-relwithdebinfo",
+      "args": [
+        "--game_data_root",
+        "${projectDir}/assets"
+      ],
+      "env": {
+        "REX_GAME_DATA_ROOT": "${projectDir}/assets"
+      }
+    }
+  ]
+}
