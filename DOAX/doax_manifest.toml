@@ -45,11 +45,11 @@ setjmp_address = 0x829F12D0
     0x82A5F370 = {}
     0x82A5F390 = {}
     0x82A5F3B0 = {}
-    0x824C05B8 = {}
+    0x824C05B8 = { name = "DOAX_WorkQueueDispatchLoop" }
     0x824C06D8 = {}
     0x824C0770 = {}
-    0x824C08B8 = {}
-    0x824C0928 = {}
+    0x824C08B8 = { name = "DOAX_SchedulerDrainWake" }
+    0x824C0928 = { name = "DOAX_SchedulerDrainDispatch" }
     0x824C13D8 = {}
     0x824C1460 = {}
     0x824C1548 = {}
@@ -72,7 +72,7 @@ setjmp_address = 0x829F12D0
     0x8250BEB0 = {}
     0x8250C468 = {}
     0x82538048 = {}
-    0x8258CE60 = {}
+    0x8258CE60 = { name = "DOAX_WorkQueueSlotWake" }
     0x8258CEF0 = {}
     0x8258E000 = {}
     0x82670880 = {}
