@@ -317,3 +317,8 @@ loop yields** (e.g. `lr=0x824C15F4`, `0x825A25E0`, `0x824C0C3C`). **Do not** res
 hooked infrastructure yields (`lr=0x824C0600` dispatcher, `0x8258CE4C` cdf8 wake) — those
 paths reload globals after return; universal restore wedged the scheduler again (black
 screen, no menu draws).
+
+**Press Start regression (2026-06-24):** Inverting the policy to “restore on every yield
+except dispatcher/cdf8” broke Press Start — boot work-fiber yields (resume `lr=0x8250A104`)
+must **not** get GPR restore. Whitelist-only preserve fixes input on Press Start while
+keeping menu work-fiber `r28` alive.
