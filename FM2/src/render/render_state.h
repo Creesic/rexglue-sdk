@@ -30,6 +30,10 @@ void SetTexture(GuestDevice *device, uint32_t index, GuestTexture *texture);
 // samples that point at a resolved surface's backing memory.
 void SetTextureBase(GuestDevice *device, uint32_t index,
                     GuestBaseTexture *texture);
+// Freeze a copy of a resolved surface (keyed by resolve-dest guest address) so
+// later samples see a snapshot, not the live (overwritten) render target.
+GuestBaseTexture *SnapshotSurfaceForResolve(GuestBaseTexture *source,
+                                            uint32_t destBase);
 void SetVertexShader(GuestDevice *device, GuestShader *shader);
 void SetPixelShader(GuestDevice *device, GuestShader *shader);
 void SetVertexDeclaration(GuestDevice *device,

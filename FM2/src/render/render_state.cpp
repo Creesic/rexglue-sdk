@@ -2106,6 +2106,35 @@ void FlushRenderState(GuestDevice *device) {
 
   // Constants are byte-swapped out of guest memory each draw (no dirty-range
   // tracking; the guest writes them directly to device memory).
+  {
+    static std::atomic<uint32_t> s_n{0};
+    const uint32_t *vc = device->vertexShaderFloatConstants;
+    uint32_t nz = 0;
+    for (uint32_t i = 0; i < 64; ++i)
+      if (vc[i] != 0)
+        ++nz;
+    // For a 3D draw (constants at +0x780 are zero), scan the whole block for
+    // where the real non-zero constant data lives so we can read the right
+    // offset. Log 64-byte windows with substantial non-zero content.
+    if (nz == 0 && s_n.fetch_add(1, std::memory_order_relaxed) < 6) {
+      const uint8_t *base = reinterpret_cast<const uint8_t *>(device);
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f, "FM2_CONSTSCAN dev=%p (nz@0x780=0)\n",
+                     static_cast<void *>(device));
+        for (uint32_t off = 0x100; off < 0x2800; off += 64) {
+          const uint32_t *w = reinterpret_cast<const uint32_t *>(base + off);
+          uint32_t wnz = 0;
+          for (uint32_t i = 0; i < 16; ++i)
+            if (w[i] != 0)
+              ++wnz;
+          if (wnz >= 8)
+            std::fprintf(f, "  +0x%04X nz=%u %08X,%08X,%08X,%08X\n", off, wnz,
+                         w[0], w[1], w[2], w[3]);
+        }
+        std::fclose(f);
+      }
+    }
+  }
   SetRootDescriptor(g_uploadAllocator.allocateCopy<true>(
                         device->vertexShaderFloatConstants,
                         sizeof(device->vertexShaderFloatConstants), 0x100),
@@ -3085,6 +3114,73 @@ void SetTextureBase(GuestDevice * /*device*/, uint32_t index,
                         RenderTextureViewDimension::TEXTURE_2D);
   // Not a GuestTexture, so clear any stale alias in g_textures[index].
   g_textures[index] = nullptr;
+}
+
+// Snapshot-on-resolve: the game resolves a rendered surface to guest memory and
+// later samples it. Aliasing the live RT is wrong because the game reuses/over-
+// writes it; we must freeze a COPY at resolve time. Creates/reuses a sampleable
+// texture per resolve-dest and copies the source surface into it on the frame
+// command list (in-order with the draws). Returns the snapshot to bind.
+std::unordered_map<uint32_t, std::unique_ptr<GuestBaseTexture>>
+    g_resolveSnapshots;
+GuestBaseTexture *SnapshotSurfaceForResolve(GuestBaseTexture *source,
+                                            uint32_t destBase) {
+  if (source == nullptr || source->texture == nullptr || Device() == nullptr ||
+      source->width == 0 || source->height == 0)
+    return nullptr;
+  destBase &= ~0xFFFu;
+  auto &slot = g_resolveSnapshots[destBase];
+  if (slot == nullptr || slot->width != source->width ||
+      slot->height != source->height || slot->format != source->format) {
+    auto snap = std::make_unique<GuestBaseTexture>(ResourceType::Texture);
+    RenderTextureDesc desc;
+    desc.dimension = RenderTextureDimension::TEXTURE_2D;
+    desc.width = source->width;
+    desc.height = source->height;
+    desc.depth = 1;
+    desc.mipLevels = 1;
+    desc.arraySize = 1;
+    desc.format = source->format;
+    desc.flags = RenderTextureFlag::NONE;
+    snap->textureHolder = Device()->createTexture(desc);
+    snap->texture = snap->textureHolder.get();
+    if (snap->texture == nullptr)
+      return nullptr;
+    RenderTextureViewDesc vdesc;
+    vdesc.format = source->format;
+    vdesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
+    vdesc.mipLevels = 1;
+    snap->textureView = snap->texture->createTextureView(vdesc);
+    snap->width = source->width;
+    snap->height = source->height;
+    snap->format = source->format;
+    snap->layout = RenderTextureLayout::SHADER_READ;
+    slot = std::move(snap);
+  }
+  GuestBaseTexture *dst = slot.get();
+  if (dst->texture == source->texture)
+    return dst;
+
+  RenderCommandList *commandList = CommandList();
+  // End any active render pass; copies/resolves must run outside a pass.
+  commandList->setFramebuffer(nullptr);
+  g_dirtyStates.renderTargetAndDepthStencil = true;
+
+  const RenderSampleCounts sc = GetSampleCount(source);
+  if (sc != RenderSampleCount::COUNT_1) {
+    AddBarrier(dst, RenderTextureLayout::RESOLVE_DEST);
+    FlushBarriers();
+    commandList->resolveTexture(dst->texture, source->texture);
+  } else {
+    AddBarrier(dst, RenderTextureLayout::COPY_DEST);
+    AddBarrier(source, RenderTextureLayout::COPY_SOURCE);
+    FlushBarriers();
+    commandList->copyTexture(dst->texture, source->texture);
+  }
+  AddBarrier(dst, RenderTextureLayout::SHADER_READ);
+  FlushBarriers();
+  dst->layout = RenderTextureLayout::SHADER_READ;
+  return dst;
 }
 
 void SetVertexShader(GuestDevice *device, GuestShader *shader) {

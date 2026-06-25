@@ -2736,6 +2736,10 @@ uint32_t Fm2EmitSurfaceResolve(uint32_t context, uint32_t flags, uint32_t a3) {
         host = rr::TranslateGuestSurface(gs);
       if (host == nullptr)
         host = rr::GetLastDrawnColorRenderTarget();
+      // NOTE: snapshot-on-resolve (SnapshotSurfaceForResolve) crashed doing a
+      // mid-frame copy from a bound RT; reverted to live aliasing while we fix
+      // the upstream issue (source RTs render black). Re-enable once the source
+      // surfaces actually hold content and the copy timing is made safe.
       RegisterSurfaceAperture(destBase, host);
       static std::atomic<uint32_t> s_n{0};
       if (s_n.fetch_add(1, std::memory_order_relaxed) < 20) {
