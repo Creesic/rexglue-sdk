@@ -687,19 +687,32 @@ bool UploadGuestTextureData(GuestTexture *texture,
   const uint32_t alignedHBlocks = (hBlocks + packedY + 31u) & ~31u;
   const uint64_t footprint =
       uint64_t(pitchBlocks + packedX) * alignedHBlocks * info.bytesPerBlock;
-  const bool readable =
-      footprint != 0 && footprint <= 0x4000000ull &&
-      GuestRangeReadable(info.baseAddress, uint32_t(footprint));
+  // Fetch-constant bases are guest PHYSICAL addresses. The game writes texture
+  // data through its physical-memory aliases, so the bytes live in the physical
+  // section (physical_membase) -- readable via TranslatePhysical -- even though
+  // the identity VIRTUAL alias at guest 0 is no-access. Gate on the PHYSICAL
+  // heap's commit state, not the virtual one.
+  auto *mem = ghp::GuestMemory();
+  const uint32_t physBase = info.baseAddress & 0x1FFFFFFFu;
+  const bool sizeOk = footprint != 0 && footprint <= 0x4000000ull;
+  const bool physReadable =
+      sizeOk && (physBase + footprint) <= 0x20000000ull &&
+      mem->GetPhysicalHeap()->QueryRangeAccess(
+          physBase, uint32_t(physBase + footprint - 1)) !=
+          rex::memory::PageAccess::kNoAccess;
+  const bool readable = physReadable;
   {
     static std::atomic<uint32_t> s_n{0};
     if (s_n.fetch_add(1, std::memory_order_relaxed) < 32) {
+      const bool virtReadable =
+          sizeOk && GuestRangeReadable(info.baseAddress, uint32_t(footprint));
       if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
         std::fprintf(f,
                      "FM2_TEX_UPLOAD base=0x%08X %ux%u fmt=%d tiled=%d fp=%llu "
-                     "readable=%d\n",
+                     "phys=%d virt=%d\n",
                      info.baseAddress, info.width, info.height, int(info.format),
                      info.tiled ? 1 : 0, (unsigned long long)footprint,
-                     readable ? 1 : 0);
+                     physReadable ? 1 : 0, virtReadable ? 1 : 0);
         std::fclose(f);
       }
     }
@@ -716,7 +729,7 @@ bool UploadGuestTextureData(GuestTexture *texture,
   }
 
   std::vector<uint8_t> linear(size_t(wBlocks) * hBlocks * info.bytesPerBlock);
-  const uint8_t *src = ToHost<uint8_t>(info.baseAddress);
+  const uint8_t *src = mem->TranslatePhysical<const uint8_t *>(info.baseAddress);
 
   // DIAGNOSTIC: is the SOURCE guest memory actually populated, or all zeros?
   // Pure-black uploaded textures could mean (a) the data isn't there in
