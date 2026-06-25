@@ -1749,6 +1749,45 @@ CreateGraphicsPipeline(const PipelineState &ps) {
   desc.vertexShader = vertexShader;
   desc.pixelShader =
       ps.pixelShader ? LoadShader(ps.pixelShader, ps.specConstants) : nullptr;
+  // DIAG: a pixel shader that is SET but fails to load yields a depth-only PSO
+  // (no PS) -> geometry renders but writes no color -> black. Distinguish the
+  // cases per-second so we can see whether the PS host translation is missing.
+  {
+    static std::atomic<uint64_t> s_noPs{0}, s_psOk{0}, s_psFailNoCache{0},
+        s_psFailOther{0}, s_lastSec{0};
+    if (ps.pixelShader == nullptr)
+      s_noPs.fetch_add(1, std::memory_order_relaxed);
+    else if (desc.pixelShader != nullptr)
+      s_psOk.fetch_add(1, std::memory_order_relaxed);
+    else if (ps.pixelShader->shaderCacheEntry == nullptr)
+      s_psFailNoCache.fetch_add(1, std::memory_order_relaxed);
+    else
+      s_psFailOther.fetch_add(1, std::memory_order_relaxed);
+    using clock = std::chrono::steady_clock;
+    const uint64_t nowSec = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            clock::now().time_since_epoch())
+            .count());
+    uint64_t last = s_lastSec.load(std::memory_order_relaxed);
+    if (last != 0 && nowSec != last &&
+        s_lastSec.compare_exchange_strong(last, nowSec,
+                                          std::memory_order_relaxed)) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_PS_LOAD sec=%llu no_ps=%llu ps_ok=%llu "
+                     "ps_fail_nocache=%llu ps_fail_other=%llu\n",
+                     (unsigned long long)nowSec,
+                     (unsigned long long)s_noPs.exchange(0),
+                     (unsigned long long)s_psOk.exchange(0),
+                     (unsigned long long)s_psFailNoCache.exchange(0),
+                     (unsigned long long)s_psFailOther.exchange(0));
+        std::fflush(f);
+        std::fclose(f);
+      }
+    } else if (last == 0) {
+      s_lastSec.store(nowSec, std::memory_order_relaxed);
+    }
+  }
   desc.depthFunction = ps.zFunc;
   desc.depthEnabled = ps.zEnable;
   desc.depthWriteEnabled = ps.zWriteEnable;
@@ -3030,6 +3069,21 @@ void SetTexture(GuestDevice * /*device*/, uint32_t index,
   g_textures[index] = texture;
 }
 
+void SetTextureBase(GuestDevice * /*device*/, uint32_t index,
+                    GuestBaseTexture *texture) {
+  if (texture == nullptr || texture->texture == nullptr)
+    return;
+  GuestBaseTexture *boundTexture =
+      (texture->sourceTexture != nullptr &&
+       GetSampleCount(texture->sourceTexture) == RenderSampleCount::COUNT_1)
+          ? texture->sourceTexture
+          : texture;
+  BindTextureDescriptor(index, boundTexture,
+                        RenderTextureViewDimension::TEXTURE_2D);
+  // Not a GuestTexture, so clear any stale alias in g_textures[index].
+  g_textures[index] = nullptr;
+}
+
 void SetVertexShader(GuestDevice *device, GuestShader *shader) {
   SyncVertexDeclarationFromDevice(device);
   if (shader != nullptr && g_pipelineState.vertexDeclaration != nullptr)
@@ -3232,6 +3286,22 @@ void SetImplicitRenderTarget(GuestBaseTexture *renderTarget) {
 }
 
 GuestBaseTexture *GetCurrentColorRenderTarget() { return g_renderTarget; }
+
+// The present source should be the color surface that was actually DRAWN into
+// (Forza renders the scene into one color RT, e.g. 130C7F000, then binds a
+// separate display/resolve buffer that present would otherwise blit empty/black).
+// g_lastTouchedRenderTarget tracks the last RT a real draw rendered to; prefer it
+// for present, falling back to the currently-bound RT if nothing has been drawn.
+GuestBaseTexture *GetLastDrawnColorRenderTarget() {
+  return g_lastTouchedRenderTarget ? g_lastTouchedRenderTarget : g_renderTarget;
+}
+
+GuestBaseTexture *g_testGameTexture = nullptr;
+void SetTestGameTexture(GuestBaseTexture *t) {
+  if (t != nullptr)
+    g_testGameTexture = t;
+}
+GuestBaseTexture *GetTestGameTexture() { return g_testGameTexture; }
 
 void SetDepthStencilSurface(GuestDevice * /*device*/,
                             GuestSurface *depthStencil) {

@@ -25,6 +25,11 @@ struct GuestStencilState {
 };
 void SetStencilState(const GuestStencilState &s);
 void SetTexture(GuestDevice *device, uint32_t index, GuestTexture *texture);
+// Bind a render-surface (or any base texture) directly into a sampler slot.
+// Used by the surface-aperture registry to satisfy fetch-constant texture
+// samples that point at a resolved surface's backing memory.
+void SetTextureBase(GuestDevice *device, uint32_t index,
+                    GuestBaseTexture *texture);
 void SetVertexShader(GuestDevice *device, GuestShader *shader);
 void SetPixelShader(GuestDevice *device, GuestShader *shader);
 void SetVertexDeclaration(GuestDevice *device,
@@ -42,6 +47,10 @@ void SetRenderTarget(GuestDevice *device, uint32_t index,
                      GuestBaseTexture *renderTarget);
 void SetImplicitRenderTarget(GuestBaseTexture *renderTarget);
 GuestBaseTexture *GetCurrentColorRenderTarget();
+GuestBaseTexture *GetLastDrawnColorRenderTarget();
+// Diagnostic: last game texture translated from a fetch constant (test grid).
+void SetTestGameTexture(GuestBaseTexture *t);
+GuestBaseTexture *GetTestGameTexture();
 void SetDepthStencilSurface(GuestDevice *device, GuestSurface *depthStencil);
 
 void Clear(GuestDevice *device, uint32_t flags, const float *color, float z);

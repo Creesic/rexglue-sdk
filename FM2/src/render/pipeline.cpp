@@ -224,9 +224,22 @@ class DxcRuntime {
       if (SUCCEEDED(result->GetErrorBuffer(&errors)) && errors != nullptr) {
         REXLOG_ERROR("%s: %.*s", label, static_cast<int>(errors->GetBufferSize()),
                      static_cast<const char*>(errors->GetBufferPointer()));
+        if (FILE* lf = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          std::fprintf(lf, "FM2_DXC_LINK_ERR %s: %.*s\n", label,
+                       static_cast<int>(errors->GetBufferSize()),
+                       static_cast<const char*>(errors->GetBufferPointer()));
+          std::fflush(lf);
+          std::fclose(lf);
+        }
         errors->Release();
       } else {
         REXLOG_ERROR("%s: failed status hr=0x%08X", label, static_cast<unsigned>(status));
+        if (FILE* lf = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          std::fprintf(lf, "FM2_DXC_LINK_ERR %s: failed status hr=0x%08X\n", label,
+                       static_cast<unsigned>(status));
+          std::fflush(lf);
+          std::fclose(lf);
+        }
       }
       return nullptr;
     }
@@ -305,6 +318,24 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
   }
 
   const ShaderCacheEntry* entry = guestShader->shaderCacheEntry;
+  // DIAG: trace pixel-shader loads (first 16) to pinpoint why they yield null.
+  static int s_psDiag = 0;
+  const bool psTrace =
+      guestShader->type == ResourceType::PixelShader && s_psDiag < 16;
+  auto psLog = [&](const char* where, const void* result) {
+    if (!psTrace) return;
+    ++s_psDiag;
+    if (FILE* f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+      std::fprintf(f,
+                   "FM2_PS_DIAG %s spec_mask=0x%X dxil_off=%u dxil_size=%u "
+                   "result=%p filename=%s\n",
+                   where, entry->spec_constants_mask, entry->dxil_offset,
+                   entry->dxil_size, result,
+                   entry->filename ? entry->filename : "(null)");
+      std::fflush(f);
+      std::fclose(f);
+    }
+  };
   RenderShaderFormat fmt = Interface()->getCapabilities().shaderFormat;
   if (fmt == RenderShaderFormat::SPIRV) {
     if (guestShader->shader != nullptr) {
@@ -326,6 +357,7 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
     guestShader->shader = Device()->createShader(g_dxilCache.get() + entry->dxil_offset,
                                                  entry->dxil_size, "main",
                                                  RenderShaderFormat::DXIL);
+    psLog("spec0_createShader", guestShader->shader.get());
     return guestShader->shader.get();
   }
 
@@ -351,6 +383,7 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
     }
   }
   if (libraryBlob == nullptr) {
+    psLog("link_libraryBlob_null", nullptr);
     return nullptr;
   }
 
@@ -358,8 +391,10 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
       libraryBlob, entry->dxil_offset, guestShader->type, specializedValue);
   libraryBlob->Release();
   if (linkedBlob == nullptr) {
+    psLog("link_linkedBlob_null", nullptr);
     return nullptr;
   }
+  psLog("link_ok", linkedBlob);
 
   std::unique_ptr<RenderShader> shader = Device()->createShader(
       linkedBlob->GetBufferPointer(), linkedBlob->GetBufferSize(), "main",

@@ -646,6 +646,22 @@ void EndianSwapBuffer(uint8_t *data, size_t size, uint32_t endian) {
   }
 }
 
+// Local copy of the guest-range readability check (the one in d3d_hooks.cpp has
+// internal linkage). Returns false if any page in the range is unmapped.
+bool GuestRangeReadable(uint32_t guestAddress, uint32_t byteCount) {
+  if (guestAddress == 0 || byteCount == 0)
+    return false;
+  const uint32_t lastAddress = guestAddress + byteCount - 1u;
+  if (lastAddress < guestAddress)
+    return false;
+  auto *memory = ghp::GuestMemory();
+  auto *heap = memory ? memory->LookupHeap(guestAddress) : nullptr;
+  if (heap == nullptr)
+    return false;
+  return heap->QueryRangeAccess(guestAddress, lastAddress) !=
+         rex::memory::PageAccess::kNoAccess;
+}
+
 bool UploadGuestTextureData(GuestTexture *texture,
                             const XenosTextureInfo &info) {
   if (texture == nullptr || texture->texture == nullptr || !info.valid)
@@ -664,8 +680,68 @@ bool UploadGuestTextureData(GuestTexture *texture,
   uint32_t packedX = 0, packedY = 0;
   GetPackedBaseOffsetBlocks(info, packedX, packedY);
 
+  // Guard against reading unmapped guest memory: textures bound from the PM4
+  // command stream point at raw GPU memory that may not be heap-backed. A tiled
+  // texture's footprint spans pitchBlocks * align(hBlocks,32) blocks; require
+  // the whole conservative footprint to be readable or we'd fault.
+  const uint32_t alignedHBlocks = (hBlocks + packedY + 31u) & ~31u;
+  const uint64_t footprint =
+      uint64_t(pitchBlocks + packedX) * alignedHBlocks * info.bytesPerBlock;
+  const bool readable =
+      footprint != 0 && footprint <= 0x4000000ull &&
+      GuestRangeReadable(info.baseAddress, uint32_t(footprint));
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 32) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_TEX_UPLOAD base=0x%08X %ux%u fmt=%d tiled=%d fp=%llu "
+                     "readable=%d\n",
+                     info.baseAddress, info.width, info.height, int(info.format),
+                     info.tiled ? 1 : 0, (unsigned long long)footprint,
+                     readable ? 1 : 0);
+        std::fclose(f);
+      }
+    }
+  }
+  if (!readable) {
+    static std::unordered_set<uint32_t> s_warned;
+    if (s_warned.insert(info.baseAddress).second) {
+      REXGPU_WARN("UploadGuestTextureData: base 0x{:08X} footprint {} not "
+                  "readable ({}x{} fmt={} tiled={}) -- skipped",
+                  info.baseAddress, footprint, info.width, info.height,
+                  int(info.format), info.tiled);
+    }
+    return false;
+  }
+
   std::vector<uint8_t> linear(size_t(wBlocks) * hBlocks * info.bytesPerBlock);
   const uint8_t *src = ToHost<uint8_t>(info.baseAddress);
+
+  // DIAGNOSTIC: is the SOURCE guest memory actually populated, or all zeros?
+  // Pure-black uploaded textures could mean (a) the data isn't there in
+  // plume_native, or (b) our detiling reads the wrong place. Scan the footprint.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 32 && src != nullptr) {
+      const auto *w = reinterpret_cast<const uint32_t *>(src);
+      const size_t words = size_t(footprint) / 4;
+      size_t nonZero = 0;
+      for (size_t i = 0; i < words; ++i)
+        if (w[i] != 0)
+          ++nonZero;
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_TEX_SRC base=0x%08X %ux%u fmt=%d tiled=%d fp=%llu "
+                     "nonZeroWords=%zu/%zu first=%08X,%08X,%08X,%08X\n",
+                     info.baseAddress, info.width, info.height, int(info.format),
+                     info.tiled ? 1 : 0, (unsigned long long)footprint, nonZero,
+                     words, words > 0 ? w[0] : 0, words > 1 ? w[1] : 0,
+                     words > 2 ? w[2] : 0, words > 3 ? w[3] : 0);
+        std::fclose(f);
+      }
+    }
+  }
   if (info.tiled) {
     for (uint32_t by = 0; by < hBlocks; ++by) {
       for (uint32_t bx = 0; bx < wBlocks; ++bx) {
@@ -717,6 +793,19 @@ std::unordered_map<uint32_t, GuestTexture *> g_guestTextureAliases;
 std::vector<std::unique_ptr<GuestTexture>> g_guestTextureStorage;
 
 } // namespace
+
+// Cache-only lookup: returns an already-created native texture whose guest base
+// address matches, without ever creating or uploading (crash-free). Used by the
+// PM4 draw path to bind textures the engine resolved via its command stream.
+GuestTexture *LookupGuestTextureByBase(uint32_t baseAddress) {
+  if (baseAddress == 0)
+    return nullptr;
+  std::lock_guard lock(g_guestTextureAliasMutex);
+  auto it = g_guestTextureAliases.find(baseAddress);
+  if (it != g_guestTextureAliases.end())
+    return it->second;
+  return nullptr;
+}
 
 GuestTexture *TranslateGuestTextureFetch(const void *guestFetch,
                                          bool uploadGuestData) {

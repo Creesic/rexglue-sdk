@@ -19,6 +19,7 @@
 
 #include "render/guest_resources.h"
 #include "render/render_internal.h"
+#include "render/render_state.h"
 #include "render/shaders/copy_ps.hlsl.dxil.h"
 #include "render/shaders/copy_vs.hlsl.dxil.h"
 
@@ -371,6 +372,146 @@ void ExecuteUpload(const std::function<void(RenderCommandList *)> &record) {
   g_copyQueue->waitForCommandFence(g_copyFence.get());
 }
 
+// ---------------------------------------------------------------------------
+// Draw-to-screen TEST GRID (diagnostic). Each cell tests a different mechanism
+// so we can SEE which actually produces pixels on the real backbuffer:
+//   - 5 solid-color swatches (red/green/blue/white/yellow) via clearColor:
+//       baseline -- proves we can write the swapchain at all + color channels.
+//   - 1 procedural checkerboard texture we create+upload+sample via the blit
+//       pipeline: proves OUR texture upload->sample path works independent of
+//       the game (if this cell is black, all our texture uploads are broken).
+// Drawn over the final backbuffer just before present.
+// ---------------------------------------------------------------------------
+std::unique_ptr<RenderTexture> g_testTex;
+std::unique_ptr<RenderTextureView> g_testTexView;
+uint32_t g_testTexDesc = 0;
+
+void EnsureTestTexture() {
+  if (g_testTex != nullptr || g_device == nullptr)
+    return;
+  const uint32_t W = 64, H = 64;
+  RenderTextureDesc desc;
+  desc.dimension = RenderTextureDimension::TEXTURE_2D;
+  desc.width = W;
+  desc.height = H;
+  desc.depth = 1;
+  desc.mipLevels = 1;
+  desc.arraySize = 1;
+  desc.format = RenderFormat::B8G8R8A8_UNORM;
+  desc.flags = RenderTextureFlag::NONE;
+  g_testTex = g_device->createTexture(desc);
+  if (g_testTex == nullptr)
+    return;
+  RenderTextureViewDesc vdesc;
+  vdesc.format = RenderFormat::B8G8R8A8_UNORM;
+  vdesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
+  vdesc.mipLevels = 1;
+  g_testTexView = g_testTex->createTextureView(vdesc);
+
+  std::vector<uint32_t> px(size_t(W) * H);
+  for (uint32_t y = 0; y < H; ++y)
+    for (uint32_t x = 0; x < W; ++x)
+      px[y * W + x] = (((x >> 3) + (y >> 3)) & 1) ? 0xFFFF00FFu  // magenta
+                                                  : 0xFF00FFFFu; // cyan
+  const uint32_t rowPitch = W * 4;
+  const uint32_t dstPitch = (rowPitch + 255u) & ~255u;
+  auto upload = g_device->createBuffer(
+      RenderBufferDesc::UploadBuffer(size_t(dstPitch) * H));
+  auto *mapped = reinterpret_cast<uint8_t *>(upload->map());
+  for (uint32_t y = 0; y < H; ++y)
+    std::memcpy(mapped + size_t(y) * dstPitch,
+                reinterpret_cast<uint8_t *>(px.data()) + size_t(y) * rowPitch,
+                rowPitch);
+  upload->unmap();
+  ExecuteUpload([&](RenderCommandList *cl) {
+    cl->barriers(RenderBarrierStage::COPY,
+                 RenderTextureBarrier(g_testTex.get(),
+                                      RenderTextureLayout::COPY_DEST));
+    cl->copyTextureRegion(
+        RenderTextureCopyLocation::Subresource(g_testTex.get(), 0),
+        RenderTextureCopyLocation::PlacedFootprint(
+            upload.get(), RenderFormat::B8G8R8A8_UNORM, W, H, 1, dstPitch / 4));
+  });
+  g_testTexDesc = AllocTextureDescriptor();
+  g_textureDescriptorSet->setTexture(g_testTexDesc, g_testTex.get(),
+                                     RenderTextureLayout::SHADER_READ,
+                                     g_testTexView.get());
+}
+
+void DrawPresentTestGrid(RenderCommandList *cl, RenderTexture *backBuffer,
+                         RenderFramebuffer *framebuffer, uint32_t sw,
+                         uint32_t sh) {
+  if (cl == nullptr || backBuffer == nullptr || framebuffer == nullptr)
+    return;
+  // backBuffer is in PRESENT layout on entry; flip to COLOR_WRITE to draw.
+  cl->barriers(RenderBarrierStage::GRAPHICS,
+               RenderTextureBarrier(backBuffer, RenderTextureLayout::COLOR_WRITE));
+  cl->setFramebuffer(framebuffer);
+
+  const int cellW = int(sw) / 6;
+  const int cellH = int(sh) / 8;
+  const RenderColor colors[5] = {
+      RenderColor(1, 0, 0, 1), RenderColor(0, 1, 0, 1), RenderColor(0, 0, 1, 1),
+      RenderColor(1, 1, 1, 1), RenderColor(1, 1, 0, 1)};
+  for (int i = 0; i < 5; ++i) {
+    RenderRect r(i * cellW + 4, 4, (i + 1) * cellW - 4, cellH); // l,t,r,b
+    cl->clearColor(0, colors[i], &r, 1);
+  }
+
+  RenderPipeline *blit = GetBlitPipeline(kBackbufferFormat);
+  auto blitDescToCell = [&](RenderTexture *tex, uint32_t desc, float x, float y,
+                            float w, float h) {
+    if (tex == nullptr || blit == nullptr)
+      return;
+    cl->barriers(RenderBarrierStage::GRAPHICS,
+                 RenderTextureBarrier(tex, RenderTextureLayout::SHADER_READ));
+    cl->setGraphicsPipelineLayout(g_pipelineLayout.get());
+    cl->setPipeline(blit);
+    cl->setGraphicsDescriptorSet(g_textureDescriptorSet.get(), 0);
+    cl->setGraphicsDescriptorSet(g_samplerDescriptorSet.get(), 3);
+    cl->setGraphicsPushConstants(0, &desc, 0, sizeof(desc));
+    cl->setFramebuffer(framebuffer);
+    cl->setViewports(RenderViewport(x, y, w, h));
+    cl->setScissors(RenderRect(int(x), int(y), int(x + w), int(y + h)));
+    cl->drawInstanced(3, 1, 0, 0);
+  };
+  auto blitGuestToCell = [&](GuestBaseTexture *g, float x, float y, float w,
+                             float h) {
+    if (g == nullptr || g->texture == nullptr || g->textureView == nullptr)
+      return;
+    if (g->descriptorIndex == 0)
+      g->descriptorIndex = AllocTextureDescriptor();
+    g_textureDescriptorSet->setTexture(g->descriptorIndex, g->texture,
+                                       RenderTextureLayout::SHADER_READ,
+                                       g->textureView.get());
+    blitDescToCell(g->texture, g->descriptorIndex, x, y, w, h);
+    g->layout = RenderTextureLayout::SHADER_READ;
+  };
+
+  const float ry = float(cellH + 8), rh = float(2 * cellH);
+  const int ity = cellH + 8, ith = 2 * cellH;
+  // Marker fills: if a cell stays its marker color, that source pointer was
+  // null (cell never blitted); if it goes black, the source is valid-but-black.
+  RenderRect mB(cellW, ity, 2 * cellW, ity + ith);   // orange = RT marker
+  RenderRect mC(2 * cellW, ity, 3 * cellW, ity + ith); // purple = tex marker
+  cl->clearColor(0, RenderColor(1.0f, 0.5f, 0.0f, 1.0f), &mB, 1);
+  cl->clearColor(0, RenderColor(0.6f, 0.0f, 0.8f, 1.0f), &mC, 1);
+
+  // Cell A: our procedural checkerboard (proven to work as a control).
+  EnsureTestTexture();
+  blitDescToCell(g_testTex.get(), g_testTexDesc, 0.0f, ry, float(cellW), rh);
+  // Cell B: the game's last-drawn color render target (does the game draw?).
+  //   orange remains => null pointer; black => valid but the RT is black.
+  blitGuestToCell(GetLastDrawnColorRenderTarget(), float(cellW), ry,
+                  float(cellW), rh);
+  // Cell C: an actual game texture (tiled upload -- the prime suspect).
+  //   purple remains => null pointer; black/garbage => upload/detile result.
+  blitGuestToCell(GetTestGameTexture(), float(2 * cellW), ry, float(cellW), rh);
+
+  cl->barriers(RenderBarrierStage::GRAPHICS,
+               RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
+}
+
 } // namespace fm2::render
 
 void Video::Present() {
@@ -524,6 +665,10 @@ void Video::Present() {
         RenderBarrierStage::GRAPHICS,
         RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
   }
+  // Diagnostic: overlay the draw-to-screen test grid on the final backbuffer.
+  fm2::render::DrawPresentTestGrid(g_commandList.get(), backBuffer, framebuffer,
+                                   g_swapChain->getWidth(),
+                                   g_swapChain->getHeight());
   g_commandList->end();
   g_frameOpen = false;
   g_presentSource = nullptr;

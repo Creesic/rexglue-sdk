@@ -61,6 +61,7 @@ GuestShader *LookupShaderAlias(uint32_t guestAddress);
 GuestTexture *LoadTextureFromMemory(const uint8_t *data, uint32_t size);
 GuestTexture *TranslateGuestTextureFetch(const void *guestFetch,
                                          bool uploadGuestData);
+GuestTexture *LookupGuestTextureByBase(uint32_t baseAddress);
 GuestTexture *TranslateGuestTexture(void *guestHeader, bool uploadGuestData);
 GuestBaseTexture *TranslateGuestSurface(void *guestHeader);
 uint32_t LockVertexBuffer(GuestBuffer *buffer, uint32_t flags);
@@ -101,6 +102,15 @@ REX_IMPORT(__imp__sub_82288948, g_origRenderWorkerFrame, void(uint32_t));
 // always 0 in plume_native and every draw fails with missing_decl. Hook it to feed
 // device->vertexDeclaration so the existing Sync/alias path resolves the layout.
 REX_IMPORT(__imp__sub_8236E228, g_origSetActivePassId, void(uint32_t, uint32_t));
+// FM2_RenderContext_BindSurfaceInternal (sub_823716F8): binds a COLOR render-target
+// surface to slot a2 (0-3) at renderContext+12160+4*slot -- this is Forza's color RT
+// bind (proven: FM2_D3D_CreatePresentBackbufferResources calls it with slot 0 for the
+// backbuffer color surface, while depth goes through SetBoundSurface at +12176). The
+// native renderer never hooked it, so g_renderTarget stayed null and forward draws had
+// no color attachment -> rendered depth-only -> blue screen. Hook it to bind the color
+// surface natively via SetRenderTargetNative, mirroring the depth path.
+REX_IMPORT(__imp__sub_823716F8, g_origBindSurfaceInternal,
+           void(uint32_t, uint32_t, uint32_t));
 // Frame-sync gate: the guest game-loop thread (sub_822172E8) blocks each frame on
 // FM2_Win32_WaitForSingleObject(dword_829C24C0,-1) when in vsync frame-sync mode.
 // FM2_SignalGate pulses that event to advance the loop, but its normal trigger is
@@ -163,10 +173,24 @@ REX_IMPORT(__imp__FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset,
 REX_IMPORT(__imp__FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup,
            g_origFm2EmitIndexedDrawPm4WithVertexFormatSetup,
            void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+// Forward/opaque object pass draw emitter (a1=CDevice/context, a2=drawListNode,
+// a3=flags). The depth prepass uses EmitIndexedDrawPm4* (hooked above); the
+// forward COLOR pass goes through here and is NOT translated to native draws ->
+// the color RT never gets written -> black. Diagnostic hook to decode the draw
+// list before translating.
+REX_IMPORT(__imp__FM2_D3D_EmitDirtyStateAndDrawList,
+           g_origFm2EmitDirtyStateAndDrawList,
+           void(uint32_t, uint32_t, uint32_t));
 // Forza's PM4 draw-list interpreter (walks command nodes, dispatches opcodes).
 // Hooked only to count whether the 3D-scene draw path runs in plume_native.
 REX_IMPORT(__imp__FM2_Render_WalkAndDispatchPm4DrawList,
            g_origWalkAndDispatchPm4DrawList, void(uint32_t));
+// EDRAM resolve emitter: copies the rendered surface to guest memory that the
+// game then samples as a texture. Untranslated in plume_native -> sampled
+// memory is empty/black. Hooked to register the resolved surface so samples hit
+// the real rendered plume texture.
+REX_IMPORT(__imp__FM2_D3D_EmitSurfaceResolvePackets, g_origEmitSurfaceResolve,
+           uint32_t(uint32_t, uint32_t, uint32_t));
 
 namespace {
 
@@ -179,6 +203,65 @@ static void LogReplayDbg(const char* fmt, Args&&... args) {
   std::fputc('\n', f);
   std::fflush(f);
   std::fclose(f);
+}
+
+// Self-contained RenderDoc in-app capture trigger (no header/include-path dep).
+// TriggerCapture is the 16th fn ptr in RENDERDOC_API_1_0_0 (renderdoc_app.h).
+// When a frame draws real geometry (>threshold draws) we auto-trigger a capture
+// so a *render* frame is captured without the user having to time the key.
+// Layout matches RENDERDOC_API_1_0_1 fn-ptr order (renderdoc_app.h).
+struct MiniRdocApi {
+  void *fn[15];                        // GetAPIVersion .. GetCapture (0..14)
+  void(__cdecl *TriggerCapture)(void); // 15
+  void *fn2[3];                        // IsRemoteAccessConnected,LaunchReplayUI,SetActiveWindow (16..18)
+  void(__cdecl *StartFrameCapture)(void *dev, void *wnd);       // 19
+  void *IsFrameCapturing;                                       // 20
+  uint32_t(__cdecl *EndFrameCapture)(void *dev, void *wnd);     // 21
+};
+std::atomic<uint32_t> g_drawsSinceLastPresent{0};
+MiniRdocApi *RdocApi() {
+  static MiniRdocApi *s_rdoc = nullptr;
+  static bool s_tried = false;
+  if (!s_tried) {
+    s_tried = true;
+    if (HMODULE mod = GetModuleHandleA("renderdoc.dll")) {
+      using GetApiFn = int(__cdecl *)(int, void **);
+      if (auto get = reinterpret_cast<GetApiFn>(
+              GetProcAddress(mod, "RENDERDOC_GetAPI"))) {
+        get(10000 /*eRENDERDOC_API_Version_1_0_0*/,
+            reinterpret_cast<void **>(&s_rdoc));
+      }
+    }
+    LogReplayDbg("FM2_RDOC_INIT renderdoc.dll=%s api=%s",
+                 GetModuleHandleA("renderdoc.dll") ? "loaded" : "absent",
+                 s_rdoc ? "ok" : "null");
+  }
+  return s_rdoc;
+}
+// Scene draws land on isolated/alternating frames, so TriggerCapture (next frame)
+// keeps missing them. Instead wrap the WHOLE render-worker call (Start at top,
+// before the draws execute, End after present) for a short window of frames once
+// drawing is detected -- a real geometry frame is captured in full.
+std::atomic<int> g_rdocCaptureRemaining{0};
+std::atomic<bool> g_rdocArmed{false};
+bool RenderDocFrameBegin() {
+  MiniRdocApi *api = RdocApi();
+  if (api == nullptr || g_rdocCaptureRemaining.load(std::memory_order_relaxed) <= 0)
+    return false;
+  api->StartFrameCapture(nullptr, nullptr);
+  return true;
+}
+void RenderDocFrameEnd(bool capturing, uint32_t drawsThisFrame) {
+  MiniRdocApi *api = RdocApi();
+  if (capturing && api != nullptr) {
+    api->EndFrameCapture(nullptr, nullptr);
+    g_rdocCaptureRemaining.fetch_sub(1, std::memory_order_relaxed);
+  }
+  if (api != nullptr && drawsThisFrame > 5u &&
+      !g_rdocArmed.exchange(true, std::memory_order_relaxed)) {
+    g_rdocCaptureRemaining.store(8, std::memory_order_relaxed);
+    LogReplayDbg("FM2_RDOC_ARM draws=%u capturing next 8 frames", drawsThisFrame);
+  }
 }
 
 using rr::GuestBaseTexture;
@@ -504,7 +587,7 @@ void Fm2GpuCommandBufferBuildAndSubmit(uint32_t commandBuffer, uint32_t arg4,
     // the original (0x8236CD78): set the present source from the last-bound
     // color render target and present. This is the game/render thread that
     // records draws into g_commandList, so present is correctly same-threaded.
-    rr::GuestBaseTexture *presentSource = rr::GetCurrentColorRenderTarget();
+    rr::GuestBaseTexture *presentSource = rr::GetLastDrawnColorRenderTarget();
     if (presentSource != nullptr && presentSource->texture != nullptr) {
       rr::SetPresentSource(presentSource);
     }
@@ -664,6 +747,36 @@ void Fm2RememberGuestDevice(GuestDevice *device) {
   if (device != nullptr) {
     rr::SetActiveGuestDevice(device);
   }
+}
+
+// Forza binds its COLOR render target(s) via BindSurfaceInternal(ctx, slot, surface)
+// (slot 0 = primary color RT), not the standard D3DDevice_SetRenderTarget. Without
+// this, g_renderTarget is null, forward draws have no color attachment, and the
+// screen stays at its clear color. Mirror the color surface into the native render
+// target like the depth path mirrors SetBoundSurface.
+void RegisterSurfaceApertures(uint32_t descriptorAddr,
+                              rr::GuestBaseTexture *host);
+
+void Fm2BindSurface(uint32_t renderContext, uint32_t slot, uint32_t surface) {
+  g_origBindSurfaceInternal(renderContext, slot, surface);
+  if (!ShouldMirrorPlumeRenderState()) {
+    return;
+  }
+  GuestDevice *device = DeviceForRenderContext(renderContext);
+  if (device == nullptr || surface == 0) {
+    return;
+  }
+  static std::atomic<uint32_t> s_n{0};
+  if (s_n.fetch_add(1, std::memory_order_relaxed) < 16) {
+    LogReplayDbg("FM2_BIND_SURFACE renderContext=0x%08X slot=%u surface=0x%08X",
+                 renderContext, slot, surface);
+  }
+  GuestSurface *gs = ghp::ToHost<GuestSurface>(surface);
+  rr::GuestBaseTexture *host = AsFm2(gs);
+  if (host == nullptr && gs != nullptr)
+    host = rr::TranslateGuestSurface(gs);
+  RegisterSurfaceApertures(surface, host);
+  SetRenderTargetNative(device, slot, gs);
 }
 
 // Forza binds the per-draw vertex declaration via SetActivePassId(ctx, declHandle)
@@ -1919,6 +2032,7 @@ void DrawIndexedVertices(GuestDevice *device, uint32_t primType,
                          int32_t baseVertexIndex, uint32_t startIndex,
                          uint32_t indexCount) {
   FlushImmediateVertices();
+  g_drawsSinceLastPresent.fetch_add(1, std::memory_order_relaxed);
   rr::DrawIndexedPrimitive(device, primType, baseVertexIndex, startIndex,
                            indexCount);
 }
@@ -1980,6 +2094,102 @@ void ApplyLiveColorWriteFromContext(GuestDevice *device, uint32_t context) {
   rr::SetRenderState(device, rr::D3DRS_COLORWRITEENABLE, cw ? 0xFu : 0u);
 }
 
+// Forza keeps the per-sampler bound texture pointers at context+12264+4*slot
+// (read by sub_823708D8 as *(ctx + 4*(slot+3066))). The PM4 emit path bypasses
+// the standard D3D SetTexture, so g_textures stays empty and the pixel shaders
+// sample nothing -> the geometry renders black (confirmed via RenderDoc). Mirror
+// ---------------------------------------------------------------------------
+// Surface-aperture registry. Forza references textures by raw GPU address; we
+// render those surfaces into host plume textures. This maps each surface's
+// backing guest address (page-aligned) -> its host texture, so a fetch-constant
+// sample of that address binds the real rendered surface instead of reading
+// black guest memory. (The native equivalent of UnleashedRecomp's per-object
+// host-resource map, keyed by address instead of object pointer.)
+// ---------------------------------------------------------------------------
+std::mutex g_surfaceApertureMutex;
+std::unordered_map<uint32_t, rr::GuestBaseTexture *> g_surfaceAperture;
+
+void RegisterSurfaceAperture(uint32_t guestAddr, rr::GuestBaseTexture *host) {
+  if (host == nullptr || host->texture == nullptr || guestAddr < 0x08000000u ||
+      guestAddr >= 0x1A000000u)
+    return;
+  std::lock_guard<std::mutex> lk(g_surfaceApertureMutex);
+  g_surfaceAperture[guestAddr & ~0xFFFu] = host;
+}
+
+rr::GuestBaseTexture *LookupSurfaceAperture(uint32_t guestAddr) {
+  std::lock_guard<std::mutex> lk(g_surfaceApertureMutex);
+  auto it = g_surfaceAperture.find(guestAddr & ~0xFFFu);
+  return it != g_surfaceAperture.end() ? it->second : nullptr;
+}
+
+// Scan a guest surface descriptor for texture-range backing addresses and map
+// each to the host surface. We register every candidate (the descriptor holds
+// the address in several forms/offsets) -- a later sample of any of them binds
+// the rendered surface.
+void RegisterSurfaceApertures(uint32_t descriptorAddr,
+                              rr::GuestBaseTexture *host) {
+  if (host == nullptr || host->texture == nullptr || descriptorAddr == 0)
+    return;
+  for (uint32_t off = 0; off < 512u; off += 4u) {
+    const uint32_t v = ReadGuestU32At(descriptorAddr + off);
+    if (v >= 0x08000000u && v < 0x1A000000u)
+      RegisterSurfaceAperture(v, host); // raw page-aligned == fetch-form base
+  }
+}
+
+// the live table into the native sampler bindings so textures actually show.
+void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
+  static std::atomic<uint32_t> s_n{0};
+  const bool trace = s_n.fetch_add(1, std::memory_order_relaxed) < 24;
+
+  // Forza binds textures via FM2_D3D_ApplyGpuMemoryPatches, which writes the
+  // canonical 6-dword GPU texture fetch constant into the engine GPU block at
+  // block + 1024 + slot*24 (and the descriptor pointer into block+12264+slot*4,
+  // which we found empty for these draws). The block base is the value passed
+  // to the draw emitter (== *dword_82A41BEC). The native draw bypasses the PM4
+  // ring, so we decode the live fetch constants here and mirror them into the
+  // native sampler bindings. Each slot is a standard xe_gpu_texture_fetch_t.
+  const uint32_t block = context != 0 ? context : ReadGuestU32At(0x82A41BECu);
+  if (block == 0)
+    return;
+
+  // Bind textures the engine resolved into the fetch-constant array. The upload
+  // path is now bounds-checked (skips unmapped guest memory instead of
+  // faulting), so we can translate+upload directly. TranslateGuestTextureFetch
+  // checks the alias cache first, so repeated draws of the same texture reuse
+  // the created resource.
+  for (uint32_t slot = 0; slot < 16u; ++slot) {
+    const uint32_t fcAddr = block + 1024u + slot * 24u;
+    const uint32_t fc0 = ReadGuestU32At(fcAddr);
+    const uint32_t fc1 = ReadGuestU32At(fcAddr + 4u);
+    if ((fc0 & 0x3u) != 2u && fc1 == 0u)
+      continue;
+    const uint32_t base = ((fc1 >> 12) & 0xFFFFFu) << 12;
+    // Prefer a registered host surface (the rendered/resolved plume texture)
+    // over uploading from black guest memory.
+    rr::GuestBaseTexture *surf = LookupSurfaceAperture(base);
+    if (surf != nullptr) {
+      rr::SetTextureBase(device, slot, surf);
+      rr::SetTestGameTexture(surf);
+      if (trace)
+        LogReplayDbg("FM2_LIVE_TEX slot=%u base=0x%08X -> APERTURE host=%p",
+                     slot, base, static_cast<void *>(surf));
+      continue;
+    }
+    rr::GuestTexture *tex =
+        rr::TranslateGuestTextureFetch(ghp::ToHost<void>(fcAddr), true);
+    if (trace) {
+      LogReplayDbg("FM2_LIVE_TEX slot=%u fc0=%08X fc1=%08X base=0x%08X tex=%p",
+                   slot, fc0, fc1, base, static_cast<void *>(tex));
+    }
+    if (tex != nullptr) {
+      rr::SetTexture(device, slot, tex);
+      rr::SetTestGameTexture(tex); // diagnostic: expose to the present test grid
+    }
+  }
+}
+
 // PM4 indexed draw emitters → replaced with native Plume draw calls.
 // FM2_D3D_EmitIndexedDrawPm4Packets:              (context, primType, indexBufferBase, indexCount)
 // FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset: (context, primType, gpuOffset, startIndex, indexCount)
@@ -1999,6 +2209,7 @@ void Fm2EmitIndexedDrawPm4Base(uint32_t context, uint32_t primType,
   CountDrawDevice("DrawEmit", s_drawEmitDevSlot, device != nullptr);
   if (device == nullptr) return;
   ApplyLiveColorWriteFromContext(device, context);
+  ApplyLiveTexturesFromContext(device, context);
   DrawIndexedVertices(device, primType, 0, 0, indexCount);
 }
 
@@ -2026,6 +2237,7 @@ void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
   CountDrawDevice("DrawSubmit", s_drawSubmitDevSlot, device != nullptr);
   if (device == nullptr) return;
   ApplyLiveColorWriteFromContext(device, context);
+  ApplyLiveTexturesFromContext(device, context);
   DrawIndexedVertices(device, primType, 0, startIndex, indexCount);
 }
 
@@ -2303,6 +2515,35 @@ void Fm2EmitIndexedDrawPm4WithVertexFormatSetup(uint32_t context,
   SubmitNativeIndexedDrawPm4(context, primType, startIndex, indexCount);
 }
 
+// Forward/opaque object-pass draw emitter. DIAGNOSTIC: call the original (keeps
+// the game's state machine consistent -- it already runs safely in plume_native)
+// then dump the draw-list structure at drawNode+116 so we can decode the per-draw
+// (primType, startIndex, indexCount) and translate to native Plume draws.
+void Fm2EmitDirtyStateAndDrawList(uint32_t context, uint32_t drawNode,
+                                  uint32_t flags) {
+  g_origFm2EmitDirtyStateAndDrawList(context, drawNode, flags);
+  if (!ShouldMirrorPlumeRenderState())
+    return;
+  static PresentDiagSlot s_dirtyDrawSlot;
+  CountPresentDiag("DirtyDraw", s_dirtyDrawSlot, nullptr);
+  static std::atomic<uint32_t> s_n{0};
+  if (s_n.fetch_add(1, std::memory_order_relaxed) < 16) {
+    const uint32_t nodeFlags = ReadGuestU32At(drawNode + 108u);
+    const uint32_t listHead = ReadGuestU32At(drawNode + 116u);
+    const uint32_t count = listHead ? ReadGuestU32At(listHead + 4u) : 0;
+    LogReplayDbg(
+        "FM2_DIRTY_DRAW ctx=0x%08X node=0x%08X nodeFlags=0x%08X list=0x%08X "
+        "count=%u e=[0x%08X 0x%08X | 0x%08X 0x%08X | 0x%08X 0x%08X]",
+        context, drawNode, nodeFlags, listHead, count,
+        listHead ? ReadGuestU32At(listHead + 8u) : 0,
+        listHead ? ReadGuestU32At(listHead + 12u) : 0,
+        listHead ? ReadGuestU32At(listHead + 16u) : 0,
+        listHead ? ReadGuestU32At(listHead + 20u) : 0,
+        listHead ? ReadGuestU32At(listHead + 24u) : 0,
+        listHead ? ReadGuestU32At(listHead + 28u) : 0);
+  }
+}
+
 } // namespace
 
 void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
@@ -2332,7 +2573,7 @@ void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
   // TranslateGuestTextureFetch (which reads stale guest CPU memory) produces
   // a blank texture. Use the last-bound color render target instead, since
   // all rendering is complete by the time VdSwap fires.
-  rr::GuestBaseTexture *presentSource = rr::GetCurrentColorRenderTarget();
+  rr::GuestBaseTexture *presentSource = rr::GetLastDrawnColorRenderTarget();
   if (presentSource == nullptr || presentSource->texture == nullptr) {
     presentSource =
         rr::TranslateGuestTextureFetch(ghp::ToHost<void>(fetchAddress), true);
@@ -2384,6 +2625,7 @@ REX_HOOK_RAW(FM2_RenderContext_BindVertexStream) {
 REX_HOOK(FM2_RenderContext_BindIndexBuffer, Fm2BindIndexBuffer);
 REX_HOOK(FM2_RenderContext_SetBoundSurface, Fm2SetBoundSurface);
 REX_HOOK(sub_8236E228, Fm2SetActivePassId);
+REX_HOOK(sub_823716F8, Fm2BindSurface);
 REX_HOOK(FM2_Render_LoadPixelShaderResourceById,
          Fm2LoadPixelShaderResourceById);
 REX_HOOK(FM2_Render_LoadVertexShaderResourceById,
@@ -2410,17 +2652,23 @@ REX_HOOK(FM2_GpuCommandBuffer_BuildAndSubmit,
 // original builds the frame, present on this same thread (the one recording into
 // g_commandList) in plume_native/plume_clear, where no other present trigger fires.
 REX_HOOK_RAW(sub_82288948) {
+  // Start the RenderDoc capture BEFORE the original runs the scene draws (their
+  // GPU submit happens inside it), so a real geometry frame is captured in full.
+  const bool rdocCapturing =
+      ShouldMirrorPlumeRenderState() ? RenderDocFrameBegin() : false;
   g_origRenderWorkerFrame.fn(ctx, base);
   if (!ShouldMirrorPlumeRenderState()) {
     return;
   }
-  rr::GuestBaseTexture *presentSource = rr::GetCurrentColorRenderTarget();
+  rr::GuestBaseTexture *presentSource = rr::GetLastDrawnColorRenderTarget();
   static PresentDiagSlot s_renderWorkerSlot;
   CountPresentDiag("RenderWorker", s_renderWorkerSlot, presentSource);
   if (presentSource != nullptr && presentSource->texture != nullptr) {
     rr::SetPresentSource(presentSource);
     Video::Present();
   }
+  RenderDocFrameEnd(rdocCapturing,
+                    g_drawsSinceLastPresent.exchange(0, std::memory_order_relaxed));
   // Ensure the persistent host-side gate driver is running (starts once; keeps
   // pulsing in every game state even after this loading-screen loop ends).
   StartGatePulseThreadOnce();
@@ -2459,6 +2707,7 @@ REX_HOOK(FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset,
          Fm2EmitIndexedDrawPm4WithGpuOffset);
 REX_HOOK(FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup,
          Fm2EmitIndexedDrawPm4WithVertexFormatSetup);
+REX_HOOK(FM2_D3D_EmitDirtyStateAndDrawList, Fm2EmitDirtyStateAndDrawList);
 
 // Diagnostic: count how often Forza's PM4 draw-list interpreter runs. Confirms
 // whether the 3D-scene render path executes in plume_native (vs only the
@@ -2468,3 +2717,31 @@ REX_HOOK_RAW(FM2_Render_WalkAndDispatchPm4DrawList) {
   CountPresentDiag("WalkDispatch", s_walkSlot, nullptr);
   g_origWalkAndDispatchPm4DrawList.fn(ctx, base);
 }
+
+// EDRAM resolve. DIAGNOSTIC PASS: scan the context block for the destination
+// base address (a texture-range guest address) so we learn which register
+// holds it, then we can register the resolved surface there.
+uint32_t Fm2EmitSurfaceResolve(uint32_t context, uint32_t flags, uint32_t a3) {
+  if (ShouldMirrorPlumeRenderState() && context != 0) {
+    const uint32_t colorSurf = ReadGuestU32At(context + 12160u);
+    if (colorSurf != 0) {
+      // The surface being resolved is one we rendered into a host texture.
+      // Register its backing addresses so later samples bind the rendered
+      // surface. Get the host texture from the surface descriptor.
+      GuestSurface *gs = ghp::ToHost<GuestSurface>(colorSurf);
+      rr::GuestBaseTexture *host = AsFm2(gs);
+      if (host == nullptr && gs != nullptr)
+        host = rr::TranslateGuestSurface(gs);
+      if (host == nullptr)
+        host = rr::GetLastDrawnColorRenderTarget();
+      RegisterSurfaceApertures(colorSurf, host);
+    }
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 12) {
+      LogReplayDbg("FM2_RESOLVE ctx=0x%08X flags=0x%08X colorSurf=0x%08X",
+                   context, flags, colorSurf);
+    }
+  }
+  return g_origEmitSurfaceResolve(context, flags, a3);
+}
+REX_HOOK(FM2_D3D_EmitSurfaceResolvePackets, Fm2EmitSurfaceResolve);
