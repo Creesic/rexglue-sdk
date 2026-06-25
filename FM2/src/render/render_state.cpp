@@ -37,6 +37,7 @@ namespace fm2::render {
 
 void BindTextureDescriptor(uint32_t index, GuestBaseTexture *texture,
                            RenderTextureViewDimension viewDimension);
+void TrackRecentRenderTarget(GuestBaseTexture *rt);
 void EnsureShaderResourceDescriptor(GuestBaseTexture *texture);
 
 namespace {
@@ -2127,8 +2128,10 @@ void FlushRenderState(GuestDevice *device) {
   if (g_dirtyStates.indices && g_indexBufferView.buffer.ref != nullptr)
     commandList->setIndexBuffer(&g_indexBufferView);
 
-  if (g_pipelineBound && renderTarget != nullptr)
+  if (g_pipelineBound && renderTarget != nullptr) {
     g_lastTouchedRenderTarget = renderTarget;
+    TrackRecentRenderTarget(renderTarget);
+  }
 
   g_dirtyStates = DirtyStates(false);
 }
@@ -3302,6 +3305,22 @@ void SetTestGameTexture(GuestBaseTexture *t) {
     g_testGameTexture = t;
 }
 GuestBaseTexture *GetTestGameTexture() { return g_testGameTexture; }
+
+// Ring of the most-recent DISTINCT color render targets that received draws,
+// most-recent at index 0. Diagnostic: find which surface holds rendered content
+// so present-source selection can show it.
+static constexpr uint32_t kRecentRTCount = 6;
+GuestBaseTexture *g_recentRTs[kRecentRTCount] = {};
+void TrackRecentRenderTarget(GuestBaseTexture *rt) {
+  if (rt == nullptr || rt == g_recentRTs[0])
+    return;
+  for (uint32_t i = kRecentRTCount - 1; i > 0; --i)
+    g_recentRTs[i] = g_recentRTs[i - 1];
+  g_recentRTs[0] = rt;
+}
+GuestBaseTexture *GetRecentColorRenderTarget(uint32_t index) {
+  return index < kRecentRTCount ? g_recentRTs[index] : nullptr;
+}
 
 void SetDepthStencilSurface(GuestDevice * /*device*/,
                             GuestSurface *depthStencil) {

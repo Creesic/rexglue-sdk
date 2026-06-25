@@ -51,6 +51,9 @@ GuestBaseTexture *GetLastDrawnColorRenderTarget();
 // Diagnostic: last game texture translated from a fetch constant (test grid).
 void SetTestGameTexture(GuestBaseTexture *t);
 GuestBaseTexture *GetTestGameTexture();
+// Recent distinct color render targets (index 0 = most recent), for finding
+// which surface holds rendered content (present-source diagnostics).
+GuestBaseTexture *GetRecentColorRenderTarget(uint32_t index);
 void SetDepthStencilSurface(GuestDevice *device, GuestSurface *depthStencil);
 
 void Clear(GuestDevice *device, uint32_t flags, const float *color, float z);

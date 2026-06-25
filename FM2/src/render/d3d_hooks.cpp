@@ -2723,23 +2723,25 @@ REX_HOOK_RAW(FM2_Render_WalkAndDispatchPm4DrawList) {
 // holds it, then we can register the resolved surface there.
 uint32_t Fm2EmitSurfaceResolve(uint32_t context, uint32_t flags, uint32_t a3) {
   if (ShouldMirrorPlumeRenderState() && context != 0) {
+    // ctx+10652 (RB_COPY_DEST_BASE) holds the guest address this resolve copies
+    // the rendered surface TO -- exactly the address the game later samples.
+    // Alias it to the plume surface we rendered, so post-process passes sample
+    // the real rendered content instead of black resolve-dest memory.
+    const uint32_t destBase = ReadGuestU32At(context + 10652u);
     const uint32_t colorSurf = ReadGuestU32At(context + 12160u);
-    if (colorSurf != 0) {
-      // The surface being resolved is one we rendered into a host texture.
-      // Register its backing addresses so later samples bind the rendered
-      // surface. Get the host texture from the surface descriptor.
+    if (colorSurf != 0 && destBase >= 0x08000000u && destBase < 0x1A000000u) {
       GuestSurface *gs = ghp::ToHost<GuestSurface>(colorSurf);
       rr::GuestBaseTexture *host = AsFm2(gs);
       if (host == nullptr && gs != nullptr)
         host = rr::TranslateGuestSurface(gs);
       if (host == nullptr)
         host = rr::GetLastDrawnColorRenderTarget();
-      RegisterSurfaceApertures(colorSurf, host);
-    }
-    static std::atomic<uint32_t> s_n{0};
-    if (s_n.fetch_add(1, std::memory_order_relaxed) < 12) {
-      LogReplayDbg("FM2_RESOLVE ctx=0x%08X flags=0x%08X colorSurf=0x%08X",
-                   context, flags, colorSurf);
+      RegisterSurfaceAperture(destBase, host);
+      static std::atomic<uint32_t> s_n{0};
+      if (s_n.fetch_add(1, std::memory_order_relaxed) < 20) {
+        LogReplayDbg("FM2_RESOLVE_ALIAS dest=0x%08X colorSurf=0x%08X host=%p",
+                     destBase, colorSurf, static_cast<void *>(host));
+      }
     }
   }
   return g_origEmitSurfaceResolve(context, flags, a3);

@@ -508,6 +508,17 @@ void DrawPresentTestGrid(RenderCommandList *cl, RenderTexture *backBuffer,
   //   purple remains => null pointer; black/garbage => upload/detile result.
   blitGuestToCell(GetTestGameTexture(), float(2 * cellW), ry, float(cellW), rh);
 
+  // Bottom row: the 6 most-recent distinct color render targets, so we can see
+  // which surface actually holds the rendered scene/UI content (present-source).
+  const float by = ry + rh + 8.0f;
+  const float bh = float(cellH * 2);
+  for (uint32_t i = 0; i < 6u; ++i) {
+    const float bx = float(int(i) * cellW);
+    RenderRect mark(int(bx), int(by), int(bx) + cellW, int(by + bh));
+    cl->clearColor(0, RenderColor(0.0f, 0.3f, 0.3f, 1.0f), &mark, 1); // teal marker
+    blitGuestToCell(GetRecentColorRenderTarget(i), bx, by, float(cellW), bh);
+  }
+
   cl->barriers(RenderBarrierStage::GRAPHICS,
                RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
 }
