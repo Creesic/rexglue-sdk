@@ -385,6 +385,7 @@ void ExecuteUpload(const std::function<void(RenderCommandList *)> &record) {
 std::unique_ptr<RenderTexture> g_testTex;
 std::unique_ptr<RenderTextureView> g_testTexView;
 uint32_t g_testTexDesc = 0;
+bool g_showPresentTestGrid = false; // diagnostic overlay; off now real content renders
 
 void EnsureTestTexture() {
   if (g_testTex != nullptr || g_device == nullptr)
@@ -676,10 +677,13 @@ void Video::Present() {
         RenderBarrierStage::GRAPHICS,
         RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
   }
-  // Diagnostic: overlay the draw-to-screen test grid on the final backbuffer.
-  fm2::render::DrawPresentTestGrid(g_commandList.get(), backBuffer, framebuffer,
-                                   g_swapChain->getWidth(),
-                                   g_swapChain->getHeight());
+  // Diagnostic draw-to-screen test grid (off by default now that real content
+  // renders; flip g_showPresentTestGrid to re-enable for debugging).
+  if (fm2::render::g_showPresentTestGrid) {
+    fm2::render::DrawPresentTestGrid(g_commandList.get(), backBuffer,
+                                     framebuffer, g_swapChain->getWidth(),
+                                     g_swapChain->getHeight());
+  }
   g_commandList->end();
   g_frameOpen = false;
   g_presentSource = nullptr;

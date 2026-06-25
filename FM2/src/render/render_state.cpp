@@ -2107,42 +2107,44 @@ void FlushRenderState(GuestDevice *device) {
   // Constants are byte-swapped out of guest memory each draw (no dirty-range
   // tracking; the guest writes them directly to device memory).
   {
+    // Confirm the corrected constant base (+0x700) carries data the old +0x780
+    // missed (esp. the low vertex registers / transform matrix).
     static std::atomic<uint32_t> s_n{0};
-    const uint32_t *vc = device->vertexShaderFloatConstants;
-    uint32_t nz = 0;
-    for (uint32_t i = 0; i < 64; ++i)
-      if (vc[i] != 0)
-        ++nz;
-    // For a 3D draw (constants at +0x780 are zero), scan the whole block for
-    // where the real non-zero constant data lives so we can read the right
-    // offset. Log 64-byte windows with substantial non-zero content.
-    if (nz == 0 && s_n.fetch_add(1, std::memory_order_relaxed) < 6) {
-      const uint8_t *base = reinterpret_cast<const uint8_t *>(device);
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 16) {
+      const uint8_t *b = reinterpret_cast<const uint8_t *>(device);
+      const uint32_t *v700 = reinterpret_cast<const uint32_t *>(b + 0x700);
+      const uint32_t *v780 = reinterpret_cast<const uint32_t *>(b + 0x780);
+      uint32_t nz700 = 0, nz780 = 0;
+      for (uint32_t i = 0; i < 32; ++i) {
+        if (v700[i] != 0)
+          ++nz700;
+        if (v780[i] != 0)
+          ++nz780;
+      }
       if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
-        std::fprintf(f, "FM2_CONSTSCAN dev=%p (nz@0x780=0)\n",
-                     static_cast<void *>(device));
-        for (uint32_t off = 0x100; off < 0x2800; off += 64) {
-          const uint32_t *w = reinterpret_cast<const uint32_t *>(base + off);
-          uint32_t wnz = 0;
-          for (uint32_t i = 0; i < 16; ++i)
-            if (w[i] != 0)
-              ++wnz;
-          if (wnz >= 8)
-            std::fprintf(f, "  +0x%04X nz=%u %08X,%08X,%08X,%08X\n", off, wnz,
-                         w[0], w[1], w[2], w[3]);
-        }
+        std::fprintf(f,
+                     "FM2_VSCONST2 nz@0x700=%u nz@0x780=%u "
+                     "c0=%08X,%08X,%08X,%08X\n",
+                     nz700, nz780, v700[0], v700[1], v700[2], v700[3]);
         std::fclose(f);
       }
     }
   }
+  // Forza's unified ALU constant file is based at block+0x700 (register 0),
+  // written by UploadMatrixConstants (low/vertex regs) and
+  // ApplyPassShaderConstants (high regs at +0x1700 = reg 256). The GuestDevice
+  // struct fields sit 0x80 (8 registers) too high (+0x780/+0x1780), so c[0..7]
+  // -- including the vertex transform matrix -- was missed, collapsing 3D
+  // geometry to black. Read from the real base instead.
+  const uint8_t *devBytes = reinterpret_cast<const uint8_t *>(device);
   SetRootDescriptor(g_uploadAllocator.allocateCopy<true>(
-                        device->vertexShaderFloatConstants,
+                        reinterpret_cast<const uint32_t *>(devBytes + 0x700),
                         sizeof(device->vertexShaderFloatConstants), 0x100),
                     0);
-  SetRootDescriptor(
-      g_uploadAllocator.allocateCopy<true>(device->pixelShaderFloatConstants,
-                                           0x380 * sizeof(uint32_t), 0x100),
-      1);
+  SetRootDescriptor(g_uploadAllocator.allocateCopy<true>(
+                        reinterpret_cast<const uint32_t *>(devBytes + 0x1700),
+                        0x380 * sizeof(uint32_t), 0x100),
+                    1);
   SetRootDescriptor(g_uploadAllocator.allocateCopy<false>(
                         &g_sharedConstants, sizeof(g_sharedConstants), 0x100),
                     2);
