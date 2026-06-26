@@ -49,7 +49,7 @@ REXCVAR_DEFINE_UINT32(
     "On FM2_ProducerProgressGuard wait-return path, execute this many delay_execution() calls per hit (0 disables)");
 
 REXCVAR_DEFINE_UINT32(
-    fm2_prod_guard_wait_yield_interval, 0, "FM2",
+    fm2_prod_guard_wait_yield_interval, 1, "FM2",
     "On FM2_ProducerProgressGuard wait-return path, call MaybeYield every N hits (0 disables)");
 
 REXCVAR_DEFINE_BOOL(

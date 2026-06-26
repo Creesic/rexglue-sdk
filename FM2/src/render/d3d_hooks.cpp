@@ -185,6 +185,29 @@ REX_IMPORT(__imp__FM2_D3D_EmitDirtyStateAndDrawList,
 // Hooked only to count whether the 3D-scene draw path runs in plume_native.
 REX_IMPORT(__imp__FM2_Render_WalkAndDispatchPm4DrawList,
            g_origWalkAndDispatchPm4DrawList, void(uint32_t));
+// PATH-LOGGING (2026-06-26): count whether the forward/object-pass call chain runs
+// in plume_native. EmitDirtyStateAndDrawList (the forward COLOR/UI emitter) never
+// fires; these are its callers, so counting them pinpoints where the render thread
+// stops. RAW hooks (signature-agnostic: we only use g_orig.fn(ctx,base)).
+REX_IMPORT(__imp__FM2_Render_ExecuteSortedDrawLists,
+           g_origExecuteSortedDrawLists, void(uint32_t));
+REX_IMPORT(__imp__FM2_Render_SubmitSortedObjectDrawLists,
+           g_origSubmitSortedObjectDrawLists, void(uint32_t));
+REX_IMPORT(__imp__FM2_Render_ObjectPassDrawTraversal,
+           g_origObjectPassDrawTraversal, void(uint32_t));
+REX_IMPORT(__imp__FM2_Render_PrepareAndWalkObjectPassDrawPackets,
+           g_origPrepareAndWalkObjectPassDrawPackets, void(uint32_t));
+REX_IMPORT(__imp__FM2_Render_UiOrScreenDrawListSubmit,
+           g_origUiOrScreenDrawListSubmit, void(uint32_t));
+// PATH-LOGGING upward: the SCENE-render entry chain (FramePipeline ->
+// SubmitPassWrapper / ViewTraversal -> SceneSliceEntry -> ExecuteSortedDrawLists).
+// Counting these locates exactly how high the scene-render dormancy reaches.
+REX_IMPORT(__imp__FM2_Render_FramePipeline, g_origFramePipeline, void(uint32_t));
+REX_IMPORT(__imp__FM2_Render_SubmitPassWrapper, g_origSubmitPassWrapper,
+           void(uint32_t));
+REX_IMPORT(__imp__FM2_Render_SceneSliceEntry, g_origSceneSliceEntry,
+           void(uint32_t));
+REX_IMPORT(__imp__FM2_Render_ViewTraversal, g_origViewTraversal, void(uint32_t));
 // EDRAM resolve emitter: copies the rendered surface to guest memory that the
 // game then samples as a texture. Untranslated in plume_native -> sampled
 // memory is empty/black. Hooked to register the resolved surface so samples hit
@@ -587,6 +610,10 @@ void Fm2GpuCommandBufferBuildAndSubmit(uint32_t commandBuffer, uint32_t arg4,
     // the original (0x8236CD78): set the present source from the last-bound
     // color render target and present. This is the game/render thread that
     // records draws into g_commandList, so present is correctly same-threaded.
+    // This is FM2's real GPU command-buffer submit. Latch this thread as the
+    // present owner so Video::Present() drops the racing presents that FM2's
+    // other job-system threads issue against the single global command list.
+    Video::ClaimPresentOwner();
     rr::GuestBaseTexture *presentSource = rr::GetLastDrawnColorRenderTarget();
     if (presentSource != nullptr && presentSource->texture != nullptr) {
       rr::SetPresentSource(presentSource);
@@ -779,28 +806,27 @@ void Fm2BindSurface(uint32_t renderContext, uint32_t slot, uint32_t surface) {
   SetRenderTargetNative(device, slot, gs);
 }
 
-// Forza binds the per-draw vertex declaration via SetActivePassId(ctx, declHandle)
-// (the "pass id" is a D3DVERTEXELEMENT9 declaration created with
-// D3DDevice_CreateVertexDeclaration). The standard D3D device declaration field
-// (GuestDevice +0x2E24) is never written, so SyncVertexDeclarationFromDevice sees 0
-// and every PM4 draw fails missing_decl. Mirror the handle into device->vertexDeclaration
-// so the existing Sync + LookupVertexDeclarationAlias auto-create path resolves the
-// input layout. declHandle==0 or non-declaration values are harmless: Sync early-returns
-// on 0, and the alias fallback validates element count (1..64) before building.
+// SetActivePassId (sub_8236E228) stores "passId" at renderContext+0x2D14. IDA
+// (2026-06-26) shows this is a texture/shader-state token, NOT a guest
+// D3DVERTEXELEMENT9 declaration: FM2_D3D_EmitIndexedDrawPacket packs it into
+// FM2_D3D_EmitTextureStageStatePackets, and the real decl field is the separate
+// GuestDevice+0x2E24 (never touched here).
+// HOWEVER -- mirroring passId into device->vertexDeclaration is EMPIRICALLY
+// LOAD-BEARING. It is the only thing that hands SyncVertexDeclarationFromDevice a
+// non-zero handle to resolve (passId!=0 -> the alias path builds a usable layout;
+// passId==0 -> MatchDeclarationForShader). Removing it (making the matcher the sole
+// source) made MatchDeclarationForShader return null for ~EVERY draw -> ok=0, all
+// draws skipped missing_decl -> total black (regression observed 2026-06-26,
+// FM2_DRAW_OUTCOME ok=0 skip=1626). So keep the mirror as a band-aid until a proper
+// per-draw declaration source (FM2 engine fetch constants) is wired in. See
+// docs/FM2-ida-renames-2026-06-26.md + docs/FM2-plume-native-black-investigation.md.
 void Fm2SetActivePassId(uint32_t renderContext, uint32_t passId) {
   g_origSetActivePassId(renderContext, passId);
-  if (!ShouldMirrorPlumeRenderState()) {
+  if (!ShouldMirrorPlumeRenderState())
     return;
-  }
   GuestDevice *device = DeviceForRenderContext(renderContext);
-  if (device == nullptr) {
+  if (device == nullptr)
     return;
-  }
-  static std::atomic<uint32_t> s_n{0};
-  if (s_n.fetch_add(1, std::memory_order_relaxed) < 16) {
-    LogReplayDbg("FM2_SET_PASSID renderContext=0x%08X passId=0x%08X", renderContext,
-                 passId);
-  }
   device->vertexDeclaration = passId;
 }
 
@@ -2573,13 +2599,31 @@ void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
   // TranslateGuestTextureFetch (which reads stale guest CPU memory) produces
   // a blank texture. Use the last-bound color render target instead, since
   // all rendering is complete by the time VdSwap fires.
-  rr::GuestBaseTexture *presentSource = rr::GetLastDrawnColorRenderTarget();
+  // Prefer the surface the game hands to VdSwap (its final composited display
+  // image) over the last-drawn RT (which is often just one menu layer/strip).
+  // Decode the front-buffer base from the fetch constant; if the resolve hook
+  // aliased that address to a rendered plume surface, present that composite.
+  const uint32_t fbBase =
+      ((ReadGuestU32At(fetchAddress + 4u) >> 12) & 0xFFFFFu) << 12;
+  rr::GuestBaseTexture *presentSource = LookupSurfaceAperture(fbBase);
+  const char *srcKind = "aperture";
   if (presentSource == nullptr || presentSource->texture == nullptr) {
     presentSource =
         rr::TranslateGuestTextureFetch(ghp::ToHost<void>(fetchAddress), true);
+    srcKind = "fbfetch";
+  }
+  if (presentSource == nullptr || presentSource->texture == nullptr) {
+    presentSource = rr::GetLastDrawnColorRenderTarget();
+    srcKind = "lastdrawn";
   }
   const bool hasTexture =
       presentSource != nullptr && presentSource->texture != nullptr;
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 16)
+      LogReplayDbg("FM2_PRESENT_SRC fbBase=0x%08X kind=%s src=%p", fbBase,
+                   srcKind, static_cast<void *>(presentSource));
+  }
 
   static uint32_t s_traceCount = 0;
   if (const uint32_t n = NextRenderHookTraceIndex(s_traceCount)) {
@@ -2718,6 +2762,56 @@ REX_HOOK_RAW(FM2_Render_WalkAndDispatchPm4DrawList) {
   g_origWalkAndDispatchPm4DrawList.fn(ctx, base);
 }
 
+// PATH-LOGGING: forward/object-pass call chain. Counting which of these fire shows
+// where the render thread diverges from the forward COLOR pass in plume_native.
+REX_HOOK_RAW(FM2_Render_ExecuteSortedDrawLists) {
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("ExecSorted", s_slot, nullptr);
+  g_origExecuteSortedDrawLists.fn(ctx, base);
+}
+REX_HOOK_RAW(FM2_Render_SubmitSortedObjectDrawLists) {
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("SubmitSorted", s_slot, nullptr);
+  g_origSubmitSortedObjectDrawLists.fn(ctx, base);
+}
+REX_HOOK_RAW(FM2_Render_ObjectPassDrawTraversal) {
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("ObjPassTrav", s_slot, nullptr);
+  g_origObjectPassDrawTraversal.fn(ctx, base);
+}
+REX_HOOK_RAW(FM2_Render_PrepareAndWalkObjectPassDrawPackets) {
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("PrepWalkObj", s_slot, nullptr);
+  g_origPrepareAndWalkObjectPassDrawPackets.fn(ctx, base);
+}
+REX_HOOK_RAW(FM2_Render_UiOrScreenDrawListSubmit) {
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("UiScreenSubmit", s_slot, nullptr);
+  g_origUiOrScreenDrawListSubmit.fn(ctx, base);
+}
+// SCENE-entry chain counters (FramePipeline may be table-dispatched; if its counter
+// stays 0 while ViewTraversal/SubmitPassWrapper also 0, the scene entry isn't reached).
+REX_HOOK_RAW(FM2_Render_FramePipeline) {
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("FramePipe", s_slot, nullptr);
+  g_origFramePipeline.fn(ctx, base);
+}
+REX_HOOK_RAW(FM2_Render_SubmitPassWrapper) {
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("SubmitPass", s_slot, nullptr);
+  g_origSubmitPassWrapper.fn(ctx, base);
+}
+REX_HOOK_RAW(FM2_Render_SceneSliceEntry) {
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("SceneSlice", s_slot, nullptr);
+  g_origSceneSliceEntry.fn(ctx, base);
+}
+REX_HOOK_RAW(FM2_Render_ViewTraversal) {
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("ViewTraverse", s_slot, nullptr);
+  g_origViewTraversal.fn(ctx, base);
+}
+
 // EDRAM resolve. DIAGNOSTIC PASS: scan the context block for the destination
 // base address (a texture-range guest address) so we learn which register
 // holds it, then we can register the resolved surface there.
@@ -2736,15 +2830,17 @@ uint32_t Fm2EmitSurfaceResolve(uint32_t context, uint32_t flags, uint32_t a3) {
         host = rr::TranslateGuestSurface(gs);
       if (host == nullptr)
         host = rr::GetLastDrawnColorRenderTarget();
-      // NOTE: snapshot-on-resolve (SnapshotSurfaceForResolve) crashed doing a
-      // mid-frame copy from a bound RT; reverted to live aliasing while we fix
-      // the upstream issue (source RTs render black). Re-enable once the source
-      // surfaces actually hold content and the copy timing is made safe.
-      RegisterSurfaceAperture(destBase, host);
+      // Freeze a snapshot of the source surface (the game reuses the live RT
+      // across passes) and alias the resolve-dest to the snapshot, so later
+      // composite passes sample the resolved content, not the overwritten RT.
+      rr::GuestBaseTexture *snap = rr::SnapshotSurfaceForResolve(host, destBase);
+      RegisterSurfaceAperture(destBase, snap != nullptr ? snap : host);
       static std::atomic<uint32_t> s_n{0};
       if (s_n.fetch_add(1, std::memory_order_relaxed) < 20) {
-        LogReplayDbg("FM2_RESOLVE_ALIAS dest=0x%08X colorSurf=0x%08X host=%p",
-                     destBase, colorSurf, static_cast<void *>(host));
+        LogReplayDbg("FM2_RESOLVE_ALIAS dest=0x%08X colorSurf=0x%08X host=%p "
+                     "snap=%p",
+                     destBase, colorSurf, static_cast<void *>(host),
+                     static_cast<void *>(snap));
       }
     }
   }

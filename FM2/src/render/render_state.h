@@ -11,6 +11,9 @@
 namespace fm2::render {
 
 void BeginRenderStateFrame();
+// Monotonic frame counter (incremented each BeginRenderStateFrame); used to
+// dedupe per-frame guest-memory uploads.
+uint64_t CurrentFrameIndex();
 
 void SetRenderState(GuestDevice *device, uint32_t state, uint32_t value);
 void SetViewportEnable(GuestDevice *device, uint32_t value);

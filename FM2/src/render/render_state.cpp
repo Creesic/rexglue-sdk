@@ -126,6 +126,8 @@ GuestBaseTexture *g_renderTarget;
 GuestBaseTexture *g_implicitRenderTarget;
 GuestSurface *g_depthStencil;
 GuestBaseTexture *g_lastTouchedRenderTarget;
+// Diagnostic: render all geometry as wireframe (set true to enable).
+bool g_wireframeMode = false;
 GuestSurface *g_implicitDepthStencil;
 RenderFramebuffer *g_framebuffer;
 RenderViewport g_viewport(0.0f, 0.0f, 1280.0f, 720.0f);
@@ -1489,59 +1491,67 @@ const char *ConvertDeclUsage(uint32_t usage) {
 }
 
 RenderFormat ConvertDeclType(uint32_t type) {
-  switch (type) {
-  case D3DDECLTYPE_FLOAT1:
-    return RenderFormat::R32_FLOAT;
-  case D3DDECLTYPE_FLOAT2:
-    return RenderFormat::R32G32_FLOAT;
-  case D3DDECLTYPE_FLOAT3:
-    return RenderFormat::R32G32B32_FLOAT;
-  case D3DDECLTYPE_FLOAT4:
-    return RenderFormat::R32G32B32A32_FLOAT;
-  case D3DDECLTYPE_D3DCOLOR:
-    return RenderFormat::B8G8R8A8_UNORM;
-  case D3DDECLTYPE_UBYTE4:
-  case D3DDECLTYPE_UBYTE4_2:
-    return RenderFormat::R8G8B8A8_UINT;
-  case D3DDECLTYPE_SHORT2:
-    return RenderFormat::R16G16_SINT;
-  case D3DDECLTYPE_SHORT4:
-    return RenderFormat::R16G16B16A16_SINT;
-  case D3DDECLTYPE_UBYTE4N:
-  case D3DDECLTYPE_UBYTE4N_2:
-    return RenderFormat::R8G8B8A8_UNORM;
-  case D3DDECLTYPE_SHORT2N:
-    return RenderFormat::R16G16_SNORM;
-  case D3DDECLTYPE_SHORT4N:
-    return RenderFormat::R16G16B16A16_SNORM;
-  case D3DDECLTYPE_USHORT2N:
-    return RenderFormat::R16G16_UNORM;
-  case D3DDECLTYPE_USHORT4N:
-    return RenderFormat::R16G16B16A16_UNORM;
-  case D3DDECLTYPE_UINT1:
+  // FM2's D3DVERTEXELEMENT9.Type is the Xbox-360 packed GPUVERTEXFETCHFORMAT:
+  //   bits 0-5  = data format (GPUVERTEXFETCHFORMAT)
+  //   bits 8-9  = number format (0=UNORM, 1=SNORM, 2=UINT, 3=SINT)
+  //   bit  11   = BGRA component swap
+  // The canonical D3DDECLTYPE_* constants are only one instance each; real
+  // declarations vary in the upper bits, so decode the fields rather than match
+  // the whole dword (which previously returned UNKNOWN -> broken input layout).
+  const uint32_t fmt = type & 0x3Fu;
+  const uint32_t nf = (type >> 8) & 0x3u;
+  switch (fmt) {
+  case 0x06: // k_8_8_8_8 (UBYTE4 / UBYTE4N / D3DCOLOR)
+    if (nf == 2)
+      return RenderFormat::R8G8B8A8_UINT;
+    return ((type >> 11) & 1u) ? RenderFormat::B8G8R8A8_UNORM
+                               : RenderFormat::R8G8B8A8_UNORM;
+  case 0x07: // k_2_10_10_10 (DEC3N / UDEC3) -- shader unpacks from raw uint
     return RenderFormat::R32_UINT;
-  case D3DDECLTYPE_DEC3N_2:
-  case D3DDECLTYPE_DEC3N_3:
-    return RenderFormat::R32_UINT;
-  case D3DDECLTYPE_FLOAT16_2:
+  case 0x19: // k_16_16 (SHORT2 family)
+    return nf == 3   ? RenderFormat::R16G16_SINT
+           : nf == 1 ? RenderFormat::R16G16_SNORM
+                     : RenderFormat::R16G16_UNORM;
+  case 0x1A: // k_16_16_16_16 (SHORT4 family)
+    return nf == 3   ? RenderFormat::R16G16B16A16_SINT
+           : nf == 1 ? RenderFormat::R16G16B16A16_SNORM
+                     : RenderFormat::R16G16B16A16_UNORM;
+  case 0x1F: // k_16_16_FLOAT
     return RenderFormat::R16G16_FLOAT;
-  case D3DDECLTYPE_FLOAT16_4:
+  case 0x20: // k_16_16_16_16_FLOAT
     return RenderFormat::R16G16B16A16_FLOAT;
+  case 0x21: // k_32 (UINT1)
+    return RenderFormat::R32_UINT;
+  case 0x24: // k_32_FLOAT (FLOAT1)
+    return RenderFormat::R32_FLOAT;
+  case 0x25: // k_32_32_FLOAT (FLOAT2)
+    return RenderFormat::R32G32_FLOAT;
+  case 0x26: // k_32_32_32_32_FLOAT (FLOAT4)
+    return RenderFormat::R32G32B32A32_FLOAT;
+  case 0x39: // k_32_32_32_FLOAT (FLOAT3)
+    return RenderFormat::R32G32B32_FLOAT;
   default:
     return RenderFormat::UNKNOWN;
   }
 }
 
 RenderFormat ConvertPositionDeclType(uint32_t type) {
-  switch (type) {
-  case D3DDECLTYPE_FLOAT1:
+  // POSITION0 is read as a raw uint vector by the recompiled shader (which then
+  // reinterprets the bits), so the input layout must expose the raw bytes.
+  switch (type & 0x3Fu) {
+  case 0x24: // FLOAT1 / k_32_FLOAT
+  case 0x21: // UINT1 / k_32
     return RenderFormat::R32_UINT;
-  case D3DDECLTYPE_FLOAT2:
+  case 0x25: // FLOAT2 / k_32_32_FLOAT
     return RenderFormat::R32G32_UINT;
-  case D3DDECLTYPE_FLOAT3:
+  case 0x39: // FLOAT3 / k_32_32_32_FLOAT
     return RenderFormat::R32G32B32_UINT;
-  case D3DDECLTYPE_FLOAT4:
+  case 0x26: // FLOAT4 / k_32_32_32_32_FLOAT
     return RenderFormat::R32G32B32A32_UINT;
+  case 0x1F: // FLOAT16_2 / k_16_16_FLOAT
+    return RenderFormat::R16G16_UINT;
+  case 0x20: // FLOAT16_4 / k_16_16_16_16_FLOAT
+    return RenderFormat::R16G16B16A16_UINT;
   default:
     return ConvertDeclType(type);
   }
@@ -1797,6 +1807,13 @@ CreateGraphicsPipeline(const PipelineState &ps) {
   desc.depthClipEnabled = ps.depthClipEnabled;
   desc.primitiveTopology = ps.primitiveTopology;
   desc.cullMode = ps.cullMode;
+  // Diagnostic wireframe: render geometry as edges so we can verify draws/
+  // transforms independent of shading/textures. Disable culling too so back
+  // faces are visible. Toggle g_wireframeMode (rebuild) to turn off.
+  if (g_wireframeMode) {
+    desc.fillMode = RenderFillMode::WIREFRAME;
+    desc.cullMode = RenderCullMode::NONE;
+  }
   desc.renderTargetFormat[0] = ps.renderTargetFormat;
   desc.renderTargetBlend[0].blendEnabled = ps.alphaBlendEnable;
   desc.renderTargetBlend[0].srcBlend = ps.srcBlend;
@@ -2074,6 +2091,62 @@ void FlushRenderState(GuestDevice *device) {
     g_dirtyStates.renderTargetAndDepthStencil = true;
   }
 
+  // DIAG (T11): per-draw census of the bound color RT + whether the VS has
+  // POSITION0, to find whether the MAIN content (POSITION0 quads / 3D car) is
+  // drawn at all in plume_native and which RT it targets vs the sprite subpass
+  // (no POSITION0). Logs first 24 of each class + periodic totals.
+  {
+    const GuestShader *censusVs = g_pipelineState.vertexShader;
+    bool hasPos = false, known = false;
+    if (censusVs != nullptr && !censusVs->headerElements.empty()) {
+      known = true;
+      for (const auto &he : censusVs->headerElements)
+        if (he.usage == 0)
+          hasPos = true;
+    }
+    const char *cls = hasPos ? "POS" : (known ? "NOPOS" : "UNKNOWN");
+    const uint64_t h = (censusVs && censusVs->shaderCacheEntry)
+                           ? censusVs->shaderCacheEntry->hash
+                           : 0ull;
+    static std::mutex s_mtx;
+    static std::unordered_set<uint64_t> s_seen;
+    static std::atomic<uint32_t> s_total{0}, s_pos{0}, s_nopos{0}, s_unk{0};
+    const uint32_t t = s_total.fetch_add(1, std::memory_order_relaxed);
+    if (hasPos)
+      s_pos.fetch_add(1, std::memory_order_relaxed);
+    else if (known)
+      s_nopos.fetch_add(1, std::memory_order_relaxed);
+    else
+      s_unk.fetch_add(1, std::memory_order_relaxed);
+    bool isNew = false;
+    {
+      std::lock_guard<std::mutex> lk(s_mtx);
+      if (s_seen.size() < 128)
+        isNew = s_seen.insert(h).second;
+    }
+    if (isNew) {
+      const GuestBaseTexture *rt = g_renderTarget;
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(
+            f, "FM2_RTCENSUS2 %-7s rt=%p %ux%u fmt=%d cw=%u hash=0x%016llX\n",
+            cls, (const void *)rt, rt ? rt->width : 0u, rt ? rt->height : 0u,
+            rt ? int(rt->format) : -1, g_pipelineState.colorWriteEnable,
+            (unsigned long long)h);
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+    if ((t & 0xFFF) == 0) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_RTCENSUS_TOTAL total=%u pos=%u nopos=%u unknown=%u\n",
+                     t + 1, s_pos.load(), s_nopos.load(), s_unk.load());
+        std::fflush(f);
+        std::fclose(f);
+      }
+    }
+  }
+
   FlushPendingStretchRects(renderTarget, depthStencil);
 
   AddBarrier(renderTarget, RenderTextureLayout::COLOR_WRITE);
@@ -2108,24 +2181,37 @@ void FlushRenderState(GuestDevice *device) {
   // tracking; the guest writes them directly to device memory).
   {
     // Confirm the corrected constant base (+0x700) carries data the old +0x780
-    // missed (esp. the low vertex registers / transform matrix).
+    // missed (esp. the low vertex registers / transform matrix). Target the
+    // no-POSITION HUD shaders (position derived from c0*(|tc0|+c4)+c1*tc0.y+c3),
+    // which collapse to the origin when c0/c1/c3/c4 are zero.
+    const GuestShader *diagVs = g_pipelineState.vertexShader;
+    bool diagHud = diagVs != nullptr && !diagVs->headerElements.empty();
+    if (diagHud) {
+      bool noPos = true;
+      for (const auto &he : diagVs->headerElements)
+        if (he.usage == 0)
+          noPos = false;
+      const uint64_t vhash =
+          diagVs->shaderCacheEntry ? diagVs->shaderCacheEntry->hash : 0ull;
+      diagHud = noPos || vhash == 0x292FF29403B1DDF8ull;
+    }
     static std::atomic<uint32_t> s_n{0};
-    if (s_n.fetch_add(1, std::memory_order_relaxed) < 16) {
+    if (diagHud && s_n.fetch_add(1, std::memory_order_relaxed) < 20) {
       const uint8_t *b = reinterpret_cast<const uint8_t *>(device);
       const uint32_t *v700 = reinterpret_cast<const uint32_t *>(b + 0x700);
-      const uint32_t *v780 = reinterpret_cast<const uint32_t *>(b + 0x780);
-      uint32_t nz700 = 0, nz780 = 0;
-      for (uint32_t i = 0; i < 32; ++i) {
+      uint32_t nz700 = 0;
+      for (uint32_t i = 0; i < 256 * 4; ++i)
         if (v700[i] != 0)
           ++nz700;
-        if (v780[i] != 0)
-          ++nz780;
-      }
+      const uint64_t h =
+          diagVs->shaderCacheEntry ? diagVs->shaderCacheEntry->hash : 0ull;
       if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
         std::fprintf(f,
-                     "FM2_VSCONST2 nz@0x700=%u nz@0x780=%u "
-                     "c0=%08X,%08X,%08X,%08X\n",
-                     nz700, nz780, v700[0], v700[1], v700[2], v700[3]);
+                     "FM2_HUDCONST hash=0x%016llX nz@0x700=%u c0=%08X,%08X,%08X,"
+                     "%08X c1=%08X c3=%08X,%08X,%08X,%08X c4=%08X,%08X\n",
+                     (unsigned long long)h, nz700, v700[0], v700[1], v700[2],
+                     v700[3], v700[4], v700[12], v700[13], v700[14], v700[15],
+                     v700[16], v700[17]);
         std::fclose(f);
       }
     }
@@ -2229,6 +2315,54 @@ void SetPrimitiveType(uint32_t primitiveType) {
                 ConvertPrimitiveType(primitiveType));
 }
 
+// Match the bound vertex shader's header usage/usageIndex set to one of FM2's
+// created D3DVERTEXELEMENT9 declarations (which carry the real format/offset).
+// FM2 never binds the declaration via the device field, so this recovers the
+// input layout. Returns nullptr if no declaration covers all the shader inputs.
+GuestVertexDeclaration *MatchDeclarationForShader(GuestShader *vs,
+                                                  uint32_t streamStride) {
+  if (vs == nullptr || vs->headerElements.empty())
+    return nullptr;
+  const std::vector<GuestVertexDeclaration *> decls = SnapshotGameDeclarations();
+  GuestVertexDeclaration *best = nullptr;
+  int bestScore = -1;
+  for (GuestVertexDeclaration *decl : decls) {
+    if (decl == nullptr || decl->vertexElements == nullptr ||
+        decl->vertexElementCount == 0)
+      continue;
+    bool covers = true;
+    for (const ShaderHeaderElement &he : vs->headerElements) {
+      bool found = false;
+      for (uint32_t i = 0; i < decl->vertexElementCount; ++i) {
+        const GuestVertexElement &e = decl->vertexElements[i];
+        if (e.usage == he.usage && e.usageIndex == he.usageIndex) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        covers = false;
+        break;
+      }
+    }
+    if (!covers)
+      continue;
+    uint32_t maxOff = 0;
+    for (uint32_t i = 0; i < decl->vertexElementCount; ++i)
+      maxOff = std::max<uint32_t>(maxOff, decl->vertexElements[i].offset);
+    int score = 0;
+    if (decl->vertexElementCount == vs->headerElements.size())
+      score += 100000; // exact element-set match
+    if (streamStride != 0 && maxOff < streamStride)
+      score += int(maxOff); // prefer the most tightly packed decl that fits
+    if (score > bestScore) {
+      bestScore = score;
+      best = decl;
+    }
+  }
+  return best;
+}
+
 void SyncVertexDeclarationFromDevice(GuestDevice *device) {
   if (device == nullptr)
     return;
@@ -2254,8 +2388,40 @@ void SyncVertexDeclarationFromDevice(GuestDevice *device) {
       }
     }
   }
-  if (guestDeclaration == 0)
+  if (guestDeclaration == 0) {
+    // FM2 never binds the declaration via the device field. Recover it by
+    // matching the bound vertex shader's embedded header usage set to one of the
+    // declarations FM2 created (which carry the real format/offset).
+    GuestVertexDeclaration *matched = MatchDeclarationForShader(
+        g_pipelineState.vertexShader, g_inputSlots[0].stride);
+    if (matched != nullptr) {
+      SetVertexDeclaration(device, matched);
+      static std::atomic<uint32_t> s_m{0};
+      if (g_inputSlots[0].stride != 0 &&
+          s_m.fetch_add(1, std::memory_order_relaxed) < 32) {
+        if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          const GuestShader *vs = g_pipelineState.vertexShader;
+          const uint64_t h =
+              vs->shaderCacheEntry ? vs->shaderCacheEntry->hash : 0ull;
+          std::fprintf(f, "FM2_DECLMATCH hash=0x%016llX stride=%u declEls=%u shdr[",
+                       (unsigned long long)h, g_inputSlots[0].stride,
+                       matched->vertexElementCount);
+          for (const auto &he : vs->headerElements)
+            std::fprintf(f, "%u.%u ", he.usage, he.usageIndex);
+          std::fprintf(f, "] decl[");
+          for (uint32_t i = 0; i < matched->vertexElementCount; ++i) {
+            const auto &e = matched->vertexElements[i];
+            std::fprintf(f, "u%u.%u@%u/t%u/s%u ", e.usage, e.usageIndex, e.offset,
+                         e.type, e.stream);
+          }
+          std::fprintf(f, "]\n");
+          std::fflush(f);
+          std::fclose(f);
+        }
+      }
+    }
     return;
+  }
   GuestVertexDeclaration *declaration =
       ghp::ToHost<GuestVertexDeclaration>(guestDeclaration);
   if (!IsFm2Resource(declaration))
@@ -2884,6 +3050,8 @@ void FlushPendingResolvesForPresent() {
   FlushPendingStretchRects(g_renderTarget, g_depthStencil);
 }
 
+uint64_t CurrentFrameIndex() { return g_frameIndex; }
+
 void BeginRenderStateFrame() {
   g_uploadAllocator.reset();
   ++g_frameIndex; // invalidates the per-frame guest vertex/index upload caches
@@ -3130,6 +3298,11 @@ GuestBaseTexture *SnapshotSurfaceForResolve(GuestBaseTexture *source,
   if (source == nullptr || source->texture == nullptr || Device() == nullptr ||
       source->width == 0 || source->height == 0)
     return nullptr;
+  // Only snapshot single-sampled sources via a plain copyTexture. MSAA sources
+  // need resolveTexture, which was crashing (device-removed) on format/sample
+  // mismatch -- skip them (caller falls back to live aliasing for those).
+  if (GetSampleCount(source) != RenderSampleCount::COUNT_1)
+    return nullptr;
   destBase &= ~0xFFFu;
   auto &slot = g_resolveSnapshots[destBase];
   if (slot == nullptr || slot->width != source->width ||
@@ -3163,11 +3336,10 @@ GuestBaseTexture *SnapshotSurfaceForResolve(GuestBaseTexture *source,
   if (dst->texture == source->texture)
     return dst;
 
+  // Mirror ExecutePendingStretchRects exactly (barriers + copy, NO
+  // setFramebuffer(nullptr) -- that corrupted the frame command list and crashed
+  // later). Plume's barriers end the active render pass implicitly.
   RenderCommandList *commandList = CommandList();
-  // End any active render pass; copies/resolves must run outside a pass.
-  commandList->setFramebuffer(nullptr);
-  g_dirtyStates.renderTargetAndDepthStencil = true;
-
   const RenderSampleCounts sc = GetSampleCount(source);
   if (sc != RenderSampleCount::COUNT_1) {
     AddBarrier(dst, RenderTextureLayout::RESOLVE_DEST);
@@ -3225,6 +3397,43 @@ void SetVertexDeclaration(GuestDevice * /*device*/,
 void SetStreamSource(GuestDevice *device, uint32_t index, GuestBuffer *buffer,
                      uint32_t offset, uint32_t stride) {
   SyncVertexDeclarationFromDevice(device);
+
+  // DIAG: for no-POSITION HUD shaders (position derived from TEXCOORD0), dump
+  // the raw big-endian guest vertex bytes so we can tell float16-normalized
+  // (~0.4) from float32-pixels (~640). The position math is c0*(|tc0.x|+c4.x)
+  // with c0.x=1/640, which only renders if tc0 is in pixels. Capped.
+  if (index == 0 && buffer != nullptr && buffer->mappedMemory != nullptr &&
+      stride != 0) {
+    const GuestShader *vs = g_pipelineState.vertexShader;
+    bool hud = vs != nullptr && !vs->headerElements.empty();
+    if (hud) {
+      bool noPos = true;
+      for (const auto &he : vs->headerElements)
+        if (he.usage == 0)
+          noPos = false;
+      const uint64_t vhash =
+          vs->shaderCacheEntry ? vs->shaderCacheEntry->hash : 0ull;
+      hud = noPos || vhash == 0x292FF29403B1DDF8ull;
+    }
+    if (hud) {
+      static std::atomic<uint32_t> s_v{0};
+      if (s_v.fetch_add(1, std::memory_order_relaxed) < 12) {
+        const uint8_t *p =
+            static_cast<const uint8_t *>(buffer->mappedMemory) + offset;
+        if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          const uint64_t h =
+              vs->shaderCacheEntry ? vs->shaderCacheEntry->hash : 0ull;
+          std::fprintf(f, "FM2_HUDVB hash=0x%016llX stride=%u off=%u bytes=",
+                       (unsigned long long)h, stride, offset);
+          for (int i = 0; i < 32; ++i)
+            std::fprintf(f, "%02X", p[i]);
+          std::fprintf(f, "\n");
+          std::fflush(f);
+          std::fclose(f);
+        }
+      }
+    }
+  }
 
   SetDirtyValue(g_dirtyStates.pipelineState,
                 g_pipelineState.vertexStrides[index],

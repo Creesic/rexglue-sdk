@@ -7,8 +7,10 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -95,6 +97,22 @@ RenderWindow g_window{};
 // The guest's final front-buffer surface to blit this frame (D3DDevice_Swap).
 fm2::render::GuestBaseTexture *g_presentSource = nullptr;
 
+// Sole present owner thread (0 = unclaimed). FM2's job-system pool drives present
+// from ~44 threads racing on the one global command list; once claimed, Present()
+// from any other thread is dropped. Stored as a hashed thread id (portable, no
+// <windows.h> dependency here).
+std::atomic<uint64_t> g_presentOwnerKey{0};
+
+inline uint64_t CurrentThreadKey() {
+  return static_cast<uint64_t>(
+      std::hash<std::thread::id>{}(std::this_thread::get_id()));
+}
+
+REXCVAR_DEFINE_BOOL(
+    fm2_plume_single_thread_present, true, "FM2",
+    "Pin Video::Present()/command-list submit to a single owner thread "
+    "(the real GPU-submit thread); drop present calls from FM2's other "
+    "job-system threads to stop them racing on the global command list.");
 REXCVAR_DEFINE_BOOL(fm2_plume_video_present_trace, true, "FM2",
                     "Emit bounded diagnostics from the active Plume present path.");
 REXCVAR_DEFINE_UINT32(
@@ -385,7 +403,7 @@ void ExecuteUpload(const std::function<void(RenderCommandList *)> &record) {
 std::unique_ptr<RenderTexture> g_testTex;
 std::unique_ptr<RenderTextureView> g_testTexView;
 uint32_t g_testTexDesc = 0;
-bool g_showPresentTestGrid = false; // diagnostic overlay; off now real content renders
+bool g_showPresentTestGrid = false; // diagnostic overlay off; use RenderDoc to inspect
 
 void EnsureTestTexture() {
   if (g_testTex != nullptr || g_device == nullptr)
@@ -526,6 +544,12 @@ void DrawPresentTestGrid(RenderCommandList *cl, RenderTexture *backBuffer,
 
 } // namespace fm2::render
 
+void Video::ClaimPresentOwner() {
+  uint64_t expected = 0;
+  g_presentOwnerKey.compare_exchange_strong(expected, CurrentThreadKey(),
+                                            std::memory_order_acq_rel);
+}
+
 void Video::Present() {
   static uint32_t s_traceCount = 0;
   static std::atomic<uint64_t> s_callCount{0};
@@ -537,6 +561,17 @@ void Video::Present() {
               (unsigned long long)callN, (int)g_initialized, (int)g_swapChainValid,
               (int)g_frameOpen, (void*)g_presentSource);
       fclose(f);
+    }
+  }
+  // Drop present calls from FM2's other job-system threads: only the latched
+  // owner (the real GPU-submit thread) may begin/end/submit the single global
+  // command list and drive the swapchain. Before an owner is claimed, allow the
+  // call (early boot). Done before the tally below so the open/closed counts
+  // reflect only the owner's frames. See fm2_plume_single_thread_present.
+  if (REXCVAR_GET(fm2_plume_single_thread_present)) {
+    const uint64_t owner = g_presentOwnerKey.load(std::memory_order_acquire);
+    if (owner != 0 && owner != CurrentThreadKey()) {
+      return;
     }
   }
   // Per-second tally of frameOpen-at-entry (proven clean-log channel). Tells us

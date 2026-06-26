@@ -1,6 +1,7 @@
 // render/d3d_resource_hooks.cpp
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cstdint>
 #include <cstdio>
@@ -17,6 +18,7 @@
 #include <rex/logging.h>
 
 #include "generated/shader_cache.h"
+#include "native_renderer/fm2_shader_analysis.h"
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
 #include "render/render_internal.h"
@@ -25,6 +27,8 @@ using namespace plume;
 using namespace fm2::ghp;
 
 namespace fm2::render {
+
+uint64_t CurrentFrameIndex(); // render_state.cpp
 
 // ---------------------------------------------------------------------------
 // Format helpers
@@ -321,6 +325,24 @@ void UnlockTextureRect(GuestTexture *texture) {
   uint32_t pitch = ComputeTexturePitch(texture);
   uint32_t slicePitch = pitch * texture->height;
 
+  // DIAGNOSTIC: track the font atlas (256x128 R8) data flow through Lock/Unlock.
+  if (texture->width == 256u && texture->height == 128u) {
+    const uint8_t *mm = static_cast<const uint8_t *>(texture->mappedMemory);
+    uint32_t nz = 0;
+    const uint32_t n = slicePitch < 4096u ? slicePitch : 4096u;
+    for (uint32_t i = 0; i < n; ++i)
+      if (mm[i] != 0)
+        ++nz;
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 12) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f, "FM2_FONT_UNLOCK 256x128 fmt=%d pitch=%u nzStaging=%u/%u\n",
+                     int(texture->format), pitch, nz, n);
+        std::fclose(f);
+      }
+    }
+  }
+
   auto upload =
       Device()->createBuffer(RenderBufferDesc::UploadBuffer(slicePitch));
   std::memcpy(upload->map(), texture->mappedMemory, slicePitch);
@@ -344,6 +366,24 @@ void UnlockTextureRect(GuestTexture *texture) {
 // ---------------------------------------------------------------------------
 // Vertex declaration (input-element translation deferred to pipeline build)
 // ---------------------------------------------------------------------------
+
+// Every D3DVERTEXELEMENT9 declaration FM2 creates (it never binds them via the
+// device field). Draws match their shader's header usage/usageIndex set against
+// this registry to recover the real input layout.
+static std::vector<GuestVertexDeclaration *> g_gameDeclarations;
+static std::mutex g_gameDeclMutex;
+
+static void RegisterGameDeclaration(GuestVertexDeclaration *decl) {
+  if (decl == nullptr)
+    return;
+  std::lock_guard<std::mutex> lock(g_gameDeclMutex);
+  g_gameDeclarations.push_back(decl);
+}
+
+std::vector<GuestVertexDeclaration *> SnapshotGameDeclarations() {
+  std::lock_guard<std::mutex> lock(g_gameDeclMutex);
+  return g_gameDeclarations;
+}
 
 static GuestVertexDeclaration *
 CreateVertexDeclarationFromElements(GuestVertexElement *guestElements,
@@ -374,6 +414,10 @@ CreateVertexDeclarationFromElements(GuestVertexElement *guestElements,
     if (i < count && d.stream < 16)
       decl->vertexStreams[d.stream] = true;
   }
+  // FM2 never binds its declarations through the device field, so register every
+  // one it creates; draws match their shader's header usage/usageIndex set against
+  // this registry to recover the real input layout (format/offset/stream).
+  RegisterGameDeclaration(decl);
   // RenderInputElement translation + hashing happens at pipeline-build time.
   return decl;
 }
@@ -484,6 +528,82 @@ static GuestShader *CreateShaderFromFunction(const uint32_t *function,
   uint32_t size = std::byteswap(function[1]) + std::byteswap(function[2]);
   uint64_t hash = XXH3_64bits(function, size);
 
+  // Parse the vertex shader's embedded input declaration (usage/usageIndex) from
+  // its container header. FM2's vfetch instructions carry no format/offset and
+  // FM2 never binds the D3DVERTEXELEMENT9 declaration via the device field, so we
+  // match this semantic set against FM2's created declarations (which DO carry
+  // format/offset). Layout: ShaderContainer.shaderOffset @ +0x18 -> VertexShader;
+  // elements are bitfields { address:12, usage:4, usageIndex:4 } at
+  // vertexElementsAndInterpolators[field18 + i]. The header usage enum matches
+  // D3DDECLUSAGE (Position=0, Normal=3, TexCoord=5, Color=10, ...).
+  std::vector<ShaderHeaderElement> headerEls;
+  if (type == ResourceType::VertexShader) {
+    const uint32_t totalDw = size / 4u;
+    const uint32_t shaderOffset = std::byteswap(function[6]);
+    if ((shaderOffset & 3u) == 0u && shaderOffset / 4u + 9u <= totalDw) {
+      const uint32_t *vs = function + shaderOffset / 4u;
+      const uint32_t field18 = std::byteswap(vs[6]);
+      const uint32_t veCount = std::byteswap(vs[7]);
+      for (uint32_t i = 0; i < veCount && i < 32u; ++i) {
+        const uint32_t idx = shaderOffset / 4u + 9u + field18 + i;
+        if (idx >= totalDw)
+          break;
+        const uint32_t v = std::byteswap(function[idx]);
+        headerEls.push_back(ShaderHeaderElement{
+            uint8_t((v >> 12) & 0xFu), uint8_t((v >> 16) & 0xFu)});
+      }
+      // DIAG: disassemble the original Xenos microcode for 2D-HUD VS (no
+      // POSITION0) so we can diff its position math against the generated DXIL
+      // (which applies c[0]=1/640 with no screen-scale -> collapse). Capped.
+      bool hasPos = false;
+      for (const auto &he : headerEls)
+        if (he.usage == 0)
+          hasPos = true;
+      const bool is292 = (hash == 0x292FF29403B1DDF8ull);
+      if ((!hasPos || is292) && !headerEls.empty()) {
+        static std::atomic<uint32_t> s_dis{0};
+        static std::atomic<uint32_t> s_292{0};
+        const bool doIt =
+            is292 ? (s_292.fetch_add(1, std::memory_order_relaxed) < 1)
+                  : (s_dis.fetch_add(1, std::memory_order_relaxed) < 3);
+        if (doIt) {
+          const uint32_t physOff = std::byteswap(vs[0]);
+          const uint32_t ucodeBytes = std::byteswap(vs[1]);
+          const uint32_t virtualSize = std::byteswap(function[1]);
+          const uint32_t ucodeByteOff = virtualSize + physOff;
+          const uint32_t ucodeDwords = ucodeBytes / 4u;
+          if ((ucodeByteOff & 3u) == 0u && ucodeDwords > 0u &&
+              ucodeDwords < 0x10000u && ucodeByteOff + ucodeBytes <= size) {
+            std::vector<uint32_t> host(ucodeDwords);
+            const uint32_t *src = function + ucodeByteOff / 4u;
+            for (uint32_t i = 0; i < ucodeDwords; ++i)
+              host[i] = std::byteswap(src[i]);
+            rex::graphics::Shader sh(rex::graphics::xenos::ShaderType::kVertex,
+                                     hash, host.data(), ucodeDwords,
+                                     std::endian::native);
+            rex::string::StringBuffer dis;
+            sh.AnalyzeUcode(dis);
+            const std::string txt = dis.to_string();
+            if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+              std::fprintf(f,
+                           "FM2_VSASM hash=0x%016llX dw=%u elems=%zu\n%s\n=====\n",
+                           (unsigned long long)hash, ucodeDwords, headerEls.size(),
+                           txt.c_str());
+              std::fflush(f);
+              std::fclose(f);
+            }
+          }
+        }
+      }
+    }
+  }
+  auto finish = [&](GuestShader *s) -> GuestShader * {
+    if (s != nullptr && type == ResourceType::VertexShader &&
+        s->headerElements.empty())
+      s->headerElements = headerEls;
+    return s;
+  };
+
   if (ShaderCacheEntry *entry = FindShaderCacheEntry(hash)) {
     if (entry->guest_shader == nullptr) {
       auto *shader = GuestNew<GuestShader>(type);
@@ -491,9 +611,9 @@ static GuestShader *CreateShaderFromFunction(const uint32_t *function,
       entry->guest_shader = reinterpret_cast<GuestShader *>(shader);
       REXGPU_INFO("CreateShader: hash=0x{:016X} type={} -> guestAddr=0x{:08X}",
                   hash, int(type), ToGuest(shader));
-      return shader;
+      return finish(shader);
     }
-    return reinterpret_cast<GuestShader *>(entry->guest_shader);
+    return finish(reinterpret_cast<GuestShader *>(entry->guest_shader));
   }
   // Dump the raw ShaderContainer so XenosRecomp can translate it offline.
   static std::unordered_set<uint64_t> s_dumped;
@@ -510,7 +630,7 @@ static GuestShader *CreateShaderFromFunction(const uint32_t *function,
         "Shader cache MISS: hash=0x{:016X} size={} type={} — dumped to {}",
         hash, size, int(type), path);
   }
-  return GuestNew<GuestShader>(type);
+  return finish(GuestNew<GuestShader>(type));
 }
 
 GuestShader *CreateVertexShader(const uint32_t *function) {
@@ -736,7 +856,9 @@ bool UploadGuestTextureData(GuestTexture *texture,
   // plume_native, or (b) our detiling reads the wrong place. Scan the footprint.
   {
     static std::atomic<uint32_t> s_n{0};
-    if (s_n.fetch_add(1, std::memory_order_relaxed) < 32 && src != nullptr) {
+    const bool isFontDims = info.width == 256u && info.height == 128u;
+    if ((s_n.fetch_add(1, std::memory_order_relaxed) < 32 || isFontDims) &&
+        src != nullptr) {
       const auto *w = reinterpret_cast<const uint32_t *>(src);
       const size_t words = size_t(footprint) / 4;
       size_t nonZero = 0;
@@ -854,8 +976,13 @@ GuestTexture *TranslateGuestTextureFetch(const void *guestFetch,
     }
   }
   if (cached != nullptr) {
-    if (uploadGuestData) {
+    // Re-upload at most once per frame, not once per draw. Many draws sample the
+    // same texture each frame; uploading per draw floods the GPU with thousands
+    // of synchronous copies and stalls the frame.
+    const uint64_t frame = CurrentFrameIndex();
+    if (uploadGuestData && cached->lastUploadFrame != frame) {
       UploadGuestTextureData(cached, info);
+      cached->lastUploadFrame = frame;
     }
     return cached;
   }

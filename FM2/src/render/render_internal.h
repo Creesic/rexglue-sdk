@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 #include <plume_render_interface.h>
 
@@ -47,5 +48,9 @@ plume::RenderShader *LoadShader(GuestShader *guestShader,
 
 struct GuestVertexDeclaration;
 GuestVertexDeclaration *LookupVertexDeclarationAlias(uint32_t guestAddress);
+// Snapshot of every D3DVERTEXELEMENT9 declaration FM2 has created. Used to match
+// a vertex shader's header usage set to its real input layout (FM2 never binds
+// the declaration via the device field).
+std::vector<GuestVertexDeclaration *> SnapshotGameDeclarations();
 
 } // namespace fm2::render

@@ -71,6 +71,9 @@ struct GuestBaseTexture : GuestResource {
   plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
   bool requiresHostInitialization = false;
   bool hostInitialized = true;
+  // Frame index of the last guest-memory upload; lets us upload a sampled
+  // texture at most once per frame instead of once per draw (huge perf win).
+  uint64_t lastUploadFrame = ~0ull;
   GuestBaseTexture *sourceTexture = nullptr;
   uint32_t pendingResolveCount = 0;
   std::vector<PendingResolve> pendingResolves;
@@ -144,6 +147,16 @@ struct GuestVertexDeclaration : GuestResource {
 
 // Vertex/pixel shader: maps a guest shader to its XenosRecomp-translated host
 // shader via the generated shader cache (keyed by microcode hash).
+// One input element a vertex shader declares in its container header
+// (usage/usageIndex). FM2's vfetch instructions carry no format/offset, so this
+// is matched against FM2's real D3DVERTEXELEMENT9 declarations (which carry the
+// format/offset) to recover the input layout -- FM2 never binds the declaration
+// through the device field, so this is how we recover it.
+struct ShaderHeaderElement {
+  uint8_t usage = 0;
+  uint8_t usageIndex = 0;
+};
+
 struct GuestShader : GuestResource {
   std::mutex mutex;
   std::unique_ptr<plume::RenderShader> shader;
@@ -153,6 +166,8 @@ struct GuestShader : GuestResource {
   IDxcBlobEncoding *dxilLibraryBlob = nullptr;
 #endif
   ShaderCacheEntry *shaderCacheEntry = nullptr;
+  // Vertex shaders only: the input declaration parsed from the shader header.
+  std::vector<ShaderHeaderElement> headerElements;
 
   explicit GuestShader(ResourceType t) : GuestResource(t) {}
   ~GuestShader();
