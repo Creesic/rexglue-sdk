@@ -15,6 +15,7 @@
 #include <rex/dbg.h>
 #include <rex/input/flags.h>
 #include <rex/input/input_driver.h>
+#include <rex/input/input_probe.h>
 #include <rex/input/input_system.h>
 #include <rex/input/mnk/mnk_input_driver.h>
 #include <rex/input/nop/nop_input_driver.h>
@@ -123,6 +124,16 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
   if (out_state) {
     *out_state = merged;
   }
+
+  InputStateProbeSample probe_sample;
+  probe_sample.user_index = user_index;
+  probe_sample.result = X_ERROR_SUCCESS;
+  probe_sample.buttons = merged.gamepad.buttons;
+  probe_sample.left_trigger = merged.gamepad.left_trigger;
+  probe_sample.right_trigger = merged.gamepad.right_trigger;
+  probe_sample.packet_number = merged.packet_number;
+  InvokeInputGetStateProbe(probe_sample);
+
   return X_ERROR_SUCCESS;
 }
 
@@ -153,6 +164,15 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
       any_connected = true;
     }
     if (result == X_ERROR_SUCCESS || result == X_ERROR_EMPTY) {
+      if (out_keystroke != nullptr && result == X_ERROR_SUCCESS) {
+        InputKeystrokeProbeSample probe_sample;
+        probe_sample.user_index = user_index;
+        probe_sample.result = result;
+        probe_sample.virtual_key = out_keystroke->virtual_key;
+        probe_sample.unicode = out_keystroke->unicode;
+        probe_sample.flags = out_keystroke->flags;
+        InvokeInputGetKeystrokeProbe(probe_sample);
+      }
       return result;
     }
   }

@@ -4,10 +4,13 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <filesystem>
+#include <memory>
 
 #include <rex/filesystem.h>
 #include <rex/rex_app.h>
+#include <rex/ui/window_listener.h>
 
 #include "doax_hooks.h"
 
@@ -23,6 +26,15 @@ class DoaxApp : public rex::ReXApp {
 
   void OnPostSetup() override {
     InstallDoaxGuestPcFiber(PPCImageConfig);
+  }
+
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    rex::ReXApp::OnCreateDialogs(drawer);
+    // Registered after ReXApp's listener so TerminateTitle runs first.
+    if (window() && !close_exit_listener_) {
+      close_exit_listener_ = std::make_unique<ForceProcessExitListener>();
+      window()->AddListener(close_exit_listener_.get());
+    }
   }
 
   // Portable game root: DOAX/assets relative to doax.exe in out/build/<preset>/.
@@ -52,4 +64,17 @@ class DoaxApp : public rex::ReXApp {
       return;
     }
   }
+
+ private:
+  // DOAX guest-PC fiber swap can leave module_thread_->Wait blocked after
+  // TerminateTitle; exit the process once the window close path has run.
+  class ForceProcessExitListener final : public rex::ui::WindowListener {
+   public:
+    void OnClosing(rex::ui::UIEvent& e) override {
+      (void)e;
+      std::exit(EXIT_SUCCESS);
+    }
+  };
+
+  std::unique_ptr<ForceProcessExitListener> close_exit_listener_;
 };

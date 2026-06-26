@@ -318,7 +318,458 @@ hooked infrastructure yields (`lr=0x824C0600` dispatcher, `0x8258CE4C` cdf8 wake
 paths reload globals after return; universal restore wedged the scheduler again (black
 screen, no menu draws).
 
+**Press Start regression (2026-06-24):** Menu-kick on scheduler bring-up modes `2/2`/`3/3`/`2/0`
+also matches **boot warning** (`sub_824C1350(2)`). Arming `flag2` before
+`boot_present==5` or during Press Start (`boot_present==5`, `overlay==0`) steals the
+boot work-fiber and wedges A/Start. Gate with `IsPreIslandMenuKickPhase` in
+`DOAX/src/doax_hooks.cpp` — only kick when `boot_present>=5` and not
+`(boot_present==5 && overlay==0)`, or after `menu-fiber` has run.
+
 **Press Start regression (2026-06-24):** Inverting the policy to “restore on every yield
 except dispatcher/cdf8” broke Press Start — boot work-fiber yields (resume `lr=0x8250A104`)
 must **not** get GPR restore. Whitelist-only preserve fixes input on Press Start while
 keeping menu work-fiber `r28` alive.
+
+**Four-menu black (2026-06-24, `doax_037`/`doax_038`):** `menu_kick=0` entire session.
+`IsPreIslandMenuKickPhase` used `boot_present < 5`, but Press Start dismiss sets
+`boot_present==1` (not 5). Fix: pre-island is only `boot_present==0` or
+`(boot_present==5 && overlay==0)`. Spurious Travel at `0x824C16A4` on first menu-fiber
+bring-up (`sched 2/2`, `overlay==0`, `item_id=15`) set `g_suppress_menu_kick` — fix:
+`IsUserTravelMenuConfirm` requires idle hub `5/1`, `overlay==1`, `item==15`, `arg2==30`.
+Build tag `doax-hooks-2026-06-24-menu-kick-fix`. Grep `menu-kick`, `travel-confirm`.
+
+## Promotion replay block crash (2026-06-24, `doax_005`)
+
+**Symptom:** Odd boot behavior then crash ~9s in. Log build tag
+`doax-hooks-2026-06-24-promotion-replay-block`.
+
+**Cause:** Skipping `PlayMovie(1)`, `MenuTransitionPlayMovie`, and faking handler-done bytes
+(`byte_833B8DFA`, `dword_82B85498`) left the scheduler promotion handler chain inconsistent.
+`IsMovieFinished` marked promotion finished before poll. Menu-kick on `2/2` still fired during
+active promotion (`menu-kick site=drain-rearm` before `promotion-finished`).
+
+**Press Start state (log-proven):** After promotion, island preview uses `boot_present==1`
+`overlay==0` on scheduler `5/1` — not `boot_present==5`. Forcing `boot_present=5` blackens
+Press Start.
+
+**Fix (build `doax-hooks-2026-06-24-promotion-menu-kick-guard`):**
+- Revert all PlayMovie / handler-skip / fake-byte hooks.
+- Block menu-kick while `g_boot_promotion_started && !g_boot_promotion_finished`.
+- Extend `IsPreIslandMenuKickPhase`: also `boot_present==1 && overlay==0 && sched 5/1`.
+- Mark promotion finished only from `DOAX_MenuTransitionMoviePoll`.
+- Narrow teardown guard: `IsPressStartIslandIdle` blocks `BootMovieReplayTeardown` only on
+  sched `5/1` with `overlay==0` after promotion finished.
+
+**Expected log sequence:** one `movie-play idx=1 attempt=1`, then `promotion-finished
+site=promotion-poll`, no `menu-kick` on `2/2` before that, Press Start draws >> 37.
+
+## Four-menu black regression (2026-06-24, `doax_006`)
+
+**Symptom:** Promotion/Press Start OK again; four-option menu black. `menu_kick=0` entire
+session.
+
+**Cause (dual):**
+1. `g_boot_promotion_finished` never set (`promotion-finished` absent from log) so
+   `g_boot_promotion_started && !finished` blocked all menu-kick forever.
+2. `DOAX_MenuSceneTransition` at `lr=0x824C1770` (LABEL_12 Press Start → four-menu) called
+   `ArmBootFiberSuppress`, setting `travel_confirm=1` and `g_suppress_boot_work_fiber` on
+   bring-up.
+
+**Fix (build `doax-hooks-2026-06-24-four-menu-fix`):**
+- Mark promotion finished from `PostPromotionCleanup`, `IsMovieFinished` (passive), and poll.
+- Skip travel suppress on scene-transition when `lr==0x824C1770` (LABEL_12 bring-up).
+- Only `EnforceTravelOverlayGuard` when `g_travel_overlay_guard` is already armed.
+
+**Expected:** `promotion-finished` in log, `menu-kick: armed` on `cef0` mode `2/2`, scene-transition
+`travel_arm=0`.
+
+## Instant promotion replay (2026-06-24, `doax_007`)
+
+**Symptom:** Promotion replays immediately after first cycle (`movie-play attempt=2`).
+
+**Cause:** `post-promotion-cleanup` marks promotion finished, then `drain-rearm` menu-kicks
+through `2/2→3/3→2/0` while `overlay==0` (Press Start still showing). Working path
+(`doax_003`) only menu-kicks from `cef0` after player dismisses.
+
+**Fix (build `doax-hooks-2026-06-24-drain-rearm-guard`):** Block `drain-rearm` menu-kick while
+`g_boot_promotion_started && overlay==0`. Keep `cef0` / `menu-fiber-return` kicks for
+Press Start → four-menu. Remove passive `IsMovieFinished` promotion-finished mark.
+
+## Promotion replay midasm (2026-06-24)
+
+**Symptom:** Scheduler/menu-kick hooks still fight promotion — instant replay after cleanup.
+
+**Root fix:** Midasm at `0x824C12B8` (`bl DOAX_PlayMovie` in `DOAX_MenuTransitionPlayMovie`
+`0x824C1208`). When `r3==1` and `g_boot_promotion_play_attempts>0`, jump to `0x824C12BC`
+(skip the call). First play runs normally; handler poll sees prior `IsMovieFinished` state.
+Same pattern as ninja `0x8250AB1C`→`0x8250ABA4`. Build tag
+`doax-hooks-2026-06-24-promotion-replay-midasm`. Keep drain-rearm + scene-transition guards
+as belt-and-suspenders for menu-kick.
+
+## Press Start 3D island missing (2026-06-24, `doax_009`)
+
+**Symptom:** Promotion replay fixed (midasm), but Press Start shows UI text with no 3D island
+backdrop. GPU `draws` stuck ~35–39; `menu_kick` climbs rapidly (cef0 `2/2→3/3→2/0` loop).
+
+**Cause:** `drain-rearm` menu-kick stayed blocked after `promotion-finished` while `cef0`
+still armed bring-up kicks — asymmetric cycle never completed back to idle `5/1`. Also
+`IsPreIslandMenuKickPhase` blocked idle `5/1` kicks on `boot_present==1 overlay==0`, so
+`sub_8258E000` island dispatch never ran on the Press Start preview drain path.
+
+**Fix (build `doax-hooks-2026-06-24-press-start-island-guard`):**
+- Block `drain-rearm` only during **active** promotion (`!g_boot_promotion_finished`); allow
+  after cleanup (midasm blocks PlayMovie replay).
+- Remove `boot_present==1 && overlay==0 && sched 5/1` from `IsPreIslandMenuKickPhase`.
+- Add `IsPressStartIslandPreview`: allow idle `5/1` menu-kick when promotion finished,
+  `overlay==0`, `boot_present==1`.
+
+**Expected:** one brief bring-up cycle after `promotion-finished`, then stable `sched=5/1` with
+GPU draws well above UI-only (~35), island visible behind Press Start text.
+
+## Press Start promotion flicker (2026-06-24)
+
+**Symptom:** Press Start flickers; no stable 3D island. Feels like instant promotion replay
+then midasm skip.
+
+**Cause:** After `press-start-island-guard` unblocked `drain-rearm` post-promotion, menu-kick
+on `2/2→3/3→2/0` and idle `5/1` re-entered `DOAX_MenuTransitionPlayMovie`. Midasm at
+`0x824C12B8` skipped only the `PlayMovie` bl — handler body still toggled present/gamma
+(flicker). `doax_037` showed island can render at high `draws` with `menu_kick=0` on Press Start.
+
+**Fix (build `doax-hooks-2026-06-24-press-start-promotion-loop-fix`):**
+- Block **all** menu-kick (cef0, drain-rearm, flag0-safety-net) during Press Start preview
+  (`promotion finished`, `overlay==0`, `boot_present==1`) until `menu-fiber` enters (player
+  pressed Start).
+- Hook `DOAX_MenuTransitionPlayMovie`: early-return on promotion replay during preview.
+- Keep midasm `SkipPromotionReplay` as belt-and-suspenders.
+
+**Expected:** stable Press Start, no `movie-play idx=1 attempt=2`, `menu-kick-skip
+reason=press_start_preview` during idle, first `menu-kick` after `menu-fiber-enter`.
+
+**Fix v2 (build `doax-hooks-2026-06-24-press-start-hold-v2`):** v1 guards required
+`g_boot_promotion_finished` and unblocked when spurious `menu-fiber` entered during replay
+(`doax_037`), so replay/flicker continued. v2 uses guest-state hold instead:
+
+- `IsPromotionPressStartHold`: `plays>0`, `boot_present==1`, `overlay==0`, not user-dismissed.
+- `g_press_start_user_dismissed` set on `DOAX_MenuSceneTransition` `lr=0x824C1770` only.
+- Skip entire `DOAX_PlayMovie(1)` and `DOAX_MenuTransitionPlayMovie` during hold (not just
+  midasm `bl`).
+- `ShouldUndoBootPresentTeardown` + `BootMovieReplayTeardown` block during hold even when sched
+  is `2/2`/`3/3` (not only idle `5/1`).
+
+Grep: `press-start-hold-v2`, `press-start-dismiss`, `promotion-replay-block: skip PlayMovie`.
+
+**Fix v3 (build `doax-hooks-2026-06-24-press-start-drain-skip`):** Per-frame flicker was
+`DOAX_SchedulerDrainDispatch` re-entering the promotion handler state machine (`5/1→2/2→3/3→2/0`)
+every frame. Skipping only `PlayMovie` / `MenuTransitionPlayMovie` left overlay fade, gamma, and
+present-state toggles running — looks like a hook firing every frame.
+
+- Skip guest **drain dispatch** during hold when sched is idle `5/1` or bring-up `2/2`/`3/3`/`2/0`;
+  pin sched header to latched `5/1` snapshot; clear `byte_833B8DFE` fade counter.
+- Skip `BootPresentStateUpdate` during hold (no run+undo fight each frame).
+- Latch handler-done bytes (`byte_833B8DFA`, `dword_82B85498`) at `promotion-finished`.
+- Skip `MenuTransitionOverlaySetup` / fade / timeline / ready-check during hold.
+- Hold still defers until `promotion-finished` (or `plays>1`) so first promotion poll works.
+
+Grep: `press-start-drain-skip`, `drain-skip: press-start-hold`, `press-start-latch`.
+
+**Fix v4 (build `doax-hooks-2026-06-24-press-start-stable`):** v3 skipped drain as soon as
+`promotion-finished` — black screen after A-skip because post-promotion bring-up never completed.
+v4 is two-phase:
+
+1. **Bring-up phase** (`!g_press_start_seen_stable`): drain, overlay, boot-present all run
+   normally until idle `5/1` for 4 frames with `boot_present==1 overlay==0`.
+2. **Stable phase** (`g_press_start_seen_stable`): block menu-kick on idle `5/1`, skip
+   `PlayMovie`/`MenuTransitionPlayMovie`/`OverlaySetup` replay, snap sched back from bring-up
+   `2/2`/`3/3` to pinned `5/1` after drain (not skip drain entirely).
+
+Grep: `press-start-stable`, `drain-snapback`.
+
+**Fix v5 (build `doax-hooks-2026-06-24-press-start-drain-freeze`):** v4 snapback ran
+*after* guest drain each frame — one frame of promotion handler (overlay/gamma) still ran
+causing per-frame flicker. v5:
+
+- Wait for `PostPromotionCleanup` before arming stable/freeze (A-skip bring-up can finish).
+- After 2 idle `5/1` frames: latch handler-done bytes + pin sched.
+- **Skip guest drain entirely** when stable on idle `5/1` or bring-up modes (boot fiber keeps
+  rendering). No post-hoc snapback.
+- Skip `BootPresentStateUpdate` + `MenuTransitionMoviePoll` during stable replay block.
+
+Grep: `press-start-drain-freeze`, `drain-freeze`, `press-start-stable`.
+
+**Fix v6 (build `doax-hooks-2026-06-24-press-start-hold-visible`):** Press Start appeared then
+instantly faded after A-skip. Promotion cleanup had started `MenuTransitionOverlaySetup` fade
+(`byte_833B8DFE` / `df4` timeline); handler-done latch (`833B8DFA`, `82B85498`) advanced the
+transition away. v6:
+
+- `ShouldHoldPressStartVisible`: after `PostPromotionCleanup`, `boot_present==1`, `overlay==0`.
+- `CancelPressStartOverlayFade`: clear `DFE`, `df0`, set `df4=0xFFFFFFFF`.
+- Skip overlay/fade/timeline/pre-transition hooks during hold; cancel fade on boot/menu fiber.
+- Re-enable `BootPresentStateUpdate` with teardown undo (was fully skipped).
+- Remove handler-done byte latch from stable freeze.
+
+Grep: `press-start-hold-visible`, `cancelled overlay fade`.
+
+**Fix v7 (build `doax-hooks-2026-06-24-press-start-replay-latch`):** v6 still faded on
+A-skip because `ShouldHoldPressStartVisible` / `ShouldBlockPromotionVideoReplay` required
+`g_press_start_post_cleanup`, which is only set in handler 10. Boot fiber can call
+`PlayMovie(1)` again between movie end and cleanup.
+
+- Hold when `boot_present==1`, `overlay==0`, `plays>0`, not dismissed (no cleanup latch).
+- Block replay on the same guest state immediately, not after cleanup.
+- `LatchPressStartPreviewIfNeeded` from drain, movie poll, boot fiber; pre-enforce in
+  `PostPromotionCleanup` before guest body runs.
+
+Grep: `press-start-replay-latch`, `press-start-latch`, `promotion-replay-block`.
+
+**Regression v7 (`press-start-replay-latch`):** Holding on `boot_present==1 overlay==0
+plays>0` matched **active promotion** too — movie poll returned early, `IsMovieFinished`
+spoofed done, promotion went black/unresponsive.
+
+**Fix v8 (build `doax-hooks-2026-06-24-press-start-hold-v7`):** Revert early hold. Replay
+block uses `plays>1`, `ShouldHoldPressStartVisible` (needs cleanup), or
+`poll_saw_done && preview && !finished` for the A-skip gap only.
+
+Grep: `press-start-hold-v7`, `promotion-poll-done`, `post-promotion-cleanup`.
+
+**Fix v9 (build `doax-hooks-2026-06-24-press-start-phase-hold`):** Delayed promotion return
+after Press Start — guest `boot_present`/`overlay` flicker during sched `5/1→2/2` re-entry
+dropped v8 guards mid-hold.
+
+- `IsPressStartHoldPhase`: latched at cleanup until dismiss (not per-frame guest bytes).
+- `SealPromotionSchedulerAfterCleanup`: `833B8DFA=1`, `82B85498=1`, clear fade after cleanup.
+- `drain-promo-skip`: skip guest drain on promo handler sched modes during hold bring-up;
+  keep idle `5/1` drain for island render.
+
+Grep: `press-start-phase-hold`, `drain-promo-skip`, `post-promotion-cleanup`.
+
+**Regression v9:** `drain-promo-skip` + `SealPromotionScheduler` blocked post-cleanup
+bring-up drain on sched `2/2`/`3/3` — never reached Press Start.
+
+**Fix v10 (build `press-start-phase-hold-v10`):** Remove drain suppress and scheduler seal.
+Keep `IsPressStartHoldPhase` for replay/menu-kick block only; overlay/fade hook skips still
+need live preview guest bytes. Cancel fade each drain frame during hold phase.
+
+Grep: `press-start-phase-hold-v10`, `post-promotion-cleanup`.
+
+**Fix v11 (build `press-start-handler-advance`):** Press Start flashed then promotion looped
+because blocking `MenuTransitionPlayMovie`/`PlayMovie` without advancing scheduler handler
+6 (`833B8DFA`, `82B85498`) made drain re-enter the promotion handler every frame.
+
+- `CompleteBlockedPromotionHandler` on replay block paths + stable latch.
+- Skip overlay/fade hooks for full `IsPressStartHoldPhase`.
+- Immediate stable latch when cleanup lands on idle `5/1` preview.
+
+Grep: `press-start-handler-advance`, `promotion-replay-block`, `press-start-stable`.
+
+**Regression v11:** Handler advance at cleanup/stable blocked bring-up to Press Start.
+
+**Fix v12 (build `press-start-preview-gated`):** Only block/advance promotion replay after
+`g_press_start_preview_seen` (Press Start actually visible once). Bring-up after cleanup
+runs normally; replay loop broken only after preview latch.
+
+Grep: `press-start-preview-gated`, `press-start-preview-seen`, `promotion-replay-block`.
+
+## Why Press Start is hard (2026-06-24)
+
+One scheduler handler (`5/1 → 2/2 → 3/3 → 2/0 → 5/1`) drives **three** unrelated jobs:
+
+1. Island 3D bring-up (`cef0` menu-kicks)
+2. Promotion handler 6 fade/poll (`MenuTransitionMoviePoll`, `PlayMovie(1)`)
+3. Press Start dismiss → four-menu (`MenuSceneTransition` LABEL_12 at `lr=0x824C1770`)
+
+Fixes are coupled: blocking menu-kicks stops replay but also blocks island load; running guest
+poll enables A/Start path but auto-advances promotion fade; accepting LABEL_12 after bring-up
+without input dismisses on timer (~1.4s at sched `2/2` in `doax_033`).
+
+**Fix v13 (build `press-start-stable-input`):** Three explicit phases after
+`press-start-bringup-done`:
+
+1. **Bring-up** (`!bringup_done`): allow one `cef0` kick cycle; block spurious LABEL_12 at
+   non-idle sched.
+2. **Stable hold** (`bringup_done && !dismissed`): block all menu-kicks; **skip guest**
+   `MenuTransitionMoviePoll` until A/Start (`sub_82782BF0` sets `g_press_start_button_seen`);
+   enforce display each frame.
+3. **Dismiss**: accept LABEL_12 only when `g_press_start_button_seen`; block `PlayMovie(1)`
+   replay until `boot_present==5 overlay==1` hub idle (not just during hold phase).
+
+Grep: `press-start-stable-input`, `press-start-bringup-done`, `block LABEL_12`, `user=1`.
+
+**Fix v14 (build `press-start-midasm-input`):** stable-input regressed to no A/Start because
+full hooks short-circuited the guest dismiss path:
+
+1. `MenuPreTransitionHook` returned early during hold (never ran guest pre-transition).
+2. `MenuTransitionMoviePoll` was frozen until a synthetic XInput latch.
+3. `MenuSceneTransition` returned early blocking all LABEL_12 until button flag.
+
+**Midasm + passthrough approach:**
+
+- Promotion replay: midasm `0x824C12B8` only (`MenuTransitionPlayMovie` hook passthrough).
+- Spurious LABEL_12 during island bring-up: midasm `0x824C176C` → `0x824C1770` skips
+  `MenuSceneTransition` bl when hold + preview + `!bringup_done` + sched != `5/1`.
+- `MenuPreTransitionHook` / `FadeAlpha` / `Timeline`: call guest, cancel overlay fade after.
+- `MoviePoll`: always call guest; post-enforce display during hold.
+
+Grep: `press-start-midasm-input`, `midasm-skip-LABEL_12`.
+
+**Fix v15 (build `press-start-handler-hold`, from `doax_036` flash probe):** After
+`press-start-bringup-done`, handler 6 still called `MenuTransitionPlayMovie`; midasm skipped
+the `bl` but guest advanced sched `5/1`→`2/2` and `PostPromotionCleanup` spun every ~120ms.
+
+1. Skip full `MenuTransitionPlayMovie` when replay blocked; `OnPromotionReplayBlocked` +
+   `EnforcePressStartDisplayState`.
+2. Skip guest `PostPromotionCleanup` on re-entry after bring-up (`skipped-reentry`).
+3. Pin sched at bring-up; `drain-snapback` when `bringup_done` + hold + sched != `5/1` (not
+   only after `press-start-stable`).
+
+Grep: `press-start-handler-hold`, `play-movie-hook blocked`, `skipped-reentry`, `drain-snapback`.
+
+**Regression (`press-start-handler-hold`):** Black after promotion — full `MenuTransitionPlayMovie`
+skip fired during `2/2→5/1` bring-up (not only after island latched), and/or bring-up latched
+on first post-cleanup `5/1` before the kick cycle ran.
+
+**Fix v16 (build `press-start-bringup-cycle`):**
+- `g_press_start_saw_bringup_cycle` set when drain sees non-idle sched during hold.
+- `bringup_done` only after saw cycle + idle `5/1`.
+- Full `MenuTransitionPlayMovie` skip only when `bringup_done` (midasm handles earlier).
+- Snapback / cleanup re-entry skip unchanged (still after bringup).
+
+Grep: `press-start-bringup-cycle`, `press-start-bringup-done`, `saw_bringup`.
+
+**Fix v17 (build `press-start-overlay-hold`, from `doax_044`):** Scheduler logic
+correct (`bringup-done`, `press-start-stable`, `drain-freeze`, `plays=1`) but user
+still saw promotion fade. Log showed `deb=1` on bring-up kicks at `3/3`/`2/0` while
+overlay guest hooks only skipped **after** `bringup_done`; island scene load lagged
+~1.1s after stable (`island-scene-load` at 22.217 vs `bringup-done` at 21.069).
+
+1. Skip `MenuTransitionOverlaySetup` / `Timeline` / `FadeAlpha` for entire hold
+   (`ShouldHoldPressStartVisible`), not only post-bringup — bring-up uses cef0, not overlay.
+2. `SuppressPressStartPromotionOverlay`: clear `byte_833B8DEB`, cancel fade bytes every hold frame.
+3. `MaybeKickPressStartIslandSceneLoad`: call `DOAX_IslandSceneLoad` immediately after
+   `bringup_done` (boot fiber + drain) instead of waiting for natural late load.
+
+Grep: `press-start-overlay-hold`, `press-start-island-load`, `skip MenuTransitionOverlaySetup`.
+
+**Fix v18 (build `press-start-guest-drain`, from `doax_045`):** Overlay-hold had
+perfect scheduler bytes (`dfa=0`, `deb=0`, `drain-freeze` x186) but user still saw
+promotion fade. Stable `doax_031` had **no drain-freeze**, `deb=1` throughout, and
+handler-6 drain kept running at idle `5/1`.
+
+Root cause: `EnforcePressStartIdleHoldState` ran **every drain frame** when hold was
+active (not only on sched drift), clearing `deb` and skipping handler-6 via
+`drain-freeze` — fighting guest Press Start presentation.
+
+1. Disable `drain-freeze` — handler-6 must dispatch at idle `5/1`.
+2. Restore `deb` — only clamp sched/`dfa`/`dfe` on actual drift (`drain-restore`).
+3. Un-skip `MenuTransitionMoviePoll` after bringup (input + guest state).
+4. Drop per-frame `EnforcePressStartDisplayState` hammering; latch gate once at cleanup.
+5. Keep overlay-guest skip during hold (blocks new promotion overlay fade setup).
+
+Grep: `press-start-guest-drain`, `drain-restore`, no `drain-freeze`.
+
+**Fix v19 (build `press-start-allow-2-2`, from doax_031 comparison):** Stable Press Start
+requires guest handler-6 at sched `2/2` with `deb=1` after bring-up — not forced idle `5/1`.
+Remove `drain-restore` / `drain-clamp` snap-back, overlay-guest skip, and sched pin/seal on
+bring-up latch. Keep menu-kick block + midasm PlayMovie replay skip.
+
+Grep: `press-start-allow-2-2`, `allow sched 2/2`, no `drain-restore`.
+
+**Fix v20 (build `four-menu-bringup-kick`):** Press Start stable again (`allow-2-2`) but
+four-option menu black after dismiss — same root as `doax_006`: `menu_kick=0` because
+`MenuKickBlockReason` / `ShouldArmMenuDispatch` required `overlay==1` at idle `5/1`, and
+`IsPreIslandMenuKickPhase` blocked `boot_present==5 overlay==0` during bring-up.
+
+- `IsPressStartFourMenuBringUp`: `post_cleanup && user_dismissed && overlay!=1`.
+- Allow cef0/drain menu-kick on idle `5/1` and bring-up sched during that window.
+
+Grep: `four-menu-bringup-kick`, `press-start-dismiss`, `menu-kick` after dismiss.
+
+**Fiber log (build `fiber-log`, 2026-06-24):** Four-menu black treated as fiber/register
+issue — no further menu-kick hook experiments. Reverted `four-menu-bringup-kick` behavior.
+`fiber-probe` window arms at `post-promotion-cleanup` until Travel confirm.
+
+Grep patterns in `DOAX/out/build/win-amd64-relwithdebinfo/logs/doax_*.log`:
+
+| Pattern | What it tells you |
+|---------|-------------------|
+| `fiber-probe kind=yield` | Every fiber yield in window: site, lr, r28-r31 before/after, gpr_preserve |
+| `fiber-probe kind=swap` | Guest-PC fiber swap target + r30/r31 clobber |
+| `fiber-probe kind=sched-swap` | Scheduler fiber swap sched before/after |
+| `fiber-probe kind=clobber` | r30/r31 zeroed after swap (compare good vs bad runs) |
+| `fiber-probe kind=menu-fiber` | Menu work fiber enter/exit |
+| `fiber-probe kind=boot-fiber` | Boot work fiber during menu phase |
+| `fiber-probe kind=drain` | Drain dispatch during window (incl. `post_dismiss_trace`) |
+| `four-menu-probe` | Phase snapshot on dismiss / clobber / boot-fiber |
+| `menu-snapshot` | One-shot when `boot_present==1` first seen |
+
+**Input log (build `input-log2`, 2026-06-24):** SDK-level `InputSystem::GetState` probe
+(`DOAX sdk-input-probe`) catches all XAM input, not only guest `0x82782BF0`. Guest scheduler
+block at `0x833B8DF8` logged via `DOAX guest-input-probe`. `movie-poll` now logs post-call
+`r3` result (`done`/`pending`), not the pre-call pointer in `r3`.
+
+Grep patterns:
+
+| Pattern | What it tells you |
+|---------|-------------------|
+| `DOAX sdk-input-probe` | Every merged host input sample (all callers) |
+| `DOAX sdk-input-probe site=edge` | Button rising edge from SDK path |
+| `DOAX sdk-input-probe site=Keystroke` | Keyboard/text input path |
+| `DOAX guest-input-probe` | Scheduler `0x833B8DF8` header + menu bytes at transition |
+| `DOAX input-probe site=GetState-wrap` | Guest `0x82782BF0` wrapper only (lr tagged) |
+| `input-transition-probe site=button-edge` | Correlated A/Start with guest snapshot |
+| `input-transition-probe site=movie-poll` | Post-call poll `r3` (`done` = skip/dismiss ready) |
+
+Do not infer "no user input" from `user_dismiss=0` alone — check `sdk-input-probe` and
+`guest-input-probe` at `LABEL_12-attempt` first.
+
+**Fix v20 (build `press-start-dismiss`, from `doax_051`):** `movie-poll` `done` latched
+`dismiss_f9` at `0x833B8DF9` without user A; midasm blocked LABEL_12 at stable sched `2/2`;
+game fell through to LABEL_34 Travel (`scene_id=15`) → black/wrong screen.
+
+1. `SanitizeAutoPressStartDismissLatch` clears `dismiss_f9` after `movie-poll-done` and at
+   bring-up latch unless user A/Start confirm is armed.
+2. `ArmPressStartUserConfirm` sets `dismiss_f9` only on real A/Start edge after bring-up.
+3. `CanAcceptPressStartDismiss` accepts LABEL_12 at idle `5/1` or stable `2/2` with user confirm.
+4. Block LABEL_34 auto-travel during Press Start hold until user dismiss.
+
+Grep: `press-start-dismiss`, `cleared auto dismiss_f9`, `LABEL_34-blocked`, `stable-2/2-dismiss`.
+
+**Fix v21 (build `press-start-label34`, from `doax_052`):** After island overlay latches
+(`overlay=1`), user A dismiss runs through **LABEL_34** (`lr=0x824C191C`, scene 15) — not
+LABEL_12. Blocking all LABEL_34 during hold caused infinite black once overlay appeared.
+
+1. Block LABEL_34 only when `!HasPressStartUserConfirm()` (auto `dismiss_f9` 1/2).
+2. On user confirm, accept LABEL_34 as dismiss path and call guest transition.
+3. Do not arm travel suppress for LABEL_34 during Press Start hold.
+4. `IsPressStartDismissEligibleState`: `boot_present` 1 or 2 (overlay may be 1).
+
+Grep: `press-start-label34`, `LABEL_34-overlay-dismiss`, `blocked LABEL_34 auto-travel`.
+
+**Fix v22 (build `press-start-fade-snap`, from `doax_053`):** Four-menu worked but black
+flash during Press Start → 4-menu. `AcceptPressStartUserDismiss` set `user_dismissed` before
+`ShouldArmTravelSuppress` ran, so `IsPressStartHoldPhase()` was false → `travel_arm=1`,
+boot-fiber suppress, and full timeline=900 travel fade.
+
+1. `g_press_start_overlay_dismiss` latched on LABEL_34 accept; exempt from travel suppress
+   even after `user_dismissed`.
+2. `SnapPressStartDismissFadeComplete` on timeline/fade-alpha/menu-fiber-yield during overlay
+   dismiss — skip the long travel fade countdown.
+
+Grep: `press-start-fade-snap`, `dismiss-snap`, `travel_arm=0` at LABEL_34 dismiss.
+
+**Fix v23 (build `moviepoll-standdown`, from `doax_083`-`doax_085`):** After
+Press Start dismiss reached four-menu idle, the title's no-input timeout path still fired
+`LABEL_12` (`lr=0x824C1770`, scene 17). Blocking only the `MenuSceneTransition` call was too
+late: `MenuPreTransitionHook` and setup had already started the timeout movie blend.
+
+1. Add midasm `0x824C1714 -> 0x824C1770` (`DOAX_SkipPostReadyAutoScenePrelude`) so the
+   post-ready timeout is blocked before pre-transition/setup calls when no fresh A/Start edge
+   was seen.
+2. Restore post-ready four-menu idle bytes on block: scheduler `5/1`, `overlay=1`,
+   `dea=0`, `deb=0`, `def=1`, `df0=1`, `df4=0`.
+3. After `g_press_start_dismiss_idle_finalized`, `DOAX_MenuTransitionMoviePoll` restores
+   the same idle state and returns before `MaybeSealAndSnapBackPostDismissPromotion`; this
+   prevents the old snapback from pushing the menu to `3/3` / item 17.
+
+Grep: `timeout-prelude-standdown`, `moviepoll-standdown`, `blocked post-ready timeout prelude`,
+`movie-poll-post-ready-restored`, `finalized-no-snapback`.

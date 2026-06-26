@@ -147,6 +147,14 @@ After rebuilding the SDK/runtime, make sure FM2 is using the fresh
   not `${workspaceRoot}\assets`.
 - Use `DOAX/scripts/bootstrap-codegen-loop.cmd` to run the bootstrap/codegen loop
   from Explorer; the script pauses on exit unless `-NoPause` is passed.
+- Rebuild DOAX intro/movie skips from IDA-disassembly midasm hooks; bulk legacy
+  skip code was intentionally stripped from `doax_hooks.cpp` before re-adding skips.
+- Prefer portable `game_data_root` via `doax_app.h` `OnConfigurePaths` (exe-relative
+  `../../../assets`); `.vs/launch.vs.json` is gitignored and breaks on checkouts.
+- Manual `cmake --build` and launch from `DOAX/out/build/win-amd64-relwithdebinfo/doax.exe`
+  is fine during boot-hook debugging; VS is not required.
+- Diagnose Press Start / four-menu input with SDK and guest input probes; `user_dismiss=0`
+  alone does not prove the user did not press A/Start.
 
 ## Learned Workspace Facts
 
@@ -181,14 +189,23 @@ After rebuilding the SDK/runtime, make sure FM2 is using the fresh
   `[entrypoint.functions]` entries need `name` or bare stubs can crash codegen
   Write; `codegen_command.cpp` repairs/merges manifest and compacts duplicate
   `bootstrap_discovered.toml` before parse.
-- DOAX boot order is warning → ninja → opening (`0x823F58E0` table). Warning is
-  `spWarn.xpr` sprite UI via scheduler mode 2 (`DOAX_BootEnterWarningMode` →
-  `sub_824C0770(2)` → `sub_824C1350(2)`), not SFD playback; per-frame path is
-  `DOAX_BootWarningDismiss` → `DOAX_WarningScreenUpdate` → `sub_82666EB0` at
-  `0x8250BC3C`.
-- DOAX boot skips: ninja midasm `0x8250AB1C`→`0x8250ABA4` works. Do not
-  auto-skip opening via `DOAX_PlayMovie` early return (breaks A-button skip). Do
-  not fake scheduler dismiss bytes `byte_833B8DF9`/`byte_833B8DFE` (black screen
-  after opening). Safe warning skip: skip `sub_824C1350(2)` queue plus draw hook
-  `0x8250BC3C`→`0x8250BC48`; midasm `jump_address_on_true` must land in the same
-  generated function.
+- DOAX boot cinematics: warning → ninja (`ninja_vi_hd.sfd`, table index 4) →
+  promotion_video.sfd (index 1). `opening.sfd` (index 0) is post–Travel confirm via
+  `DOAX_TravelOpeningHandler` (`0x826E1978`), not boot. Warning is `spWarn.xpr`
+  sprite UI (scheduler mode 2), not SFD playback. Boot promotion runs via UI handlers
+  `DOAX_MenuTransitionPlayMovie` (`0x824C1208`) and poll
+  `DOAX_MenuTransitionMoviePoll` (`0x824C12D0`). `DOAX_MovieFilenameTable` at
+  `0x82E71DC0` (40-byte stride).
+- DOAX boot hooks (reference: `DOAX/archive/fiber-hooks-2026-06-24/`): license warn
+  midasm `0x8250AAA8`→`0x8250AAFC`; ninja `0x8250AB1C`→`0x8250ABA4`. Promotion **replay**
+  midasm `0x824C12B8`→`0x824C12BC` when `r3==1` and `g_boot_promotion_play_attempts>0`.
+  Block drain-rearm menu-kick during active promotion or Press Start preview (`overlay==0`).
+  Four-menu needs scheduler `flag2` via menu-kick; latch `g_boot_promotion_finished` or
+  menu-kick stays blocked. Press Start → 4-menu dismiss uses LABEL_34 when `overlay==1`
+  (LABEL_12 midasm-blocked at sched `2/2`); block LABEL_34 only for auto `dismiss_f9` from
+  movie-poll-done, not user A/Start. Do not arm travel suppress on LABEL_12/LABEL_34
+  during Press Start hold; `g_press_start_overlay_dismiss` + fade snap avoid travel_arm
+  black flash. Do not global-skip `DOAX_PlayMovie(0)`. Travel confirm needs idle hub
+  `5/1`, `overlay==1`, `item==15`.
+- `DoaxApp` in `doax_app.h` calls `std::exit` on window close after `TerminateTitle`;
+  guest fiber swap can otherwise leave `doax.exe` running past window close.
