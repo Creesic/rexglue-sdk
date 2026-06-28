@@ -94,6 +94,12 @@ REX_IMPORT(__imp__FM2_GpuCommandBuffer_BuildAndSubmit,
 // (FMOD pump bit / sub_825ADE20) never fire, so we drive Video::Present() from
 // here — same thread that records draws into g_commandList (no cross-thread race).
 REX_IMPORT(__imp__sub_82288948, g_origRenderWorkerFrame, void(uint32_t));
+// Gate-probe helpers: the two functions RunFrame uses to compute v33 (the drain
+// a2 selector). sub_8245CD38(queue) returns *(queue+60)?1:*(queue+128); >1 means
+// backlog pressure. sub_8245D3E0(queue) returns the head deferred node's flag byte
+// (under the queue+64 lock). v33 = (backlog>1 && cd38>1) || d3e0.
+REX_IMPORT(__imp__sub_8245CD38, g_cbQueueCd38, uint32_t(uint32_t));
+REX_IMPORT(__imp__sub_8245D3E0, g_cbQueueD3e0, uint32_t(uint32_t));
 // FM2_RenderContext_SetActivePassId (sub_8236E228): stores the active vertex
 // declaration handle at renderContext+11540, read by FM2_D3D_EmitDrawListStatePackets
 // at draw time. Forza binds the per-draw vertex declaration here (a D3DVERTEXELEMENT9
@@ -208,6 +214,46 @@ REX_IMPORT(__imp__FM2_Render_SubmitPassWrapper, g_origSubmitPassWrapper,
 REX_IMPORT(__imp__FM2_Render_SceneSliceEntry, g_origSceneSliceEntry,
            void(uint32_t));
 REX_IMPORT(__imp__FM2_Render_ViewTraversal, g_origViewTraversal, void(uint32_t));
+// sub_825E8BF8 = the per-view scene-render DISPATCHER (vtable method). It calls
+// FM2_Render_FramePipeline via (*(this+20))->vtable[+44]; its whole body is gated
+// by *(this+2379). Runs ~4x/frame in Xenos, 0x in plume_native. Probe: learn
+// whether plume_native (a) never reaches it, or (b) reaches it with the +2379
+// enable flag clear (or a null pass object at this+20).
+REX_IMPORT(__imp__sub_825E8BF8, g_origSceneViewDispatch, void(uint32_t));
+// sub_8245D048 = deferred-callback QUEUE dispatcher (walks a node list, invokes
+// each node's fn ptr *(node)). The scene render sub_825E8BF8 is one registered
+// node. Called by FM2_RenderThread_RunFrame only when v11>*(a1+2100) (frame gate)
+// && sub_8245D448(). Probe: in plume_native, is this called at all, and is the
+// scene callback enqueued in its node list?
+REX_IMPORT(__imp__sub_8245D048, g_origCbQueueDispatch, void(uint32_t));
+// sub_8245CED8 = the ENQUEUE API (queue=r3, fn=r4, this=r5, arg2=r6, flag=r7):
+// allocates an 0x18 node, node[0]=fn, node[4]=this, links it. The scene render is
+// enqueued via fn=sub_825E8BF8. Hook + filter fn==0x825E8BF8 to capture the
+// PRODUCER (caller) that schedules the scene render -- runs in Xenos, silent in
+// plume_native.
+REX_IMPORT(__imp__sub_8245CED8, g_origScheduleCallback, void(uint32_t));
+// session 6P: pin WHY the scene/car render-pass action never fires in plume_native.
+// FM2_TriggerMatchingListEntryActions (0x8234d5a8) walks an owner's (a1) intrusive entry
+// list and fires the render-action vfunc for entries matching a2 with weight/enable set.
+// sub_82279630 = the car-render CParams ctor (one such action). Log, per distinct (a1,a2),
+// whether that owner's entry list is empty (sentinel=*(a1+20); empty iff *(sentinel)==
+// sentinel), re-logging on status change; and tag the car render's actual (a1,a2). Diff
+// Xenos vs plume: an owner non-empty in Xenos but empty in plume = the scene render-pass
+// entries are never registered there.
+REX_IMPORT(__imp__FM2_TriggerMatchingListEntryActions, g_origTriggerListActions,
+           void(uint32_t));
+REX_IMPORT(__imp__sub_82279630, g_origCarReflectionCtor, void(uint32_t));
+// sub_82279610 = the CParams EXECUTE that reads the scene-view vtable[11]=0x825E8BF8 (verified via
+// x64dbg: scene-vtable read fires at sub_82279610+0x181). It runs on the render thread under RunFrame
+// in Xenos but NOT in plume. Capture ctx.lr at entry = the GUEST address of the DRAIN that invokes it
+// (the unlabeled recompiled fn x64dbg couldn't name). Decompile that guest fn to find the plume gate.
+REX_IMPORT(__imp__sub_82279610, g_origCarReflectionExec, void(uint32_t));
+// sub_82363800 = FM2_AllocPoolBumpAllocate(pool=r3, size=r4) — every render CParams ctor allocs its
+// node here. Filter ctx.lr to the render-CParams ctor range (0x82278xxx-0x8227Axxx) and log which POOL
+// each ctor uses. The scene ctor sub_82279630 (size 0x1C) vs siblings SetClearColor(8)/BeginRender(0xC):
+// if the scene CParams goes to a different/dead pool in plume (vs the drained queue), that's why its
+// execute (sub_82279610) is never dispatched. Compare Xenos vs plume.
+REX_IMPORT(__imp__sub_82363800, g_origAllocPoolBump, void(uint32_t));
 // EDRAM resolve emitter: copies the rendered surface to guest memory that the
 // game then samples as a texture. Untranslated in plume_native -> sampled
 // memory is empty/black. Hooked to register the resolved surface so samples hit
@@ -2696,6 +2742,45 @@ REX_HOOK(FM2_GpuCommandBuffer_BuildAndSubmit,
 // original builds the frame, present on this same thread (the one recording into
 // g_commandList) in plume_native/plume_clear, where no other present trigger fires.
 REX_HOOK_RAW(sub_82288948) {
+  // GATE PROBE (session 6P): RunFrame picks the drain's a2 via `if(v33||v23)`. Read
+  // both at frame start (a1=ctx.r3=renderThread): v23 = movie/wait-renderer
+  // (a1+2524) active; v33 component = submitted(queue+120) vs processed(a1+2100)
+  // backlog. Tells whether the wait-renderer or the backlog keeps a2=1 in plume.
+  if (ShouldMirrorPlumeRenderState()) {
+    auto rd = [&](uint32_t ga) -> uint32_t {
+      auto *p = ghp::ToHost<rex::be<uint32_t>>(ga);
+      return p ? p->get() : 0u;
+    };
+    const uint32_t a1 = ctx.r3.u32;
+    const uint32_t queue = a1 + 2224u;
+    const uint32_t movie = rd(a1 + 2524u);
+    // v23 reads a single BYTE at movie+4 (big-endian high byte of the dword).
+    const uint32_t movieByte = movie ? ((rd(movie + 4u) >> 24) & 0xFFu) : 0u;
+    const uint32_t v23 = (movie != 0u && movieByte != 0u) ? 1u : 0u;
+    const uint32_t submitted = rd(queue + 120u);
+    const uint32_t processed = rd(a1 + 2100u);
+    const int backlog = static_cast<int>(submitted - processed);
+    static std::atomic<uint32_t> s_lastSec{0};
+    const uint32_t nowSec = static_cast<uint32_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    uint32_t last = s_lastSec.load(std::memory_order_relaxed);
+    if (nowSec != last &&
+        s_lastSec.compare_exchange_strong(last, nowSec, std::memory_order_relaxed)) {
+      // Call the game's own selectors (auto-isolating ctx; safe, lock released
+      // before g_orig runs). cd38>1 = backlog pressure; d3e0 = head-node flag.
+      const uint32_t cd38 = g_cbQueueCd38(queue);
+      const uint32_t d3e0 = g_cbQueueD3e0(queue);
+      const uint32_t v33 =
+          ((backlog > 1 && cd38 > 1u) || d3e0 != 0u) ? 1u : 0u;
+      LogReplayDbg("FM2_RUNFRAME_GATE movie=0x%08X movieByte=%u v23=%u | "
+                   "submitted=%u processed=%u backlog=%d cd38=%u d3e0=%u v33=%u "
+                   "=> a2=%u",
+                   movie, movieByte, v23, submitted, processed, backlog, cd38,
+                   d3e0, v33, (v33 || v23) ? 1u : 0u);
+    }
+  }
   // Start the RenderDoc capture BEFORE the original runs the scene draws (their
   // GPU submit happens inside it), so a real geometry frame is captured in full.
   const bool rdocCapturing =
@@ -2794,6 +2879,19 @@ REX_HOOK_RAW(FM2_Render_UiOrScreenDrawListSubmit) {
 REX_HOOK_RAW(FM2_Render_FramePipeline) {
   static PresentDiagSlot s_slot;
   CountPresentDiag("FramePipe", s_slot, nullptr);
+  // One-shot caller capture. FramePipe is vtable-dispatched and runs in Xenos but
+  // never in plume_native; logging its guest caller (ctx.lr) + object (r3) for the
+  // first calls identifies the scene-render DISPATCHER, so we can find the gating
+  // condition that is false in plume_native. Mode-independent (only fires in the
+  // mode where FramePipe actually runs -> Xenos).
+  static std::atomic<uint32_t> s_callerLogs{0};
+  const uint32_t cnt = s_callerLogs.fetch_add(1, std::memory_order_relaxed);
+  if (cnt < 16u) {
+    LogReplayDbg("FM2_FRAMEPIPE_CALLER n=%u lr=0x%08X obj=0x%08X tid=%u mirror=%d",
+                 cnt, (uint32_t)ctx.lr, (uint32_t)ctx.r3.u32,
+                 (unsigned)::GetCurrentThreadId(),
+                 ShouldMirrorPlumeRenderState() ? 1 : 0);
+  }
   g_origFramePipeline.fn(ctx, base);
 }
 REX_HOOK_RAW(FM2_Render_SubmitPassWrapper) {
@@ -2810,6 +2908,289 @@ REX_HOOK_RAW(FM2_Render_ViewTraversal) {
   static PresentDiagSlot s_slot;
   CountPresentDiag("ViewTraverse", s_slot, nullptr);
   g_origViewTraversal.fn(ctx, base);
+}
+// Per-view scene-render dispatcher (calls FramePipe via vtable[+44], gated on
+// *(this+2379)). Probe whether plume_native reaches it and the gate/pass-object
+// values. Logs the first calls in BOTH modes + a per-second counter.
+REX_HOOK_RAW(sub_825E8BF8) {
+  const uint32_t self = ctx.r3.u32;
+  uint32_t enable2379 = 0xFFFFFFFFu;
+  if (auto *p = ghp::ToHost<uint8_t>(self + 2379u))
+    enable2379 = *p;
+  uint32_t passObj = 0xFFFFFFFFu;
+  if (auto *p = ghp::ToHost<rex::be<uint32_t>>(self + 20u))
+    passObj = p->get();
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("SceneViewDisp", s_slot, nullptr);
+  static std::atomic<uint32_t> s_logs{0};
+  const uint32_t c = s_logs.fetch_add(1, std::memory_order_relaxed);
+  if (c < 24u) {
+    LogReplayDbg("FM2_SCENEVIEW_DISP n=%u this=0x%08X enable2379=%u passObj=0x%08X "
+                 "caller=0x%08X tid=%u mirror=%d",
+                 c, self, enable2379, passObj, (uint32_t)ctx.lr,
+                 (unsigned)::GetCurrentThreadId(),
+                 ShouldMirrorPlumeRenderState() ? 1 : 0);
+  }
+  g_origSceneViewDispatch.fn(ctx, base);
+}
+// Deferred-callback queue dispatcher probe. Counts invocation and walks the node
+// list to report whether the scene-render callback (guest 0x825E8BF8) is enqueued.
+// session 6P fix toggles.  kForceRunFrameA2ZeroBranch: force RunFrame's v33=0 at the
+// sub_8245CD38/sub_8245D3E0 call sites so it takes the a2=0 branch (the proper fix).
+// kForceDrainA2Zero: legacy workaround that forces only the drain's a2=0 (kept for
+// A/B comparison; superseded by the branch fix above -- leave false).
+static constexpr bool kForceRunFrameA2ZeroBranch = true;
+static constexpr bool kForceDrainA2Zero = false;
+// kForceCarNodeEnqueue: bypass sub_8245CED8's backpressure-drop for the car/scene
+// execute node (fn=0x82279610) by forcing its a5 flag !=0, so it enqueues like Xenos.
+static constexpr bool kForceCarNodeEnqueue = true;
+
+// RunFrame v33 selector A: sub_8245CD38(queue) returns *(q+60)?1:*(q+128). RunFrame
+// uses `cd38 > 1` as the backlog-pressure term. Called from RunFrame at 0x82288D80
+// (ctx.lr ~ 0x82288D84). Force <=1 there so that term is false -> pushes v33 toward 0.
+REX_HOOK_RAW(sub_8245CD38) {
+  const uint32_t lr = (uint32_t)ctx.lr;
+  g_cbQueueCd38.fn(ctx, base);  // original result in ctx.r3
+  const bool runFrameCaller = (lr >= 0x82288D80u && lr <= 0x82288D88u);
+  if (runFrameCaller && ShouldMirrorPlumeRenderState()) {
+    static std::atomic<bool> s_logged{false};
+    if (!s_logged.exchange(true, std::memory_order_relaxed)) {
+      LogReplayDbg("FM2_V33_CD38 lr=0x%08X raw=%u", lr, ctx.r3.u32);
+    }
+    if (kForceRunFrameA2ZeroBranch && ctx.r3.u32 > 1u) {
+      ctx.r3.u32 = 1u;
+    }
+  }
+}
+// RunFrame v33 selector B: sub_8245D3E0(queue) returns the head deferred node's flag
+// byte. RunFrame ORs it into v33. Called from RunFrame at 0x82288D90
+// (ctx.lr ~ 0x82288D94). Force 0 there so v33 collapses to 0 -> a2=0 branch.
+REX_HOOK_RAW(sub_8245D3E0) {
+  const uint32_t lr = (uint32_t)ctx.lr;
+  g_cbQueueD3e0.fn(ctx, base);  // original result in ctx.r3
+  const bool runFrameCaller = (lr >= 0x82288D90u && lr <= 0x82288D98u);
+  if (runFrameCaller && ShouldMirrorPlumeRenderState()) {
+    static std::atomic<bool> s_logged{false};
+    if (!s_logged.exchange(true, std::memory_order_relaxed)) {
+      LogReplayDbg("FM2_V33_D3E0 lr=0x%08X raw=%u", lr, ctx.r3.u32);
+    }
+    if (kForceRunFrameA2ZeroBranch) {
+      ctx.r3.u32 = 0u;
+    }
+  }
+}
+REX_HOOK_RAW(sub_8245D048) {
+  auto rd = [&](uint32_t ga) -> uint32_t {
+    auto *p = ghp::ToHost<rex::be<uint32_t>>(ga);
+    return p ? p->get() : 0u;
+  };
+  // Single byte at guest addr X (big-endian high byte of the dword at X).
+  auto rb = [&](uint32_t ga) -> uint32_t { return (rd(ga) >> 24) & 0xFFu; };
+  const uint32_t a1 = ctx.r3.u32;
+  const uint32_t a2 = ctx.r4.u32;
+  const uint32_t v4 = rd(a1 + 56u);
+  // Walk the list to find the car/scene EXECUTE node (fn==sub_82279610). For that
+  // node, replicate the drain's per-node dispatch decision so we can see WHY it is
+  // (or isn't) dispatched.  v6=(*(q+60)!=*(q+56)) || *(q+148); per node:
+  // v10=!(*(q+136)||node[16]); v11=v6||v10; dispatch = v11 && (!a2 || !v10).
+  uint32_t carNode = 0, carNode16 = 0, nodeCount = 0;
+  if (v4) {
+    for (uint32_t i = rd(v4); i != 0 && nodeCount < 512u;
+         i = rd(i + 20u), ++nodeCount) {
+      if (rd(i) == 0x82279610u) { carNode = i; carNode16 = rb(i + 16u); break; }
+    }
+  }
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("CbQueueDisp", s_slot, nullptr);
+  if (carNode != 0 && ShouldMirrorPlumeRenderState()) {
+    const uint32_t q60 = rd(a1 + 60u);
+    const uint32_t q148 = rb(a1 + 148u);
+    const uint32_t q136 = rd(a1 + 136u);
+    const uint32_t v6 = ((q60 != v4) || q148 != 0u) ? 1u : 0u;
+    const uint32_t v10 = (q136 != 0u || carNode16 != 0u) ? 0u : 1u;
+    const uint32_t v11 = (v6 || v10) ? 1u : 0u;
+    const uint32_t disp = (v11 && (a2 == 0u || v10 == 0u)) ? 1u : 0u;
+    static std::atomic<uint32_t> s_carLogs{0};
+    if (s_carLogs.fetch_add(1, std::memory_order_relaxed) < 40u) {
+      LogReplayDbg("FM2_CBQ_CARNODE a1=0x%08X a2=%u node=0x%08X node16=%u "
+                   "q56=0x%08X q60=0x%08X q148=%u q136=0x%08X v6=%u v10=%u "
+                   "v11=%u disp=%u tid=%u",
+                   a1, a2, carNode, carNode16, v4, q60, q148, q136, v6, v10, v11,
+                   disp, (unsigned)::GetCurrentThreadId());
+    }
+  }
+  static std::atomic<uint32_t> s_logs{0};
+  const uint32_t c = s_logs.fetch_add(1, std::memory_order_relaxed);
+  if (c < 24u) {
+    LogReplayDbg("FM2_CBQUEUE_DISP n=%u a1=0x%08X a2=%u v4=0x%08X nodes=%u "
+                 "car=0x%08X tid=%u mirror=%d",
+                 c, a1, a2, v4, nodeCount, carNode,
+                 (unsigned)::GetCurrentThreadId(),
+                 ShouldMirrorPlumeRenderState() ? 1 : 0);
+  }
+  // PROPER FIX (session 6P): the forced-drain-a2=0 below is now DISABLED. Root cause
+  // is confirmed (see FM2_RUNFRAME_GATE: v23=0, v33=1 from cd38=7/d3e0=1 backlog). The
+  // proper fix forces RunFrame's v33=0 at the sub_8245CD38/sub_8245D3E0 call sites
+  // (see those hooks) so RunFrame takes the a2=0 BRANCH naturally -- which calls this
+  // drain with a2=0 AND runs the correct GPU-wait/metrics path + avoids the a2=1
+  // branch's (*dev+196)(dev,1/0) bracketing. With the branch fix, r4 is already 0 here.
+  if (kForceDrainA2Zero && ShouldMirrorPlumeRenderState() && a1 == 0x4001CA20u &&
+      ctx.r4.u32 != 0u) {
+    ctx.r4.u32 = 0u;
+  }
+  g_origCbQueueDispatch.fn(ctx, base);
+}
+// Enqueue API probe: capture the PRODUCER that schedules the scene render
+// (fn==sub_825E8BF8). Fires in Xenos (scene enqueued); silent in plume_native.
+REX_HOOK_RAW(sub_8245CED8) {
+  // Fire-confirmation counter: proves the hook is installed + its call rate.
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("SchedCb", s_slot, nullptr);
+  // FIXED FILTER (session 6P): sub_8245CED8 IS the enqueue that feeds the drain
+  // (its append target *(Q+52) = the input buffer's cmd list, swapped to Q+56 by
+  // sub_8245D448 and drained by sub_8245D048). The VIEW render node fn is
+  // sub_82279610 (=0x82279610), which the OLD scene-only [0x825E0000,0x825F0000)
+  // filter EXCLUDED -> we never saw it. Now catch the view-render fns (sub_82279610
+  // & siblings at 0x82279xxx, AND sub_825E8BF8 at 0x825E8xxx). caller=ctx.lr = the
+  // GUEST producer that schedules the view render. Compare Xenos vs plume.
+  const uint32_t fn = ctx.r4.u32;
+  if ((fn >= 0x82279000u && fn < 0x8227A000u) ||
+      (fn >= 0x825E0000u && fn < 0x825F0000u)) {
+    static std::atomic<uint32_t> s_logs{0};
+    const uint32_t c = s_logs.fetch_add(1, std::memory_order_relaxed);
+    if (c < 48u) {
+      LogReplayDbg("FM2_VIEW_ENQUEUE n=%u fn=0x%08X queue=0x%08X this=0x%08X "
+                   "arg2=0x%08X caller=0x%08X tid=%u mirror=%d",
+                   c, fn, ctx.r3.u32, ctx.r5.u32, ctx.r6.u32, (uint32_t)ctx.lr,
+                   (unsigned)::GetCurrentThreadId(),
+                   ShouldMirrorPlumeRenderState() ? 1 : 0);
+    }
+  }
+  // CAR-NODE ENQUEUE PROBE (session 6P-2): the car/scene EXECUTE fn (0x82279610) is
+  // enqueued here. Only 2/16 reach the drain queue. sub_8245CED8 has 3 internal paths:
+  //   path144: *(pool+144)        -> execute fn NOW (not enqueued)
+  //   pathBP : *(pool+145) && !a5 && *(pool+140)<=0 -> spin then FreeIfOutsidePool (DROPPED)
+  //   else   : ENQUEUE into *(pool+52) list
+  // Log a5(r7)/pool flags + predicted path to see why 14/16 are lost.
+  if (fn == 0x82279610u && ShouldMirrorPlumeRenderState()) {
+    auto rd = [&](uint32_t ga) -> uint32_t {
+      auto *p = ghp::ToHost<rex::be<uint32_t>>(ga);
+      return p ? p->get() : 0u;
+    };
+    const uint32_t pool = ctx.r3.u32;
+    const uint32_t a5 = ctx.r7.u32;
+    const uint32_t p144 = (rd(pool + 144u) >> 24) & 0xFFu;
+    const uint32_t p145 = (rd(pool + 144u) >> 16) & 0xFFu;
+    const int32_t p140 = static_cast<int32_t>(rd(pool + 140u));
+    const char *path = p144 ? "exec144"
+                       : (p145 && a5 == 0u && p140 <= 0) ? "DROP_bp"
+                                                         : "enqueue";
+    // FIX TEST (session 6P-2): the backpressure-drop path requires `!a5`. Force the
+    // node flag a5(r7)=1 so the condition is false -> the car node ENQUEUEs instead of
+    // being freed. a5 also becomes node[16]=1; the drain still dispatches it when v6=1
+    // (verified true for the nodes that previously survived). This matches Xenos, where
+    // all 16 car renders enqueue.
+    if (kForceCarNodeEnqueue && a5 == 0u && p145 && p140 <= 0) {
+      ctx.r7.u32 = 1u;
+    }
+    static std::atomic<uint32_t> s_carLogs{0};
+    if (s_carLogs.fetch_add(1, std::memory_order_relaxed) < 40u) {
+      LogReplayDbg("FM2_CARENQ pool=0x%08X a5=%u p144=%u p145=%u p140=%d "
+                   "arg1=0x%08X arg2=0x%08X caller=0x%08X path=%s forced=%u tid=%u",
+                   pool, a5, p144, p145, p140, ctx.r5.u32, ctx.r6.u32,
+                   (uint32_t)ctx.lr, path, (kForceCarNodeEnqueue ? 1u : 0u),
+                   (unsigned)::GetCurrentThreadId());
+    }
+  }
+  g_origScheduleCallback.fn(ctx, base);
+}
+// Render-pass trigger probe: which owners have a non-empty entry list, per mode.
+static thread_local uint32_t g_curTrigA1 = 0;
+static thread_local uint32_t g_curTrigA2 = 0;
+REX_HOOK_RAW(FM2_TriggerMatchingListEntryActions) {
+  auto rd = [&](uint32_t ga) -> uint32_t {
+    auto *p = ghp::ToHost<rex::be<uint32_t>>(ga);
+    return p ? p->get() : 0u;
+  };
+  const uint32_t a1 = ctx.r3.u32;
+  const uint32_t a2 = ctx.r4.u32;
+  const uint32_t savedA1 = g_curTrigA1, savedA2 = g_curTrigA2;
+  g_curTrigA1 = a1;
+  g_curTrigA2 = a2;
+  const uint32_t sentinel = rd(a1 + 20u);
+  const uint32_t nextNode = sentinel ? rd(sentinel) : 0u;
+  const bool nonEmpty = (sentinel != 0u && nextNode != 0u && nextNode != sentinel);
+  // Per-(a1,a2) status map; log on first sight + whenever empty<->nonEmpty flips.
+  static std::atomic<uint32_t> s_mapCount{0};
+  static uint64_t s_mapKey[64];
+  static uint8_t s_mapStatus[64];
+  const uint64_t key = (static_cast<uint64_t>(a1) << 32) | a2;
+  const uint8_t status = nonEmpty ? 2u : 1u;
+  uint32_t n = s_mapCount.load(std::memory_order_relaxed);
+  int idx = -1;
+  for (uint32_t i = 0; i < n && i < 64u; ++i)
+    if (s_mapKey[i] == key) { idx = static_cast<int>(i); break; }
+  if (idx < 0 && n < 64u) {
+    idx = static_cast<int>(n);
+    s_mapKey[n] = key;
+    s_mapStatus[n] = 0u;
+    s_mapCount.store(n + 1u, std::memory_order_relaxed);
+  }
+  if (idx >= 0 && s_mapStatus[idx] != status) {
+    s_mapStatus[idx] = status;
+    LogReplayDbg("FM2_TRIG a1=0x%08X a2=0x%08X empty=%d sentinel=0x%08X next=0x%08X "
+                 "tid=%u mirror=%d",
+                 a1, a2, nonEmpty ? 0 : 1, sentinel, nextNode,
+                 (unsigned)::GetCurrentThreadId(),
+                 ShouldMirrorPlumeRenderState() ? 1 : 0);
+  }
+  g_origTriggerListActions.fn(ctx, base);
+  g_curTrigA1 = savedA1;
+  g_curTrigA2 = savedA2;
+}
+REX_HOOK_RAW(sub_82279630) {
+  static std::atomic<uint32_t> s_logs{0};
+  const uint32_t c = s_logs.fetch_add(1, std::memory_order_relaxed);
+  if (c < 16u) {
+    LogReplayDbg("FM2_CAR_FIRED trigA1=0x%08X trigA2=0x%08X tid=%u mirror=%d",
+                 g_curTrigA1, g_curTrigA2, (unsigned)::GetCurrentThreadId(),
+                 ShouldMirrorPlumeRenderState() ? 1 : 0);
+  }
+  g_origCarReflectionCtor.fn(ctx, base);
+}
+REX_HOOK_RAW(sub_82279610) {
+  static std::atomic<uint32_t> s_logs{0};
+  const uint32_t c = s_logs.fetch_add(1, std::memory_order_relaxed);
+  if (c < 16u) {
+    LogReplayDbg("FM2_CARREFLEXEC n=%u drain_lr=0x%08X this=0x%08X tid=%u mirror=%d",
+                 c, (uint32_t)ctx.lr, (uint32_t)ctx.r3.u32,
+                 (unsigned)::GetCurrentThreadId(),
+                 ShouldMirrorPlumeRenderState() ? 1 : 0);
+  }
+  g_origCarReflectionExec.fn(ctx, base);
+}
+// Pool-routing probe: which pool each render-CParams ctor allocs its node into.
+REX_HOOK_RAW(sub_82363800) {
+  const uint32_t lr = static_cast<uint32_t>(ctx.lr);
+  if (lr >= 0x82278000u && lr < 0x8227B000u) {
+    const uint32_t pool = ctx.r3.u32;
+    const uint32_t size = ctx.r4.u32;
+    static std::atomic<uint32_t> s_cnt{0};
+    static uint64_t s_seen[96];
+    const uint64_t key = (static_cast<uint64_t>(lr) << 32) | (pool ^ (size << 24));
+    uint32_t n = s_cnt.load(std::memory_order_relaxed);
+    bool isNew = true;
+    for (uint32_t i = 0; i < n && i < 96u; ++i)
+      if (s_seen[i] == key) { isNew = false; break; }
+    if (isNew && n < 96u) {
+      s_seen[n] = key;
+      s_cnt.store(n + 1u, std::memory_order_relaxed);
+      LogReplayDbg("FM2_CPARAMS_ALLOC lr=0x%08X pool=0x%08X size=%u tid=%u mirror=%d",
+                   lr, pool, size, (unsigned)::GetCurrentThreadId(),
+                   ShouldMirrorPlumeRenderState() ? 1 : 0);
+    }
+  }
+  g_origAllocPoolBump.fn(ctx, base);
 }
 
 // EDRAM resolve. DIAGNOSTIC PASS: scan the context block for the destination

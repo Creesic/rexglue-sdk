@@ -699,3 +699,183 @@ that condition is met WITHOUT plume_native but not WITH it. Leads:
 - Check whether `D3D_SubmitAndDrainCommands` / the swap/fence (`a1+10780`/`+10800`, VdSwap path) signal
   the completion the loading state machine waits on; if the plume present/VdSwap hook doesn't advance that
   fence, the wait never clears.
+
+## 16. PRODUCER-GUARD BYPASS IS CORRECT; LOG CONFIRMS NO CONTENT PATH RUNS (session 6O)
+
+Two results this session that refine §15 and define the next decisive test.
+
+### 16a. The GPU-fence bypass (`Fm2ProducerProgressGuard` returns 0) is NOT the bug — it is correct
+`D3D_CommandCheckCompletion` (0x82369340, our `Fm2ProducerProgressGuard` hook) is the GPU completed-fence
+poll: reads `D3D_GetFrameCounter` (= `device.gpuState[+256]+332`, the GPU completed-frame counter) and
+returns `(submitted-completed) < 0x1388`. Its blocking-wait callers loop **while it returns non-zero**:
+- `FM2_D3D_WaitForPrimaryOverrun` (0x82371DF8): `while(1){ if(!CheckCompletion(v)){destroy; return;} ... }`
+- `FM2_AudioPump_WaitForBlockerCompletion` (0x82381850): `while(CheckCompletion(v6) && **(v2+16)!=v3);`
+
+So our bypass `return 0` makes these waits **exit immediately** (don't block on the dead ring) — the
+intended behaviour. The bypass is correct, NOT the gate. Producer is not GPU-blocked.
+
+`D3D_GetFrameCounter`'s other readers (`resource_manager_async_load_by_hash` 0x82432310,
+`FM2_IOSys_EnqueueFileOperation`) use the counter only to pick a **load priority** (`a4 = 393215`) and then
+call `resource_handle_trigger_load_and_resolve` **regardless** — they do NOT hard-block on the counter. So
+a frozen frame-counter does not by itself stall loading. The "loading waits on the GPU fence" sub-theory is
+**ruled out** as a hard gate.
+
+### 16b. LOG BASELINE (plume_native, fm2-clean.log 2026-06-26 15:47): render thread presents an EMPTY RT
+Per-second `FM2_PRESENT_DIAG` tallies in the current plume_native log:
+- `RenderWorker` = **144/sec**, `with_source`=144, src=`0x130C7F000` → presents the RT every frame.
+- `GateThread` ~520/sec (frame-sync gate pulse), `GpuCmdBuf` sparse (1–29).
+- **ZERO** for every content path: `FramePipe`, `SubmitPass`, `ViewTraverse`, `SceneSlice`, `ExecSorted`,
+  `SubmitSorted`, `ObjPassTrav`, `UiScreenSubmit`, **AND** `WalkDispatch`, `DrawEmit`, `DrawSubmit`,
+  `DirtyDraw`.
+
+So neither the **scene chain** NOR the **PM4 draw-list walker** runs. The render thread spins presents of
+the RT while **nothing ever draws into it**. (Sharper than "stuck on wait screen": no content-generation
+path executes at all. The 2-sprite RTCENSUS seen earlier was a different/earlier run state.)
+
+### 16c. DECISIVE EXPERIMENT (zero code change): Xenos-mode baseline of the SAME counters
+`CountPresentDiag`→`LogReplayDbg` is **not** mode-gated and the `REX_HOOK_RAW` hooks install in **both**
+modes (`__imp__` thunk replacements, independent of `--fm2_plume_mode`). So the same counters fire in Xenos
+mode. Comparing Xenos vs plume_native for the SAME screen resolves the central fork:
+- If `FramePipe`/`WalkDispatch`/`DrawEmit` are **>0 in Xenos** → that path renders the screen and
+  plume_native suppresses it → bisect which hook/bypass suppresses it (gate pulse, prod-guard, GpuCmdBuf
+  body-skip, Irq skip, `dword_829F0258`/`dword_829C24C0`).
+- If they are **0 in Xenos too** → the menu is NOT scene/PM4-rendered; it is the minimal PathA/PathB
+  composite and the bug is in that translation (back to the sprite-collapse / decl band-aid line).
+
+Procedure: clear/rename `C:\temp\fm2-clean.log`; run FM2 **without** `--fm2_plume_mode plume_native` to the
+same screen; then summarise the per-hook counters. No rebuild required.
+
+## 17. RESOLVED FORK + CALL-CHAIN CLIMB (session 6O) — scene producer is silent in plume_native
+
+Decisive Xenos vs plume_native comparison (same screen, same RAW-hook counters, both modes):
+
+| hook | Xenos /sec | plume_native /sec |
+|---|---|---|
+| `FramePipe` (scene render) | **360–410** | **0** |
+| `SubmitPass` | 1805–2050 | 0 |
+| `ObjPassTrav` | 1441–1482 | 0 |
+| `SubmitSorted` | 330–366 | 0 |
+
+**Fork RESOLVED:** `FM2_Render_FramePipeline` IS the on-screen render; plume_native suppresses it. Not a
+shader-collapse, not a wait-screen problem. `FramePipe`'s counter is **0, not 1** — never entered once.
+
+### 17a. The climb (each level via guest `ctx.lr` capture in the RAW hook, Xenos run)
+1. **`FramePipe` caller** = `sub_825E8BF8` (`0x825E8F38`/`0x825E8FB8`), which calls FramePipe via
+   `(*(this+20))->vtable[+44]()`, 4×/frame across 2 pass objects. Whole body gated by `if(*(this+2379))`.
+   Probe in plume_native: **`sub_825E8BF8` is never reached** (`FM2_SCENEVIEW_DISP` absent). In Xenos it
+   runs with `enable2379=1` — so **the +2379 gate is a red herring** (set in both / not the issue).
+2. **`sub_825E8BF8` caller** = `0x8245D13C` inside **`sub_8245D048`** — a **deferred-callback QUEUE drain**
+   (`for(i=*v4; i; i=*(i+20)) (*(i))(i[1], i[2])`). The scene render is one registered node
+   (`node[0]=sub_825E8BF8`, `node[4]=this=sceneView 0x4193xxxx`). `sub_8245D048` is called by
+   `FM2_RenderThread_RunFrame` (`sub_82288948`) only when `v11(=*(queue+120) submitted) > *(rt+2100)
+   processed` && `sub_8245D448()`.
+3. **plume_native probe of `sub_8245D048`**: it **runs heavily** (~288/sec, draining 7–110-node queues on
+   tids 82056 & 58272) — but **`sceneNode=0` in every queue**. So the consumer/frame-gate is FINE; the
+   **scene-render callback is never enqueued**. (RenderWorker fires 144/sec and presents the RT regardless.)
+
+### 17b. ROOT (refined): a PRODUCER/SUBMISSION failure, not consumer/GPU
+The deferred-callback queue is a **producer/consumer with a circular buffer**: `sub_8245D448` pops a frame's
+batch from the input ring (`queue+32`) into the consume list (`queue+56`); `sub_8245D048` drains+dispatches;
+`sub_8245D740` recycles via `FM2_CircularBuffer_PushFrontNode`. The render queue lives at
+**`renderThreadObj+2224`**. In plume_native the consumer drains fine but the **scene producer never pushes
+the scene-render command** into it. (`sub_8245CED8`/`ReleaseChildCallback` — which appends to a *different*
+list at `queue+52` — is NOT the scene's enqueue; filtering `fn==0x825E8BF8` there never fired, even in
+Xenos. The scene node is a persistent/cross-thread push into the `+2224` input ring.)
+
+So: in plume_native the **scene-render producer thread is silent** — it never enqueues the per-frame scene
+command. Everything downstream (drain → `sub_825E8BF8` → `FramePipe` → passes) is reached only when the
+command is enqueued. The producer-guard bypass, the GPU-fence waits, and the `+2379` enable flag are all
+ruled out. Most likely the **scene-producer thread is parked on a frame-sync/present signal the disabled
+ring never raises** (same family as the `dword_829C24C0` gate we already pulse — but a DIFFERENT event/
+thread). Reconnects to §15a.
+
+### 17c. NEXT
+Find the producer that pushes `(fn=sub_825E8BF8, this=sceneView)` into `renderThreadObj+2224`, and why its
+thread is silent in plume_native. Cleanest: attach x64dbg to a **plume_native** run on the black screen and
+inspect thread states — locate the parked render-producer thread (the one that in Xenos runs on the
+scene tid and pushes to `+2224`) and read what it waits on. Alternatively a HW read-bp on the vtable slot
+holding `sub_825E8BF8` (`0x8210c74c` / `0x821950e8`) during a Xenos run reveals the producer call site.
+Diagnostic hooks added this session (all in `d3d_hooks.cpp`, log to `fm2-clean.log`, mode-independent):
+`FM2_FRAMEPIPE_CALLER`, `FM2_SCENEVIEW_DISP` (sub_825E8BF8), `FM2_CBQUEUE_DISP` (sub_8245D048),
+`FM2_SCENE_ENQUEUE` (sub_8245CED8 — wrong queue, can be removed).
+
+## 18. x64dbg: PRODUCER PINPOINTED — scene-view entry never SUBMITTED in plume_native (session 6P)
+
+Used x64dbg (HW read-bp on the scene-render vtable slot, guest `0x8210c74c`/`0x821950e8`, both hold
+fn `0x825E8BF8`; host = membase `0x100000000` + guest). **Xenos run:** the bp fired instantly; call
+stack (render thread "XThread1CA20"): `XThread::Execute → sub_82756CE0 → sub_82289640
+(RenderThread_Main) → sub_82288948 (RunFrame) → sub_822884C8 (FM2_WaitScreen_FlushPendingEntries) →
+… → sub_82279610` (a CParams execute that loads scene `vtable[11]`, `bswap`s it, builds the render
+command). So the scene render command is **built on the render thread inside `sub_822884C8`**, which
+RunFrame calls when `*(renderThread+1824)` is set.
+
+**Plume_native run** (relaunched under x64dbg, broke at RunFrame entry): render-thread obj
+`a1 = ctx.r3 = 0x4001C170` (queue `a1+2224 = 0x4001CA20` ✓). Two HW bps:
+- WRITE-bp on `+1824` (host `0x14001C890`) **fired, value=1**, written by a **GAME thread**
+  ("XThread4124": `sub_82214CF0 → sub_8220EAC8 → sub_822892C0`) that queues a render entry. So
+  **`+1824` toggles normally in plume** — game threads DO queue entries and the render thread DOES
+  flush them. The gate is NOT the bug (an earlier single read of `0` was just a cleared moment).
+- READ-bp on the scene vtable slot **never fired in plume_native**, even after the game reached the
+  front-end (audio/UI/music loaded). So `sub_822884C8` flushes OTHER entries but **never builds the
+  scene-view command** — the scene-view entry is never queued.
+
+### 18a. REFINED ROOT CAUSE
+The `+1824`/flush/queue/drain/dispatch machinery all WORK in plume_native. What's missing is the
+**game-thread submission of the scene-view render entry** — the 3D scene render request is simply
+never made in plume_native (other render entries are). This is a **game-logic-level divergence**, not
+a render-pipeline bug. So ALL the prior render-pipeline theories (decl/constants/collapse, +1824
+gate, GPU fences, producer-guard, present race) are downstream/irrelevant — the scene is never even
+requested.
+
+### 18b. SUBMITTER CHAIN + THE GATE (x64dbg Xenos, bp on the renderer-CParams ctor)
+Broke on `sub_82279630` (`CCarRendererDeferred::CParams1ICarRendererRenderCarReflection` ctor) in
+Xenos → submitter (game thread "XThread15FE8"):
+```
+sub_822172E8 (MAIN GAME LOOP) → sub_825DCE08 → sub_82609AB8 (render-pass schedule loop)
+  → FM2_TriggerMatchingListEntryActions (0x8234d5a8) → sub_82279630 (build car-render CParams)
+```
+Render entries are typed CParams (`CCarRendererDeferred`/`COverlayRendererDeferred`/…) queued onto
+the render thread via `sub_822892C0(rt, entry)` = `sub_82288460(rt+16, entry)` + set `rt+1824=1`.
+
+**THE GATE** — `FM2_TriggerMatchingListEntryActions` walks the render-pass list and fires each entry's
+render-action vfunc ONLY if ALL of:
+```
+*(DWORD*)(entry+36)==a2  &&  *(BYTE*)(entry+202)  &&  *(float*)(entry+180)!=0.0
+  &&  (*(BYTE*)(entry+184) || *(BYTE*)(entry+185))
+```
+The car/scene render is one entry's action. **In plume_native that entry fails one of these** — most
+likely `+180` (pass weight/fade-alpha, set by `sub_82609AB8`'s `FM2_Render_SetPassTimingScalar`/level
+calls) == 0, or the `+202`/`+184/185` enables. So the render-action never fires → command never built
+→ drain empty → `FramePipe` never dispatched → black.
+
+### 18c. FIX REGION + NEXT
+The bug is in the **render-pass activation / transition-weight system**: the car/scene pass entry is
+never activated (weight 0 / disabled) in plume_native, even though the game reaches the front-end.
+NEXT: read the car-render pass entry's `+180/+202/+184/+185` in plume vs Xenos to pin the exact field,
+then trace what sets it (`sub_82609AB8` pass-weight/transition, or a higher game-state flag) that
+plume_native leaves incomplete. x64dbg facts: recompiled guest fns resolve by **bare** name
+(`sub_82288948`, not `fm2.`); at entry `RCX=&PPCContext`, `ctx.r3=[RCX+0]`; render-thread obj fixed at
+guest `0x4001C170` (queue +2224, wait-flag +1824); bps persist in the `.dd64` db across relaunch.
+
+### 17d. DEFINITIVE: scene is NOT enqueued via the deferred-callback API (`sub_8245CED8`)
+`sub_8245CED8` = `FM2_DeferredTaskParams_ReleaseChildCallback(queue, fn=a2, this=a3, arg2=a4, flag=a5)`:
+either immediate-executes (`if(*(queue+144)) a2(a3,a4)`) or allocs an 0x18 node (`node[0]=a2 …`) and appends
+to the list at **`queue+52`**. Probe with fire-counter + fn-range capture: `SchedCb` fires **354,752/sec**
+(hook definitely installed) but **ZERO** enqueues with `fn` in `[0x825E0000,0x825F0000)` — so the scene
+render is **never scheduled through this API**. Reason: the drain `sub_8245D048` processes `queue+56`
+(filled by `sub_8245D448` from the **input ring `queue+32`**), which is a DIFFERENT list from the `queue+52`
+that `ReleaseChildCallback` appends to. The render-thread command system uses C++ command objects
+**`CRenderThreadLink::CParams1IRenderThread*`** (`BeginRenderInternal` 0x82276940, `EndRenderModeInternal`
+0x82276B30, …) enqueued via `GetField4`+`AllocPoolBumpAllocate`+`ReleaseChild`. But the scene node is a
+**raw-fn** node (`node[0]=sub_825E8BF8`, called directly by the drain, caller `0x8245D13C`, no thunk), NOT a
+CParams object — so it reaches the input ring `queue+32` via a per-frame **render-command submission** path
+that is layered/inlined (no single clean hookable enqueue). Top-down is also nested vtable dispatch
+(`FM2_SceneCamera_CallVfunc12/20` → `(*(*(*(scene+2392)+8)+12))()`).
+
+**STATUS:** diagnosis is solid (scene producer silent in plume_native; consumer/queue/GPU all fine). The
+exact producer function is elusive via static+hook climbing due to the engine's layered render-command
+architecture. Cleanest remaining options: (1) x64dbg HW write-bp on the scene queue node `[0]` (catch the
+writer = producer) or thread inspection of the parked producer on a plume_native black-screen run; (2)
+test the main-loop branch hypothesis: in `sub_822172E8` the render path is `if(*(a1+8)) (*(*(a1+8)+40))(dt)`
+else the loading branch (`FM2_Render_NotifyManagerStateChange`) — count a loading-branch marker plume vs
+Xenos to see if the main loop is stuck pre-render (`*(a1+8)==0`).
