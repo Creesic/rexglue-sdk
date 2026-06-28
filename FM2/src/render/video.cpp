@@ -515,18 +515,38 @@ void DrawPresentTestGrid(RenderCommandList *cl, RenderTexture *backBuffer,
   static std::atomic<uint32_t> s_vramLogCtr{0};
   const bool logThis =
       (s_vramLogCtr.fetch_add(1, std::memory_order_relaxed) % 150u) == 0u;
+  // Cells 0-7 (top 2 rows) = sampled INPUT textures (what the draws read).
+  // Cells 8-11 (bottom row) = the recent RENDER TARGETS = the draw OUTPUTS, so we
+  // can see which RT actually holds the composited menu vs. stays black (the cell
+  // that shows the menu is the one the present source should be).
   for (uint32_t i = 0; i < cols * rows; ++i) {
     const float x = float(i % cols) * cw;
     const float y = float(i / cols) * chf;
     RenderRect mark(int(x), int(y), int(x + cw), int(y + chf));
-    cl->clearColor(0, RenderColor(0.0f, 0.3f, 0.3f, 1.0f), &mark, 1); // teal = null
+    // Cell 11 = the latest EDRAM resolve SOURCE = the composited-frame candidate
+    // (incl. the swap framebuffer). Cells 8-10 = recent render targets (outputs).
+    // Cells 0-7 = sampled input textures.
+    const bool isComposite = (i == 11u);
+    const bool isRT = (i >= 8u && i < 11u);
+    RenderColor markCol = RenderColor(0.0f, 0.3f, 0.3f, 1.0f); // teal = tex
+    if (isComposite)
+      markCol = RenderColor(0.9f, 0.9f, 0.0f, 1.0f); // yellow = composite candidate
+    else if (isRT)
+      markCol = RenderColor(0.4f, 0.0f, 0.4f, 1.0f); // magenta = RT
+    cl->clearColor(0, markCol, &mark, 1);
     uint32_t base = 0;
-    GuestBaseTexture *g = GetVramViewTexture(i, &base);
+    GuestBaseTexture *g = isComposite  ? GetSceneResolveSource()
+                          : isRT       ? GetRecentColorRenderTarget(i - 8u)
+                                       : GetVramViewTexture(i, &base);
     blitGuestToCell(g, x + 2.0f, y + 2.0f, cw - 4.0f, chf - 4.0f);
     if (logThis) {
       if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
-        std::fprintf(f, "FM2_VRAMVIEW cell=%u row=%u col=%u base=0x%08X tex=%p\n",
-                     i, i / cols, i % cols, base, static_cast<void *>(g));
+        std::fprintf(f,
+                     "FM2_VRAMVIEW cell=%u row=%u col=%u kind=%s base=0x%08X "
+                     "tex=%p%s\n",
+                     i, i / cols, i % cols,
+                     isComposite ? "COMPOSITE" : isRT ? "RT" : "tex", base,
+                     static_cast<void *>(g), (g != nullptr ? "" : " (null)"));
         std::fclose(f);
       }
     }

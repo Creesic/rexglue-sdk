@@ -2765,6 +2765,13 @@ REX_HOOK(FM2_GpuCommandBuffer_BuildAndSubmit,
 // the menu RT. Present the last-drawn RT so the menu actually shows.
 static constexpr bool kPresentSceneResolveSource = false;
 static std::atomic<rr::GuestBaseTexture *> g_sceneResolveSource{nullptr};
+namespace fm2::render {
+// Accessor so the VRAM viewer can show the latest resolve source = the composited
+// frame candidate (incl. the widened swap-framebuffer resolve).
+GuestBaseTexture *GetSceneResolveSource() {
+  return g_sceneResolveSource.load(std::memory_order_relaxed);
+}
+} // namespace fm2::render
 // Render-worker per-frame dispatch (guest sub_82288948), called in an infinite
 // loop by sub_82289640. RAW hook: the original needs its full PPC context
 // (r13 thread base, etc.); auto-marshaling would isolate it and trap. After the
@@ -3240,7 +3247,10 @@ uint32_t Fm2EmitSurfaceResolve(uint32_t context, uint32_t flags, uint32_t a3) {
     // the real rendered content instead of black resolve-dest memory.
     const uint32_t destBase = ReadGuestU32At(context + 10652u);
     const uint32_t colorSurf = ReadGuestU32At(context + 12160u);
-    if (colorSurf != 0 && destBase >= 0x08000000u && destBase < 0x1A000000u) {
+    // Widened upper bound 0x1A000000 -> 0x20000000 to capture the SWAP FRAMEBUFFER
+    // resolve (guest ~0x1F90F000, the final composited display) which the old range
+    // filtered out -- that's the surface the menu/game image actually lands in.
+    if (colorSurf != 0 && destBase >= 0x08000000u && destBase < 0x20000000u) {
       GuestSurface *gs = ghp::ToHost<GuestSurface>(colorSurf);
       rr::GuestBaseTexture *host = AsFm2(gs);
       if (host == nullptr && gs != nullptr)

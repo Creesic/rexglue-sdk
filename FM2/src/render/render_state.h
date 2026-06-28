@@ -67,6 +67,9 @@ GuestBaseTexture *GetRecentColorRenderTarget(uint32_t index);
 void RecordVramViewTexture(uint32_t base, GuestBaseTexture *tex);
 GuestBaseTexture *GetVramViewTexture(uint32_t index, uint32_t *outBase);
 uint32_t VramViewCount();
+// Latest EDRAM-resolve source = the composited-frame candidate (defined in
+// d3d_hooks.cpp). The VRAM viewer shows it in a dedicated cell.
+GuestBaseTexture *GetSceneResolveSource();
 void SetDepthStencilSurface(GuestDevice *device, GuestSurface *depthStencil);
 
 void Clear(GuestDevice *device, uint32_t flags, const float *color, float z);
