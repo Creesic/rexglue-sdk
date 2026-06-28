@@ -20,6 +20,7 @@
 #include <utility>
 
 #include <rex/cvar.h>
+#include <rex/gpu_sync_diag.h>  // TEMP_DIAG
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/flags.h>
 #include <rex/kernel/xboxkrnl/video.h>
@@ -309,6 +310,7 @@ void GraphicsSystem::SetInterruptCallback(uint32_t callback, uint32_t user_data)
 
 void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
   if (!interrupt_callback_) {
+    gpu_sync_diag::OnDispatch(source, cpu, 0, /*dropped=*/true);  // TEMP_DIAG
     return;
   }
 
@@ -323,6 +325,9 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
 
   // REXGPU_INFO("Dispatching GPU interrupt at {:08X} w/ mode {} on cpu {}",
   //          interrupt_callback_, source, cpu);
+
+  gpu_sync_diag::OnDispatch(source, cpu, interrupt_callback_, /*dropped=*/false);  // TEMP_DIAG
+  gpu_sync_diag::InterruptScope int_diag_scope;                                    // TEMP_DIAG
 
   uint64_t args[] = {source, interrupt_callback_data_};
   function_dispatcher_->ExecuteInterrupt(thread->thread_state(), interrupt_callback_, args,

@@ -25,7 +25,30 @@
 namespace rex::kernel::xboxkrnl {
 using namespace rex::system;
 
+PPCContext* GetCurrentGuestContextForDebug() {
+  if (auto* thread_state = rex::runtime::ThreadState::Get()) {
+    return thread_state->context();
+  }
+
+  auto* thread = XThread::GetCurrentThread();
+  if (thread && thread->thread_state()) {
+    return thread->thread_state()->context();
+  }
+
+  return nullptr;
+}
+
+uint32_t GetCurrentGuestThreadIdForDebug() {
+  if (auto* thread_state = rex::runtime::ThreadState::Get()) {
+    return thread_state->thread_id();
+  }
+
+  auto* thread = XThread::GetCurrentThread();
+  return thread ? thread->thread_id() : 0;
+}
+
 void DbgBreakPoint_entry() {
+  REXKRNL_ERROR("DbgBreakPoint hit");
   rex::debug::Break();
 }
 
@@ -111,6 +134,17 @@ void HandleCppException(ppc_ptr_t<X_EXCEPTION_RECORD> record) {
   // http://www.drdobbs.com/visual-c-exception-handling-instrumentat/184416600
   // http://www.openrce.org/articles/full_view/21
 
+  REXKRNL_ERROR(
+      "RtlRaiseException C++ exception: record={:08X} code={:08X} flags={:08X} addr={:08X} "
+      "params={} magic={:08X} thrown={:08X} throw_info={:08X}",
+      record.guest_address(), static_cast<uint32_t>(record->code),
+      static_cast<uint32_t>(record->exception_flags),
+      static_cast<uint32_t>(record->exception_address),
+      static_cast<uint32_t>(record->number_parameters),
+      static_cast<uint32_t>(record->exception_information[0]),
+      static_cast<uint32_t>(record->exception_information[1]),
+      static_cast<uint32_t>(record->exception_information[2]));
+
   assert_true(record->number_parameters == 3);
   assert_true(record->exception_information[0] == 0x19930520);
 
@@ -123,10 +157,37 @@ void HandleCppException(ppc_ptr_t<X_EXCEPTION_RECORD> record) {
   auto catchable_types = REX_KERNEL_MEMORY()->TranslateVirtual<x_s__CatchableTypeArray*>(
       throw_info->catchable_type_array_ptr);
 
+  REXKRNL_ERROR(
+      "RtlRaiseException C++ details: thrown_vftable={:08X} throw_attrs={:08X} unwind={:08X} "
+      "forward={:08X} catchable_array={:08X} catchable_count={}",
+      static_cast<uint32_t>(vftable_ptr), static_cast<uint32_t>(throw_info->attributes),
+      static_cast<uint32_t>(throw_info->unwind_ptr),
+      static_cast<uint32_t>(throw_info->forward_compat_ptr),
+      static_cast<uint32_t>(throw_info->catchable_type_array_ptr),
+      catchable_types ? static_cast<int32_t>(catchable_types->number_catchable_types) : -1);
+
   rex::debug::Break();
 }
 
 void RtlRaiseException_entry(ppc_ptr_t<X_EXCEPTION_RECORD> record) {
+  if (!record) {
+    REXKRNL_ERROR("RtlRaiseException called with null record");
+    rex::debug::Break();
+    return;
+  }
+
+  REXKRNL_ERROR(
+      "RtlRaiseException: record={:08X} code={:08X} flags={:08X} addr={:08X} params={} "
+      "info0={:08X} info1={:08X} info2={:08X} info3={:08X}",
+      record.guest_address(), static_cast<uint32_t>(record->code),
+      static_cast<uint32_t>(record->exception_flags),
+      static_cast<uint32_t>(record->exception_address),
+      static_cast<uint32_t>(record->number_parameters),
+      static_cast<uint32_t>(record->exception_information[0]),
+      static_cast<uint32_t>(record->exception_information[1]),
+      static_cast<uint32_t>(record->exception_information[2]),
+      static_cast<uint32_t>(record->exception_information[3]));
+
   switch (record->code) {
     case 0x406D1388: {
       HandleSetThreadName(record);
@@ -140,12 +201,27 @@ void RtlRaiseException_entry(ppc_ptr_t<X_EXCEPTION_RECORD> record) {
 
   // TODO(benvanik): unwinding.
   // This is going to suck.
+  REXKRNL_ERROR("RtlRaiseException unhandled code={:08X}",
+                static_cast<uint32_t>(record->code));
   rex::debug::Break();
 }
 
 void KeBugCheckEx_entry(u32 code, u32 param1, u32 param2, u32 param3, u32 param4) {
-  REXKRNL_DEBUG("*** STOP: 0x{:08X} (0x{:08X}, 0x{:08X}, 0x{:08X}, 0x{:08X})", code, param1, param2,
-                param3, param4);
+  auto* ctx = GetCurrentGuestContextForDebug();
+  if (ctx) {
+    REXKRNL_ERROR(
+        "*** STOP: 0x{:08X} (0x{:08X}, 0x{:08X}, 0x{:08X}, 0x{:08X}) tid={} lr={:08X} "
+        "r1={:08X} r3={:08X} r4={:08X} r5={:08X} r6={:08X} r7={:08X}",
+        code, param1, param2, param3, param4, GetCurrentGuestThreadIdForDebug(),
+        static_cast<uint32_t>(ctx->lr), static_cast<uint32_t>(ctx->r1.u64),
+        static_cast<uint32_t>(ctx->r3.u64), static_cast<uint32_t>(ctx->r4.u64),
+        static_cast<uint32_t>(ctx->r5.u64), static_cast<uint32_t>(ctx->r6.u64),
+        static_cast<uint32_t>(ctx->r7.u64));
+  } else {
+    REXKRNL_ERROR(
+        "*** STOP: 0x{:08X} (0x{:08X}, 0x{:08X}, 0x{:08X}, 0x{:08X}) no-guest-context",
+        code, param1, param2, param3, param4);
+  }
   fflush(stdout);
   rex::debug::Break();
   assert_always();

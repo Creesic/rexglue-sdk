@@ -40,6 +40,7 @@
 
 // TEMP_DIAG: XMA gap diagnostics
 #include "xma_gap_diag.h"
+#include <rex/gpu_sync_diag.h>  // TEMP_DIAG
 // END TEMP_DIAG
 
 namespace rex::kernel::xboxkrnl {
@@ -492,6 +493,7 @@ u32 KeSetEvent_entry(ppc_ptr_t<X_KEVENT> event_ptr, u32 increment, u32 wait) {
   // TEMP_DIAG: XMA gap - signal tracking (with guest address)
   xma_gap_diag::LogSignal("KeSetEvent", event_ptr.guest_address());
   // END TEMP_DIAG
+  gpu_sync_diag::OnSignal("KeSetEvent", event_ptr.guest_address());  // TEMP_DIAG
   return xeKeSetEvent(event_ptr, increment, wait);
 }
 
@@ -575,6 +577,7 @@ u32 NtSetEvent_entry(u32 handle, mapped_u32 previous_state_ptr) {
     xma_gap_diag_v2::IncStreamSignal();
   }
   // END TEMP_DIAG V2
+  gpu_sync_diag::OnSignal("NtSetEvent", handle);  // TEMP_DIAG
   return xeNtSetEvent(handle, previous_state_ptr);
 }
 
@@ -647,6 +650,7 @@ u32 KeReleaseSemaphore_entry(ppc_ptr_t<X_KSEMAPHORE> semaphore_ptr, u32 incremen
   // TEMP_DIAG: XMA gap - signal tracking (with guest address)
   xma_gap_diag::LogSignal("KeReleaseSemaphore", semaphore_ptr.guest_address(), adjustment);
   // END TEMP_DIAG
+  gpu_sync_diag::OnSignal("KeReleaseSemaphore", semaphore_ptr.guest_address());  // TEMP_DIAG
   return xeKeReleaseSemaphore(semaphore_ptr, increment, adjustment, wait);
 }
 
@@ -872,6 +876,7 @@ uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason, uint32_
 
 u32 KeWaitForSingleObject_entry(mapped_void object_ptr, u32 wait_reason, u32 processor_mode,
                                 u32 alertable, mapped_u64 timeout_ptr) {
+  gpu_sync_diag::OnWaitSingle("KeWait1", object_ptr.guest_address());  // TEMP_DIAG
   // TEMP_DIAG: XMA gap - wait tracking (with guest address)
   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
   double wait_enter_ms = xma_gap_diag::LogWaitEnter("KeWaitForSingle", object_ptr.guest_address(),
@@ -888,6 +893,7 @@ u32 KeWaitForSingleObject_entry(mapped_void object_ptr, u32 wait_reason, u32 pro
 
 u32 NtWaitForSingleObjectEx_entry(u32 object_handle, u32 wait_mode, u32 alertable,
                                   mapped_u64 timeout_ptr) {
+  gpu_sync_diag::OnWaitSingle("NtWait1", object_handle);  // TEMP_DIAG
   // TEMP_DIAG: TASK 2 — FMOD stream event wait instrumentation
   bool is_xma_thread = xma_gap_diag::IsXmaThread();
   double wait_enter_ms = 0.0;
@@ -933,6 +939,7 @@ u32 KeWaitForMultipleObjects_entry(u32 count, mapped_u32 objects_ptr, u32 wait_t
                                    u32 wait_reason, u32 processor_mode, u32 alertable,
                                    mapped_u64 timeout_ptr, mapped_void wait_block_array_ptr) {
   assert_true(wait_type <= 1);
+  gpu_sync_diag::OnWaitMultiple("KeWaitMultiple", count, wait_type);  // TEMP_DIAG
 
   // TEMP_DIAG: XMA gap - multi-wait tracking
   uint32_t obj_addrs[4] = {};
@@ -995,6 +1002,7 @@ uint32_t xeNtWaitForMultipleObjectsEx(uint32_t count, rex::be<uint32_t>* handles
 
 u32 NtWaitForMultipleObjectsEx_entry(u32 count, mapped_u32 handles, u32 wait_type, u32 wait_mode,
                                      u32 alertable, mapped_u64 timeout_ptr) {
+  gpu_sync_diag::OnWaitMultiple("NtWaitMultiple", count, wait_type);  // TEMP_DIAG
   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
   return xeNtWaitForMultipleObjectsEx(count, handles, wait_type, wait_mode, alertable,
                                       timeout_ptr ? &timeout : nullptr);
@@ -1002,6 +1010,7 @@ u32 NtWaitForMultipleObjectsEx_entry(u32 count, mapped_u32 handles, u32 wait_typ
 
 u32 NtSignalAndWaitForSingleObjectEx_entry(u32 signal_handle, u32 wait_handle, u32 alertable,
                                            u32 r6, mapped_u64 timeout_ptr) {
+  gpu_sync_diag::OnSignalAndWait(signal_handle, wait_handle);  // TEMP_DIAG
   X_STATUS result = X_STATUS_SUCCESS;
 
   auto signal_object = REX_KERNEL_OBJECTS()->LookupObject<XObject>(signal_handle);

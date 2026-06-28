@@ -20,6 +20,7 @@
 
 #include <rex/cvar.h>
 #include <rex/dbg.h>
+#include <rex/gpu_sync_diag.h>  // TEMP_DIAG
 #include <rex/perf/counter.h>
 #include <rex/chrono/clock.h>
 #include <rex/graphics/command_processor.h>
@@ -1775,6 +1776,7 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
 
   IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
   FinishCommandStatsFrame(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
+  gpu_sync_diag::OnSwap(frontbuffer_ptr);  // TEMP_DIAG
 
   ++counter_;
   return true;

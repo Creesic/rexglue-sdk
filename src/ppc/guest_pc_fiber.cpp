@@ -61,10 +61,12 @@ struct GuestFiberEntryArgs {
 // as a namespace-scope global.)
 std::atomic<bool> g_active{false};
 
-// TEMP diagnostic: trace the first N swaps/dispatches to characterize the
-// world-load hang. Remove once the fiber path is confirmed working.
+// TEMP_DIAG: full-run compact fiber-swap trace (one line per swap) to diff the
+// fiber execution order between a GOOD and a BAD (black) run and find which
+// fiber's activation diverges. resume_pc is the stable cross-run fiber identity.
+// High cap so the post-boot menu transition (far past swap #600) is captured.
 std::atomic<uint32_t> g_swap_seq{0};
-constexpr uint32_t kSwapLogCap = 600;
+constexpr uint32_t kSwapLogCap = 2000000;
 
 std::mutex& Mtx() {
   static std::mutex m;
@@ -224,21 +226,6 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
 
   auto* thread = XThread::GetCurrentThread();
 
-  // TEMP diagnostic on the file-captured WARN channel: prove the override is
-  // reached and report whether we have an XThread / active subsystem.
-  {
-    const uint32_t eseq = g_swap_seq.load(std::memory_order_relaxed);
-    if (eseq < kSwapLogCap) {
-      REXKRNL_WARN(
-          "gpf-hook ENTER active={} thread={} tid={} swapImpl={} tgt(r3)={:#010x} lr={:#010x} "
-          "r1={:#010x} r13={:#010x}",
-          g_active.load(std::memory_order_acquire), static_cast<const void*>(thread),
-          thread ? thread->thread_id() : 0u, reinterpret_cast<uintptr_t>(swapImpl),
-          static_cast<uint32_t>(ctx.r3.u64), static_cast<uint32_t>(ctx.lr),
-          static_cast<uint32_t>(ctx.r1.u64), static_cast<uint32_t>(ctx.r13.u64));
-    }
-  }
-
   if (!g_active.load(std::memory_order_acquire) || !thread || !swapImpl) {
     // Subsystem inactive or no thread context: degrade to the legacy inline
     // swap so behavior is unchanged when the fix is not installed.
@@ -253,32 +240,30 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
   // Snapshot the *source* fiber before swapImpl rewrites the TLS-current slot.
   const uint32_t current_block = ReadCurrentFiberBlock(ctx, mem);
   const uint32_t target_block = static_cast<uint32_t>(ctx.r3.u64);  // guest swap ABI
-  const uint32_t entry_lr = static_cast<uint32_t>(ctx.lr);
-  const uint32_t entry_r1 = static_cast<uint32_t>(ctx.r1.u64);
 
   rex::thread::Fiber* current_host = rex::thread::Fiber::Current();
-  const bool had_current = current_host != nullptr;
   if (!current_host) {
     current_host = thread->main_fiber();
   }
 
   const uint32_t seq = g_swap_seq.fetch_add(1, std::memory_order_relaxed);
-  const bool trace = seq < kSwapLogCap;
-  if (trace) {
-    REXKRNL_INFO(
-        "gpf swap #{} tid={} cur_blk={:#010x} tgt_blk={:#010x} cur_host={} had_cur={} "
-        "main={} entry_lr={:#010x} r1={:#010x} r13={:#010x}",
-        seq, thread->thread_id(), current_block, target_block,
-        static_cast<const void*>(current_host), had_current,
-        static_cast<const void*>(thread->main_fiber()), entry_lr, entry_r1,
-        static_cast<uint32_t>(ctx.r13.u64));
-  }
 
   // Make the source fiber resumable: register its host fiber under its block so
   // a later swap back to `current_block` finds this host stack.
   if (current_block) {
     EnsureSlot(current_block, current_host, current_host == thread->main_fiber());
   }
+
+  // Preserve the caller (yielding) fiber's non-volatile register set across the
+  // host fiber switch. The recompiled guest context switch (swapImpl) does not
+  // reliably reload r14-r31 / f14-f31 / v14-v31 on swap-back, so the resuming
+  // fiber can come back with stale callee-saved registers -- e.g. a stale
+  // pointer in r31 that faults when a menu/island worker fiber resumes. We
+  // snapshot them here and restore them on resume (only on the real switch-back
+  // path below). This is the uniform runtime replacement for the per-LR
+  // doax_hooks GPR band-aid (NeedsFiberCalleeSavePreserve).
+  alignas(16) uint8_t saved_nonvolatiles[PPCContext::kNonVolatileSaveSize];
+  ctx.SaveNonVolatiles(saved_nonvolatiles);
 
   // Reuse the guest's own register save/restore: saves the current registers
   // into the current context block and loads the target's into PPCContext,
@@ -288,41 +273,29 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
 
   FiberSlot* target = LookupSlot(target_block);
   const bool brand_new = (target == nullptr);
-  if (trace) {
-    REXKRNL_WARN("gpf swap #{} post-swap resume_pc={:#010x} tgt_sp={:#010x} brand_new={}", seq,
-                static_cast<uint32_t>(ctx.lr), static_cast<uint32_t>(ctx.r1.u64), brand_new);
-  }
   if (brand_new) {
     target = CreateHostFiberForTarget(target_block);
-    if (!target) {
-      // Cannot back the target with a host fiber -- fall through and let the
-      // guest continue inline on the current host stack (best effort).
-      if (trace) REXKRNL_ERROR("gpf swap #{} CreateHostFiber FAILED -> inline", seq);
-      return false;
-    }
   }
+  const bool will_switch = target && target->host && target->host != current_host;
 
-  if (!target->host || target->host == current_host) {
-    if (trace) {
-      REXKRNL_WARN("gpf swap #{} no-switch (host={} cur_host={}) -> inline continue", seq,
-                  static_cast<const void*>(target->host), static_cast<const void*>(current_host));
-    }
+  if (!target) {
+    // CreateHostFiberForTarget failed: continue inline on the current host stack.
+    REXKRNL_ERROR("FIBERSW #{} CreateHostFiber FAILED tgt={:08X} -> inline", seq, target_block);
+    return false;
+  }
+  if (!will_switch) {
     return false;  // already on the right host stack
   }
 
   // Hand the host stack to the target fiber. Control returns here only when
   // something switches back to `current_host`; by then a swapImpl on the other
   // side has already restored our register state into PPCContext.
-  if (trace) {
-    REXKRNL_WARN("gpf swap #{} -> SwitchTo host={} (brand_new={})", seq,
-                static_cast<const void*>(target->host), brand_new);
-  }
   rex::thread::Fiber::SwitchTo(target->host);
-  if (trace) {
-    REXKRNL_WARN("gpf swap #{} <- RESUMED on host={} lr={:#010x} r1={:#010x}", seq,
-                static_cast<const void*>(current_host), static_cast<uint32_t>(ctx.lr),
-                static_cast<uint32_t>(ctx.r1.u64));
-  }
+  // Resumed on this fiber's host stack. The swap-back's recompiled context
+  // switch may not have reloaded our non-volatiles -- force them back to the
+  // values this fiber had when it yielded. (Volatile regs incl. ctx.lr/r1 were
+  // correctly restored by swapImpl and are intentionally left untouched.)
+  ctx.RestoreNonVolatiles(saved_nonvolatiles);
   return true;
 }
 

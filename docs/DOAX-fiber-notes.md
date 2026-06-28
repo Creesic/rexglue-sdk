@@ -773,3 +773,10 @@ late: `MenuPreTransitionHook` and setup had already started the timeout movie bl
 
 Grep: `timeout-prelude-standdown`, `moviepoll-standdown`, `blocked post-ready timeout prelude`,
 `movie-poll-post-ready-restored`, `finalized-no-snapback`.
+
+**Crash follow-up (2026-06-26, `doax_111`):** Press Start dismiss reached LABEL_34 and
+re-entered `E000`/`CEF0`, but the current reduced hook forced `byte_833B8DEB=0`.
+`DOAX_MenuWorkFiberLoop` then returned to `sub_82783220`, whose next instruction is
+`KeBugCheck(0)` at `0x82783264`; log STOP showed `lr=0x82783268`. Keep
+`byte_833B8DEB` nonzero for the post-dismiss menu state; do not use fiber return as
+the four-menu ready signal.
