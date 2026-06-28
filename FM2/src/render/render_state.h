@@ -61,6 +61,12 @@ GuestBaseTexture *GetTestGameTexture();
 // Recent distinct color render targets (index 0 = most recent), for finding
 // which surface holds rendered content (present-source diagnostics).
 GuestBaseTexture *GetRecentColorRenderTarget(uint32_t index);
+// VRAM viewer: stable set of distinct GUEST textures the draws actually sample
+// (resolve-dests + loaded textures = the guest-RAM contents). The present grid
+// blits these so the user can see if RAM holds black / garbage / good data.
+void RecordVramViewTexture(uint32_t base, GuestBaseTexture *tex);
+GuestBaseTexture *GetVramViewTexture(uint32_t index, uint32_t *outBase);
+uint32_t VramViewCount();
 void SetDepthStencilSurface(GuestDevice *device, GuestSurface *depthStencil);
 
 void Clear(GuestDevice *device, uint32_t flags, const float *color, float z);

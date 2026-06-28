@@ -403,7 +403,9 @@ void ExecuteUpload(const std::function<void(RenderCommandList *)> &record) {
 std::unique_ptr<RenderTexture> g_testTex;
 std::unique_ptr<RenderTextureView> g_testTexView;
 uint32_t g_testTexDesc = 0;
-bool g_showPresentTestGrid = false; // diagnostic overlay off; use RenderDoc to inspect
+bool g_showPresentTestGrid = true; // session 6P-2: VRAM viewer back ON (stable
+                                   // first-12-no-evict ring -- the crash was the
+                                   // evict-oldest variant blitting freed textures).
 
 void EnsureTestTexture() {
   if (g_testTex != nullptr || g_device == nullptr)
@@ -467,16 +469,6 @@ void DrawPresentTestGrid(RenderCommandList *cl, RenderTexture *backBuffer,
                RenderTextureBarrier(backBuffer, RenderTextureLayout::COLOR_WRITE));
   cl->setFramebuffer(framebuffer);
 
-  const int cellW = int(sw) / 6;
-  const int cellH = int(sh) / 8;
-  const RenderColor colors[5] = {
-      RenderColor(1, 0, 0, 1), RenderColor(0, 1, 0, 1), RenderColor(0, 0, 1, 1),
-      RenderColor(1, 1, 1, 1), RenderColor(1, 1, 0, 1)};
-  for (int i = 0; i < 5; ++i) {
-    RenderRect r(i * cellW + 4, 4, (i + 1) * cellW - 4, cellH); // l,t,r,b
-    cl->clearColor(0, colors[i], &r, 1);
-  }
-
   RenderPipeline *blit = GetBlitPipeline(kBackbufferFormat);
   auto blitDescToCell = [&](RenderTexture *tex, uint32_t desc, float x, float y,
                             float w, float h) {
@@ -507,35 +499,37 @@ void DrawPresentTestGrid(RenderCommandList *cl, RenderTexture *backBuffer,
     g->layout = RenderTextureLayout::SHADER_READ;
   };
 
-  const float ry = float(cellH + 8), rh = float(2 * cellH);
-  const int ity = cellH + 8, ith = 2 * cellH;
-  // Marker fills: if a cell stays its marker color, that source pointer was
-  // null (cell never blitted); if it goes black, the source is valid-but-black.
-  RenderRect mB(cellW, ity, 2 * cellW, ity + ith);   // orange = RT marker
-  RenderRect mC(2 * cellW, ity, 3 * cellW, ity + ith); // purple = tex marker
-  cl->clearColor(0, RenderColor(1.0f, 0.5f, 0.0f, 1.0f), &mB, 1);
-  cl->clearColor(0, RenderColor(0.6f, 0.0f, 0.8f, 1.0f), &mC, 1);
-
-  // Cell A: our procedural checkerboard (proven to work as a control).
-  EnsureTestTexture();
-  blitDescToCell(g_testTex.get(), g_testTexDesc, 0.0f, ry, float(cellW), rh);
-  // Cell B: the game's last-drawn color render target (does the game draw?).
-  //   orange remains => null pointer; black => valid but the RT is black.
-  blitGuestToCell(GetLastDrawnColorRenderTarget(), float(cellW), ry,
-                  float(cellW), rh);
-  // Cell C: an actual game texture (tiled upload -- the prime suspect).
-  //   purple remains => null pointer; black/garbage => upload/detile result.
-  blitGuestToCell(GetTestGameTexture(), float(2 * cellW), ry, float(cellW), rh);
-
-  // Bottom row: the 6 most-recent distinct color render targets, so we can see
-  // which surface actually holds the rendered scene/UI content (present-source).
-  const float by = ry + rh + 8.0f;
-  const float bh = float(cellH * 2);
-  for (uint32_t i = 0; i < 6u; ++i) {
-    const float bx = float(int(i) * cellW);
-    RenderRect mark(int(bx), int(by), int(bx) + cellW, int(by + bh));
-    cl->clearColor(0, RenderColor(0.0f, 0.3f, 0.3f, 1.0f), &mark, 1); // teal marker
-    blitGuestToCell(GetRecentColorRenderTarget(i), bx, by, float(cellW), bh);
+  // VRAM VIEWER: a 4x3 grid of the distinct GUEST textures the draws actually
+  // sample (resolve-dests + loaded textures = the raw guest-RAM contents the
+  // shaders read). Each cell paints that memory. Interpretation per cell:
+  //   teal (unchanged) => slot null / never populated
+  //   solid black      => valid pointer but RAM is all zero (nothing written)
+  //   flat gray        => cleared-but-unwritten (e.g. resolve-dest never resolved)
+  //   noisy/garbage     => data IS present but mis-detiled / wrong format
+  //   recognizable image=> real good data
+  // The cell->guest-address map is logged (FM2_VRAMVIEW) so we know which surface
+  // each cell shows.
+  const uint32_t cols = 4u, rows = 3u;
+  const float cw = float(sw) / float(cols);
+  const float chf = float(sh) / float(rows);
+  static std::atomic<uint32_t> s_vramLogCtr{0};
+  const bool logThis =
+      (s_vramLogCtr.fetch_add(1, std::memory_order_relaxed) % 150u) == 0u;
+  for (uint32_t i = 0; i < cols * rows; ++i) {
+    const float x = float(i % cols) * cw;
+    const float y = float(i / cols) * chf;
+    RenderRect mark(int(x), int(y), int(x + cw), int(y + chf));
+    cl->clearColor(0, RenderColor(0.0f, 0.3f, 0.3f, 1.0f), &mark, 1); // teal = null
+    uint32_t base = 0;
+    GuestBaseTexture *g = GetVramViewTexture(i, &base);
+    blitGuestToCell(g, x + 2.0f, y + 2.0f, cw - 4.0f, chf - 4.0f);
+    if (logThis) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f, "FM2_VRAMVIEW cell=%u row=%u col=%u base=0x%08X tex=%p\n",
+                     i, i / cols, i % cols, base, static_cast<void *>(g));
+        std::fclose(f);
+      }
+    }
   }
 
   cl->barriers(RenderBarrierStage::GRAPHICS,

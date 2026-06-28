@@ -861,27 +861,47 @@ bool UploadGuestTextureData(GuestTexture *texture,
         src != nullptr) {
       const auto *w = reinterpret_cast<const uint32_t *>(src);
       const size_t words = size_t(footprint) / 4;
-      size_t nonZero = 0;
-      for (size_t i = 0; i < words; ++i)
+      size_t nonZero = 0, distinctish = 0;
+      const uint32_t w0 = words > 0 ? w[0] : 0;
+      for (size_t i = 0; i < words; ++i) {
         if (w[i] != 0)
           ++nonZero;
+        if (w[i] != w0)
+          ++distinctish;
+      }
+      // class: zero (all 0), uniform (all == w0, e.g. cleared gray), varied (real).
+      const char *cls = nonZero == 0          ? "zero"
+                        : distinctish == 0    ? "uniform"
+                                              : "VARIED";
       if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
         std::fprintf(f,
                      "FM2_TEX_SRC base=0x%08X %ux%u fmt=%d tiled=%d fp=%llu "
-                     "nonZeroWords=%zu/%zu first=%08X,%08X,%08X,%08X\n",
+                     "cls=%s nonZeroWords=%zu/%zu first=%08X,%08X,%08X,%08X\n",
                      info.baseAddress, info.width, info.height, int(info.format),
-                     info.tiled ? 1 : 0, (unsigned long long)footprint, nonZero,
-                     words, words > 0 ? w[0] : 0, words > 1 ? w[1] : 0,
+                     info.tiled ? 1 : 0, (unsigned long long)footprint, cls,
+                     nonZero, words, words > 0 ? w[0] : 0, words > 1 ? w[1] : 0,
                      words > 2 ? w[2] : 0, words > 3 ? w[3] : 0);
         std::fclose(f);
       }
     }
   }
-  if (info.tiled) {
+  // TEST (session 6P-2): the fmt50 (R8_UNORM) resolve-dest buffers carry real data
+  // but display as static. Pitch is handled (pitchBlocks from info.pitchTexels), so
+  // the likely cause is the data being 32x32-tile-swizzled while info.tiled=0. Try
+  // detiling fmt50 and watch the VRAM viewer static cell resolve to a real image.
+  static constexpr bool kForceTileFmt50 = true;
+  const bool useTiled =
+      info.tiled || (kForceTileFmt50 && int(info.format) == 50);
+  if (useTiled) {
     for (uint32_t by = 0; by < hBlocks; ++by) {
       for (uint32_t bx = 0; bx < wBlocks; ++bx) {
         const uint32_t element = TiledOffset2D(bx + packedX, by + packedY,
                                                pitchBlocks, info.bytesPerBlock);
+        // Bounds guard: TiledOffset2D can overshoot the committed footprint for
+        // small/odd dims (esp. force-tiled fmt50) -> OOB read/crash. Skip if so.
+        if (uint64_t(element) * info.bytesPerBlock + info.bytesPerBlock >
+            footprint)
+          continue;
         std::memcpy(
             linear.data() + (size_t(by) * wBlocks + bx) * info.bytesPerBlock,
             src + size_t(element) * info.bytesPerBlock, info.bytesPerBlock);

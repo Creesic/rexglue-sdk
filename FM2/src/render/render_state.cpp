@@ -2216,6 +2216,73 @@ void FlushRenderState(GuestDevice *device) {
       }
     }
   }
+  // 3D-DRAW PROBE (session 6P-2): the forward color pass outputs BLACK while
+  // sampling GRAY (0x80808080) resolve-dests -- gray-in can't give black-out, so
+  // the zeroing factor is likely PS material/lighting constants (+0x1700) == 0 or
+  // invalid bindless texture indices. Log per 3D draw (has-position VS + a PS,
+  // excluding the HUD shader): VS const nz@0x700, PS const nz@0x1700, and the first
+  // bound texture2D indices (0 = sampling the default/black descriptor).
+  {
+    const GuestShader *vs3 = g_pipelineState.vertexShader;
+    bool has3D = vs3 != nullptr && !vs3->headerElements.empty() &&
+                 g_pipelineState.pixelShader != nullptr;
+    if (has3D) {
+      bool hasPos = false;
+      for (const auto &he : vs3->headerElements)
+        if (he.usage == 0) {
+          hasPos = true;
+          break;
+        }
+      const uint64_t vh =
+          vs3->shaderCacheEntry ? vs3->shaderCacheEntry->hash : 0ull;
+      has3D = hasPos && vh != 0x292FF29403B1DDF8ull;
+    }
+    // Dedup by distinct VS hash (render thread only) so we see EVERY 3D shader
+    // that renders, not just the first 24 draws (which were all reflection). A
+    // car-body MATERIAL shader (sampling a loaded diffuse) would show as a new hash.
+    static uint32_t s_n3dCount = 0;
+    static uint64_t s_3dHashes[32] = {};
+    bool logIt = false;
+    if (has3D) {
+      const uint64_t vhd =
+          vs3->shaderCacheEntry ? vs3->shaderCacheEntry->hash : 0ull;
+      bool seen = false;
+      for (uint32_t i = 0; i < s_n3dCount && i < 32u; ++i)
+        if (s_3dHashes[i] == vhd) {
+          seen = true;
+          break;
+        }
+      if (!seen && s_n3dCount < 32u) {
+        s_3dHashes[s_n3dCount++] = vhd;
+        logIt = true;
+      }
+    }
+    if (logIt) {
+      const uint8_t *b = reinterpret_cast<const uint8_t *>(device);
+      const uint32_t *v700 = reinterpret_cast<const uint32_t *>(b + 0x700);
+      const uint32_t *v1700 = reinterpret_cast<const uint32_t *>(b + 0x1700);
+      uint32_t nz700 = 0, nz1700 = 0;
+      for (uint32_t i = 0; i < 256u * 4u; ++i) {
+        if (v700[i] != 0)
+          ++nz700;
+        if (v1700[i] != 0)
+          ++nz1700;
+      }
+      const uint64_t vh =
+          vs3->shaderCacheEntry ? vs3->shaderCacheEntry->hash : 0ull;
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_3DCONST vh=0x%016llX nzVS@700=%u nzPS@1700=%u "
+                     "texIdx=%u,%u,%u,%u\n",
+                     (unsigned long long)vh, nz700, nz1700,
+                     g_sharedConstants.texture2DIndices[0],
+                     g_sharedConstants.texture2DIndices[1],
+                     g_sharedConstants.texture2DIndices[2],
+                     g_sharedConstants.texture2DIndices[3]);
+        std::fclose(f);
+      }
+    }
+  }
   // Forza's unified ALU constant file is based at block+0x700 (register 0),
   // written by UploadMatrixConstants (low/vertex regs) and
   // ApplyPassShaderConstants (high regs at +0x1700 = reg 256). The GuestDevice
@@ -3628,6 +3695,48 @@ void TrackRecentRenderTarget(GuestBaseTexture *rt) {
 GuestBaseTexture *GetRecentColorRenderTarget(uint32_t index) {
   return index < kRecentRTCount ? g_recentRTs[index] : nullptr;
 }
+
+// VRAM viewer ring: a STABLE set of distinct guest textures the draws sample, in
+// first-seen order (cells don't jump so the user can describe them). Refreshes the
+// host texture pointer each frame; appends new distinct bases until full.
+static constexpr uint32_t kVramViewCount = 12;
+struct VramViewEntry {
+  GuestBaseTexture *tex = nullptr;
+  uint32_t base = 0;
+};
+static VramViewEntry g_vramView[kVramViewCount] = {};
+void RecordVramViewTexture(uint32_t base, GuestBaseTexture *tex) {
+  if (tex == nullptr || base == 0)
+    return;
+  for (uint32_t i = 0; i < kVramViewCount; ++i) {
+    if (g_vramView[i].base == base) {
+      g_vramView[i].tex = tex; // refresh (content may re-upload)
+      return;
+    }
+    if (g_vramView[i].base == 0) {
+      g_vramView[i] = {tex, base}; // append in first-seen order
+      return;
+    }
+  }
+  // Full: evict oldest (FIFO) so the grid cycles through textures the game samples
+  // over time (captures the menu/car-body passes, not just the first 12). Safe now
+  // that only persistent upload-path textures are recorded (apertures excluded) --
+  // the earlier dangling crash was from recreated aperture/snapshot surfaces.
+  for (uint32_t i = 0; i + 1 < kVramViewCount; ++i)
+    g_vramView[i] = g_vramView[i + 1];
+  g_vramView[kVramViewCount - 1] = {tex, base};
+}
+GuestBaseTexture *GetVramViewTexture(uint32_t index, uint32_t *outBase) {
+  if (index >= kVramViewCount) {
+    if (outBase)
+      *outBase = 0;
+    return nullptr;
+  }
+  if (outBase)
+    *outBase = g_vramView[index].base;
+  return g_vramView[index].tex;
+}
+uint32_t VramViewCount() { return kVramViewCount; }
 
 void SetDepthStencilSurface(GuestDevice * /*device*/,
                             GuestSurface *depthStencil) {

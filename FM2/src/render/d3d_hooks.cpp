@@ -326,10 +326,24 @@ void RenderDocFrameEnd(bool capturing, uint32_t drawsThisFrame) {
     api->EndFrameCapture(nullptr, nullptr);
     g_rdocCaptureRemaining.fetch_sub(1, std::memory_order_relaxed);
   }
-  if (api != nullptr && drawsThisFrame > 5u &&
-      !g_rdocArmed.exchange(true, std::memory_order_relaxed)) {
-    g_rdocCaptureRemaining.store(8, std::memory_order_relaxed);
-    LogReplayDbg("FM2_RDOC_ARM draws=%u capturing next 8 frames", drawsThisFrame);
+  if (api == nullptr) {
+    return;
+  }
+  // Capture a 4-frame window whenever the PREVIOUS frame was draw-dense (>8 draws =
+  // the 3D car scene, not a sparse loading/blit frame), spaced >=200 present-frames
+  // apart. With the submission fix the scene flows steadily, so consecutive frames
+  // are both dense -- arming on a dense frame reliably captures a dense next frame
+  // (unlike the old isolated-draw pattern that kept capturing blit frames).
+  static std::atomic<uint32_t> s_frameCtr{0};
+  static std::atomic<uint32_t> s_lastArm{0};
+  const uint32_t fc = s_frameCtr.fetch_add(1, std::memory_order_relaxed);
+  if (drawsThisFrame > 8u &&
+      g_rdocCaptureRemaining.load(std::memory_order_relaxed) <= 0 &&
+      fc - s_lastArm.load(std::memory_order_relaxed) >= 200u) {
+    s_lastArm.store(fc, std::memory_order_relaxed);
+    g_rdocCaptureRemaining.store(4, std::memory_order_relaxed);
+    LogReplayDbg("FM2_RDOC_ARM frame=%u draws=%u capturing next 4 frames", fc,
+                 drawsThisFrame);
   }
 }
 
@@ -2244,6 +2258,10 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
     if (surf != nullptr) {
       rr::SetTextureBase(device, slot, surf);
       rr::SetTestGameTexture(surf);
+      // NOTE: do NOT record aperture/snapshot surfaces into the VRAM viewer --
+      // SnapshotSurfaceForResolve recreates them on format change, so the viewer's
+      // stored pointer dangles -> blit crash. Only the persistent upload-path
+      // textures (cached in g_guestTextureAliases) are recorded (below).
       if (trace)
         LogReplayDbg("FM2_LIVE_TEX slot=%u base=0x%08X -> APERTURE host=%p",
                      slot, base, static_cast<void *>(surf));
@@ -2258,6 +2276,7 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
     if (tex != nullptr) {
       rr::SetTexture(device, slot, tex);
       rr::SetTestGameTexture(tex); // diagnostic: expose to the present test grid
+      rr::RecordVramViewTexture(base, tex);
     }
   }
 }
@@ -2736,6 +2755,16 @@ REX_HOOK(FM2_RenderContext_SetClipPlane3Enable, Fm2SetClipPlane3Enable);
 REX_HOOK(FM2_D3D_TryPresentAndUpdateStatus, Fm2Present);
 REX_HOOK(FM2_GpuCommandBuffer_BuildAndSubmit,
          Fm2GpuCommandBufferBuildAndSubmit);
+// DIAGNOSTIC (session 6P-2, test b): present the SCENE RT directly instead of
+// GetLastDrawnColorRenderTarget() (which returns the UI/backbuffer 0x130C41000 not the
+// scene 0x130C7F000). Captured in Fm2EmitSurfaceResolve = the scene color surface the
+// game resolves. If the scene appears -> geometry IS rendered, only present-selection
+// is wrong. If still black -> the scene RT is empty (the colorWrite=0 per-draw issue).
+// session 6P-2: OFF. true forced presenting g_sceneResolveSource (a black scene
+// snapshot), overriding GetLastDrawnColorRenderTarget -- which for the 2D menu is
+// the menu RT. Present the last-drawn RT so the menu actually shows.
+static constexpr bool kPresentSceneResolveSource = false;
+static std::atomic<rr::GuestBaseTexture *> g_sceneResolveSource{nullptr};
 // Render-worker per-frame dispatch (guest sub_82288948), called in an infinite
 // loop by sub_82289640. RAW hook: the original needs its full PPC context
 // (r13 thread base, etc.); auto-marshaling would isolate it and trap. After the
@@ -2790,6 +2819,13 @@ REX_HOOK_RAW(sub_82288948) {
     return;
   }
   rr::GuestBaseTexture *presentSource = rr::GetLastDrawnColorRenderTarget();
+  if (kPresentSceneResolveSource) {
+    rr::GuestBaseTexture *scene =
+        g_sceneResolveSource.load(std::memory_order_relaxed);
+    if (scene != nullptr && scene->texture != nullptr) {
+      presentSource = scene;
+    }
+  }
   static PresentDiagSlot s_renderWorkerSlot;
   CountPresentDiag("RenderWorker", s_renderWorkerSlot, presentSource);
   if (presentSource != nullptr && presentSource->texture != nullptr) {
@@ -3216,6 +3252,12 @@ uint32_t Fm2EmitSurfaceResolve(uint32_t context, uint32_t flags, uint32_t a3) {
       // composite passes sample the resolved content, not the overwritten RT.
       rr::GuestBaseTexture *snap = rr::SnapshotSurfaceForResolve(host, destBase);
       RegisterSurfaceAperture(destBase, snap != nullptr ? snap : host);
+      // test b: remember the scene RT (frozen snapshot preferred) so RenderWorker
+      // can present it directly instead of the UI/backbuffer.
+      if (host != nullptr) {
+        g_sceneResolveSource.store(snap != nullptr ? snap : host,
+                                   std::memory_order_relaxed);
+      }
       static std::atomic<uint32_t> s_n{0};
       if (s_n.fetch_add(1, std::memory_order_relaxed) < 20) {
         LogReplayDbg("FM2_RESOLVE_ALIAS dest=0x%08X colorSurf=0x%08X host=%p "
