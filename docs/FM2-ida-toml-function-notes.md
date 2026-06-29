@@ -25,6 +25,36 @@ manual function override form:
 `FM2/generated/rexglue.cmake` invokes codegen with `fm2_manifest.toml`, so this
 is the config that matters for regenerated FM2 output.
 
+## June 29 Update: D3D Library vs PM4 Draw Path
+
+Rechecked FM2 in IDA after confusion around whether Forza "does not use
+DirectX libraries." The corrected model is:
+
+- FM2 does link/use Xbox XDK D3D/XG library code. IDA shows callable functions
+  including `D3DDevice_CreateVertexBuffer`, `D3DDevice_CreateTexture`,
+  `D3DDevice_CreateSurface`, `D3DDevice_CreateVertexDeclaration`,
+  `D3DDevice_SetRenderState_DepthBias`, `D3DDevice_SetScalerParameters`,
+  `D3D_SubmitAndDrainCommands`, D3D command-buffer helpers, XG texture/header
+  helpers, D3DX strings, PIX strings, and D3D GPU-hang diagnostics.
+- FM2 does **not** import named `D3DDevice_*` functions from another module.
+  The XEX imports kernel/XAM graphics-adjacent symbols such as `VdSwap`,
+  `VdGetSystemCommandBuffer`, `VdPersistDisplay`, `VdInitializeRingBuffer`,
+  and `VdSetDisplayMode`; the D3D/XG code is in the title image.
+- The hot render path still differs from ReOdyssey/UnleashedRecomp. FM2 uses
+  `FM2_RenderContext_*` wrappers and cached draw-list/opcode replay
+  (`FM2_Render_WalkAndDispatchPm4DrawList`,
+  `FM2_Render_DispatchPm4DrawOpcode`, `FM2_Render_DrawIndexedPrimitive`),
+  ending in `FM2_D3D_EmitIndexedDrawPm4Packets*` and
+  `D3D_SubmitAndDrainCommands`.
+- Present is mixed D3D/Vd: `FM2_GpuCommandBuffer_BuildAndSubmit` calls
+  `VdGetSystemCommandBuffer`, `VdSwap`, `D3DDevice_SetScalerParameters`,
+  `VdPersistDisplay`, `D3D_SubmitAndDrainCommands`, `D3D::CBlocker`, and EDRAM
+  training helpers.
+
+Practical interpretation: "raw PM4-only/no Direct3D" was too strong. The right
+native-renderer boundary is "D3D-internal command-buffer/PM4 layer instead of a
+public immediate `D3DDevice_Draw*` hook layer."
+
 ## Renamed Functions
 
 | Address | IDA name | Notes |

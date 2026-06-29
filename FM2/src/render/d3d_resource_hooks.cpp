@@ -125,7 +125,12 @@ GuestBuffer *CreateIndexBuffer(uint32_t length, uint32_t format) {
       RenderBufferDesc::IndexBuffer(length, BufferHeapType()));
   buffer->dataSize = length;
   buffer->guestFormat = format;
-  buffer->format = ConvertFormat(format);
+  // Index buffers MUST be a 16/32-bit index format -- never a color format.
+  // ConvertFormat falls through to R8G8B8A8_UNORM for unrecognized index format
+  // values, which D3D12 rejects as an index format (IASetIndexBuffer fails -> no
+  // index buffer bound -> DrawIndexedInstanced reads 0 indices -> nothing renders).
+  buffer->format = (format == 6 /* D3DFMT_INDEX32 */) ? RenderFormat::R32_UINT
+                                                      : RenderFormat::R16_UINT;
   return buffer;
 }
 
@@ -1216,10 +1221,21 @@ GuestBaseTexture *TranslateGuestSurface(void *guestHeader) {
   }
 
   const RenderFormat format = ConvertFormat(guestFormat);
-  const RenderSampleCounts sampleCount =
+  RenderSampleCounts sampleCount =
       msaaType == 2   ? RenderSampleCount::COUNT_4
       : msaaType == 1 ? RenderSampleCount::COUNT_2
                       : RenderSampleCount::COUNT_1;
+  // DEBUG (geometry bring-up): the scene RT+depth are created 4x MSAA
+  // (msaaType==2), but plume's present/resolve path can't handle MSAA --
+  // SnapshotSurfaceForResolve skips COUNT_!=1 and resolveTexture was
+  // device-removing. The 4x RTV vs the 1x-forced PSO (kDebugForceSingleSample)
+  // produced D3D12 id=614/616 sample-desc-mismatch errors that DROPPED every
+  // scene DrawIndexedInstanced. Forcing single-sample here makes RT/PSO/present
+  // all 1x and consistent (and gives the surface a sampleable view below).
+  // TODO: restore real MSAA once the resolve-on-present path works.
+  static constexpr bool kDebugForceSingleSampleSurfaces = true;
+  if (kDebugForceSingleSampleSurfaces)
+    sampleCount = RenderSampleCount::COUNT_1;
 
   {
     std::lock_guard lock(g_guestSurfaceAliasMutex);

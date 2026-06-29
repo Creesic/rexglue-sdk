@@ -55,6 +55,9 @@ void SetRenderTarget(GuestDevice *device, uint32_t index,
 void SetImplicitRenderTarget(GuestBaseTexture *renderTarget);
 GuestBaseTexture *GetCurrentColorRenderTarget();
 GuestBaseTexture *GetLastDrawnColorRenderTarget();
+// DEBUG (geometry bring-up): the PM4 scene-draw path records the bound RT here so
+// present can show the SCENE RT instead of the last-touched UI RT.
+void SetScenePresentRT(GuestBaseTexture *renderTarget);
 // Diagnostic: last game texture translated from a fetch constant (test grid).
 void SetTestGameTexture(GuestBaseTexture *t);
 GuestBaseTexture *GetTestGameTexture();

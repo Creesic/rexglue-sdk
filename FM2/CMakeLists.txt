@@ -35,6 +35,14 @@ endif()
 
 rexglue_setup_target(fm2)
 
+# pipeline.cpp wraps DXC/dxcompiler.dll calls in __try/__except to survive crashes
+# from malformed regenerated shader blobs. clang-cl's default /EHsc does NOT let
+# __except catch asynchronous hardware exceptions (access violations) -- the guard
+# silently does nothing. /EHa (async EH) is required for the catch to actually fire.
+if(WIN32)
+    set_source_files_properties(src/render/pipeline.cpp PROPERTIES COMPILE_OPTIONS "/EHa")
+endif()
+
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../plume/CMakeLists.txt")
     set(PLUME_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     if(NOT TARGET plume)

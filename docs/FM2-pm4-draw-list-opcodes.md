@@ -7,13 +7,25 @@ a native (Plume) renderer in `--fm2_plume_mode plume_native`.
 
 ## Why this matters
 
-Forza does **not** use the high-level Xbox 360 XDK Direct3D API (unlike ReOdyssey
-and UnleashedRecomp, which hook ~46 `D3DDevice_*` functions). Forza is a custom
-engine that builds its **own structured draw-command list** and walks it with a
-private interpreter, each node emitting Xenos **PM4 packets** straight into the GPU
-ring buffer; present is via low-level `VdSwap` / `PM4_XE_SWAP (0x64)`, not
-`D3DDevice_Swap`. So a native renderer for Forza must translate at this draw-list /
-PM4 layer, not at the (absent) D3D-call layer.
+2026-06-29 correction: do **not** read this as "Forza has no Direct3D
+library code." IDA shows the XDK D3D/XG code is present in the XEX: resource
+creation and setup paths call functions such as `D3DDevice_CreateVertexBuffer`,
+`D3DDevice_CreateTexture`, `D3DDevice_CreateSurface`, and
+`D3DDevice_CreateVertexDeclaration`, and the binary contains D3D command-buffer,
+PIX, D3DX, and XGraphics strings. The import table has no named `D3DDevice_*`
+imports because this code is linked into the title image; the kernel-facing
+graphics imports are the lower-level `Vd*` functions.
+
+The important FM2-specific point is narrower: the hot draw/replay path does not
+look like ReOdyssey or UnleashedRecomp's public immediate-mode hook surface with
+dozens of `D3DDevice_Set*` / `D3DDevice_Draw*` calls. Forza builds its **own
+structured draw-command list** and walks it with a private interpreter. The
+opcode handlers update a D3D-style render context and then call internal D3D
+command-buffer helpers that emit Xenos **PM4 packets**. Present goes through
+`FM2_GpuCommandBuffer_BuildAndSubmit` and low-level `VdSwap` /
+`PM4_XE_SWAP (0x64)`, not a clean `D3DDevice_Swap` hook. So a native renderer
+for Forza must translate at this draw-list / D3D-internal PM4 layer, not at an
+absent high-level `D3DDevice_DrawIndexedPrimitive` call layer.
 
 ## The interpreter
 

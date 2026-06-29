@@ -46,6 +46,14 @@ struct GuestShader;
 plume::RenderShader *LoadShader(GuestShader *guestShader,
                                 uint32_t specConstants = 0);
 
+// session 6P-3: the game uploads per-draw VS transform constants via
+// FM2_RenderContext_UploadMatrixConstants, which writes to a render-context object
+// that FlushRenderState's GuestDevice never sees (so device constants are zero for
+// scene draws -> geometry collapses). The hook mirrors those uploads here (register-
+// indexed, raw big-endian); FlushRenderState uploads this buffer when valid.
+void MirrorPassVsConstants(uint32_t startRegister, const void *src,
+                           uint32_t vector4fCount);
+
 struct GuestVertexDeclaration;
 GuestVertexDeclaration *LookupVertexDeclarationAlias(uint32_t guestAddress);
 // Snapshot of every D3DVERTEXELEMENT9 declaration FM2 has created. Used to match

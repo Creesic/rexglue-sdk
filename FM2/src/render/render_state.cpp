@@ -1508,6 +1508,13 @@ RenderFormat ConvertDeclType(uint32_t type) {
                                : RenderFormat::R8G8B8A8_UNORM;
   case 0x07: // k_2_10_10_10 (DEC3N / UDEC3) -- shader unpacks from raw uint
     return RenderFormat::R32_UINT;
+  case 0x10: // k_10_11_11 (packed) -- 32-bit, shader unpacks from raw uint
+  case 0x11: // k_11_11_10 (packed) -- 32-bit, shader unpacks from raw uint
+    return RenderFormat::R32_UINT;
+  case 0x22: // k_32_32 (raw uint2)
+    return RenderFormat::R32G32_UINT;
+  case 0x23: // k_32_32_32_32 (raw uint4)
+    return RenderFormat::R32G32B32A32_UINT;
   case 0x19: // k_16_16 (SHORT2 family)
     return nf == 3   ? RenderFormat::R16G16_SINT
            : nf == 1 ? RenderFormat::R16G16_SNORM
@@ -1641,6 +1648,22 @@ void CompleteVertexDeclaration(GuestVertexDeclaration *decl) {
       break;
     case D3DDECLUSAGE_BLENDWEIGHT:
       break;
+    }
+    // Safety net: an UNKNOWN format makes CreateInputLayout reject the whole PSO
+    // (E_INVALIDARG), dropping every draw with this declaration. Expose the raw
+    // bytes as uint instead and log it so the missing format can be mapped properly.
+    if (ie.format == RenderFormat::UNKNOWN) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_DECL_UNKNOWN_FMT usage=%u idx=%u type=0x%X fmt=0x%X nf=%u "
+                     "stream=%u offset=%u\n",
+                     static_cast<unsigned>(e.usage), static_cast<unsigned>(e.usageIndex),
+                     static_cast<unsigned>(e.type), static_cast<unsigned>(e.type & 0x3Fu),
+                     static_cast<unsigned>((e.type >> 8) & 0x3u),
+                     static_cast<unsigned>(e.stream), static_cast<unsigned>(e.offset));
+        std::fclose(f);
+      }
+      ie.format = RenderFormat::R32_UINT;
     }
     decl->vertexStreams[e.stream] = true;
   }
@@ -2063,6 +2086,14 @@ void FlushSamplerStates(GuestDevice *device) {
   }
 }
 
+// session 6P-3: unified VS float-constant file, register-indexed (reg N at
+// [N*4..]), raw big-endian -- mirrors the render-pass uploads
+// (FM2_RenderContext_UploadMatrixConstants) the GuestDevice never receives in
+// plume_native. FlushRenderState uploads this (byte-swapped) instead of device+0x700
+// once any pass upload has happened.
+alignas(16) static uint32_t g_passVsConstants[0x400] = {};
+static std::atomic<bool> g_passVsConstantsValid{false};
+
 void FlushRenderState(GuestDevice *device) {
   // Forza programs per-draw color-write through its PM4 draw-list node, which the
   // native renderer doesn't decode -- so the mirrored/context color-write is stale
@@ -2158,7 +2189,38 @@ void FlushRenderState(GuestDevice *device) {
 
   RenderCommandList *commandList = CommandList();
 
+  // DEBUG (session 6P-2): force-clear the bound color RT to bright blue before each
+  // draw to test whether the RT we bind actually reaches the screen / viewer. If the
+  // presented RT (or grid RT cells) turn blue, the bind+present pipeline works and
+  // the draws simply aren't rasterizing visible pixels; if they stay black, we are
+  // binding/presenting a different RT than the census reports. Toggle off when done.
+  // DEBUG (session 6P-3): clear the bound RT to blue ONLY when we switch to a new
+  // RT (start of its draw batch), so the batch's draws accumulate on blue. If the
+  // RT ends up showing geometry on blue -> draws DO rasterize (issue is present
+  // selection); if it stays solid blue -> draws produce nothing (transform/const).
+  static constexpr bool kDebugClearRtBlue = false;
+  static GuestBaseTexture *s_lastBlueRt = nullptr;
+  if (kDebugClearRtBlue && renderTarget != nullptr &&
+      renderTarget != s_lastBlueRt) {
+    s_lastBlueRt = renderTarget;
+    RenderRect full(0, 0, int32_t(renderTarget->width),
+                    int32_t(renderTarget->height));
+    commandList->clearColor(0, RenderColor(0.0f, 0.25f, 1.0f, 1.0f), &full, 1);
+  }
+
   PipelineState pipelineState = g_pipelineState;
+  // DEBUG (session 6P-3): force cull off to test whether backface culling (cull=1
+  // in FM2_DRAWSTATE) is rejecting every triangle (wrong winding) -> solid blue.
+  static constexpr bool kDebugForceCullNone = true;
+  if (kDebugForceCullNone)
+    pipelineState.cullMode = RenderCullMode::NONE;
+  // DEBUG (session 6P-3): the PSO is built for the surface's intended MSAA count
+  // (often 4) but the actual plume render targets are single-sampled (count 1).
+  // D3D12 rejects the sample-desc mismatch (debug id=614/616) and the draw renders
+  // nothing. Force the pipeline to COUNT_1 to match the real RTs.
+  static constexpr bool kDebugForceSingleSample = true;
+  if (kDebugForceSingleSample)
+    pipelineState.sampleCount = RenderSampleCount::COUNT_1;
   if (depthStencil == nullptr) {
     pipelineState.zEnable = false;
     pipelineState.zWriteEnable = false;
@@ -2169,6 +2231,107 @@ void FlushRenderState(GuestDevice *device) {
   if (pipeline != nullptr)
     commandList->setPipeline(pipeline);
   g_pipelineBound = (pipeline != nullptr);
+
+  // DEBUG (session 6P-3): one-shot full draw-state + constant dump for the first
+  // 3D draws (POS VS + PS), to find why nothing rasterizes. Logs cull/depth/blend/
+  // viewport/scissor and c0..c3 as byte-swapped floats from BOTH +0x0 and +0x700 so
+  // we can see which offset holds a sane WVP matrix (and rule depth/cull in or out).
+  {
+    const GuestShader *dvs = g_pipelineState.vertexShader;
+    bool is3d = dvs != nullptr && !dvs->headerElements.empty() &&
+                g_pipelineState.pixelShader != nullptr;
+    if (is3d) {
+      bool hasPos = false;
+      for (const auto &he : dvs->headerElements)
+        if (he.usage == 0) { hasPos = true; break; }
+      is3d = hasPos;
+    }
+    static std::atomic<uint32_t> s_dn{0};
+    if (is3d && g_passVsConstantsValid.load(std::memory_order_relaxed) &&
+        s_dn.fetch_add(1, std::memory_order_relaxed) < 10) {
+      const uint8_t *db = reinterpret_cast<const uint8_t *>(device);
+      auto sf = [&](uint32_t off) -> double {
+        uint32_t r = __builtin_bswap32(
+            *reinterpret_cast<const uint32_t *>(db + off));
+        float fv;
+        std::memcpy(&fv, &r, 4);
+        return double(fv);
+      };
+      auto pf = [&](uint32_t idx) -> double {
+        uint32_t r = __builtin_bswap32(g_passVsConstants[idx]);
+        float fv;
+        std::memcpy(&fv, &r, 4);
+        return double(fv);
+      };
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(
+            f,
+            "FM2_DRAWSTATE cull=%d zEn=%d zFunc=%d zWr=%d dClip=%d blend=%d "
+            "cw=0x%X vp=(%.0f,%.0f %.0fx%.0f z=%.2f..%.2f) scis=%d rZ=%d "
+            "rt=%p %ux%u ibFmt=%d ibSz=%u ibRef=%d idirty=%d\n"
+            "  @0x780 c0=[%.3f %.3f %.3f %.3f] c1=[%.3f %.3f %.3f %.3f] "
+            "c2=[%.3f %.3f %.3f %.3f] c3=[%.3f %.3f %.3f %.3f]\n"
+            "  @0x700 c0=[%.3f %.3f %.3f %.3f] c1=[%.3f %.3f %.3f %.3f]\n"
+            "  PASS valid=%d c0=[%.3f %.3f %.3f %.3f] c1=[%.3f %.3f %.3f %.3f]\n",
+            int(g_pipelineState.cullMode), g_pipelineState.zEnable,
+            int(g_pipelineState.zFunc), g_pipelineState.zWriteEnable,
+            g_pipelineState.depthClipEnabled, g_pipelineState.alphaBlendEnable,
+            g_pipelineState.colorWriteEnable, g_viewport.x, g_viewport.y,
+            g_viewport.width, g_viewport.height, g_viewport.minDepth,
+            g_viewport.maxDepth, g_scissorTestEnable, SceneReverseZ(),
+            (const void *)renderTarget, renderTarget ? renderTarget->width : 0,
+            renderTarget ? renderTarget->height : 0,
+            int(g_indexBufferView.format), g_indexBufferView.size,
+            g_indexBufferView.buffer.ref != nullptr ? 1 : 0,
+            g_dirtyStates.indices ? 1 : 0, sf(0x780), sf(0x784),
+            sf(0x788), sf(0x78C), sf(0x790), sf(0x794), sf(0x798), sf(0x79C),
+            sf(0x7A0), sf(0x7A4), sf(0x7A8), sf(0x7AC), sf(0x7B0), sf(0x7B4),
+            sf(0x7B8), sf(0x7BC), sf(0x700), sf(0x704), sf(0x708), sf(0x70C),
+            sf(0x710), sf(0x714), sf(0x718), sf(0x71C),
+            g_passVsConstantsValid.load(std::memory_order_relaxed) ? 1 : 0,
+            pf(0), pf(1), pf(2), pf(3), pf(4), pf(5), pf(6), pf(7));
+        std::fclose(f);
+      }
+      // The car VS (Shader fb3c0c13) reads its WVP matrix from cbuffer regs
+      // c7..c18. Dump those regs (full vec4) from device+0x780 (the struct field
+      // SetVertexShaderConstantF writes), device+0x700 (UploadMatrixConstants
+      // base / what FlushRenderState currently uploads), and g_passVsConstants,
+      // to find which source actually holds the matrix at the regs the VS reads.
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f, "  CMAT780");
+        for (uint32_t r = 7; r <= 14; ++r)
+          std::fprintf(f, " c%u[%.2f %.2f %.2f %.2f]", r, sf(0x780 + r * 16),
+                       sf(0x780 + r * 16 + 4), sf(0x780 + r * 16 + 8),
+                       sf(0x780 + r * 16 + 12));
+        std::fprintf(f, "\n  CMAT700");
+        for (uint32_t r = 7; r <= 14; ++r)
+          std::fprintf(f, " c%u[%.2f %.2f %.2f %.2f]", r, sf(0x700 + r * 16),
+                       sf(0x700 + r * 16 + 4), sf(0x700 + r * 16 + 8),
+                       sf(0x700 + r * 16 + 12));
+        std::fprintf(f, "\n  CMATpass");
+        for (uint32_t r = 7; r <= 14; ++r)
+          std::fprintf(f, " c%u[%.2f %.2f %.2f %.2f]", r, pf(r * 4),
+                       pf(r * 4 + 1), pf(r * 4 + 2), pf(r * 4 + 3));
+        std::fprintf(f, "\n");
+        std::fclose(f);
+      }
+      // STAGE: geometry inputs bound at draw time (does the game's vertex/index
+      // data survive to here, or is it 0?).
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        const auto *decl = g_pipelineState.vertexDeclaration;
+        std::fprintf(f, "  GEO decl=%p elems=%u idxStream=%d | vtx:",
+                     (const void *)decl, decl ? decl->inputElementCount : 0u,
+                     decl ? int(decl->indexVertexStream) : -1);
+        for (uint32_t s = 0; s < 6; ++s)
+          std::fprintf(f, " s%u[ref=%d sz=%u str=%u]", s,
+                       g_vertexBufferViews[s].buffer.ref != nullptr ? 1 : 0,
+                       (unsigned)g_vertexBufferViews[s].size,
+                       (unsigned)g_inputSlots[s].stride);
+        std::fprintf(f, "\n");
+        std::fclose(f);
+      }
+    }
+  }
 
   // Booleans and sampler indices feed the shared constants (16 bits each in
   // the XenosRecomp ABI).
@@ -2199,19 +2362,36 @@ void FlushRenderState(GuestDevice *device) {
     if (diagHud && s_n.fetch_add(1, std::memory_order_relaxed) < 20) {
       const uint8_t *b = reinterpret_cast<const uint8_t *>(device);
       const uint32_t *v700 = reinterpret_cast<const uint32_t *>(b + 0x700);
+      const uint32_t *v1700 = reinterpret_cast<const uint32_t *>(b + 0x1700);
       uint32_t nz700 = 0;
       for (uint32_t i = 0; i < 256 * 4; ++i)
         if (v700[i] != 0)
           ++nz700;
       const uint64_t h =
           diagVs->shaderCacheEntry ? diagVs->shaderCacheEntry->hash : 0ull;
+      // Scan the device block (0..0x2000, in 0x80=8-register chunks) for WHERE
+      // non-zero constants actually live -- the HUD c0/c1/c3/c4 are zero at +0x700,
+      // so find the real offset (the game may write them elsewhere).
+      char scan[400];
+      int sp = 0;
+      const uint32_t *bw = reinterpret_cast<const uint32_t *>(b);
+      for (uint32_t off = 0; off < 0x2000u && sp < 360; off += 0x80u) {
+        uint32_t nz = 0;
+        for (uint32_t i = 0; i < 0x80u / 4u; ++i)
+          if (bw[off / 4u + i] != 0)
+            ++nz;
+        if (nz != 0)
+          sp += std::snprintf(scan + sp, sizeof(scan) - sp, "+0x%X:%u ", off, nz);
+      }
+      scan[sp < int(sizeof(scan)) ? sp : int(sizeof(scan)) - 1] = '\0';
       if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
         std::fprintf(f,
-                     "FM2_HUDCONST hash=0x%016llX nz@0x700=%u c0=%08X,%08X,%08X,"
-                     "%08X c1=%08X c3=%08X,%08X,%08X,%08X c4=%08X,%08X\n",
+                     "FM2_HUDCONST hash=0x%016llX nz@0x700=%u v700[0..4]=%08X,%08X,"
+                     "%08X,%08X,%08X v1700[0..4]=%08X,%08X,%08X,%08X,%08X | "
+                     "nzBlocks=%s\n",
                      (unsigned long long)h, nz700, v700[0], v700[1], v700[2],
-                     v700[3], v700[4], v700[12], v700[13], v700[14], v700[15],
-                     v700[16], v700[17]);
+                     v700[3], v700[4], v1700[0], v1700[1], v1700[2], v1700[3],
+                     v1700[4], scan);
         std::fclose(f);
       }
     }
@@ -2283,15 +2463,21 @@ void FlushRenderState(GuestDevice *device) {
       }
     }
   }
-  // Forza's unified ALU constant file is based at block+0x700 (register 0),
-  // written by UploadMatrixConstants (low/vertex regs) and
-  // ApplyPassShaderConstants (high regs at +0x1700 = reg 256). The GuestDevice
-  // struct fields sit 0x80 (8 registers) too high (+0x780/+0x1780), so c[0..7]
-  // -- including the vertex transform matrix -- was missed, collapsing 3D
-  // geometry to black. Read from the real base instead.
+  // VS float-constant base. UploadMatrixConstants (0x8236D958) writes register r to
+  // context+0x700+r*16, so +0x700 is the real upload base (NOT the struct field's
+  // +0x780). But device+0x700 reads zero for the scene draws -> the matrices are
+  // uploaded to a DIFFERENT context object (or via PM4 the disabled CP drops), not
+  // the GuestDevice we read here. (see FM2_DRAWSTATE / memory project note)
+  static constexpr uint32_t kVsConstBase = 0x700;
   const uint8_t *devBytes = reinterpret_cast<const uint8_t *>(device);
+  // Prefer the mirrored render-pass constants (the scene transforms the GuestDevice
+  // never receives). Fall back to the device block until the first pass upload.
+  const uint32_t *vsConstSrc =
+      g_passVsConstantsValid.load(std::memory_order_relaxed)
+          ? g_passVsConstants
+          : reinterpret_cast<const uint32_t *>(devBytes + kVsConstBase);
   SetRootDescriptor(g_uploadAllocator.allocateCopy<true>(
-                        reinterpret_cast<const uint32_t *>(devBytes + 0x700),
+                        vsConstSrc,
                         sizeof(device->vertexShaderFloatConstants), 0x100),
                     0);
   SetRootDescriptor(g_uploadAllocator.allocateCopy<true>(
@@ -2309,8 +2495,15 @@ void FlushRenderState(GuestDevice *device) {
         g_dirtyStates.vertexStreamLast - g_dirtyStates.vertexStreamFirst + 1,
         g_inputSlots + g_dirtyStates.vertexStreamFirst);
   }
-  if (g_dirtyStates.indices && g_indexBufferView.buffer.ref != nullptr)
+  if (g_dirtyStates.indices && g_indexBufferView.buffer.ref != nullptr) {
+    // Defense-in-depth: an index buffer can only be R16_UINT/R32_UINT. A color
+    // format here (e.g. R8G8B8A8_UNORM from a mis-converted buffer) makes
+    // IASetIndexBuffer fail silently -> no indices -> no geometry.
+    if (g_indexBufferView.format != RenderFormat::R16_UINT &&
+        g_indexBufferView.format != RenderFormat::R32_UINT)
+      g_indexBufferView.format = RenderFormat::R16_UINT;
     commandList->setIndexBuffer(&g_indexBufferView);
+  }
 
   if (g_pipelineBound && renderTarget != nullptr) {
     g_lastTouchedRenderTarget = renderTarget;
@@ -3095,6 +3288,18 @@ void UnsetInstancingStream() {
 
 } // namespace
 
+// session 6P-3: mirror of the render-pass VS constant uploads
+// (FM2_RenderContext_UploadMatrixConstants). Public (called from the d3d_hooks
+// REX_HOOK); writes into the anon-namespace g_passVsConstants the flush reads.
+void MirrorPassVsConstants(uint32_t startRegister, const void *src,
+                           uint32_t vector4fCount) {
+  if (src == nullptr || startRegister >= 0x100u || vector4fCount == 0)
+    return;
+  const uint32_t count = std::min(vector4fCount, 0x100u - startRegister);
+  std::memcpy(g_passVsConstants + startRegister * 4u, src, count * 16u);
+  g_passVsConstantsValid.store(true, std::memory_order_relaxed);
+}
+
 // ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
@@ -3365,6 +3570,15 @@ GuestBaseTexture *SnapshotSurfaceForResolve(GuestBaseTexture *source,
   if (source == nullptr || source->texture == nullptr || Device() == nullptr ||
       source->width == 0 || source->height == 0)
     return nullptr;
+  // DEBUG ISOLATION (geometry bring-up): forcing surfaces to single-sample made
+  // this path run copyTexture on the scene RT (previously skipped as MSAA), and
+  // the GPU now hangs (DXGI_ERROR_DEVICE_HUNG / TDR). Skip the snapshot copy to
+  // isolate whether the hang is THIS resolve copy or the scene draws themselves;
+  // present still shows the scene via GetLastDrawnColorRenderTarget. If geometry
+  // appears with this on, the resolve copy is the culprit -> fix it next.
+  static constexpr bool kDebugSkipResolveSnapshot = true;
+  if (kDebugSkipResolveSnapshot)
+    return nullptr;
   // Only snapshot single-sampled sources via a plain copyTexture. MSAA sources
   // need resolveTexture, which was crashing (device-removed) on format/sample
   // mismatch -- skip them (caller falls back to live aliasing for those).
@@ -3518,6 +3732,21 @@ void SetStreamSource(GuestDevice *device, uint32_t index, GuestBuffer *buffer,
     g_dirtyStates.vertexStreamLast =
         std::max<uint8_t>(g_dirtyStates.vertexStreamLast, index);
   }
+  // STAGE 3: vertex stream bind -- does the game's vertex buffer have a plume
+  // backing, and what size/stride survives into the view?
+  {
+    static std::atomic<uint32_t> s_ss{0};
+    if (s_ss.fetch_add(1, std::memory_order_relaxed) < 24) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(
+            f, "FM2_SETVTX idx=%u buf=%p backing=%d size=%u stride=%u off=%u\n",
+            index, (const void *)buffer, (buffer && buffer->buffer) ? 1 : 0,
+            buffer ? (unsigned)(buffer->dataSize - offset) : 0u,
+            (unsigned)(buffer ? stride : 0u), (unsigned)offset);
+        std::fclose(f);
+      }
+    }
+  }
 }
 
 void SetIndices(GuestDevice * /*device*/, GuestBuffer *buffer) {
@@ -3667,9 +3896,20 @@ GuestBaseTexture *GetCurrentColorRenderTarget() { return g_renderTarget; }
 // The present source should be the color surface that was actually DRAWN into
 // (Forza renders the scene into one color RT, e.g. 130C7F000, then binds a
 // separate display/resolve buffer that present would otherwise blit empty/black).
+// g_scenePresentRT is the RT bound during PM4 scene (3D) draws, captured by the
+// PM4 draw path via SetScenePresentRT. GetLastDrawnColorRenderTarget otherwise
+// returns the LAST-touched RT, which is the UI/HUD RT (UI draws after the scene),
+// so present shows UI not the scene. Prefer the scene RT for present.
+GuestBaseTexture *g_scenePresentRT = nullptr;
+void SetScenePresentRT(GuestBaseTexture *rt) {
+  if (rt != nullptr)
+    g_scenePresentRT = rt;
+}
 // g_lastTouchedRenderTarget tracks the last RT a real draw rendered to; prefer it
 // for present, falling back to the currently-bound RT if nothing has been drawn.
 GuestBaseTexture *GetLastDrawnColorRenderTarget() {
+  if (g_scenePresentRT != nullptr)
+    return g_scenePresentRT;
   return g_lastTouchedRenderTarget ? g_lastTouchedRenderTarget : g_renderTarget;
 }
 
@@ -3779,9 +4019,15 @@ void Clear(GuestDevice * /*device*/, uint32_t flags, const float *color,
   if (g_renderTarget != nullptr && (flags & D3DCLEAR_TARGET) != 0) {
     if (!onePass)
       SetFramebuffer(g_renderTarget, nullptr, true);
-    commandList->clearColor(0,
-                            RenderColor(color[0], color[1], color[2], color[3]),
-                            &clearRect, 1);
+    // DEBUG (session 6P-2): override the game's clear color to blue so a frame's
+    // draws accumulate on a known background. If the presented RT shows ONLY blue,
+    // the draws aren't rasterizing; if geometry appears on blue, draws render and
+    // the remaining issue is present-source selection. Toggle off when done.
+    static constexpr bool kDebugClearColorBlue = false;
+    RenderColor clearCol = kDebugClearColorBlue
+                               ? RenderColor(0.0f, 0.25f, 1.0f, 1.0f)
+                               : RenderColor(color[0], color[1], color[2], color[3]);
+    commandList->clearColor(0, clearCol, &clearRect, 1);
     MarkAttachmentInitialized(g_renderTarget);
     g_lastTouchedRenderTarget = g_renderTarget;
   }

@@ -33,6 +33,38 @@
 #include "render/fm2_device.h"
 #include "render/video.h"
 
+#include <windows.h>
+
+namespace {
+// Crash logger: runs LAST in the VEH chain (AddVectoredExceptionHandler First=0),
+// so the runtime's commit-on-demand page-fault handler intercepts benign AVs first
+// and only genuinely-UNHANDLED faults reach here. Logs the faulting rip + a stack
+// backtrace so we can map the host addresses to the crashing function/shader.
+LONG WINAPI Fm2CrashLogger(EXCEPTION_POINTERS *ep) {
+  const auto *r = ep->ExceptionRecord;
+  static std::atomic<uint32_t> s_n{0};
+  if (s_n.fetch_add(1, std::memory_order_relaxed) >= 4)
+    return EXCEPTION_CONTINUE_SEARCH;
+  void *frames[24];
+  const USHORT n = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
+  if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+    std::fprintf(f, "FM2_CRASH code=0x%08lX rip=%p fault=0x%llX frames:",
+                 r->ExceptionCode, r->ExceptionAddress,
+                 r->NumberParameters >= 2
+                     ? (unsigned long long)r->ExceptionInformation[1]
+                     : 0ull);
+    for (USHORT i = 0; i < n; ++i)
+      std::fprintf(f, " %p", frames[i]);
+    std::fprintf(f, "\n");
+    std::fclose(f);
+  }
+  return EXCEPTION_CONTINUE_SEARCH; // let it crash normally (now logged)
+}
+struct Fm2CrashInit {
+  Fm2CrashInit() { AddVectoredExceptionHandler(0, &Fm2CrashLogger); }
+} g_fm2CrashInit;
+} // namespace
+
 namespace rr = fm2::render;
 namespace ghp = fm2::ghp;
 namespace nr = fm2::native_renderer;
@@ -100,6 +132,12 @@ REX_IMPORT(__imp__sub_82288948, g_origRenderWorkerFrame, void(uint32_t));
 // (under the queue+64 lock). v33 = (backlog>1 && cd38>1) || d3e0.
 REX_IMPORT(__imp__sub_8245CD38, g_cbQueueCd38, uint32_t(uint32_t));
 REX_IMPORT(__imp__sub_8245D3E0, g_cbQueueD3e0, uint32_t(uint32_t));
+// FM2_RenderContext_UploadMatrixConstants (sub_8236D958): the game uploads per-draw
+// VS transform constants here, but to a render-context object FlushRenderState's
+// GuestDevice never sees (so device VS constants are zero for scene draws -> geometry
+// collapses in plume_native). Mirror the upload into the unified VS const buffer.
+REX_IMPORT(__imp__sub_8236D958, g_origUploadMatrixConstants,
+           void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
 // FM2_RenderContext_SetActivePassId (sub_8236E228): stores the active vertex
 // declaration handle at renderContext+11540, read by FM2_D3D_EmitDrawListStatePackets
 // at draw time. Forza binds the per-draw vertex declaration here (a D3DVERTEXELEMENT9
@@ -288,6 +326,9 @@ struct MiniRdocApi {
   uint32_t(__cdecl *EndFrameCapture)(void *dev, void *wnd);     // 21
 };
 std::atomic<uint32_t> g_drawsSinceLastPresent{0};
+// A (CL-flow diagnostic): PM4 scene (3D) draws submitted since the last present.
+// Logged + reset at present to tell whether scene draws reach the submitted CL.
+std::atomic<uint32_t> g_sceneDrawsThisCL{0};
 MiniRdocApi *RdocApi() {
   static MiniRdocApi *s_rdoc = nullptr;
   static bool s_tried = false;
@@ -642,6 +683,15 @@ void Fm2Present(uint32_t presentChain) {
   Video::Present();
 }
 
+// The frontbuffer (final composited display) present source, decoded from the
+// VdSwap fetch in Fm2GpuCommandBufferBuildAndSubmit. The RenderWorker present (which
+// has no access to the VdSwap fetch) prefers this over GetLastDrawnColorRenderTarget.
+static std::atomic<rr::GuestBaseTexture *> g_frontbufferPresentSource{nullptr};
+// session 6P-2: with the draw pipeline healthy (PSO failures fixed), the guest
+// frontbuffer RAM is the WRONG present source -- the disabled CP never resolves the
+// scene into it, so it is black. Present the last-drawn color RT (actual rendered
+// content) instead. Set true to restore the old VdSwap-fetch frontbuffer behavior.
+static constexpr bool kPreferFrontbufferPresent = false;
 void Fm2GpuCommandBufferBuildAndSubmit(uint32_t commandBuffer, uint32_t arg4,
                                        uint32_t arg5) {
   static uint32_t s_traceCount = 0;
@@ -665,18 +715,43 @@ void Fm2GpuCommandBufferBuildAndSubmit(uint32_t commandBuffer, uint32_t arg4,
 
   if (ShouldMirrorPlumeRenderState()) {
     // plume_native / plume_clear: the Xenia CP thread is disabled, so the
-    // original body would crash kicking the GPU ring buffer. Skip it, but
-    // replicate the midasm FM2PlumeTraceVdSwap that normally runs at the end of
-    // the original (0x8236CD78): set the present source from the last-bound
-    // color render target and present. This is the game/render thread that
-    // records draws into g_commandList, so present is correctly same-threaded.
-    // This is FM2's real GPU command-buffer submit. Latch this thread as the
-    // present owner so Video::Present() drops the racing presents that FM2's
-    // other job-system threads issue against the single global command list.
+    // original body would crash kicking the GPU ring buffer. We skip it -- but
+    // the original ends with `bl VdSwap` (0x8236CD74), handing the FRONTBUFFER
+    // (the final composited display image) to the present. The original NEVER
+    // runs, so the FM2PlumeTraceVdSwap midasm (0x8236CD78) never fires. Replicate
+    // it HERE using arg4: the frontbuffer D3D9 fetch constant is at arg4+28 (the
+    // original does FM2_MemcpyAligned(&v48, a2+28, 24)); the frontbuffer base is
+    // dword1 & 0xFFFFF000 (== v46). Present THAT, not the last-drawn RT (which is
+    // just one black intermediate). Prefer a resolve-aliased surface at that base,
+    // else upload the frontbuffer from guest RAM, else fall back to last-drawn.
     Video::ClaimPresentOwner();
+    const uint32_t fetchAddr = arg4 + 28u;
+    const uint32_t fbBase = ReadGuestU32At(fetchAddr + 4u) & 0xFFFFF000u;
+    // Default to the last-drawn color RT (the actual rendered content). The guest
+    // frontbuffer fetch is black in plume_native (no CP resolve), so only use it
+    // when explicitly restoring the old behavior.
+    const char *kind = "lastdrawn";
     rr::GuestBaseTexture *presentSource = rr::GetLastDrawnColorRenderTarget();
+    if (kPreferFrontbufferPresent) {
+      rr::GuestBaseTexture *fb =
+          rr::TranslateGuestTextureFetch(ghp::ToHost<void>(fetchAddr), true);
+      if (fb != nullptr && fb->texture != nullptr) {
+        presentSource = fb;
+        kind = "fbfetch";
+      }
+    }
     if (presentSource != nullptr && presentSource->texture != nullptr) {
       rr::SetPresentSource(presentSource);
+      g_frontbufferPresentSource.store(presentSource, std::memory_order_relaxed);
+    }
+    {
+      const uint32_t sceneDraws =
+          g_sceneDrawsThisCL.exchange(0, std::memory_order_relaxed);
+      static std::atomic<uint32_t> s_n{0};
+      if (s_n.fetch_add(1, std::memory_order_relaxed) < 120)
+        LogReplayDbg(
+            "FM2_GPUCMD_PRESENT fbBase=0x%08X kind=%s src=%p sceneDraws=%u",
+            fbBase, kind, static_cast<void *>(presentSource), sceneDraws);
     }
     static PresentDiagSlot s_gpuCmdBufSlot;
     CountPresentDiag("GpuCmdBuf", s_gpuCmdBufSlot, presentSource);
@@ -1799,6 +1874,7 @@ void SetStreamSourceNative(GuestDevice *device, uint32_t stream,
 void SetIndicesNative(GuestDevice *device, GuestBuffer *buffer) {
   FlushImmediateVertices();
   GuestBuffer *reo = AsFm2(buffer);
+  const char *path = "none";
   if (reo == nullptr && buffer != nullptr) {
     const auto *header =
         reinterpret_cast<const GuestD3DIndexBufferHeader *>(buffer);
@@ -1810,10 +1886,21 @@ void SetIndicesNative(GuestDevice *device, GuestBuffer *buffer) {
       if (address != 0 && size != 0) {
         rr::SetIndicesGuestData(device, ghp::ToHost<void>(address), size,
                                 indexStride);
+        static std::atomic<uint32_t> s_n{0};
+        if (s_n.fetch_add(1, std::memory_order_relaxed) < 8)
+          LogReplayDbg("FM2_SETIDX header addr=0x%08X size=%u stride=%u", address,
+                       size, indexStride);
         return;
       }
     }
+    path = "header_fail";
+  } else if (reo != nullptr) {
+    path = "fm2res";
   }
+  static std::atomic<uint32_t> s_n2{0};
+  if (s_n2.fetch_add(1, std::memory_order_relaxed) < 8)
+    LogReplayDbg("FM2_SETIDX path=%s reo=%p buffer=%p", path, (void *)reo,
+                 (void *)buffer);
   rr::SetIndices(device, reo);
 }
 void SetViewport(GuestDevice *device, rr::GuestViewport *viewport) {
@@ -2285,6 +2372,239 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
 // FM2_D3D_EmitIndexedDrawPm4Packets:              (context, primType, indexBufferBase, indexCount)
 // FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset: (context, primType, gpuOffset, startIndex, indexCount)
 // FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup:(context, primType, gpuOffset, startIndex, indexCount)
+// Bind the PM4 draw's REAL geometry directly from the render context. In
+// plume_native the D3D9 SetStreamSource/SetIndices hooks receive NULL -- the
+// geometry comes through the PM4 stream, with the bound D3DResources stored in the
+// context (FM2_RenderContext_BindVertexStream / BindIndexBuffer):
+//   index resource    @ ctx+0x2F7C
+//   vtx stream s res   @ ctx+0x2F94 + 4*s ; stride/4 byte @ ctx+0x2FD8 + s
+//   in each D3DResource: GPU phys base @ +0x18, size @ +0x1C, common(format) @ +0.
+// Bases are guest PHYSICAL addresses (read via TranslatePhysical).
+// DIAGNOSTIC: the per-object world-view matrix (VS ALU consts, regs c7..c18) is
+// emitted as PM4 SET_CONSTANT into the FM2 command buffer (ctx+0x30 = write ptr,
+// a GPU write-combined physical-alias addr) which plume_native's disabled CP
+// never processes -> those regs read zero -> car geometry collapses. Scan the
+// command-buffer delta since the last draw for PM4_SET_CONSTANT(type=0 ALU)
+// packets and log them; idx is the ALU register (const = idx/4). Confirm the
+// WVP (idx ~28..75) is here before feeding g_passVsConstants.
+void ProcessPm4VsConstantsDiag(uint32_t context) {
+  auto *mem = ghp::GuestMemory();
+  if (mem == nullptr) return;
+  auto rd = [&](uint32_t ga) -> uint32_t {
+    auto *p = ghp::ToHost<rex::be<uint32_t>>(ga);
+    return p ? p->get() : 0u;
+  };
+  const uint32_t curPhys = rd(context + 0x30u) & 0x1FFFFFFFu;
+  static uint32_t s_lastPhys = 0;
+  const uint32_t lastPhys = s_lastPhys;
+  s_lastPhys = curPhys;
+  if (lastPhys == 0 || curPhys <= lastPhys) return; // first call / wrap / drain
+  const uint32_t len = curPhys - lastPhys;
+  if (len > 0x40000u) return;
+  const auto *buf = mem->TranslatePhysical<const uint8_t *>(lastPhys);
+  if (buf == nullptr) return;
+  auto be = [&](uint32_t o) -> uint32_t {
+    const uint8_t *p = buf + o;
+    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+           (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+  };
+  uint32_t off = 0, guard = 0;
+  while (off + 4u <= len && guard++ < 8192u) {
+    const uint32_t hdr = be(off);
+    const uint32_t type = hdr >> 30;
+    uint32_t adv;
+    if (type == 3u) {
+      const uint32_t cnt = ((hdr >> 16) & 0x3FFFu) + 1u; // data dwords
+      const uint32_t op = (hdr >> 8) & 0x7Fu;
+      adv = 1u + cnt;
+      if (op == 0x2Du && off + 8u <= len) { // PM4_SET_CONSTANT
+        const uint32_t ot = be(off + 4u);
+        const uint32_t idx = ot & 0x7FFu;
+        const uint32_t ctype = (ot >> 16) & 0xFFu;
+        // Log each DISTINCT (type,idx) once -> full histogram of which ALU regs
+        // the game SET_CONSTANTs. WVP for the VS is regs ~28..75 (c7..c18).
+        static bool s_seen[6][2048] = {};
+        const uint32_t tt = ctype < 6u ? ctype : 5u;
+        if (idx < 2048u && !s_seen[tt][idx]) {
+          s_seen[tt][idx] = true;
+          LogReplayDbg("FM2_PM4SETC type=%u idx=%u (c%u.%u) regs=%u v=%08X %08X "
+                       "%08X %08X",
+                       ctype, idx, idx / 4u, idx % 4u, cnt - 1u,
+                       off + 8u <= len ? be(off + 8u) : 0u,
+                       off + 12u <= len ? be(off + 12u) : 0u,
+                       off + 16u <= len ? be(off + 16u) : 0u,
+                       off + 20u <= len ? be(off + 20u) : 0u);
+        }
+      } else if (op == 0x2Fu && off + 16u <= len) { // PM4_LOAD_ALU_CONSTANT
+        const uint32_t addr = be(off + 4u) & 0x3FFFFFFFu;
+        const uint32_t ot = be(off + 8u);
+        const uint32_t idx = ot & 0x7FFu;
+        const uint32_t ctype = (ot >> 16) & 0xFFu;
+        const uint32_t sz = be(off + 12u) & 0xFFFu;
+        static bool s_seenL[2048] = {};
+        if (ctype == 0u && idx < 2048u && !s_seenL[idx]) {
+          s_seenL[idx] = true;
+          const auto *src =
+              mem->TranslatePhysical<const uint8_t *>(addr & 0x1FFFFFFFu);
+          auto sbe = [&](uint32_t o) -> uint32_t {
+            if (!src) return 0u;
+            const uint8_t *p = src + o;
+            return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+                   (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+          };
+          LogReplayDbg("FM2_PM4LOADALU idx=%u (c%u) sz=%u addr=%08X v=%08X %08X "
+                       "%08X %08X",
+                       idx, idx / 4u, sz, addr, sbe(0), sbe(4), sbe(8), sbe(12));
+        }
+      }
+    } else if (type == 0u) {
+      const uint32_t cnt0 = ((hdr >> 16) & 0x3FFFu) + 1u;
+      const uint32_t base = hdr & 0x7FFFu;
+      if (base >= 0x4000u && base < 0x4400u) {
+        static bool s_seen0[2048] = {};
+        const uint32_t r = base - 0x4000u;
+        if (r < 2048u && !s_seen0[r]) {
+          s_seen0[r] = true;
+          LogReplayDbg("FM2_PM4T0ALU reg=%u (c%u.%u) count=%u v=%08X", r, r / 4u,
+                       r % 4u, cnt0, off + 4u <= len ? be(off + 4u) : 0u);
+        }
+      }
+      adv = 1u + cnt0;
+    } else if (type == 1u) {
+      adv = 3u;
+    } else {
+      adv = 1u; // type 2 NOP filler
+    }
+    off += 4u * adv;
+  }
+}
+
+void BindPm4GeometryFromContext(GuestDevice *device, uint32_t context,
+                                uint32_t startIndex, uint32_t indexCount) {
+  if (context == 0) return;
+  ProcessPm4VsConstantsDiag(context);
+  auto *mem = ghp::GuestMemory();
+  if (mem == nullptr) return;
+  auto rd = [&](uint32_t ga) -> uint32_t {
+    auto *p = ghp::ToHost<rex::be<uint32_t>>(ga);
+    return p ? p->get() : 0u;
+  };
+  auto physReadable = [&](uint32_t physBase, uint32_t size) -> bool {
+    return size != 0 && size <= 0x4000000u && (physBase + size) <= 0x20000000u &&
+           mem->GetPhysicalHeap()->QueryRangeAccess(physBase, physBase + size - 1) !=
+               rex::memory::PageAccess::kNoAccess;
+  };
+  // Decode a Xenos vertex/index FETCH-constant size word (D3DResource+0x1C):
+  // bits[1:0]=endian, bits[25:2]=size-in-dwords, high bits=format/clamp flags.
+  // (Confirmed against FM2_RenderContext_BindVertexStream @0x82370E48 and the
+  //  index emitter @0x827317A0.) Reading it raw yields a bogus ~256MB size for
+  //  any resource that has flag bits set, which physReadable then rejects.
+  auto decodeFetchSize = [](uint32_t w) -> uint32_t {
+    return ((w >> 2) & 0xFFFFFFu) * 4u;
+  };
+  // Index buffer.
+  const uint32_t idxRes = rd(context + 0x2F7Cu);
+  bool idxBound = false;
+  if (idxRes != 0) {
+    const uint32_t common = rd(idxRes);
+    // Index base keeps its low 2 bits: the emitter forms the read address as
+    // (2*startIndex + base) & 0x1FFFFFFF without clearing them.
+    const uint32_t physBase = rd(idxRes + 0x18u) & 0x1FFFFFFFu;
+    const uint32_t size = decodeFetchSize(rd(idxRes + 0x1Cu));
+    // 32-bit indices iff the common dword's sign bit is set (IDA: `*v13 < 0`).
+    const uint32_t stride = (common & 0x80000000u) ? 4u : 2u;
+    if (physReadable(physBase, size)) {
+      const void *host = mem->TranslatePhysical<const void *>(physBase);
+      if (host) {
+        rr::SetIndicesGuestData(device, host, size, stride);
+        idxBound = true;
+      }
+    }
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 16)
+      LogReplayDbg("FM2_PM4GEO_IDX ctx=0x%08X idxRes=0x%08X common=0x%08X "
+                   "physBase=0x%08X size=%u stride=%u readable=%d bound=%d",
+                   context, idxRes, common, physBase, size, stride,
+                   physReadable(physBase, size) ? 1 : 0, idxBound ? 1 : 0);
+  } else {
+    static std::atomic<uint32_t> s_n0{0};
+    if (s_n0.fetch_add(1, std::memory_order_relaxed) < 8)
+      LogReplayDbg("FM2_PM4GEO_IDX ctx=0x%08X idxRes=0 (no index resource)",
+                   context);
+  }
+  // Vertex streams.
+  for (uint32_t s = 0; s < 8u; ++s) {
+    const uint32_t vbRes = rd(context + 0x2F94u + 4u * s);
+    if (vbRes == 0) continue;
+    // Vertex base clears the 2 endian bits (BindVertexStream uses addr & ~3;
+    // the low bits select the GPU fetch endian swap, not part of the address).
+    const uint32_t physBase = rd(vbRes + 0x18u) & 0x1FFFFFFCu;
+    const uint32_t size = decodeFetchSize(rd(vbRes + 0x1Cu));
+    auto *sb = ghp::ToHost<uint8_t>(context + 0x2FD8u + s);
+    const uint32_t stride = (sb ? *sb : 0u) * 4u;
+    bool vbBound = false;
+    if (stride != 0 && physReadable(physBase, size)) {
+      const void *host = mem->TranslatePhysical<const void *>(physBase);
+      if (host) {
+        rr::SetStreamSourceGuestData(device, s, host, size, stride);
+        vbBound = true;
+      }
+    }
+    static std::atomic<uint32_t> s_nv{0};
+    if (s == 0 && s_nv.fetch_add(1, std::memory_order_relaxed) < 10) {
+      // Dump the raw resource dwords + the fetch constants BindVertexStream also
+      // writes (base @ ctx+0x6F8, size @ ctx+0x6FC for stream 0), to decode the
+      // real base/size offsets in the D3DResource.
+      const uint32_t fcBase = rd(context + 0x6F8u);
+      const uint32_t fcSize = rd(context + 0x6FCu);
+      LogReplayDbg("FM2_PM4GEO_VTX s=0 vbRes=0x%08X res[0..9]="
+                   "%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X | "
+                   "fetchBase=0x%08X fetchSize=%u stride=%u | decBase=0x%08X "
+                   "decSize=%u bound=%d",
+                   vbRes, rd(vbRes), rd(vbRes + 4), rd(vbRes + 8), rd(vbRes + 12),
+                   rd(vbRes + 16), rd(vbRes + 20), rd(vbRes + 24), rd(vbRes + 28),
+                   rd(vbRes + 32), rd(vbRes + 36), fcBase, fcSize, stride,
+                   physBase, size, vbBound ? 1 : 0);
+    }
+  }
+  // VERBOSE for scene-sized draws: dump EVERY bound stream (slots 0..15; the
+  // D3D12 debug layer reported the input layout referencing slot 15), so we can
+  // tell whether the big indexed draws actually get a large vertex buffer or
+  // just the 24-vert UI stream that the first draws bind.
+  static std::atomic<uint32_t> s_big{0};
+  if (indexCount >= 600u && s_big.fetch_add(1, std::memory_order_relaxed) < 24) {
+    char buf[640];
+    int off = 0;
+    for (uint32_t s = 0; s < 16u; ++s) {
+      const uint32_t vbRes = rd(context + 0x2F94u + 4u * s);
+      if (vbRes == 0) continue;
+      const uint32_t base = rd(vbRes + 0x18u) & 0x1FFFFFFCu;
+      const uint32_t size = decodeFetchSize(rd(vbRes + 0x1Cu));
+      auto *sb = ghp::ToHost<uint8_t>(context + 0x2FD8u + s);
+      const uint32_t stride = (sb ? *sb : 0u) * 4u;
+      const uint32_t nverts = stride ? size / stride : 0u;
+      // Raw guest source bytes at the decoded phys base (PRE-byteswap). If this
+      // is uniform fill (e.g. FF000000) the geometry is not actually there.
+      const auto *vsrc = mem->TranslatePhysical<const uint8_t *>(base);
+      uint32_t vs0 = 0, vs1 = 0;
+      if (vsrc) { std::memcpy(&vs0, vsrc, 4); std::memcpy(&vs1, vsrc + 4, 4); }
+      off += std::snprintf(buf + off, sizeof(buf) - off,
+                           " s%u[res=%08X base=%08X sz=%u str=%u nv=%u src=%08X%08X]",
+                           s, vbRes, base, size, stride, nverts, vs0, vs1);
+      if (off >= (int)sizeof(buf) - 80) break;
+    }
+    const uint32_t idxPhys = idxRes ? (rd(idxRes + 0x18u) & 0x1FFFFFFFu) : 0u;
+    const auto *isrc =
+        idxPhys ? mem->TranslatePhysical<const uint8_t *>(idxPhys) : nullptr;
+    uint32_t is0 = 0, is1 = 0;
+    if (isrc) { std::memcpy(&is0, isrc, 4); std::memcpy(&is1, isrc + 4, 4); }
+    LogReplayDbg("FM2_PM4GEO_BIG idxCnt=%u start=%u idxRes=0x%08X idxPhys=%08X "
+                 "idxSz=%u idxSrc=%08X%08X |%s",
+                 indexCount, startIndex, idxRes, idxPhys,
+                 idxRes ? decodeFetchSize(rd(idxRes + 0x1Cu)) : 0u, is0, is1, buf);
+  }
+}
+
 void Fm2EmitIndexedDrawPm4Base(uint32_t context, uint32_t primType,
                                uint32_t indexBufferBase,
                                uint32_t indexCount) {
@@ -2301,7 +2621,10 @@ void Fm2EmitIndexedDrawPm4Base(uint32_t context, uint32_t primType,
   if (device == nullptr) return;
   ApplyLiveColorWriteFromContext(device, context);
   ApplyLiveTexturesFromContext(device, context);
+  BindPm4GeometryFromContext(device, context, 0, indexCount);
   DrawIndexedVertices(device, primType, 0, 0, indexCount);
+  rr::SetScenePresentRT(rr::GetCurrentColorRenderTarget());
+  g_sceneDrawsThisCL.fetch_add(1, std::memory_order_relaxed);
 }
 
 // Aliased creation hooks: call the original XDK function (FM2 reads the result
@@ -2329,7 +2652,19 @@ void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
   if (device == nullptr) return;
   ApplyLiveColorWriteFromContext(device, context);
   ApplyLiveTexturesFromContext(device, context);
+  // STAGE 1: what the game asked to draw (the intent), before we bind/submit.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 24)
+      LogReplayDbg("FM2_PM4_DRAW ctx=0x%08X prim=%u startIndex=%u indexCount=%u",
+                   context, primType, startIndex, indexCount);
+  }
+  BindPm4GeometryFromContext(device, context, startIndex, indexCount);
   DrawIndexedVertices(device, primType, 0, startIndex, indexCount);
+  // B: present the SCENE RT (the RT these PM4 3D draws render to), not the
+  // last-touched UI RT. A: count scene draws to see if they reach the submit.
+  rr::SetScenePresentRT(rr::GetCurrentColorRenderTarget());
+  g_sceneDrawsThisCL.fetch_add(1, std::memory_order_relaxed);
 }
 
 // Decode the current native state snapshot + PM4 draw args and submit a debug
@@ -2826,6 +3161,16 @@ REX_HOOK_RAW(sub_82288948) {
     return;
   }
   rr::GuestBaseTexture *presentSource = rr::GetLastDrawnColorRenderTarget();
+  // Old behavior: prefer the guest frontbuffer decoded from the VdSwap fetch. In
+  // plume_native the CP never resolves the scene into that guest RAM, so it is
+  // black -- only correct when the game's own GPU does the resolve. Gated off now.
+  if (kPreferFrontbufferPresent) {
+    rr::GuestBaseTexture *fb =
+        g_frontbufferPresentSource.load(std::memory_order_relaxed);
+    if (fb != nullptr && fb->texture != nullptr) {
+      presentSource = fb;
+    }
+  }
   if (kPresentSceneResolveSource) {
     rr::GuestBaseTexture *scene =
         g_sceneResolveSource.load(std::memory_order_relaxed);
@@ -2839,12 +3184,49 @@ REX_HOOK_RAW(sub_82288948) {
     rr::SetPresentSource(presentSource);
     Video::Present();
   }
-  RenderDocFrameEnd(rdocCapturing,
-                    g_drawsSinceLastPresent.exchange(0, std::memory_order_relaxed));
+  // A (CL-flow diagnostic): how many draws (total) and PM4 scene draws were
+  // recorded into g_commandList since the last present, i.e. submitted in THIS
+  // frame. sceneDraws>0 => scene draws reach the submitted CL (so an empty scene
+  // RT means a rasterization bug, not a submission bug); sceneDraws==0 => they go
+  // to a different/discarded recording.
+  const uint32_t totalDraws =
+      g_drawsSinceLastPresent.exchange(0, std::memory_order_relaxed);
+  const uint32_t sceneDraws =
+      g_sceneDrawsThisCL.exchange(0, std::memory_order_relaxed);
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 120)
+      LogReplayDbg("FM2_CL_SUBMIT path=RenderWorker src=%p totalDraws=%u "
+                   "sceneDraws=%u",
+                   static_cast<void *>(presentSource), totalDraws, sceneDraws);
+  }
+  RenderDocFrameEnd(rdocCapturing, totalDraws);
   // Ensure the persistent host-side gate driver is running (starts once; keeps
   // pulsing in every game state even after this loading-screen loop ends).
   StartGatePulseThreadOnce();
 }
+
+// Mirror the game's per-draw VS constant uploads into the unified VS const buffer
+// that FlushRenderState reads. RAW hook: run the original (it does VMX stores to the
+// render-context object), then copy the same a4 vec4 regs (src=r5) at register r4
+// into our buffer so the scene transform actually reaches the shader.
+REX_HOOK_RAW(sub_8236D958) {
+  const uint32_t destReg = ctx.r4.u32;
+  const uint32_t srcAddr = ctx.r5.u32;
+  const uint32_t count = ctx.r6.u32;
+  g_origUploadMatrixConstants.fn(ctx, base);
+  if (ShouldMirrorPlumeRenderState()) {
+    const void *src = ghp::ToHost<void>(srcAddr);
+    if (src != nullptr)
+      rr::MirrorPassVsConstants(destReg, src, count);
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 16) {
+      LogReplayDbg("FM2_UPLOADMTX destReg=%u count=%u src=0x%08X srcHost=%p",
+                   destReg, count, srcAddr, src);
+    }
+  }
+}
+
 REX_HOOK(FM2_FmodIrqSubmit_8236C688, Fm2FmodIrqSubmitSafe);
 REX_HOOK(FM2_ProducerProgressGuard_82369340, Fm2ProducerProgressGuard);
 

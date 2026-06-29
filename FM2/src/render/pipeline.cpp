@@ -37,6 +37,41 @@ std::unique_ptr<uint8_t[]> g_spirvCache;
 std::once_flag g_spirvCacheOnce;
 
 #ifdef _WIN32
+// SEH-guarded DXC linker call: some translated shaders (FM2 menu, spec_mask!=0)
+// crash dxcompiler.dll's IDxcLinker::Link with a null deref (0xCC). Catch it so the
+// single bad shader is skipped (draw falls back to no host VS) instead of taking
+// down the whole process. Must be a plain function with no C++ unwinding objects.
+static HRESULT SafeDxcLink(IDxcLinker *linker, const wchar_t *profile,
+                           const wchar_t *const *libs, uint32_t libCount,
+                           IDxcOperationResult **out) {
+  __try {
+    return linker->Link(L"shaderMain", profile, libs, libCount, nullptr, 0, out);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    *out = nullptr;
+    return E_UNEXPECTED;
+  }
+}
+
+// Some regenerated spec-mask shaders produce a DXC linker-output blob whose
+// GetBufferPointer()/GetBufferSize() vtable calls null-deref inside dxcompiler.dll
+// (fault 0xCC). Read the bytes + build the plume shader behind an SEH guard so the
+// one bad shader is skipped. The unwinding unique_ptr temporary lives in the *Raw
+// callee, keeping the __try frame free of objects requiring unwinding.
+static RenderShader *CreateShaderFromDxcBlobRaw(IDxcBlob *blob) {
+  return Device()
+      ->createShader(blob->GetBufferPointer(), blob->GetBufferSize(), "main",
+                     RenderShaderFormat::DXIL)
+      .release();
+}
+static RenderShader *SafeCreateShaderFromDxcBlob(IDxcBlob *blob) {
+  RenderShader *out = nullptr;
+  __try {
+    out = CreateShaderFromDxcBlobRaw(blob);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    out = nullptr;
+  }
+  return out;
+}
 class DxcRuntime {
  public:
   DxcRuntime() {
@@ -145,8 +180,38 @@ class DxcRuntime {
     return shaderBlob;
   }
 
+  // Public entry: SEH-guard the ENTIRE DXC link path. Some regenerated FM2 menu
+  // shaders crash dxcompiler.dll with a null deref (fault 0xCC) -- not always in
+  // Link() itself but in RegisterLibrary/Compile on a malformed blob. Catch it
+  // here (whole path) and skip the one bad shader instead of killing the process.
+  // No C++ unwinding objects live in this frame, so __try is legal here.
   IDxcBlob* LinkShaderLibrary(IDxcBlob* shaderBlob, uint32_t dxilOffset, ResourceType shaderType,
                               uint32_t specConstants) {
+    // Flush a "trying" marker BEFORE touching DXC. If DXC hard-crashes (and the SEH
+    // guard below fails to catch it), the LAST FM2_DXC_LINK_TRY line in the log names
+    // the exact culprit shader so we can blacklist it deterministically.
+    if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+      std::fprintf(f, "FM2_DXC_LINK_TRY dxilOffset=%u spec=%u type=%d\n",
+                   dxilOffset, specConstants, static_cast<int>(shaderType));
+      std::fclose(f);
+    }
+    IDxcBlob* result = nullptr;
+    __try {
+      result = LinkShaderLibraryInner(shaderBlob, dxilOffset, shaderType, specConstants);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_DXC_LINK_ERR dxilOffset=%u spec=%u (CRASHED-caught in link path)\n",
+                     dxilOffset, specConstants);
+        std::fclose(f);
+      }
+      result = nullptr;
+    }
+    return result;
+  }
+
+  IDxcBlob* LinkShaderLibraryInner(IDxcBlob* shaderBlob, uint32_t dxilOffset,
+                                   ResourceType shaderType, uint32_t specConstants) {
     if (!ready()) {
       return nullptr;
     }
@@ -184,10 +249,16 @@ class DxcRuntime {
     const wchar_t* profile =
         shaderType == ResourceType::VertexShader ? L"vs_6_0" : L"ps_6_0";
     IDxcOperationResult* linkResult = nullptr;
-    hr = linker->Link(L"shaderMain", profile, libraries, std::size(libraries), nullptr, 0,
-                      &linkResult);
+    hr = SafeDxcLink(linker, profile, libraries, std::size(libraries), &linkResult);
     linker->Release();
     if (FAILED(hr) || linkResult == nullptr) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_DXC_LINK_ERR dxilOffset=%u spec=%u hr=0x%08X%s\n",
+                     dxilOffset, specConstants, static_cast<unsigned>(hr),
+                     hr == E_UNEXPECTED ? " (CRASHED-caught)" : "");
+        std::fclose(f);
+      }
       REXLOG_ERROR("DXC: shader link failed hr=0x%08X", static_cast<unsigned>(hr));
       return nullptr;
     }
@@ -354,6 +425,12 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
     if (guestShader->shader != nullptr) {
       return guestShader->shader.get();
     }
+    if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+      std::fprintf(f, "FM2_CREATESHADER_TRY spec0 off=%u size=%u type=%d file=%s\n",
+                   entry->dxil_offset, entry->dxil_size, static_cast<int>(guestShader->type),
+                   entry->filename ? entry->filename : "(null)");
+      std::fclose(f);
+    }
     guestShader->shader = Device()->createShader(g_dxilCache.get() + entry->dxil_offset,
                                                  entry->dxil_size, "main",
                                                  RenderShaderFormat::DXIL);
@@ -396,10 +473,23 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
   }
   psLog("link_ok", linkedBlob);
 
-  std::unique_ptr<RenderShader> shader = Device()->createShader(
-      linkedBlob->GetBufferPointer(), linkedBlob->GetBufferSize(), "main",
-      RenderShaderFormat::DXIL);
+  // SEH-guarded: a malformed linker-output blob (some regenerated spec-mask
+  // shaders) crashes dxcompiler.dll when its bytes are read. On crash, skip this
+  // shader (the draw falls back to no host shader) instead of killing the process.
+  std::unique_ptr<RenderShader> shader(SafeCreateShaderFromDxcBlob(linkedBlob));
   linkedBlob->Release();
+  if (shader == nullptr) {
+    if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+      std::fprintf(f,
+                   "FM2_CREATESHADER_SKIP linked off=%u spec=%u type=%d file=%s\n",
+                   entry->dxil_offset, specializedValue,
+                   static_cast<int>(guestShader->type),
+                   entry->filename ? entry->filename : "(null)");
+      std::fclose(f);
+    }
+    psLog("link_createShader_crashed", nullptr);
+    return nullptr;
+  }
 
   RenderShader* shaderPtr = shader.get();
   {

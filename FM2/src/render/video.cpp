@@ -403,9 +403,8 @@ void ExecuteUpload(const std::function<void(RenderCommandList *)> &record) {
 std::unique_ptr<RenderTexture> g_testTex;
 std::unique_ptr<RenderTextureView> g_testTexView;
 uint32_t g_testTexDesc = 0;
-bool g_showPresentTestGrid = true; // session 6P-2: VRAM viewer back ON (stable
-                                   // first-12-no-evict ring -- the crash was the
-                                   // evict-oldest variant blitting freed textures).
+bool g_showPresentTestGrid = false;  // OFF: present the raw scene RT (no grid overdraw)
+                                     // so we can see whether the scene RT has geometry.
 
 void EnsureTestTexture() {
   if (g_testTex != nullptr || g_device == nullptr)
@@ -526,26 +525,24 @@ void DrawPresentTestGrid(RenderCommandList *cl, RenderTexture *backBuffer,
     // Cell 11 = the latest EDRAM resolve SOURCE = the composited-frame candidate
     // (incl. the swap framebuffer). Cells 8-10 = recent render targets (outputs).
     // Cells 0-7 = sampled input textures.
-    const bool isComposite = (i == 11u);
-    const bool isRT = (i >= 8u && i < 11u);
-    RenderColor markCol = RenderColor(0.0f, 0.3f, 0.3f, 1.0f); // teal = tex
-    if (isComposite)
-      markCol = RenderColor(0.9f, 0.9f, 0.0f, 1.0f); // yellow = composite candidate
-    else if (isRT)
-      markCol = RenderColor(0.4f, 0.0f, 0.4f, 1.0f); // magenta = RT
-    cl->clearColor(0, markCol, &mark, 1);
+    // Cells 8-11 = recent RENDER TARGETS (persistent device surfaces -- safe). The
+    // composite cell (GetSceneResolveSource = a recreated resolve snapshot) was
+    // removed: it dangled -> blit crash.
+    const bool isRT = (i >= 8u);
+    cl->clearColor(0,
+                   isRT ? RenderColor(0.4f, 0.0f, 0.4f, 1.0f)   // magenta = RT
+                        : RenderColor(0.0f, 0.3f, 0.3f, 1.0f),  // teal = tex
+                   &mark, 1);
     uint32_t base = 0;
-    GuestBaseTexture *g = isComposite  ? GetSceneResolveSource()
-                          : isRT       ? GetRecentColorRenderTarget(i - 8u)
-                                       : GetVramViewTexture(i, &base);
+    GuestBaseTexture *g = isRT ? GetRecentColorRenderTarget(i - 8u)
+                               : GetVramViewTexture(i, &base);
     blitGuestToCell(g, x + 2.0f, y + 2.0f, cw - 4.0f, chf - 4.0f);
     if (logThis) {
       if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
         std::fprintf(f,
                      "FM2_VRAMVIEW cell=%u row=%u col=%u kind=%s base=0x%08X "
                      "tex=%p%s\n",
-                     i, i / cols, i % cols,
-                     isComposite ? "COMPOSITE" : isRT ? "RT" : "tex", base,
+                     i, i / cols, i % cols, isRT ? "RT" : "tex", base,
                      static_cast<void *>(g), (g != nullptr ? "" : " (null)"));
         std::fclose(f);
       }
