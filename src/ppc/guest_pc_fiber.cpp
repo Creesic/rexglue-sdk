@@ -19,6 +19,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include <rex/gpu_sync_diag.h>  // TEMP_DIAG: record fiber swaps into the lock-free ring
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/system/function_dispatcher.h>
@@ -224,6 +225,15 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
   (void)job_ctx;
   (void)fiber_slot;
 
+  // TEMP_DIAG (fiber register-loss hunt 2026-06-29): DOAX_WorkQueueDispatchLoop sets
+  // r30=segBase(0x834A0000) ONCE then relies on it surviving its yield (sub_82783210);
+  // __imp__ never re-derives it, so a RunFiberSwap path that returns without restoring
+  // non-volatiles drops r30 -> AV at doax_recomp.7.cpp:48682. Log which PATH this
+  // loop-yield takes + whether r30 survives, to pin the exact branch to fix.
+  const uint32_t diag_entry_r30 = ctx.r30.u32;
+  const bool diag_loop = (diag_entry_r30 == 0x834A0000u);
+  static std::atomic<uint32_t> s_pathlog{0};
+
   auto* thread = XThread::GetCurrentThread();
 
   if (!g_active.load(std::memory_order_acquire) || !thread || !swapImpl) {
@@ -231,6 +241,10 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
     // swap so behavior is unchanged when the fix is not installed.
     if (swapImpl) {
       swapImpl(ctx, base);
+    }
+    if (diag_loop && s_pathlog.fetch_add(1) < 80u) {
+      REXKRNL_WARN("FIBERPATH loop-yield DEGRADED (g_active={} thread={} swapImpl={}) r30 {:#010x}->{:#010x}",
+                   g_active.load(), thread != nullptr, swapImpl != nullptr, diag_entry_r30, ctx.r30.u32);
     }
     return false;
   }
@@ -278,12 +292,26 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
   }
   const bool will_switch = target && target->host && target->host != current_host;
 
+  // TEMP_DIAG: record every fiber swap (src->tgt) into the lock-free ring so the dump
+  // shows the swap chain. The menu fiber (e.g. block 0x401e8ed0) is swapped-to in GOOD
+  // but never in BLACK -- this captures where the chain diverges.
+  gpu_sync_diag::Record(gpu_sync_diag::OP_FIBERSWAP, current_block, target_block,
+                        static_cast<uint16_t>((will_switch ? 1 : 0) | (brand_new ? 2 : 0)));
+
   if (!target) {
     // CreateHostFiberForTarget failed: continue inline on the current host stack.
     REXKRNL_ERROR("FIBERSW #{} CreateHostFiber FAILED tgt={:08X} -> inline", seq, target_block);
+    if (diag_loop && s_pathlog.fetch_add(1) < 80u) {
+      REXKRNL_WARN("FIBERPATH loop-yield !TARGET cur={:#010x} tgt={:#010x} r30 {:#010x}->{:#010x}",
+                   current_block, target_block, diag_entry_r30, ctx.r30.u32);
+    }
     return false;
   }
   if (!will_switch) {
+    if (diag_loop && s_pathlog.fetch_add(1) < 80u) {
+      REXKRNL_WARN("FIBERPATH loop-yield !WILL_SWITCH (same host) cur={:#010x} tgt={:#010x} r30 {:#010x}->{:#010x}",
+                   current_block, target_block, diag_entry_r30, ctx.r30.u32);
+    }
     return false;  // already on the right host stack
   }
 
@@ -296,6 +324,10 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
   // values this fiber had when it yielded. (Volatile regs incl. ctx.lr/r1 were
   // correctly restored by swapImpl and are intentionally left untouched.)
   ctx.RestoreNonVolatiles(saved_nonvolatiles);
+  if (diag_loop && s_pathlog.fetch_add(1) < 80u) {
+    REXKRNL_WARN("FIBERPATH loop-yield SWITCH+restore cur={:#010x} tgt={:#010x} r30 {:#010x}->{:#010x}",
+                 current_block, target_block, diag_entry_r30, ctx.r30.u32);
+  }
   return true;
 }
 

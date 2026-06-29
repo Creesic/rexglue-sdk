@@ -1187,6 +1187,24 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
     return true;
   }
 
+  // TEMP_DIAG (DOAX render-path black hunt): log the resolve SOURCE EDRAM base
+  // (where the resolve READS) vs the dest. Compare against "DOAX drawRT bases"
+  // (where draws WRITE) - a srcEDRAM that doesn't match the draw RT base = the
+  // draws-to-tile-A / resolve-reads-tile-B mismatch. Dedup on source base only.
+  {
+    static uint32_t s_prev_resolve_src = ~0u;
+    uint32_t src_base = resolve_info.IsCopyingDepth() ? resolve_info.depth_original_base
+                                                      : resolve_info.color_original_base;
+    if (src_base != s_prev_resolve_src) {
+      s_prev_resolve_src = src_base;
+      REXGPU_WARN(
+          "DOAX resolve srcEDRAM={:#x} depth={} -> destBase={:#x} extent={:#x}+{:#x} {}x{}",
+          src_base, resolve_info.IsCopyingDepth() ? 1 : 0, resolve_info.copy_dest_base,
+          resolve_info.copy_dest_extent_start, resolve_info.copy_dest_extent_length,
+          resolve_info.coordinate_info.width_div_8 * 8, resolve_info.height_div_8 * 8);
+    }
+  }
+
   DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
 
   // Copying.

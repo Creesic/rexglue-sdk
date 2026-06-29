@@ -3746,6 +3746,32 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
     }
   }
 
+  // TEMP_DIAG (DOAX render-path black hunt): log the color RT EDRAM bases that
+  // draws WRITE to (enabled per color mask), with the surface pitch. Compare the
+  // active base against "DOAX resolve srcEDRAM" - if the menu's draw RT base
+  // never matches the resolve source, the resolve reads an un-drawn (black) tile.
+  // Dedup on the enabled-base set + pitch so it only logs when the target changes.
+  {
+    static uint64_t s_prev_draw_rt = ~0ull;
+    uint32_t cb[4] = {color_infos[0].color_base, color_infos[1].color_base,
+                      color_infos[2].color_base, color_infos[3].color_base};
+    uint32_t surface_pitch = rb_surface_info.surface_pitch;
+    uint64_t key = uint64_t(surface_pitch) << 1;
+    for (uint32_t i = 0; i < 4; ++i) {
+      if ((normalized_color_mask >> (i * 4)) & 0xF) {
+        key ^= (uint64_t(cb[i]) + 1) << (i * 14);
+      }
+    }
+    if (key != s_prev_draw_rt) {
+      s_prev_draw_rt = key;
+      REXGPU_WARN(
+          "DOAX drawRT bases c0={:#x}/{} c1={:#x}/{} c2={:#x}/{} c3={:#x}/{} pitch={} mask={:#x}",
+          cb[0], normalized_color_mask & 0xF, cb[1], (normalized_color_mask >> 4) & 0xF, cb[2],
+          (normalized_color_mask >> 8) & 0xF, cb[3], (normalized_color_mask >> 12) & 0xF,
+          surface_pitch, normalized_color_mask);
+    }
+  }
+
   // Disable depth and stencil if it aliases a color render target (for
   // instance, during the XBLA logo in 58410954, though depth writing is already
   // disabled there).

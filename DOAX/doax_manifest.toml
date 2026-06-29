@@ -63,31 +63,33 @@ setjmp_address = 0x829F12D0
     0x824C0770 = {}
     0x824C08B8 = { name = "DOAX_SchedulerDrainWake" }  # Group 2
     0x824C0928 = { name = "DOAX_SchedulerDrainDispatch" }  # Group 2
+    0x824C0FB0 = { name = "DOAX_MenuTransitionSetup" }
     0x824C1208 = {}
     0x824C12D0 = {}
     0x824C1310 = {}
     0x824C13D8 = {}
-    0x824C1460 = {}
-    0x824C1548 = {}
+    0x824C1460 = { name = "DOAX_MenuPreTransitionHook" }
+    0x824C1548 = { name = "DOAX_MenuWorkFiberLoop" }
     0x824C15D0 = {}
-    0x824195C8 = {}
-    0x824C1958 = {}
+    0x824195C8 = { name = "DOAX_MenuTransitionTimeline" }  # PROBE: log from the menu fiber (case 3, every frame)
+    0x824C1958 = { name = "DOAX_MenuSceneTransition" }
     0x824D6868 = {}
     0x824DA790 = {}
     0x824DA868 = {}
     0x829CF100 = {}
     0x8250A0B8 = {}
     0x8250A118 = {}
-    0x8250A568 = {}
-    0x8250A728 = {}
+    0x8250A568 = { name = "DOAX_BootWorkFiberBody" }
+    0x8250A728 = { name = "DOAX_BootMovieReplayTeardown" }
     0x8250AA48 = {}
     0x8250AC08 = {}
-    0x8250AC50 = {}
-    0x8250AC98 = {}
-    0x8250BB60 = {}
-    0x8250BEB0 = {}
+    0x8250AC50 = { name = "DOAX_BootWarningDismiss" }
+    0x8250AC98 = { name = "DOAX_BootWarningFrame" }
+    0x8250BB60 = { name = "DOAX_WarningScreenUpdate" }
+    0x8250BEB0 = { name = "DOAX_BootPresentStateUpdate" }
     0x8250C468 = {}
-    0x82538048 = {}
+    0x82538048 = { name = "DOAX_IslandSceneLoad" }
+    0x8258C070 = { name = "DOAX_GammaFadeTick" }  # EXPERIMENT: content-ready gamma gate + render-layer diag
     0x8258CDF8 = {}  # Group 3: sub_8258CDF8 work-entry runner override
     0x8258CE60 = { name = "DOAX_WorkQueueSlotWake" }  # Group 3
     0x8258CEF0 = {}
@@ -95,7 +97,7 @@ setjmp_address = 0x829F12D0
     0x8266E618 = {}
     0x82670880 = {}
     0x82670E10 = {}
-    0x82671250 = {}
+    0x82671250 = { name = "DOAX_MenuValidateSelection" }  # PROBE: why default item auto-confirms
     0x82671308 = {}
     0x826B0CD8 = {}
     0x826B0E30 = {}

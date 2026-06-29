@@ -40,6 +40,7 @@
 
 // TEMP_DIAG: XMA gap diagnostics
 #include "xma_gap_diag.h"
+#define GPU_SYNC_DIAG_IMPL  // this TU owns the single ring + Record/Dump/Arm (exported)
 #include <rex/gpu_sync_diag.h>  // TEMP_DIAG
 // END TEMP_DIAG
 
@@ -887,6 +888,7 @@ u32 KeWaitForSingleObject_entry(mapped_void object_ptr, u32 wait_reason, u32 pro
   auto result = xeKeWaitForSingleObject(object_ptr, wait_reason, processor_mode, alertable,
                                         timeout_ptr ? &timeout : nullptr);
   xma_gap_diag::LogWaitExit("KeWaitForSingle", object_ptr.guest_address(), result, wait_enter_ms);
+  gpu_sync_diag::OnWaitSingleExit("KeWait1", object_ptr.guest_address(), result);  // TEMP_DIAG
   // END TEMP_DIAG
   return result;
 }
@@ -931,6 +933,7 @@ u32 NtWaitForSingleObjectEx_entry(u32 object_handle, u32 wait_mode, u32 alertabl
     // END TEMP_DIAG V2
   }
   // END TEMP_DIAG
+  gpu_sync_diag::OnWaitSingleExit("NtWait1", object_handle, result);  // TEMP_DIAG
 
   return result;
 }
@@ -939,13 +942,13 @@ u32 KeWaitForMultipleObjects_entry(u32 count, mapped_u32 objects_ptr, u32 wait_t
                                    u32 wait_reason, u32 processor_mode, u32 alertable,
                                    mapped_u64 timeout_ptr, mapped_void wait_block_array_ptr) {
   assert_true(wait_type <= 1);
-  gpu_sync_diag::OnWaitMultiple("KeWaitMultiple", count, wait_type);  // TEMP_DIAG
 
   // TEMP_DIAG: XMA gap - multi-wait tracking
   uint32_t obj_addrs[4] = {};
   for (uint32_t n = 0; n < count && n < 4; n++) {
     obj_addrs[n] = objects_ptr[n];
   }
+  gpu_sync_diag::OnWaitMultiple("KeWaitMultiple", count, obj_addrs[0], obj_addrs[1]);  // TEMP_DIAG
   bool mwait_infinite = !timeout_ptr;
   double mwait_enter_ms = xma_gap_diag::LogMultiWaitEnter("KeWaitMultiple", count, obj_addrs,
                                                             alertable, mwait_infinite);
@@ -969,6 +972,7 @@ u32 KeWaitForMultipleObjects_entry(u32 count, mapped_u32 objects_ptr, u32 wait_t
 
   // TEMP_DIAG: XMA gap - multi-wait exit
   xma_gap_diag::LogMultiWaitExit("KeWaitMultiple", count, obj_addrs, result, mwait_enter_ms);
+  gpu_sync_diag::OnWaitMultipleExit("KeWaitMultiple", count, result, obj_addrs[0]);  // TEMP_DIAG
   // END TEMP_DIAG
 
   if (alertable && result == X_STATUS_USER_APC) {
@@ -1002,10 +1006,14 @@ uint32_t xeNtWaitForMultipleObjectsEx(uint32_t count, rex::be<uint32_t>* handles
 
 u32 NtWaitForMultipleObjectsEx_entry(u32 count, mapped_u32 handles, u32 wait_type, u32 wait_mode,
                                      u32 alertable, mapped_u64 timeout_ptr) {
-  gpu_sync_diag::OnWaitMultiple("NtWaitMultiple", count, wait_type);  // TEMP_DIAG
+  gpu_sync_diag::OnWaitMultiple("NtWaitMultiple", count, count >= 1 ? (uint32_t)handles[0] : 0,
+                                count >= 2 ? (uint32_t)handles[1] : 0);  // TEMP_DIAG
   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
-  return xeNtWaitForMultipleObjectsEx(count, handles, wait_type, wait_mode, alertable,
-                                      timeout_ptr ? &timeout : nullptr);
+  u32 result = xeNtWaitForMultipleObjectsEx(count, handles, wait_type, wait_mode, alertable,
+                                            timeout_ptr ? &timeout : nullptr);
+  gpu_sync_diag::OnWaitMultipleExit("NtWaitMultiple", count, result,
+                                    count >= 1 ? (uint32_t)handles[0] : 0);  // TEMP_DIAG
+  return result;
 }
 
 u32 NtSignalAndWaitForSingleObjectEx_entry(u32 signal_handle, u32 wait_handle, u32 alertable,
@@ -1027,6 +1035,7 @@ u32 NtSignalAndWaitForSingleObjectEx_entry(u32 signal_handle, u32 wait_handle, u
     XThread::GetCurrentThread()->DeliverAPCs();
   }
 
+  gpu_sync_diag::OnSignalAndWaitExit(signal_handle, wait_handle, result);  // TEMP_DIAG
   return result;
 }
 
