@@ -286,7 +286,25 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
   swapImpl(ctx, base);
 
   FiberSlot* target = LookupSlot(target_block);
-  const bool brand_new = (target == nullptr);
+  bool brand_new = (target == nullptr);
+  // REUSED-BLOCK FIX (root confirmed via probe, doax_019): a freshly-allocated kernel-stack work
+  // context resumes at 0x82785660 (Xam_AllocKernelStackWorkContext sets v6[7]=sub_82785660). If the
+  // block already has a host in the Map (!brand_new) yet is dispatched as a FRESH context, the guest
+  // freed+reused the block (e.g. the menu loader slot's work ctx re-allocated onto the finished boot
+  // fiber's block 0x401bbc30) and the STALE host would resume the OLD fiber instead of the new one ->
+  // the loader never runs -> black. Drop the stale mapping + create a FRESH host so the new context
+  // runs. FiberSlot::host is a raw ptr with no dtor, so overwriting the entry just leaks the old
+  // (finished) host -- which is correct: the game already freed that fiber's guest context, so it
+  // must NOT be resumed.
+  if (!brand_new && static_cast<uint32_t>(ctx.lr) == 0x82785660u) {
+    static std::atomic<uint32_t> s_reuse{0};
+    if (s_reuse.fetch_add(1, std::memory_order_relaxed) < 40u) {
+      REXKRNL_WARN("FIBER REUSE FIX: block {:#010x} reused for a fresh work ctx -> fresh host "
+                   "(was stale-routed to the old fiber)", target_block);
+    }
+    brand_new = true;
+    target = nullptr;
+  }
   if (brand_new) {
     target = CreateHostFiberForTarget(target_block);
   }

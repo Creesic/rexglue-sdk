@@ -518,15 +518,8 @@ extern "C" REX_FUNC(DOAX_SchedulerDrainWake) {
 }
 
 extern "C" REX_FUNC(DOAX_SchedulerDrainDispatch) {
-  // TARGETED REGISTER GUARD (FH1 #8/#9 pattern; the minimal form of the old Group 2/3 loop
-  // reimpl). DOAX_WorkQueueDispatchLoop holds its segBase/tableBase pointers in callee-saved
-  // r28-r31 across this call. VERIFIED: at scheduler deactivation (countdown expiry ->
-  // present=2/sphase=2/sactive=0) the drain-wake path (menu-fiber arm + indirect mode callback)
-  // clobbers them ("DrainDispatch LOST loop r30 0x834a0000->0 present=2"), so the loop's next
-  // iter loads [r30=0 + 13560] -> AV @ doax_recomp.7.cpp:48682. Restore the loop's callee-saved
-  // regs when called from it (r30==segBase on entry). This does NOT undo DrainDispatch's own
-  // state writes (sphase/present/sactive are memory, not these registers). RunFiberSwap is clean
-  // (all loop-yields will_switch + r30 preserved); the loss is purely this recomp branch.
+  // TARGETED REGISTER GUARD: restore the dispatch loop's callee-saved r28-r31 across __imp__
+  // (the deactivation branch clobbers them -> AV @ doax_recomp.7.cpp:48682). RunFiberSwap is clean.
   const uint64_t r28_in = ctx.r28.u64, r29_in = ctx.r29.u64, r30_in = ctx.r30.u64, r31_in = ctx.r31.u64;
   __imp__DOAX_SchedulerDrainDispatch(ctx, base);
   if ((r30_in & 0xFFFFFFFFu) == 0x834A0000u) {
@@ -534,6 +527,29 @@ extern "C" REX_FUNC(DOAX_SchedulerDrainDispatch) {
     ctx.r29.u64 = r29_in;
     ctx.r30.u64 = r30_in;
     ctx.r31.u64 = r31_in;
+  }
+
+  // TEMP_DIAG (loader-dispatch hunt): the loader slot (2) is armed (state&1, cd=0) but the
+  // dispatcher sub_8258CC00 never yields to it even with the scheduler kept alive. Probe the
+  // slot CONTEXT (slot[2] = what DOAX_FiberYield(slot[2]) dispatches) + func (slot[3]) + the
+  // dispatcher scan index (0x834A34F8): is the loader ctx NULL in black (Xam kernel-stack alloc
+  // failed) or a valid context the scan skips? Slot 4 (menu) ctx shown for contrast.
+  {
+    static uint64_t s_prev = ~0ull;
+    const uint32_t l_s = REX_LOAD_U32(0x834A3290u), l_cd = REX_LOAD_U32(0x834A3294u);
+    const uint32_t l_ctx = REX_LOAD_U32(0x834A3298u), l_fn = REX_LOAD_U32(0x834A329Cu);
+    const uint32_t m_ctx = REX_LOAD_U32(0x834A32D0u);
+    const int32_t scan = static_cast<int32_t>(REX_LOAD_U32(0x834A34F8u));
+    const uint64_t key = (uint64_t(l_s) << 40) ^ (uint64_t(l_cd) << 32) ^ (uint64_t(l_ctx) << 4) ^
+                         static_cast<uint32_t>(scan & 0xF);
+    if (key != s_prev) {
+      s_prev = key;
+      static int s_n = 0;
+      if (s_n++ < 140) {
+        REXKRNL_WARN("DOAX loader2: state={:#x} cd={} ctx={:#010x} fn={:#010x} | menu4 ctx={:#010x} | scanidx={} fl85094={:#x}",
+                     l_s, l_cd, l_ctx, l_fn, m_ctx, scan, REX_LOAD_U32(0x83985094u));
+      }
+    }
   }
   LogBootGate(base);  // TEMP_DIAG: transition-gate determinants (on change)
 }
