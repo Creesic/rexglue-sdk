@@ -48,7 +48,11 @@ constexpr size_t kHostFiberStackSize = 1u << 20;  // 1 MiB
 struct FiberSlot {
   rex::thread::Fiber* host = nullptr;
   uint32_t block = 0;
+  uint32_t initial_lr = 0;    ///< ctx.lr at first brand-new dispatch (fresh-context entry point)
   bool is_thread_fiber = false;  ///< backed by the thread's main (converted) fiber
+  // Set true when RunGuestPc returns (coroutine finished). Any subsequent dispatch
+  // to this block is a stale reuse — caught by the reuse check regardless of lr.
+  std::atomic<bool> finished{false};
 };
 
 /// Args handed to a freshly created host fiber's entry trampoline.
@@ -189,6 +193,20 @@ void GuestFiberEntry(void* raw_arg) {
   // to the thread's main fiber so its host stack unwinds normally.
   REXKRNL_WARN("gpf fiber-entry block={:#010x} RunGuestPc RETURNED (coroutine finished) lr={:#010x}",
               args->block, static_cast<uint32_t>(ctx.lr));
+
+  // Mark this slot finished so the reuse check detects any future stale dispatch
+  // to this block (e.g. if the guest frees and reallocates the context block for a
+  // new fiber with a non-standard entry point that the lr==0x82785660 check misses).
+  // Guard: only mark our own slot; CreateHostFiberForTarget may have already replaced
+  // it (in which case slot->host != Current() and we must not clobber the new slot).
+  {
+    std::lock_guard<std::mutex> lk(Mtx());
+    auto it = Map().find(args->block);
+    if (it != Map().end() && it->second->host == rex::thread::Fiber::Current()) {
+      it->second->finished.store(true, std::memory_order_relaxed);
+    }
+  }
+
   auto* main = thread->main_fiber();
   if (main && main != rex::thread::Fiber::Current()) {
     rex::thread::Fiber::SwitchTo(main);
@@ -225,15 +243,6 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
   (void)job_ctx;
   (void)fiber_slot;
 
-  // TEMP_DIAG (fiber register-loss hunt 2026-06-29): DOAX_WorkQueueDispatchLoop sets
-  // r30=segBase(0x834A0000) ONCE then relies on it surviving its yield (sub_82783210);
-  // __imp__ never re-derives it, so a RunFiberSwap path that returns without restoring
-  // non-volatiles drops r30 -> AV at doax_recomp.7.cpp:48682. Log which PATH this
-  // loop-yield takes + whether r30 survives, to pin the exact branch to fix.
-  const uint32_t diag_entry_r30 = ctx.r30.u32;
-  const bool diag_loop = (diag_entry_r30 == 0x834A0000u);
-  static std::atomic<uint32_t> s_pathlog{0};
-
   auto* thread = XThread::GetCurrentThread();
 
   if (!g_active.load(std::memory_order_acquire) || !thread || !swapImpl) {
@@ -241,10 +250,6 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
     // swap so behavior is unchanged when the fix is not installed.
     if (swapImpl) {
       swapImpl(ctx, base);
-    }
-    if (diag_loop && s_pathlog.fetch_add(1) < 80u) {
-      REXKRNL_WARN("FIBERPATH loop-yield DEGRADED (g_active={} thread={} swapImpl={}) r30 {:#010x}->{:#010x}",
-                   g_active.load(), thread != nullptr, swapImpl != nullptr, diag_entry_r30, ctx.r30.u32);
     }
     return false;
   }
@@ -287,26 +292,40 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
 
   FiberSlot* target = LookupSlot(target_block);
   bool brand_new = (target == nullptr);
-  // REUSED-BLOCK FIX (root confirmed via probe, doax_019): a freshly-allocated kernel-stack work
-  // context resumes at 0x82785660 (Xam_AllocKernelStackWorkContext sets v6[7]=sub_82785660). If the
-  // block already has a host in the Map (!brand_new) yet is dispatched as a FRESH context, the guest
-  // freed+reused the block (e.g. the menu loader slot's work ctx re-allocated onto the finished boot
-  // fiber's block 0x401bbc30) and the STALE host would resume the OLD fiber instead of the new one ->
-  // the loader never runs -> black. Drop the stale mapping + create a FRESH host so the new context
-  // runs. FiberSlot::host is a raw ptr with no dtor, so overwriting the entry just leaks the old
-  // (finished) host -- which is correct: the game already freed that fiber's guest context, so it
-  // must NOT be resumed.
-  if (!brand_new && static_cast<uint32_t>(ctx.lr) == 0x82785660u) {
-    static std::atomic<uint32_t> s_reuse{0};
-    if (s_reuse.fetch_add(1, std::memory_order_relaxed) < 40u) {
-      REXKRNL_WARN("FIBER REUSE FIX: block {:#010x} reused for a fresh work ctx -> fresh host "
-                   "(was stale-routed to the old fiber)", target_block);
+  const uint32_t ctx_lr32 = static_cast<uint32_t>(ctx.lr);
+
+  // REUSED-BLOCK FIX: detect stale Map entries and force a fresh host.
+  //   Case A (lr==0x82785660): Xam_AllocKernelStackWorkContext always sets v6[7]=sub_82785660.
+  //     If the block already has a Map entry and is dispatched with that lr, the guest freed+
+  //     reused the address for a new work context -> the stale host would run the OLD fiber.
+  //   Case B (slot->finished): the fiber for this block already ran to completion (RunGuestPc
+  //     returned). Any subsequent dispatch is a reuse regardless of lr value — catches contexts
+  //     allocated via paths with a different initial entry point.
+  // In both cases: drop the stale slot and create a fresh host. FiberSlot::host is a raw ptr
+  // with no dtor, so overwriting just leaks the old finished host — correct, it must not resume.
+  if (!brand_new) {
+    const bool fresh_entry = (ctx_lr32 == 0x82785660u);
+    const bool slot_done   = target->finished.load(std::memory_order_acquire);
+    if (fresh_entry || slot_done) {
+      static std::atomic<uint32_t> s_reuse{0};
+      if (s_reuse.fetch_add(1, std::memory_order_relaxed) < 40u) {
+        if (slot_done && !fresh_entry) {
+          REXKRNL_WARN("FIBER REUSE FIX (stale slot): block {:#010x} slot FINISHED but redispatched "
+                       "lr={:#010x} -> fresh host", target_block, ctx_lr32);
+        } else {
+          REXKRNL_WARN("FIBER REUSE FIX: block {:#010x} reused for a fresh work ctx -> fresh host "
+                       "(was stale-routed to the old fiber)", target_block);
+        }
+      }
+      brand_new = true;
+      target = nullptr;
     }
-    brand_new = true;
-    target = nullptr;
   }
   if (brand_new) {
     target = CreateHostFiberForTarget(target_block);
+    if (target) {
+      target->initial_lr = ctx_lr32;
+    }
   }
   const bool will_switch = target && target->host && target->host != current_host;
 
@@ -319,17 +338,9 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
   if (!target) {
     // CreateHostFiberForTarget failed: continue inline on the current host stack.
     REXKRNL_ERROR("FIBERSW #{} CreateHostFiber FAILED tgt={:08X} -> inline", seq, target_block);
-    if (diag_loop && s_pathlog.fetch_add(1) < 80u) {
-      REXKRNL_WARN("FIBERPATH loop-yield !TARGET cur={:#010x} tgt={:#010x} r30 {:#010x}->{:#010x}",
-                   current_block, target_block, diag_entry_r30, ctx.r30.u32);
-    }
     return false;
   }
   if (!will_switch) {
-    if (diag_loop && s_pathlog.fetch_add(1) < 80u) {
-      REXKRNL_WARN("FIBERPATH loop-yield !WILL_SWITCH (same host) cur={:#010x} tgt={:#010x} r30 {:#010x}->{:#010x}",
-                   current_block, target_block, diag_entry_r30, ctx.r30.u32);
-    }
     return false;  // already on the right host stack
   }
 
@@ -342,10 +353,6 @@ bool RunFiberSwap(PPCContext& ctx, uint8_t* base, PPCFunc* swapImpl, uint32_t jo
   // values this fiber had when it yielded. (Volatile regs incl. ctx.lr/r1 were
   // correctly restored by swapImpl and are intentionally left untouched.)
   ctx.RestoreNonVolatiles(saved_nonvolatiles);
-  if (diag_loop && s_pathlog.fetch_add(1) < 80u) {
-    REXKRNL_WARN("FIBERPATH loop-yield SWITCH+restore cur={:#010x} tgt={:#010x} r30 {:#010x}->{:#010x}",
-                 current_block, target_block, diag_entry_r30, ctx.r30.u32);
-  }
   return true;
 }
 
