@@ -103,6 +103,9 @@ setjmp_address = 0x829F12D0
     0x826B0E30 = {}
     0x826B23C0 = {}
     0x82509F04 = {}
+    0x82688438 = {}
+    0x8244EF10 = {}
+    0x82563320 = {}
 
 # Group 4 (partial): boot intro skips. Each jumps past the intro's display/wait.
 [[entrypoint.midasm_hook]]

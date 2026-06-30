@@ -200,7 +200,15 @@ function Wait-ForBootstrapContinue {
     Write-Host ""
 
     while (-not $Process.HasExited) {
-        if ([Console]::KeyAvailable) {
+        $keyAvailable = $false
+        try {
+            $keyAvailable = [Console]::KeyAvailable
+        } catch [System.InvalidOperationException] {
+            # No interactive console (e.g. redirected stdin); wait for process to exit naturally.
+            Wait-Process -Id $Process.Id -ErrorAction SilentlyContinue
+            break
+        }
+        if ($keyAvailable) {
             $null = [Console]::ReadKey($true)
             break
         }
