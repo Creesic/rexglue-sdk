@@ -196,6 +196,36 @@ const char* MetalTextureUploadSourceFallbackReasonName(size_t reason) {
   }
 }
 
+const char* MetalTextureUploadCommandBufferModeName(size_t mode) {
+  switch (mode) {
+    case 0:
+      return "standalone";
+    case 1:
+      return "upload_batch";
+    case 2:
+      return "current_submission";
+    default:
+      return "invalid";
+  }
+}
+
+const char* MetalResolveDispatchRouteName(size_t route) {
+  switch (route) {
+    case 0:
+      return "direct_host";
+    case 1:
+      return "edram_dump_direct_candidate";
+    case 2:
+      return "edram_dump_fallback";
+    case 3:
+      return "edram_copy_direct_candidate";
+    case 4:
+      return "edram_copy_fallback";
+    default:
+      return "invalid";
+  }
+}
+
 std::string MetalFormatNamedCounts(const uint64_t* values, size_t count,
                                    MetalTelemetryNameCallback name_callback) {
   std::string formatted;

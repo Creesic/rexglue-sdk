@@ -885,7 +885,17 @@ bool GetResolveInfo(const RegisterFile& regs, const memory::Memory& memory,
 
   assert_true(x0 < x1 && y0 < y1);
   if (x0 >= x1 || y0 >= y1) {
-    REXGPU_ERROR("Resolve region is empty");
+    static rex::log::RepeatedLogCounter empty_resolve_log;
+    uint64_t occurrence = 0;
+    uint64_t suppressed = 0;
+    if (empty_resolve_log.ShouldLog(&occurrence, &suppressed)) {
+      if (suppressed) {
+        REXGPU_ERROR("Resolve region is empty (occurrence {}, suppressed {} repeats)",
+                     occurrence, suppressed);
+      } else {
+        REXGPU_ERROR("Resolve region is empty");
+      }
+    }
     return false;
   }
 

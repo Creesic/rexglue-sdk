@@ -3909,6 +3909,7 @@ bool MetalRenderTargetCache::PrepareResolvePlan(memory::Memory& memory,
 
   if (!trace_writer_) {
     REXLOG_ERROR("MetalRenderTargetCache::Resolve: trace_writer_ is null");
+    command_processor_.RecordResolvePlan(false, false, false, false);
     return false;
   }
 
@@ -3916,7 +3917,20 @@ bool MetalRenderTargetCache::PrepareResolvePlan(memory::Memory& memory,
                                  draw_resolution_scale_x(),
                                  draw_resolution_scale_y(), fixed_rg16_trunc,
                                  fixed_rgba16_trunc, plan_out.resolve_info)) {
-    REXLOG_ERROR("MetalRenderTargetCache::Resolve: GetResolveInfo failed");
+    static rex::log::RepeatedLogCounter get_resolve_info_failed_log;
+    uint64_t occurrence = 0;
+    uint64_t suppressed = 0;
+    if (get_resolve_info_failed_log.ShouldLog(&occurrence, &suppressed)) {
+      if (suppressed) {
+        REXLOG_ERROR(
+            "MetalRenderTargetCache::Resolve: GetResolveInfo failed (occurrence {}, suppressed {} "
+            "repeats)",
+            occurrence, suppressed);
+      } else {
+        REXLOG_ERROR("MetalRenderTargetCache::Resolve: GetResolveInfo failed");
+      }
+    }
+    command_processor_.RecordResolvePlan(false, false, false, false);
     return false;
   }
   plan_out.valid = true;
@@ -3925,6 +3939,7 @@ bool MetalRenderTargetCache::PrepareResolvePlan(memory::Memory& memory,
   plan_out.noop =
       !resolve_info.coordinate_info.width_div_8 || !resolve_info.height_div_8;
   if (plan_out.noop) {
+    command_processor_.RecordResolvePlan(true, true, false, false);
     return true;
   }
   plan_out.needs_copy_export = resolve_info.copy_dest_extent_length != 0;
@@ -3943,6 +3958,9 @@ bool MetalRenderTargetCache::PrepareResolvePlan(memory::Memory& memory,
     plan_out.written_address = resolve_info.copy_dest_extent_start;
     plan_out.written_length = resolve_info.copy_dest_extent_length;
   }
+  command_processor_.RecordResolvePlan(true, false,
+                                       plan_out.needs_copy_export,
+                                       plan_out.needs_resolve_clear);
   return true;
 }
 
@@ -3975,6 +3993,9 @@ bool MetalRenderTargetCache::Resolve(memory::Memory& memory,
   const auto& coord = resolve_info.coordinate_info;
   uint32_t resolve_width = coord.width_div_8 * 8;
   uint32_t resolve_height = resolve_info.height_div_8 * 8;
+  const uint64_t resolve_pixels =
+      uint64_t(resolve_width) * uint64_t(resolve_height);
+  const uint64_t resolve_bytes = resolve_info.copy_dest_extent_length;
 
   // Try GPU compute resolve first (RT -> EDRAM -> shared memory), matching
   // D3D12/Vulkan behavior for the supported cases.
@@ -4006,11 +4027,21 @@ bool MetalRenderTargetCache::Resolve(memory::Memory& memory,
                                    dump_base, dump_row_length_used, dump_rows,
                                    dump_pitch, command_buffer, written_address,
                                    written_length)) {
+        command_processor_.RecordResolveDispatch(
+            MetalCommandProcessor::ResolveDispatchRoute::kDirectHost,
+            resolve_pixels, resolve_bytes);
         copy_succeeded = true;
       } else {
         DumpRenderTargets(dump_base, dump_row_length_used, dump_rows,
                           dump_pitch, command_buffer,
                           ResolveDumpEncoderLabel(direct_host_rt_candidate));
+        command_processor_.RecordResolveDispatch(
+            direct_host_rt_candidate
+                ? MetalCommandProcessor::ResolveDispatchRoute::
+                      kEdramDumpDirectCandidate
+                : MetalCommandProcessor::ResolveDispatchRoute::
+                      kEdramDumpFallback,
+            resolve_pixels, resolve_bytes);
 
         uint32_t dest_base = resolve_info.copy_dest_base;
         uint32_t dest_local_start =
@@ -4111,6 +4142,13 @@ bool MetalRenderTargetCache::Resolve(memory::Memory& memory,
                 encoder->dispatchThreadgroups(
                     MTL::Size::Make(group_count_x, group_count_y, 1),
                     MTL::Size::Make(8, 8, 1));
+                command_processor_.RecordResolveDispatch(
+                    direct_host_rt_candidate
+                        ? MetalCommandProcessor::ResolveDispatchRoute::
+                              kEdramCopyDirectCandidate
+                        : MetalCommandProcessor::ResolveDispatchRoute::
+                              kEdramCopyFallback,
+                    resolve_pixels, resolve_bytes);
 
                 if (!draw_resolution_scaled) {
                   command_processor_.MarkSharedMemoryComputeWritePending(

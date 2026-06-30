@@ -168,6 +168,24 @@ class MetalCommandProcessor final : public CommandProcessor {
   };
   static constexpr size_t kTextureUploadSourceFallbackReasonCount =
       static_cast<size_t>(TextureUploadSourceFallbackReason::kCount);
+  enum class TextureUploadCommandBufferMode : uint32_t {
+    kStandalone,
+    kUploadBatch,
+    kCurrentSubmission,
+    kCount,
+  };
+  static constexpr size_t kTextureUploadCommandBufferModeCount =
+      static_cast<size_t>(TextureUploadCommandBufferMode::kCount);
+  enum class ResolveDispatchRoute : uint32_t {
+    kDirectHost,
+    kEdramDumpDirectCandidate,
+    kEdramDumpFallback,
+    kEdramCopyDirectCandidate,
+    kEdramCopyFallback,
+    kCount,
+  };
+  static constexpr size_t kResolveDispatchRouteCount =
+      static_cast<size_t>(ResolveDispatchRoute::kCount);
   enum class SharedMemoryUploadEncoderEndReason : uint32_t {
     kUnknown,
     kRenderBegin,
@@ -201,6 +219,18 @@ class MetalCommandProcessor final : public CommandProcessor {
                                       uint64_t bytes);
   void RecordTextureUploadSourceFallback(
       TextureUploadSourceFallbackReason reason);
+  void RecordTextureUploadCommandBufferMode(
+      TextureUploadCommandBufferMode mode);
+  void RecordTextureUploadWork(uint64_t compute_dispatches,
+                               uint64_t direct_blit_regions,
+                               uint64_t direct_blit_bytes,
+                               uint64_t repack_blit_regions,
+                               uint64_t repack_blit_bytes,
+                               bool deferred_blit_encoder);
+  void RecordResolvePlan(bool success, bool noop, bool copy_export,
+                         bool clear);
+  void RecordResolveDispatch(ResolveDispatchRoute route, uint64_t pixels,
+                             uint64_t bytes);
   void RecordSharedMemoryUploadEncoderCopy();
   bool RequestSharedMemoryRange(SharedMemoryRequestReason reason,
                                 uint32_t start, uint32_t length);
@@ -687,6 +717,16 @@ class MetalCommandProcessor final : public CommandProcessor {
     uint64_t texture_requests_before_encoder = 0;
     uint64_t texture_requests_after_encoder_begin = 0;
 
+    uint64_t frame_lifetimes_opened = 0;
+    uint64_t frame_lifetimes_closed = 0;
+    uint64_t main_command_buffers_created = 0;
+    uint64_t main_command_buffers_committed = 0;
+    uint64_t main_command_buffers_committed_with_draws = 0;
+    uint64_t main_command_buffers_committed_without_draws = 0;
+    uint64_t standalone_command_buffers_created = 0;
+    uint64_t standalone_command_buffers_committed_async = 0;
+    uint64_t standalone_command_buffers_committed_sync = 0;
+
     uint64_t begin_encoder_calls = 0;
     uint64_t begin_encoder_reused_compatible = 0;
     uint64_t begin_encoder_created = 0;
@@ -735,6 +775,25 @@ class MetalCommandProcessor final : public CommandProcessor {
         texture_upload_source_route_bytes = {};
     std::array<uint64_t, kTextureUploadSourceFallbackReasonCount>
         texture_upload_source_fallback_reasons = {};
+    std::array<uint64_t, kTextureUploadCommandBufferModeCount>
+        texture_upload_command_buffer_modes = {};
+    uint64_t texture_upload_compute_dispatches = 0;
+    uint64_t texture_upload_direct_blit_regions = 0;
+    uint64_t texture_upload_direct_blit_bytes = 0;
+    uint64_t texture_upload_repack_blit_regions = 0;
+    uint64_t texture_upload_repack_blit_bytes = 0;
+    uint64_t texture_upload_deferred_blit_encoders = 0;
+    uint64_t resolve_plan_successes = 0;
+    uint64_t resolve_plan_failures = 0;
+    uint64_t resolve_plan_noops = 0;
+    uint64_t resolve_plan_copy_exports = 0;
+    uint64_t resolve_plan_clears = 0;
+    std::array<uint64_t, kResolveDispatchRouteCount>
+        resolve_dispatch_route_counts = {};
+    std::array<uint64_t, kResolveDispatchRouteCount>
+        resolve_dispatch_route_pixels = {};
+    std::array<uint64_t, kResolveDispatchRouteCount>
+        resolve_dispatch_route_bytes = {};
     uint64_t shared_memory_upload_batches = 0;
     uint64_t shared_memory_upload_batch_input_ranges = 0;
     uint64_t shared_memory_upload_batch_coalesced_ranges = 0;

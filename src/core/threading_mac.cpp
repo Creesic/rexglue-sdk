@@ -13,6 +13,7 @@ static_assert(REX_PLATFORM_MAC, "This file is macOS-only");
 
 #include <signal.h>
 
+#include <algorithm>
 #include <atomic>
 #include <array>
 #include <cerrno>
@@ -279,7 +280,8 @@ class PosixConditionBase {
     }
   }
 
-  static std::pair<WaitResult, size_t> WaitMultiple(std::vector<PosixConditionBase*>&& handles,
+  static std::pair<WaitResult, size_t> WaitMultiple(
+      const std::vector<PosixConditionBase*>& handles,
                                                     bool wait_all,
                                                     std::chrono::milliseconds timeout) {
     assert_true(!handles.empty());
@@ -293,14 +295,16 @@ class PosixConditionBase {
     auto end_time = (timeout == std::chrono::milliseconds::max())
                         ? std::chrono::steady_clock::time_point::max()
                         : start_time + timeout;
+    std::vector<std::unique_lock<std::mutex>> locks;
+    locks.reserve(handles.size());
+    uint32_t contention_backoff_us = 50;
 
     while (true) {
       size_t first_signaled = std::numeric_limits<size_t>::max();
       bool condition_met = false;
       bool all_locked = true;
 
-      std::vector<std::unique_lock<std::mutex>> locks;
-      locks.reserve(handles.size());
+      locks.clear();
 
       for (size_t i = 0; i < handles.size(); ++i) {
 #if REX_PLATFORM_LINUX
@@ -326,9 +330,25 @@ class PosixConditionBase {
 
       if (!all_locked) {
         locks.clear();
-        std::this_thread::yield();
+        auto now = std::chrono::steady_clock::now();
+        if (now >= end_time) {
+          return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
+        }
+
+        auto backoff = std::chrono::microseconds(contention_backoff_us);
+        if (timeout != std::chrono::milliseconds::max()) {
+          auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(end_time - now);
+          backoff = std::min(backoff, remaining);
+        }
+        if (backoff.count() > 0) {
+          Sleep(backoff);
+        } else {
+          MaybeYield();
+        }
+        contention_backoff_us = std::min<uint32_t>(contention_backoff_us * 2, 1000);
         continue;
       }
+      contention_backoff_us = 50;
 
       if (wait_all) {
         bool all_signaled = true;
@@ -1107,7 +1127,7 @@ std::pair<WaitResult, size_t> WaitMultiple(WaitHandle* wait_handles[], size_t wa
     conditions.push_back(&handle->condition());
   }
   if (!is_alertable) {
-    return PosixConditionBase::WaitMultiple(std::move(conditions), wait_all, timeout);
+    return PosixConditionBase::WaitMultiple(conditions, wait_all, timeout);
   }
 
   ScopedAlertableState alertable_state_guard(true);
@@ -1119,8 +1139,8 @@ std::pair<WaitResult, size_t> WaitMultiple(WaitHandle* wait_handles[], size_t wa
     if (HasAlertableTimeoutElapsed(deadline)) {
       return std::make_pair(WaitResult::kTimeout, 0);
     }
-    auto result = PosixConditionBase::WaitMultiple(std::vector<PosixConditionBase*>(conditions),
-                                                   wait_all, ComputeAlertableWaitTimeout(deadline));
+    auto result =
+        PosixConditionBase::WaitMultiple(conditions, wait_all, ComputeAlertableWaitTimeout(deadline));
     if (result.first != WaitResult::kTimeout) {
       return result;
     }

@@ -30,6 +30,8 @@ const char* MetalSharedMemoryDirectWriteRejectReasonName(size_t reason);
 const char* MetalSharedMemoryUploadEncoderEndReasonName(size_t reason);
 const char* MetalTextureUploadSourceRouteName(size_t route);
 const char* MetalTextureUploadSourceFallbackReasonName(size_t reason);
+const char* MetalTextureUploadCommandBufferModeName(size_t mode);
+const char* MetalResolveDispatchRouteName(size_t route);
 
 std::string MetalFormatNamedCounts(const uint64_t* values, size_t count,
                                    MetalTelemetryNameCallback name_callback);

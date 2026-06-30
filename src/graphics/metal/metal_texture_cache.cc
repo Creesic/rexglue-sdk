@@ -1667,6 +1667,25 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     release_buffer_immediate(dest_buffer, size_t(dest_buffer_size));
     return false;
   }
+  if (command_processor_) {
+    MetalCommandProcessor::TextureUploadCommandBufferMode telemetry_mode =
+        MetalCommandProcessor::TextureUploadCommandBufferMode::kStandalone;
+    switch (upload_command_buffer_mode) {
+      case UploadCommandBufferMode::kStandalone:
+        telemetry_mode =
+            MetalCommandProcessor::TextureUploadCommandBufferMode::kStandalone;
+        break;
+      case UploadCommandBufferMode::kUploadBatch:
+        telemetry_mode =
+            MetalCommandProcessor::TextureUploadCommandBufferMode::kUploadBatch;
+        break;
+      case UploadCommandBufferMode::kCurrentSubmission:
+        telemetry_mode = MetalCommandProcessor::TextureUploadCommandBufferMode::
+            kCurrentSubmission;
+        break;
+    }
+    command_processor_->RecordTextureUploadCommandBufferMode(telemetry_mode);
+  }
   bool command_buffer_has_work = false;
   auto is_current_submission = [&]() {
     return upload_command_buffer_mode ==
@@ -2225,6 +2244,22 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   }
 
   end_local_compute_encoder();
+
+  if (command_processor_) {
+    uint64_t direct_blit_bytes = 0;
+    for (const PendingDirectUpload& upload : direct_uploads) {
+      direct_blit_bytes +=
+          uint64_t(upload.source_bytes_per_image) * uint64_t(upload.depth);
+    }
+    uint64_t repack_blit_bytes = 0;
+    for (const PendingRepackUpload& upload : repack_uploads) {
+      repack_blit_bytes += uint64_t(upload.staging_size);
+    }
+    command_processor_->RecordTextureUploadWork(
+        uint64_t(dispatch_index), uint64_t(direct_uploads.size()),
+        direct_blit_bytes, uint64_t(repack_uploads.size()),
+        repack_blit_bytes, using_deferred_upload_encoder);
+  }
 
   MTL::Texture* mtl_texture = metal_texture->metal_texture();
   if (use_blit_upload) {

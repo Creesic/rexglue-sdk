@@ -939,17 +939,34 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
   switch (fetch.type) {
     case xenos::FetchConstantType::kTexture:
       break;
-    case xenos::FetchConstantType::kInvalidTexture:
+    case xenos::FetchConstantType::kInvalidTexture: {
       if (REXCVAR_GET(gpu_allow_invalid_fetch_constants)) {
         break;
       }
-      REXGPU_WARN(
-          "Texture fetch constant ({:08X} {:08X} {:08X} {:08X} {:08X} {:08X}) "
-          "has \"invalid\" type! This is incorrect behavior, but you can try "
-          "bypassing this by launching Xenia with "
-          "--gpu_allow_invalid_fetch_constants=true.",
-          fetch.dword_0, fetch.dword_1, fetch.dword_2, fetch.dword_3, fetch.dword_4, fetch.dword_5);
+      static rex::log::RepeatedLogCounter invalid_texture_log;
+      uint64_t occurrence = 0;
+      uint64_t suppressed = 0;
+      if (invalid_texture_log.ShouldLog(&occurrence, &suppressed)) {
+        if (suppressed) {
+          REXGPU_WARN(
+              "Texture fetch constant ({:08X} {:08X} {:08X} {:08X} {:08X} {:08X}) "
+              "has \"invalid\" type! This is incorrect behavior, but you can try "
+              "bypassing this by launching Xenia with "
+              "--gpu_allow_invalid_fetch_constants=true. (occurrence {}, suppressed {} repeats)",
+              fetch.dword_0, fetch.dword_1, fetch.dword_2, fetch.dword_3, fetch.dword_4,
+              fetch.dword_5, occurrence, suppressed);
+        } else {
+          REXGPU_WARN(
+              "Texture fetch constant ({:08X} {:08X} {:08X} {:08X} {:08X} {:08X}) "
+              "has \"invalid\" type! This is incorrect behavior, but you can try "
+              "bypassing this by launching Xenia with "
+              "--gpu_allow_invalid_fetch_constants=true.",
+              fetch.dword_0, fetch.dword_1, fetch.dword_2, fetch.dword_3, fetch.dword_4,
+              fetch.dword_5);
+        }
+      }
       return;
+    }
     default:
       REXGPU_WARN(
           "Texture fetch constant ({:08X} {:08X} {:08X} {:08X} {:08X} {:08X}) "

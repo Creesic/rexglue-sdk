@@ -17,6 +17,9 @@
 // Function declarations, CVAR declarations
 #include <rex/logging/api.h>
 
+// Helpers for throttling repeated hot-path log messages
+#include <rex/logging/repeated_log.h>
+
 // Logging macros (parameterized, per-subsystem aliases, category definition)
 #include <rex/logging/macros.h>
 

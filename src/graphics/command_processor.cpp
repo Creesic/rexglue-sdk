@@ -80,6 +80,57 @@ REXCVAR_DEFINE_BOOL(async_shader_compilation, true, "GPU",
                     "pipelines are being prepared.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+const char* rex::graphics::CommandProcessor::GetDrawFailureReasonName(
+    DrawFailureReason reason) {
+  switch (reason) {
+    case DrawFailureReason::kNone:
+      return "none";
+    case DrawFailureReason::kMissingVertexShader:
+      return "missing_vertex_shader";
+    case DrawFailureReason::kPrimitiveProcessorMissing:
+      return "primitive_processor_missing";
+    case DrawFailureReason::kPrimitiveProcessingFailed:
+      return "primitive_processing_failed";
+    case DrawFailureReason::kRenderTargetUpdateFailed:
+      return "render_target_update_failed";
+    case DrawFailureReason::kShaderTranslationFailed:
+      return "shader_translation_failed";
+    case DrawFailureReason::kPipelineCreationFailed:
+      return "pipeline_creation_failed";
+    case DrawFailureReason::kTextureMaterializationFailed:
+      return "texture_materialization_failed";
+    case DrawFailureReason::kSharedMemoryRangeFailed:
+      return "shared_memory_range_failed";
+    case DrawFailureReason::kDrawConstantsFailed:
+      return "draw_constants_failed";
+    case DrawFailureReason::kGuestIndexPreparationFailed:
+      return "guest_index_preparation_failed";
+    case DrawFailureReason::kCommandBufferFailed:
+      return "command_buffer_failed";
+    case DrawFailureReason::kRenderEncoderBeginFailed:
+      return "render_encoder_begin_failed";
+    case DrawFailureReason::kPreparedDrawFailed:
+      return "prepared_draw_failed";
+    case DrawFailureReason::kDispatchFailed:
+      return "dispatch_failed";
+    case DrawFailureReason::kCopyResolvePlanFailed:
+      return "copy_resolve_plan_failed";
+    case DrawFailureReason::kCopyCommandBufferFailed:
+      return "copy_command_buffer_failed";
+    case DrawFailureReason::kCopyResolveFailed:
+      return "copy_resolve_failed";
+    case DrawFailureReason::kUnsupportedPrimitive:
+      return "unsupported_primitive";
+    case DrawFailureReason::kUnsupportedIndexBuffer:
+      return "unsupported_index_buffer";
+    case DrawFailureReason::kIndexBufferInvalid:
+      return "index_buffer_invalid";
+    case DrawFailureReason::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
 namespace rex::graphics {
 
 using namespace rex::graphics::xenos;
@@ -1523,20 +1574,48 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
 
       bool major_mode_explicit =
           xenos::IsMajorModeExplicit(vgt_draw_initiator.major_mode, vgt_draw_initiator.prim_type);
+      ClearDrawFailureReason();
       draw_succeeded = IssueDraw(vgt_draw_initiator.prim_type, vgt_draw_initiator.num_indices,
                                  is_indexed ? &index_buffer_info : nullptr, major_mode_explicit);
       if (!draw_succeeded) {
         auto vgt_output_path_cntl = register_file_->Get<reg::VGT_OUTPUT_PATH_CNTL>();
         auto vgt_hos_cntl = register_file_->Get<reg::VGT_HOS_CNTL>();
         auto rb_modecontrol = register_file_->Get<reg::RB_MODECONTROL>();
-        REXGPU_ERROR(
-            "{}({}, {}, {}): Failed in backend "
-            "(major_mode={}, explicit_major={}, path_select={}, tess_mode={}, edram_mode={})",
-            opcode_name, static_cast<uint32_t>(vgt_draw_initiator.num_indices),
-            uint32_t(vgt_draw_initiator.prim_type), uint32_t(vgt_draw_initiator.source_select),
-            uint32_t(vgt_draw_initiator.major_mode), uint32_t(major_mode_explicit),
-            uint32_t(vgt_output_path_cntl.path_select), uint32_t(vgt_hos_cntl.tess_mode),
-            uint32_t(rb_modecontrol.edram_mode));
+        static rex::log::RepeatedLogCounter backend_draw_failed_log;
+        uint64_t occurrence = 0;
+        uint64_t suppressed = 0;
+        if (backend_draw_failed_log.ShouldLog(&occurrence, &suppressed)) {
+          const DrawFailureReason reason = draw_failure_reason();
+          if (suppressed) {
+            REXGPU_ERROR(
+                "{}({}, {}, {}): Failed in backend "
+                "(reason={}, major_mode={}, explicit_major={}, path_select={}, "
+                "tess_mode={}, edram_mode={}, occurrence={}, suppressed {} repeats)",
+                opcode_name, static_cast<uint32_t>(vgt_draw_initiator.num_indices),
+                uint32_t(vgt_draw_initiator.prim_type),
+                uint32_t(vgt_draw_initiator.source_select),
+                GetDrawFailureReasonName(reason),
+                uint32_t(vgt_draw_initiator.major_mode),
+                uint32_t(major_mode_explicit),
+                uint32_t(vgt_output_path_cntl.path_select),
+                uint32_t(vgt_hos_cntl.tess_mode),
+                uint32_t(rb_modecontrol.edram_mode), occurrence, suppressed);
+          } else {
+            REXGPU_ERROR(
+                "{}({}, {}, {}): Failed in backend "
+                "(reason={}, major_mode={}, explicit_major={}, path_select={}, "
+                "tess_mode={}, edram_mode={}, occurrence={})",
+                opcode_name, static_cast<uint32_t>(vgt_draw_initiator.num_indices),
+                uint32_t(vgt_draw_initiator.prim_type),
+                uint32_t(vgt_draw_initiator.source_select),
+                GetDrawFailureReasonName(reason),
+                uint32_t(vgt_draw_initiator.major_mode),
+                uint32_t(major_mode_explicit),
+                uint32_t(vgt_output_path_cntl.path_select),
+                uint32_t(vgt_hos_cntl.tess_mode),
+                uint32_t(rb_modecontrol.edram_mode), occurrence);
+          }
+        }
       }
     }
   }

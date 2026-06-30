@@ -1785,6 +1785,12 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
 
   // Submit and wait for command buffer
   if (current_command_buffer_) {
+    ++backend_telemetry_.main_command_buffers_committed;
+    if (submission_has_draws_) {
+      ++backend_telemetry_.main_command_buffers_committed_with_draws;
+    } else {
+      ++backend_telemetry_.main_command_buffers_committed_without_draws;
+    }
     current_command_buffer_->commit();
     current_command_buffer_->release();
     current_command_buffer_ = nullptr;
@@ -2631,6 +2637,10 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   ++backend_telemetry_.draw_calls;
   const RegisterFile& regs = *register_file_;
   uint32_t normalized_color_mask = 0;
+  auto fail_draw = [this](DrawFailureReason reason) {
+    SetDrawFailureReason(reason);
+    return false;
+  };
 
   // Check for copy mode
   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
@@ -2647,7 +2657,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   Shader* vertex_shader = active_vertex_shader();
   if (!vertex_shader) {
     REXLOG_WARN("IssueDraw: No vertex shader");
-    return false;
+    return fail_draw(DrawFailureReason::kMissingVertexShader);
   }
   if (!vertex_shader->is_ucode_analyzed()) {
     vertex_shader->AnalyzeUcode(pipeline_cache_->ucode_disasm_buffer());
@@ -2690,11 +2700,11 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   PrimitiveProcessor::ProcessingResult primitive_processing_result;
   if (!primitive_processor_) {
     REXLOG_ERROR("IssueDraw: primitive processor is not initialized");
-    return false;
+    return fail_draw(DrawFailureReason::kPrimitiveProcessorMissing);
   }
   if (!primitive_processor_->Process(primitive_processing_result)) {
     REXLOG_ERROR("IssueDraw: primitive processing failed");
-    return false;
+    return fail_draw(DrawFailureReason::kPrimitiveProcessingFailed);
   }
   if (!primitive_processing_result.host_draw_vertex_count) {
     return true;
@@ -2760,12 +2770,12 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       if (!prepared_draw_queue_render_target_key_valid_) {
         if (!FlushPreparedDrawQueue(
                 PreparedDrawFlushReason::kRenderTargetUpdate)) {
-          return false;
+          return fail_draw(DrawFailureReason::kPreparedDrawFailed);
         }
       } else if (render_target_key != prepared_draw_queue_render_target_key_) {
         if (!FlushPreparedDrawQueue(
                 PreparedDrawFlushReason::kRenderTargetKeyMismatch)) {
-          return false;
+          return fail_draw(DrawFailureReason::kPreparedDrawFailed);
         }
       }
     }
@@ -2775,7 +2785,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       REXLOG_ERROR(
           "MetalCommandProcessor::IssueDraw - RenderTargetCache::Update "
           "failed");
-      return false;
+      return fail_draw(DrawFailureReason::kRenderTargetUpdateFailed);
     }
     pending_draw_pass_transfer_guard.cache = render_target_cache_.get();
     if (current_render_encoder_ &&
@@ -2902,10 +2912,10 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (use_tessellation_emulation || use_geometry_emulation) {
     if (!pipeline_cache_->EnsureDxbcTranslationReady(vertex_translation,
                                                      "vertex")) {
-      return false;
+      return fail_draw(DrawFailureReason::kShaderTranslationFailed);
     }
     if (!pipeline_cache_->EnsureMetalTranslationReady(pixel_translation)) {
-      return false;
+      return fail_draw(DrawFailureReason::kShaderTranslationFailed);
     }
   }
 
@@ -3001,7 +3011,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         return pending_draw_pass_transfer_guard.Flush();
       }
       REXLOG_ERROR("Failed to create pipeline state");
-      return false;
+      return fail_draw(DrawFailureReason::kPipelineCreationFailed);
     }
   }
 
@@ -3034,6 +3044,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   bool textures_requested_for_draw = false;
   auto request_textures_for_draw = [&](uint64_t& telemetry_counter) -> bool {
     if (!EnsureCommandBuffer()) {
+      SetDrawFailureReason(DrawFailureReason::kCommandBufferFailed);
       return false;
     }
     if (texture_materialization_plan.NeedsTextureUpload()) {
@@ -3102,7 +3113,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (texture_cache_ && may_texture_request_load_data) {
     if (!texture_cache_->PrepareTextureMaterialization(
             regs, used_texture_mask, texture_materialization_plan)) {
-      return false;
+      return fail_draw(DrawFailureReason::kTextureMaterializationFailed);
     }
     for (const SharedMemory::Range& range :
          texture_materialization_plan.source_ranges) {
@@ -3119,7 +3130,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             regs, *vertex_shader, vertex_fetch_ranges.data(),
             uint32_t(vertex_fetch_ranges.size()), &vertex_fetch_range_count,
             true)) {
-      return false;
+      return fail_draw(DrawFailureReason::kSharedMemoryRangeFailed);
     }
     for (uint32_t i = 0; i < vertex_fetch_range_count; ++i) {
       add_current_draw_shared_memory_range(
@@ -3160,7 +3171,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             primitive_processing_result.guest_index_base,
             primitive_processing_result.host_draw_vertex_count,
             primitive_processing_result.host_index_format, "guest DMA")) {
-      return false;
+      return fail_draw(DrawFailureReason::kIndexBufferInvalid);
     }
     if (shader_primitive_index_load &&
         !add_guest_index_range(
@@ -3168,7 +3179,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             primitive_processing_result.guest_draw_vertex_count,
             regs.Get<reg::VGT_DRAW_INITIATOR>().index_size,
             "shader primitive")) {
-      return false;
+      return fail_draw(DrawFailureReason::kIndexBufferInvalid);
     }
 
     for (const auto& binding : vb_bindings) {
@@ -3208,7 +3219,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             ? backend_telemetry_.texture_requests_after_encoder_begin
             : backend_telemetry_.texture_requests_before_encoder;
     if (!request_textures_for_draw(texture_request_counter)) {
-      return false;
+      return fail_draw(DrawFailureReason::kTextureMaterializationFailed);
     }
   }
 
@@ -3218,10 +3229,10 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (prepare_uniforms) {
     if (!draw_pass_descriptor) {
       REXLOG_ERROR("IssueDraw: no render pass descriptor for draw constants");
-      return false;
+      return fail_draw(DrawFailureReason::kDrawConstantsFailed);
     }
     if (!EnsureCommandBuffer()) {
-      return false;
+      return fail_draw(DrawFailureReason::kCommandBufferFailed);
     }
     if (!PrepareDrawConstants(regs, vertex_shader, pixel_shader,
                               metal_vertex_shader, metal_pixel_shader,
@@ -3229,7 +3240,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                               primitive_processing_result, used_texture_mask,
                               normalized_color_mask, draw_pass_descriptor,
                               uniforms, draw_dynamic_state)) {
-      return false;
+      return fail_draw(DrawFailureReason::kDrawConstantsFailed);
     }
   }
 
@@ -3239,7 +3250,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA) {
     if (!PrepareGuestDMAIndexBufferForMemexport(
             primitive_processing_result, prepared_guest_dma_index_buffer)) {
-      return false;
+      return fail_draw(DrawFailureReason::kGuestIndexPreparationFailed);
     }
   }
 
@@ -3339,7 +3350,13 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   prepared_draw.has_pending_draw_pass_transfers =
       render_target_cache_ &&
       render_target_cache_->HasPendingDrawPassTransfers();
-  return SubmitPreparedDraw(std::move(prepared_draw));
+  if (!SubmitPreparedDraw(std::move(prepared_draw))) {
+    if (draw_failure_reason() == DrawFailureReason::kNone) {
+      SetDrawFailureReason(DrawFailureReason::kPreparedDrawFailed);
+    }
+    return false;
+  }
+  return true;
 }
 
 bool MetalCommandProcessor::PrepareDrawConstants(
@@ -4964,6 +4981,7 @@ bool MetalCommandProcessor::CanQueuePreparedDraw(
 
 bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
   if (!BeginRenderEncoderForDraw(draw.fallback_depth_attachment_required)) {
+    SetDrawFailureReason(DrawFailureReason::kRenderEncoderBeginFailed);
     static bool no_command_buffer_logged = false;
     if (!no_command_buffer_logged) {
       no_command_buffer_logged = true;
@@ -4982,9 +5000,11 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
             current_render_encoder_, current_render_pass_descriptor_,
             &transfer_mutations)) {
       if (!render_target_cache_->FlushPendingDrawPassTransfers()) {
+        SetDrawFailureReason(DrawFailureReason::kPreparedDrawFailed);
         return false;
       }
       if (!BeginRenderEncoderForDraw(draw.fallback_depth_attachment_required)) {
+        SetDrawFailureReason(DrawFailureReason::kRenderEncoderBeginFailed);
         return false;
       }
       transfer_mutations =
@@ -5001,9 +5021,11 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
             draw.shared_memory_hazard_ranges.data(),
             draw.shared_memory_hazard_range_count,
             draw.shared_memory_consumer_stages)) {
+      SetDrawFailureReason(DrawFailureReason::kSharedMemoryRangeFailed);
       return false;
     }
     if (!current_render_encoder_) {
+      SetDrawFailureReason(DrawFailureReason::kRenderEncoderBeginFailed);
       return false;
     }
   }
@@ -5024,6 +5046,7 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
   }
   if (draw.use_tessellation_emulation) {
     if (!tessellator_tables_buffer_) {
+      SetDrawFailureReason(DrawFailureReason::kDispatchFailed);
       REXLOG_ERROR("Tessellation emulation requires tessellator tables buffer");
       return false;
     }
@@ -5044,23 +5067,31 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
             draw.shared_memory_is_uav, draw.shared_memory_usage,
             draw.use_geometry_emulation, draw.use_tessellation_emulation,
             draw.uniforms)) {
+      SetDrawFailureReason(DrawFailureReason::kDrawConstantsFailed);
       return false;
     }
   }
 
-  return DispatchDraw(
-      draw.primitive_processing_result, draw.use_tessellation_emulation,
-      draw.tessellation_pipeline_state, draw.use_geometry_emulation,
-      draw.geometry_pipeline_state, draw.shared_memory_is_uav,
-      draw.shared_memory_usage, draw.memexport_used,
-      draw.memexport_write_stages, draw.uses_vertex_fetch,
-      draw.prepare_uniforms,
-      draw.prepared_guest_dma_index_buffer.buffer
-          ? &draw.prepared_guest_dma_index_buffer
-          : nullptr,
-      draw.vertex_bindings, draw.vertex_ranges.data(), draw.vertex_range_count,
-      draw.has_index_buffer_info ? &draw.index_buffer_info : nullptr,
-      draw.memexport_ranges);
+  if (!DispatchDraw(
+          draw.primitive_processing_result, draw.use_tessellation_emulation,
+          draw.tessellation_pipeline_state, draw.use_geometry_emulation,
+          draw.geometry_pipeline_state, draw.shared_memory_is_uav,
+          draw.shared_memory_usage, draw.memexport_used,
+          draw.memexport_write_stages, draw.uses_vertex_fetch,
+          draw.prepare_uniforms,
+          draw.prepared_guest_dma_index_buffer.buffer
+              ? &draw.prepared_guest_dma_index_buffer
+              : nullptr,
+          draw.vertex_bindings, draw.vertex_ranges.data(),
+          draw.vertex_range_count,
+          draw.has_index_buffer_info ? &draw.index_buffer_info : nullptr,
+          draw.memexport_ranges)) {
+    if (draw_failure_reason() == DrawFailureReason::kNone) {
+      SetDrawFailureReason(DrawFailureReason::kDispatchFailed);
+    }
+    return false;
+  }
+  return true;
 }
 
 bool MetalCommandProcessor::FlushPreparedDrawQueue(
@@ -5120,6 +5151,7 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
     if (!RequestSharedMemoryRanges(
             SharedMemoryRequestReason::kDrawMaterialization, ranges.data(),
             static_cast<uint32_t>(ranges.size()))) {
+      SetDrawFailureReason(DrawFailureReason::kSharedMemoryRangeFailed);
       REXLOG_ERROR("Failed to request {} prepared-draw shared-memory ranges",
              ranges.size());
       flushing_prepared_draw_queue_ = previous_flushing;
@@ -5134,6 +5166,7 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
       EndRenderEncoder(RenderEncoderEndReason::kTextureUploadBeforeDrawPass);
     }
     if (!EnsureCommandBuffer()) {
+      SetDrawFailureReason(DrawFailureReason::kCommandBufferFailed);
       flushing_prepared_draw_queue_ = previous_flushing;
       return false;
     }
@@ -5158,6 +5191,7 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
       texture_materialization_succeeded = false;
     }
     if (!texture_materialization_succeeded) {
+      SetDrawFailureReason(DrawFailureReason::kTextureMaterializationFailed);
       flushing_prepared_draw_queue_ = previous_flushing;
       return false;
     }
@@ -5165,6 +5199,9 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
 
   for (const PreparedDraw& draw : draws) {
     if (!EncodePreparedDraw(draw)) {
+      if (draw_failure_reason() == DrawFailureReason::kNone) {
+        SetDrawFailureReason(DrawFailureReason::kPreparedDrawFailed);
+      }
       flushing_prepared_draw_queue_ = previous_flushing;
       return false;
     }
@@ -5192,6 +5229,9 @@ bool MetalCommandProcessor::SubmitPreparedDraw(PreparedDraw&& draw) {
 
   RecordPreparedDrawQueueReject(reject_reason);
   if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kQueueReject)) {
+    if (draw_failure_reason() == DrawFailureReason::kNone) {
+      SetDrawFailureReason(DrawFailureReason::kPreparedDrawFailed);
+    }
     return false;
   }
 
@@ -5204,6 +5244,7 @@ bool MetalCommandProcessor::SubmitPreparedDraw(PreparedDraw&& draw) {
             SharedMemoryRequestReason::kDrawMaterialization,
             draw.materialization_ranges.data(),
             static_cast<uint32_t>(draw.materialization_ranges.size()))) {
+      SetDrawFailureReason(DrawFailureReason::kSharedMemoryRangeFailed);
       REXLOG_ERROR("Failed to request {} current-draw shared-memory ranges",
              draw.materialization_ranges.size());
       return false;
@@ -5218,15 +5259,23 @@ bool MetalCommandProcessor::SubmitPreparedDraw(PreparedDraw&& draw) {
       EndRenderEncoder(RenderEncoderEndReason::kTextureUploadBeforeDrawPass);
     }
     if (!EnsureCommandBuffer()) {
+      SetDrawFailureReason(DrawFailureReason::kCommandBufferFailed);
       return false;
     }
     if (!texture_cache_->ExecuteTextureMaterialization(
             draw.texture_materialization_plan)) {
+      SetDrawFailureReason(DrawFailureReason::kTextureMaterializationFailed);
       return false;
     }
   }
 
-  return EncodePreparedDraw(draw);
+  if (!EncodePreparedDraw(draw)) {
+    if (draw_failure_reason() == DrawFailureReason::kNone) {
+      SetDrawFailureReason(DrawFailureReason::kPreparedDrawFailed);
+    }
+    return false;
+  }
+  return true;
 }
 
 bool MetalCommandProcessor::DispatchDraw(
@@ -5248,6 +5297,10 @@ bool MetalCommandProcessor::DispatchDraw(
       return;
     }
     UseRenderEncoderResource(buffer, shared_memory_usage);
+  };
+  auto fail_dispatch = [this](DrawFailureReason reason) {
+    SetDrawFailureReason(reason);
+    return false;
   };
 
   // Bind vertex buffers / descriptors.
@@ -5315,6 +5368,7 @@ bool MetalCommandProcessor::DispatchDraw(
                                         uint32_t index_count,
                                         MTL::IndexType index_type) -> bool {
     if (!shared_memory_) {
+      SetDrawFailureReason(DrawFailureReason::kSharedMemoryRangeFailed);
       return false;
     }
     uint32_t index_stride = (index_type == MTL::IndexTypeUInt16)
@@ -5326,6 +5380,7 @@ bool MetalCommandProcessor::DispatchDraw(
       REXLOG_WARN(
           "Index buffer range out of bounds (base=0x{:08X} size={} count={})",
           static_cast<uint32_t>(index_base), index_length, index_count);
+      SetDrawFailureReason(DrawFailureReason::kIndexBufferInvalid);
       return false;
     }
     return true;
@@ -5342,6 +5397,7 @@ bool MetalCommandProcessor::DispatchDraw(
         REXLOG_ERROR(
             "IssueDraw: guest DMA memexport index draw was not prepared for "
             "GPU copy");
+        SetDrawFailureReason(DrawFailureReason::kGuestIndexPreparationFailed);
         return false;
       }
       index_buffer_out = prepared_guest_dma_index_buffer->buffer;
@@ -5355,6 +5411,7 @@ bool MetalCommandProcessor::DispatchDraw(
     MTL::Buffer* shared_mem_buffer =
         shared_memory_ ? shared_memory_->GetBuffer() : nullptr;
     if (!shared_mem_buffer) {
+      SetDrawFailureReason(DrawFailureReason::kSharedMemoryRangeFailed);
       return false;
     }
     index_buffer_out = shared_mem_buffer;
@@ -5376,6 +5433,7 @@ bool MetalCommandProcessor::DispatchDraw(
                 primitive_processing_result.host_draw_vertex_count, index_type,
                 index_buffer_out, index_offset_out)) {
           REXLOG_ERROR("IssueDraw: failed to resolve guest DMA index buffer");
+          SetDrawFailureReason(DrawFailureReason::kIndexBufferInvalid);
           return false;
         }
         break;
@@ -5397,12 +5455,12 @@ bool MetalCommandProcessor::DispatchDraw(
       default:
         REXLOG_ERROR("Unsupported index buffer type {}",
                uint32_t(primitive_processing_result.index_buffer_type));
-        return false;
+        return fail_dispatch(DrawFailureReason::kUnsupportedIndexBuffer);
     }
     if (!index_buffer_out) {
       REXLOG_ERROR("IssueDraw: index buffer is null for type {}",
              uint32_t(primitive_processing_result.index_buffer_type));
-      return false;
+      return fail_dispatch(DrawFailureReason::kIndexBufferInvalid);
     }
     UseRenderEncoderResource(index_buffer_out, MTL::ResourceUsageRead);
     return true;
@@ -5434,7 +5492,7 @@ bool MetalCommandProcessor::DispatchDraw(
             "Host tessellated primitive type {} returned by the primitive "
             "processor is not supported by the Metal tessellation path",
             uint32_t(primitive_processing_result.host_primitive_type));
-        return false;
+        return fail_dispatch(DrawFailureReason::kUnsupportedPrimitive);
     }
 
     const IRRuntimeTessellationPipelineConfig& tess_config =
@@ -5483,7 +5541,7 @@ bool MetalCommandProcessor::DispatchDraw(
             "Host primitive type {} returned by the primitive processor is not "
             "supported by the Metal geometry path",
             uint32_t(primitive_processing_result.host_primitive_type));
-        return false;
+        return fail_dispatch(DrawFailureReason::kUnsupportedPrimitive);
     }
 
     IRRuntimeGeometryPipelineConfig geometry_config = {};
@@ -5544,7 +5602,7 @@ bool MetalCommandProcessor::DispatchDraw(
             "Host primitive type {} returned by the primitive processor is not "
             "supported by the Metal command processor",
             uint32_t(primitive_processing_result.host_primitive_type));
-        return false;
+        return fail_dispatch(DrawFailureReason::kUnsupportedPrimitive);
     }
 
     // Draw using primitive processor output.
@@ -5593,6 +5651,7 @@ bool MetalCommandProcessor::DispatchDraw(
 
 bool MetalCommandProcessor::IssueCopy() {
   if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kIssueCopy)) {
+    SetDrawFailureReason(DrawFailureReason::kPreparedDrawFailed);
     return false;
   }
   if (!render_target_cache_) {
@@ -5602,7 +5661,20 @@ bool MetalCommandProcessor::IssueCopy() {
 
   MetalRenderTargetCache::ResolvePlan resolve_plan;
   if (!render_target_cache_->PrepareResolvePlan(*memory_, resolve_plan)) {
-    REXLOG_ERROR("MetalCommandProcessor::IssueCopy - Resolve planning failed");
+    SetDrawFailureReason(DrawFailureReason::kCopyResolvePlanFailed);
+    static rex::log::RepeatedLogCounter resolve_planning_failed_log;
+    uint64_t occurrence = 0;
+    uint64_t suppressed = 0;
+    if (resolve_planning_failed_log.ShouldLog(&occurrence, &suppressed)) {
+      if (suppressed) {
+        REXLOG_ERROR(
+            "MetalCommandProcessor::IssueCopy - Resolve planning failed (occurrence {}, "
+            "suppressed {} repeats)",
+            occurrence, suppressed);
+      } else {
+        REXLOG_ERROR("MetalCommandProcessor::IssueCopy - Resolve planning failed");
+      }
+    }
     return false;
   }
 
@@ -5616,6 +5688,7 @@ bool MetalCommandProcessor::IssueCopy() {
     EndRenderEncoder(RenderEncoderEndReason::kResolveNeedsBoundary);
     copy_command_buffer = EnsureCommandBuffer();
     if (!copy_command_buffer) {
+      SetDrawFailureReason(DrawFailureReason::kCopyCommandBufferFailed);
       REXLOG_ERROR("MetalCommandProcessor::IssueCopy: failed to get command buffer");
       return false;
     }
@@ -5623,6 +5696,7 @@ bool MetalCommandProcessor::IssueCopy() {
 
   if (!render_target_cache_->Resolve(*memory_, written_address, written_length,
                                      copy_command_buffer, &resolve_plan)) {
+    SetDrawFailureReason(DrawFailureReason::kCopyResolveFailed);
     REXLOG_ERROR("MetalCommandProcessor::IssueCopy - Resolve failed");
     return false;
   }
@@ -5947,6 +6021,7 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
     DrainCommandBufferAutoreleasePool();
     return nullptr;
   }
+  ++backend_telemetry_.main_command_buffers_created;
 
   ++submission_current_;
 
@@ -6039,6 +6114,7 @@ void MetalCommandProcessor::WaitForFrameSlotSubmission(
 }
 
 void MetalCommandProcessor::OpenFrameLifetime() {
+  ++backend_telemetry_.frame_lifetimes_opened;
   const uint64_t awaited_submission =
       closed_frame_submissions_[frame_current_ % kMaxFramesInFlight];
   WaitForFrameSlotSubmission(awaited_submission);
@@ -6109,6 +6185,7 @@ void MetalCommandProcessor::CloseFrameLifetime() {
   if (!frame_open_) {
     return;
   }
+  ++backend_telemetry_.frame_lifetimes_closed;
   if (primitive_processor_) {
     primitive_processor_->EndFrame();
   }
@@ -6185,6 +6262,19 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
       MetalFormatNamedCounts(
           backend_telemetry_.texture_upload_source_fallback_reasons,
           MetalTextureUploadSourceFallbackReasonName);
+  const std::string texture_upload_command_buffer_modes =
+      MetalFormatNamedCounts(
+          backend_telemetry_.texture_upload_command_buffer_modes,
+          MetalTextureUploadCommandBufferModeName);
+  const std::string resolve_dispatch_route_counts = MetalFormatNamedCounts(
+      backend_telemetry_.resolve_dispatch_route_counts,
+      MetalResolveDispatchRouteName);
+  const std::string resolve_dispatch_route_pixels = MetalFormatNamedCounts(
+      backend_telemetry_.resolve_dispatch_route_pixels,
+      MetalResolveDispatchRouteName);
+  const std::string resolve_dispatch_route_bytes = MetalFormatNamedCounts(
+      backend_telemetry_.resolve_dispatch_route_bytes,
+      MetalResolveDispatchRouteName);
   const std::string shared_memory_upload_encoder_end_reasons =
       MetalFormatNamedCounts(
           backend_telemetry_.shared_memory_upload_encoder_end_reasons,
@@ -6308,6 +6398,19 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
       backend_telemetry_.texture_requests_before_encoder,
       backend_telemetry_.texture_requests_after_encoder_begin);
   REXLOG_INFO(
+      "MetalTelemetry[{}]: command_buffers frame open/close={}/{} "
+      "main created/committed/with_draws/without_draws={}/{}/{}/{} "
+      "standalone created/async/sync={}/{}/{}",
+      reason, backend_telemetry_.frame_lifetimes_opened,
+      backend_telemetry_.frame_lifetimes_closed,
+      backend_telemetry_.main_command_buffers_created,
+      backend_telemetry_.main_command_buffers_committed,
+      backend_telemetry_.main_command_buffers_committed_with_draws,
+      backend_telemetry_.main_command_buffers_committed_without_draws,
+      backend_telemetry_.standalone_command_buffers_created,
+      backend_telemetry_.standalone_command_buffers_committed_async,
+      backend_telemetry_.standalone_command_buffers_committed_sync);
+  REXLOG_INFO(
       "MetalTelemetry[{}]: render_encoder begin_calls={} reused={} created={} "
       "descriptor_restarts={} resource_resets={} desc_fail={} create_fail={} "
       "end active/no_active={}/{} reasons={{ {} }}",
@@ -6369,6 +6472,17 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
       reason, texture_upload_source_route_counts,
       texture_upload_source_route_bytes,
       texture_upload_source_fallback_reasons);
+  REXLOG_INFO(
+      "MetalTelemetry[{}]: texture_upload_work modes={{ {} }} "
+      "compute_dispatches={} direct_regions/bytes={}/{} "
+      "repack_regions/bytes={}/{} deferred_blit_encoders={}",
+      reason, texture_upload_command_buffer_modes,
+      backend_telemetry_.texture_upload_compute_dispatches,
+      backend_telemetry_.texture_upload_direct_blit_regions,
+      backend_telemetry_.texture_upload_direct_blit_bytes,
+      backend_telemetry_.texture_upload_repack_blit_regions,
+      backend_telemetry_.texture_upload_repack_blit_bytes,
+      backend_telemetry_.texture_upload_deferred_blit_encoders);
   REXLOG_INFO(
       "MetalTelemetry[{}]: draw_materialization ranges={{ {} }} bytes={{ {} }} "
       "invalid_ranges={{ {} }} invalid_bytes={{ {} }} "
@@ -6485,6 +6599,16 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
       direct_host_stats.direct_host_reject_format_mismatch,
       direct_host_stats.direct_host_reject_sample_select,
       direct_host_stats.direct_host_reject_depth_no_fast);
+  REXLOG_INFO(
+      "MetalTelemetry[{}]: resolve_work plan success/fail/noop/copy/clear="
+      "{}/{}/{}/{}/{} dispatch_counts={{ {} }} dispatch_pixels={{ {} }} "
+      "dispatch_bytes={{ {} }}",
+      reason, backend_telemetry_.resolve_plan_successes,
+      backend_telemetry_.resolve_plan_failures,
+      backend_telemetry_.resolve_plan_noops,
+      backend_telemetry_.resolve_plan_copy_exports,
+      backend_telemetry_.resolve_plan_clears, resolve_dispatch_route_counts,
+      resolve_dispatch_route_pixels, resolve_dispatch_route_bytes);
   REXLOG_INFO(
       "MetalTelemetry[{}]: stage_compile requests={} hits/misses={}/{} "
       "waits={} failures={} persistent hits/misses={}/{} "
@@ -6905,6 +7029,61 @@ void MetalCommandProcessor::RecordTextureUploadSourceFallback(
   }
 }
 
+void MetalCommandProcessor::RecordTextureUploadCommandBufferMode(
+    TextureUploadCommandBufferMode mode) {
+  const size_t mode_index = static_cast<size_t>(mode);
+  if (mode_index >= kTextureUploadCommandBufferModeCount) {
+    return;
+  }
+  ++backend_telemetry_.texture_upload_command_buffer_modes[mode_index];
+}
+
+void MetalCommandProcessor::RecordTextureUploadWork(
+    uint64_t compute_dispatches, uint64_t direct_blit_regions,
+    uint64_t direct_blit_bytes, uint64_t repack_blit_regions,
+    uint64_t repack_blit_bytes, bool deferred_blit_encoder) {
+  backend_telemetry_.texture_upload_compute_dispatches += compute_dispatches;
+  backend_telemetry_.texture_upload_direct_blit_regions +=
+      direct_blit_regions;
+  backend_telemetry_.texture_upload_direct_blit_bytes += direct_blit_bytes;
+  backend_telemetry_.texture_upload_repack_blit_regions +=
+      repack_blit_regions;
+  backend_telemetry_.texture_upload_repack_blit_bytes += repack_blit_bytes;
+  if (deferred_blit_encoder) {
+    ++backend_telemetry_.texture_upload_deferred_blit_encoders;
+  }
+}
+
+void MetalCommandProcessor::RecordResolvePlan(bool success, bool noop,
+                                              bool copy_export, bool clear) {
+  if (success) {
+    ++backend_telemetry_.resolve_plan_successes;
+  } else {
+    ++backend_telemetry_.resolve_plan_failures;
+  }
+  if (noop) {
+    ++backend_telemetry_.resolve_plan_noops;
+  }
+  if (copy_export) {
+    ++backend_telemetry_.resolve_plan_copy_exports;
+  }
+  if (clear) {
+    ++backend_telemetry_.resolve_plan_clears;
+  }
+}
+
+void MetalCommandProcessor::RecordResolveDispatch(ResolveDispatchRoute route,
+                                                  uint64_t pixels,
+                                                  uint64_t bytes) {
+  const size_t route_index = static_cast<size_t>(route);
+  if (route_index >= kResolveDispatchRouteCount) {
+    return;
+  }
+  ++backend_telemetry_.resolve_dispatch_route_counts[route_index];
+  backend_telemetry_.resolve_dispatch_route_pixels[route_index] += pixels;
+  backend_telemetry_.resolve_dispatch_route_bytes[route_index] += bytes;
+}
+
 void MetalCommandProcessor::RecordSharedMemoryUploadEncoderCopy() {
   ++backend_telemetry_.shared_memory_upload_encoder_copies;
 }
@@ -6968,6 +7147,7 @@ MetalCommandProcessor::CreateStandaloneTransferCommandBuffer(
   if (!cmd) {
     return nullptr;
   }
+  ++backend_telemetry_.standalone_command_buffers_created;
   return cmd;
 }
 
@@ -6975,6 +7155,7 @@ void MetalCommandProcessor::CommitStandaloneAsync(MTL::CommandBuffer* cmd) {
   if (!cmd) {
     return;
   }
+  ++backend_telemetry_.standalone_command_buffers_committed_async;
   cmd->addCompletedHandler(^(MTL::CommandBuffer* completed_cmd) {
     completed_cmd->release();
   });
@@ -6985,6 +7166,7 @@ void MetalCommandProcessor::CommitStandaloneAndWait(MTL::CommandBuffer* cmd) {
   if (!cmd) {
     return;
   }
+  ++backend_telemetry_.standalone_command_buffers_committed_sync;
   cmd->commit();
   cmd->waitUntilCompleted();
   cmd->release();
@@ -7928,6 +8110,12 @@ void MetalCommandProcessor::EndCommandBuffer() {
   }
 
   if (current_command_buffer_) {
+    ++backend_telemetry_.main_command_buffers_committed;
+    if (submission_has_draws_) {
+      ++backend_telemetry_.main_command_buffers_committed_with_draws;
+    } else {
+      ++backend_telemetry_.main_command_buffers_committed_without_draws;
+    }
     current_command_buffer_->commit();
     current_command_buffer_->release();
     current_command_buffer_ = nullptr;

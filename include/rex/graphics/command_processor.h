@@ -231,9 +231,39 @@ class CommandProcessor {
   virtual Shader* LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
                              const uint32_t* host_address, uint32_t dword_count) = 0;
 
+  enum class DrawFailureReason {
+    kNone,
+    kMissingVertexShader,
+    kPrimitiveProcessorMissing,
+    kPrimitiveProcessingFailed,
+    kRenderTargetUpdateFailed,
+    kShaderTranslationFailed,
+    kPipelineCreationFailed,
+    kTextureMaterializationFailed,
+    kSharedMemoryRangeFailed,
+    kDrawConstantsFailed,
+    kGuestIndexPreparationFailed,
+    kCommandBufferFailed,
+    kRenderEncoderBeginFailed,
+    kPreparedDrawFailed,
+    kDispatchFailed,
+    kCopyResolvePlanFailed,
+    kCopyCommandBufferFailed,
+    kCopyResolveFailed,
+    kUnsupportedPrimitive,
+    kUnsupportedIndexBuffer,
+    kIndexBufferInvalid,
+    kUnknown,
+  };
+
   virtual bool IssueDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
                          IndexBufferInfo* index_buffer_info, bool major_mode_explicit) = 0;
   virtual bool IssueCopy() = 0;
+
+  void ClearDrawFailureReason() { draw_failure_reason_ = DrawFailureReason::kNone; }
+  void SetDrawFailureReason(DrawFailureReason reason) { draw_failure_reason_ = reason; }
+  DrawFailureReason draw_failure_reason() const { return draw_failure_reason_; }
+  static const char* GetDrawFailureReasonName(DrawFailureReason reason);
 
   // "Actual" is for the command processor thread, to be read by the
   // implementations.
@@ -302,6 +332,7 @@ class CommandProcessor {
   // Set by backend command processors to their legacy memexport readback cvar
   // name (for explicit-override compatibility).
   const char* legacy_readback_memexport_cvar_name_ = nullptr;
+  DrawFailureReason draw_failure_reason_ = DrawFailureReason::kNone;
 
  private:
   reg::DC_LUT_30_COLOR gamma_ramp_256_entry_table_[256] = {};
