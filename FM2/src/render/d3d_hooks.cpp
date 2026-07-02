@@ -4078,10 +4078,15 @@ REX_HOOK_RAW(sub_8245D048) {
   static constexpr bool kDrainCatchUp = true;
   if (kDrainCatchUp && ShouldMirrorPlumeRenderState() && a1 == 0x4001CA20u) {
     uint32_t drained = 0;
-    for (; drained < 8u; ++drained) {
+    for (; drained < 16u; ++drained) {
       const int32_t backlog = static_cast<int32_t>(rd(a1 + 128u));
       const int32_t thresh = static_cast<int32_t>(rd(a1 + 132u));
-      if (thresh < 0 || backlog <= thresh)
+      // Drain BELOW the threshold, not to it: p145 re-latches at submit time
+      // whenever backlog > threshold, so stopping at == threshold left the
+      // latch armed for most of every frame (POOLSTATE showed steady-state
+      // 4-7 pending with p145=1 and drops continuing). Down to 1 keeps the
+      // next submit at 2 <= 3 and the latch permanently open.
+      if (thresh < 0 || backlog <= 1)
         break;
       if (g_cbQueueSwapNext(a1) == 0u)
         break;

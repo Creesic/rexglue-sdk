@@ -2026,10 +2026,48 @@ RenderTexture *GetOversizedDepthColorTarget(uint32_t width, uint32_t height,
 
 void ResizeTileSurface(GuestSurface *surface, uint32_t width, uint32_t height);
 
+// Predicated-tiling window emulation (2026-07-02). Each tile pass renders the
+// FULL frame viewport shifted so its 256-row band lands at tile row 0 (Xenos
+// PA_SC_WINDOW_OFFSET); SetRenderTargetInternal's D3D9 viewport reset instead
+// squished the whole frame into the tile. Originally the band resolves in
+// StretchRect identified the tile surface; with the deferred state stream
+// live (2026-07-02 session 2) the resolve topology changed and that detection
+// never fires, so tile surfaces are now identified at BIND time below.
+static GuestBaseTexture *g_tileRenderTarget = nullptr;
+static uint32_t g_tileFrameWidth = 0;
+static uint32_t g_tileFrameHeight = 0;
+
 void SetFramebuffer(GuestBaseTexture *renderTarget, GuestSurface *depthStencil,
                     bool forClear) {
   if (!forClear && !g_dirtyStates.renderTargetAndDepthStencil)
     return;
+
+  // Bind-time EDRAM tile identification (2026-07-02 session 2): the game now
+  // renders whole frames into a frame-wide x 256 surface (the EDRAM tile of
+  // the recorded tiling pass -- hardware would replay it 3x with different
+  // window offsets), recreated fresh per menu screen, and the new resolve
+  // form is a single full-surface copy (no banded destPt) so the old
+  // detection in StretchRect never triggers. A color RT of exactly
+  // 1280x256 with FM2's 720p frame is unambiguous: grow it to full frame
+  // height so the single pass rasterizes every row, and let the tile
+  // viewport/scissor expansion in FlushViewport take it from there.
+  {
+    constexpr uint32_t kFm2FrameWidth = 1280u;
+    constexpr uint32_t kFm2FrameHeight = 720u;
+    constexpr uint32_t kFm2TileHeight = 256u;
+    if (renderTarget != nullptr &&
+        renderTarget->type == ResourceType::RenderTarget &&
+        renderTarget->width == kFm2FrameWidth &&
+        renderTarget->height == kFm2TileHeight) {
+      ResizeTileSurface(static_cast<GuestSurface *>(renderTarget),
+                        kFm2FrameWidth, kFm2FrameHeight);
+      g_tileRenderTarget = renderTarget;
+      g_tileFrameWidth = kFm2FrameWidth;
+      g_tileFrameHeight = kFm2FrameHeight;
+      g_dirtyStates.viewport = true;
+      g_dirtyStates.scissorRect = true;
+    }
+  }
 
   // Fix #18 follow-up: if the tile COLOR surface was grown to frame height
   // but its depth partner wasn't (it wasn't bound at band-resolve time),
@@ -2107,14 +2145,6 @@ void SetFramebuffer(GuestBaseTexture *renderTarget, GuestSurface *depthStencil,
   g_dirtyStates.renderTargetAndDepthStencil = forClear;
 }
 
-// Predicated-tiling window emulation (2026-07-02). Each tile pass renders the
-// FULL frame viewport shifted so its 256-row band lands at tile row 0 (Xenos
-// PA_SC_WINDOW_OFFSET); SetRenderTargetInternal's D3D9 viewport reset instead
-// squished the whole frame into the tile. The band resolves in StretchRect
-// identify the tile surface + frame dims and advance the offset per pass.
-static GuestBaseTexture *g_tileRenderTarget = nullptr;
-static uint32_t g_tileFrameWidth = 0;
-static uint32_t g_tileFrameHeight = 0;
 static int32_t g_tileViewportOffsetY = 0;
 
 // Fix #18 (2026-07-02): recorded commands may still reference a resized tile
@@ -2183,6 +2213,19 @@ void FlushViewport() {
   if (g_dirtyStates.viewport) {
     s_appliedTileOffsetY = tileBound ? g_tileViewportOffsetY : INT32_MIN;
     RenderViewport vp = g_viewport;
+    // 2026-07-02 (live state stream): the game's own per-tile viewport
+    // (1280x256) now EXECUTES (it was silently dropped with the rest of the
+    // deferred command stream before), clamping rasterization to band 1 of
+    // the full-height tile surface -> content only in the top third of the
+    // frame. When the grown tile surface is bound, expand the tile-window
+    // viewport back to the full surface so the single recorded pass
+    // rasterizes every row (the hardware would replay it per band instead).
+    if (g_renderTarget != nullptr && g_renderTarget == g_tileRenderTarget &&
+        g_renderTarget->height == g_tileFrameHeight && vp.x == 0.0f &&
+        vp.y == 0.0f && uint32_t(vp.width) == g_renderTarget->width &&
+        vp.height > 0.0f && uint32_t(vp.height) < g_renderTarget->height) {
+      vp.height = float(g_renderTarget->height);
+    }
     if (g_renderTarget != nullptr && g_renderTarget == g_tileRenderTarget &&
         g_tileFrameHeight > g_renderTarget->height && vp.x == 0.0f &&
         vp.y == 0.0f) {
@@ -2242,6 +2285,15 @@ void FlushViewport() {
             : RenderRect(int32_t(g_viewport.x), int32_t(g_viewport.y),
                          int32_t(g_viewport.x + g_viewport.width),
                          int32_t(g_viewport.y + g_viewport.height));
+    // Tile-window scissor expansion (see the matching viewport override
+    // above): the game's live per-tile 1280x256 scissor must not clamp the
+    // single recorded pass on the grown full-height tile surface.
+    if (g_renderTarget != nullptr && g_renderTarget == g_tileRenderTarget &&
+        g_renderTarget->height == g_tileFrameHeight && rect.left == 0 &&
+        rect.top == 0 && uint32_t(rect.right) == g_renderTarget->width &&
+        rect.bottom > 0 && uint32_t(rect.bottom) < g_renderTarget->height) {
+      rect.bottom = int32_t(g_renderTarget->height);
+    }
     commandList->setScissors(rect);
     g_dirtyStates.scissorRect = false;
   }
