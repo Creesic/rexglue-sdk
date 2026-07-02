@@ -230,30 +230,6 @@ class D3D12CommandProcessor : public CommandProcessor {
  private:
   static constexpr uint32_t kQueueFrames = 3;
 
-  bool ShouldHoldDoaxLowDrawSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
-                                 uint32_t frontbuffer_height);
-  bool ShouldHoldDoaxMissingFinalCompositeSwap(uint32_t frontbuffer_ptr,
-                                               uint32_t frontbuffer_width,
-                                               uint32_t frontbuffer_height,
-                                               bool frontbuffer_signature_valid,
-                                               uint32_t frontbuffer_signature_nonzero_dwords,
-                                               uint64_t frontbuffer_signature_rgb3_min_sum);
-
-  bool doax_low_draw_hold_has_good_output_ = false;
-  uint32_t doax_low_draw_hold_frames_ = 0;
-  uint32_t doax_low_draw_hold_logs_ = 0;
-  bool doax_final_composite_seen_ = false;
-  uint32_t doax_final_composite_draws_ = 0;
-  bool doax_missing_final_composite_has_good_output_ = false;
-  uint32_t doax_missing_final_composite_hold_frames_ = 0;
-  uint32_t doax_missing_final_composite_hold_logs_ = 0;
-  uint32_t doax_missing_final_composite_hold_cap_logs_ = 0;
-  uint32_t doax_missing_final_composite_good_logs_ = 0;
-  uint32_t doax_missing_final_composite_no_baseline_logs_ = 0;
-  uint32_t doax_missing_final_composite_disabled_logs_ = 0;
-  uint32_t doax_missing_final_composite_no_baseline_frames_ = 0;
-  uint32_t doax_missing_final_composite_check_tick_ = 0;
-
   enum RootParameter : UINT {
     // Keep the size of the root signature at each stage 13 dwords or less
     // (better 12 or less) so it fits in user data on AMD. Descriptor tables are

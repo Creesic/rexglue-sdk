@@ -12,7 +12,6 @@
 #include <vector>
 
 #include <rex/chrono/clock.h>
-#include <rex/doax_pulse_diag.h>  // TEMP_DIAG: lossy-PulseEvent worker-wake race
 #include <rex/stream.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/util/string_utils.h>  // For TranslateAnsiStringAddress
@@ -213,10 +212,7 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
                                        TimeoutTicksToMs(*opt_timeout)))
                                  : std::chrono::milliseconds::max();
 
-  const bool diag_is_event = (type() == Type::Event);  // TEMP_DIAG: pulse race
-  if (diag_is_event) doax_pulse_diag::OnWaitEnter(guest_object());
   auto result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
-  if (diag_is_event) doax_pulse_diag::OnWaitExit(guest_object());
   switch (result) {
     case rex::thread::WaitResult::kSuccess:
     case rex::thread::WaitResult::kUserCallback: {
@@ -247,12 +243,9 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, ui
                                        TimeoutTicksToMs(*opt_timeout)))
                                  : std::chrono::milliseconds::max();
 
-  const bool diag_wait_is_event = (wait_object->type() == Type::Event);  // TEMP_DIAG: pulse race
-  if (diag_wait_is_event) doax_pulse_diag::OnWaitEnter(wait_object->guest_object());
   auto result =
       rex::thread::SignalAndWait(signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
                                   alertable ? true : false, timeout_ms);
-  if (diag_wait_is_event) doax_pulse_diag::OnWaitExit(wait_object->guest_object());
   switch (result) {
     case rex::thread::WaitResult::kSuccess:
     case rex::thread::WaitResult::kUserCallback: {
@@ -291,12 +284,6 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
 
   X_STATUS status = X_STATUS_UNSUCCESSFUL;
   uint32_t boost_increment = 0;
-
-  // TEMP_DIAG: pulse race - all event objects are parked across this wait.
-  for (uint32_t di = 0; di < count; ++di) {
-    if (objects[di]->type() == Type::Event)
-      doax_pulse_diag::OnWaitEnter(objects[di]->guest_object());
-  }
 
   if (wait_type) {
     auto result =
@@ -348,12 +335,6 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
         status = X_STATUS_ABANDONED_WAIT_0;
         break;
     }
-  }
-
-  // TEMP_DIAG: pulse race - unpark.
-  for (uint32_t di = 0; di < count; ++di) {
-    if (objects[di]->type() == Type::Event)
-      doax_pulse_diag::OnWaitExit(objects[di]->guest_object());
   }
 
   if (status != X_STATUS_TIMEOUT && status != X_STATUS_UNSUCCESSFUL &&
