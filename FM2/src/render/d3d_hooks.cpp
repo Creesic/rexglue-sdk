@@ -2708,6 +2708,9 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
 // shaders in FlushRenderState), plus keeps the original one-shot histogram
 // logging (FM2_PM4SETC / FM2_PM4T0ALU / FM2_PM4LOADALU).
 void ProcessPm4VsConstantsDiag(uint32_t context) {
+  // Fresh-set reset FIRST (even on the early-out paths): a draw with no new
+  // command-buffer bytes gets an EMPTY fresh set, never the previous draw's.
+  rr::BeginPm4ConstantDelta();
   auto *mem = ghp::GuestMemory();
   if (mem == nullptr) return;
   auto rd = [&](uint32_t ga) -> uint32_t {
@@ -2715,9 +2718,22 @@ void ProcessPm4VsConstantsDiag(uint32_t context) {
     return p ? p->get() : 0u;
   };
   const uint32_t curPhys = rd(context + 0x30u) & 0x1FFFFFFFu;
-  static uint32_t s_lastPhys = 0;
-  const uint32_t lastPhys = s_lastPhys;
-  s_lastPhys = curPhys;
+  // Per-CONTEXT write-pointer tracking (2026-07-02): the old single static
+  // garbled the delta whenever draws interleaved across render contexts
+  // (each has its own command buffer), silently dropping constant packets.
+  static constexpr uint32_t kCtxSlots = 4;
+  static uint32_t s_ctx[kCtxSlots] = {};
+  static uint32_t s_last[kCtxSlots] = {};
+  uint32_t slot = 0;
+  for (; slot < kCtxSlots; ++slot) {
+    if (s_ctx[slot] == context || s_ctx[slot] == 0)
+      break;
+  }
+  if (slot == kCtxSlots)
+    slot = kCtxSlots - 1; // overflow: reuse the last slot (best effort)
+  s_ctx[slot] = context;
+  const uint32_t lastPhys = s_last[slot];
+  s_last[slot] = curPhys;
   if (lastPhys == 0 || curPhys <= lastPhys) return; // first call / wrap / drain
   const uint32_t len = curPhys - lastPhys;
   if (len > 0x40000u) return;
@@ -2745,9 +2761,11 @@ void ProcessPm4VsConstantsDiag(uint32_t context) {
         // ceiling carry the per-element 2D placement matrices -- feed them
         // into the PM4 constant shadow in stream order (payload is already
         // big-endian dwords in guest memory, pass verbatim).
-        if (ctype == 0u && idx < 0x400u && cnt >= 2u &&
-            off + 8u + 4u * (cnt - 1u) <= len) {
-          rr::ApplyPm4VsConstants(idx, buf + off + 8u, cnt - 1u);
+        if (ctype == 0u && cnt >= 2u && off + 8u + 4u * (cnt - 1u) <= len) {
+          if (idx < 0x400u)
+            rr::ApplyPm4VsConstants(idx, buf + off + 8u, cnt - 1u);
+          else if (idx < 0x800u)
+            rr::ApplyPm4PsConstants(idx - 0x400u, buf + off + 8u, cnt - 1u);
         }
         // Log each DISTINCT (type,idx) once -> full histogram of which ALU regs
         // the game SET_CONSTANTs. WVP for the VS is regs ~28..75 (c7..c18).
@@ -2770,10 +2788,14 @@ void ProcessPm4VsConstantsDiag(uint32_t context) {
         const uint32_t ctype = (ot >> 16) & 0xFFu;
         const uint32_t sz = be(off + 12u) & 0xFFFu;
         // APPLY: indirect ALU load -- copy the source block into the shadow.
-        if (ctype == 0u && idx < 0x400u && sz != 0u && sz <= 0x400u) {
+        if (ctype == 0u && idx < 0x800u && sz != 0u && sz <= 0x400u) {
           if (const auto *lsrc =
-                  mem->TranslatePhysical<const uint8_t *>(addr & 0x1FFFFFFFu))
-            rr::ApplyPm4VsConstants(idx, lsrc, sz);
+                  mem->TranslatePhysical<const uint8_t *>(addr & 0x1FFFFFFFu)) {
+            if (idx < 0x400u)
+              rr::ApplyPm4VsConstants(idx, lsrc, sz);
+            else
+              rr::ApplyPm4PsConstants(idx - 0x400u, lsrc, sz);
+          }
         }
         static bool s_seenL[2048] = {};
         if (ctype == 0u && idx < 2048u && !s_seenL[idx]) {
@@ -2794,14 +2816,21 @@ void ProcessPm4VsConstantsDiag(uint32_t context) {
     } else if (type == 0u) {
       const uint32_t cnt0 = ((hdr >> 16) & 0x3FFFu) + 1u;
       const uint32_t base = hdr & 0x7FFFu;
-      if (base >= 0x4000u && base < 0x4400u) {
+      if (base >= 0x4000u && base < 0x4800u) {
         // APPLY: Type-0 direct ALU register burst (dword-indexed at
-        // base-0x4000). Clamp to the VS file and the scanned window.
-        const uint32_t r0 = base - 0x4000u;
-        if (r0 < 0x400u && off + 4u + 4u * cnt0 <= len) {
-          rr::ApplyPm4VsConstants(r0, buf + off + 4u,
-                                  std::min(cnt0, 0x400u - r0));
+        // base-0x4000; PS half starts at 0x4400). Clamp to the file and the
+        // scanned window.
+        const uint32_t rAll = base - 0x4000u;
+        if (off + 4u + 4u * cnt0 <= len) {
+          if (rAll < 0x400u)
+            rr::ApplyPm4VsConstants(rAll, buf + off + 4u,
+                                    std::min(cnt0, 0x400u - rAll));
+          else
+            rr::ApplyPm4PsConstants(rAll - 0x400u, buf + off + 4u,
+                                    std::min(cnt0, 0x800u - rAll));
         }
+      }
+      if (base >= 0x4000u && base < 0x4400u) {
         static bool s_seen0[2048] = {};
         const uint32_t r = base - 0x4000u;
         if (r < 2048u && !s_seen0[r]) {

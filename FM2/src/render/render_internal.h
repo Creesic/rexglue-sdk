@@ -80,6 +80,13 @@ void SetUiGlyphModelView(const void *rows4);
 // context file for no-POSITION (2D) shaders.
 void ApplyPm4VsConstants(uint32_t dwordIndex, const void *beDwords,
                          uint32_t dwordCount);
+// PS half of the PM4 ALU space (packet idx 0x400-0x7FF, rebase before call).
+void ApplyPm4PsConstants(uint32_t dwordIndex, const void *beDwords,
+                         uint32_t dwordCount);
+// Reset the per-delta "fresh" register set (see render_state.cpp); the
+// scanner calls this before walking each command-buffer delta so 3D draws
+// only overlay constants written immediately before them.
+void BeginPm4ConstantDelta();
 
 struct GuestVertexDeclaration;
 GuestVertexDeclaration *LookupVertexDeclarationAlias(uint32_t guestAddress);

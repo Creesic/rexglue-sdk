@@ -2350,7 +2350,22 @@ alignas(16) static uint32_t g_passVsConstants[0x400] = {};
 // coverage tracked per vec4 register.
 alignas(16) static uint32_t g_pm4VsConstants[0x400] = {};
 static uint64_t g_pm4VsConstantsCoverage[4] = {};
+// Registers written in the CURRENT command-buffer delta only (cleared by
+// BeginPm4ConstantDelta before each scan). 3D shaders overlay just these:
+// accumulated coverage goes stale across passes and stomps live-file values
+// (user-verified regression: bright flashing + missing 3D), while the fresh
+// set is by construction what the stream set for THIS draw (the car's
+// per-object WVP pattern).
+static uint64_t g_pm4VsConstantsFreshCoverage[4] = {};
 static std::atomic<bool> g_pm4VsConstantsValid{false};
+// PS half of the PM4 ALU space (packet idx 0x400-0x7FF / Type-0 base
+// 0x4400-0x47FF). Material/paint colors ride here -- unapplied, the pixel
+// shaders read transient live-file values and surfaces FLASH primary colors
+// per frame (user-verified on the car + showroom panels).
+alignas(16) static uint32_t g_pm4PsConstants[0x400] = {};
+static uint64_t g_pm4PsConstantsCoverage[4] = {};
+static uint64_t g_pm4PsConstantsFreshCoverage[4] = {};
+static std::atomic<bool> g_pm4PsConstantsValid{false};
 // Bit N set = register N was written by a pass upload (drives the per-register
 // overlay in FlushRenderState; see the merged-file comment there).
 static uint64_t g_passVsConstantsCoverage[4] = {};
@@ -2746,6 +2761,20 @@ void FlushRenderState(GuestDevice *device) {
   // exactly the registers a pass upload has written.
   alignas(16) static uint32_t s_mergedVsConstants[0x400];
   const uint32_t *vsConstSrc = device->vertexShaderFloatConstants;
+  // Hoisted for both the VS and PS PM4-overlay policies below: 2D UI shaders
+  // have no POSITION element (position rides in TEXCOORD halves).
+  bool noPos = false;
+  {
+    const GuestShader *vs2d = g_pipelineState.vertexShader;
+    noPos = vs2d != nullptr && !vs2d->headerElements.empty();
+    if (noPos) {
+      for (const auto &he : vs2d->headerElements)
+        if (he.usage == 0) {
+          noPos = false;
+          break;
+        }
+    }
+  }
   if (g_liveVsFloatConstants != nullptr) {
     // PM4 draw: base = the issuing context's real ALU register file
     // (ctx+0x710, register-aligned). FM2 uses MULTIPLE render contexts
@@ -2767,15 +2796,6 @@ void FlushRenderState(GuestDevice *device) {
     // the Xenia arcade diff). The SetF mirror is call-ordered across all
     // contexts; overlay just regs 0-3 for these shaders.
     {
-      const GuestShader *vs2d = g_pipelineState.vertexShader;
-      bool noPos = vs2d != nullptr && !vs2d->headerElements.empty();
-      if (noPos) {
-        for (const auto &he : vs2d->headerElements)
-          if (he.usage == 0) {
-            noPos = false;
-            break;
-          }
-      }
       // DISABLED 2026-07-02: a single captured UI matrix is wrong too --
       // UiOrScreenDrawListSubmit runs PER UI ELEMENT, each staging its OWN
       // ModelView before emitting its slice of the recorded list, so any one
@@ -2795,22 +2815,40 @@ void FlushRenderState(GuestDevice *device) {
       // idx=0 regs=16 with the 0.05-scale row right before each 2D element
       // draw; live file has color+zeros there). The scanner applies them in
       // stream order into g_pm4VsConstants BEFORE each draw, so each 2D draw
-      // sees exactly the constants the Xenos CP would have applied. Overlay
-      // covered registers for no-POSITION (2D) shaders only -- 3D shaders
-      // stay on the pure live file, which is proven correct for them.
-      if (noPos && g_pm4VsConstantsValid.load(std::memory_order_relaxed)) {
+      // sees exactly the constants the Xenos CP would have applied.
+      // 3D shaders (car-mesh follow-up): the CAR's per-object WVP (c7..c18
+      // per the scanner's original diagnostic) ALSO travels only as PM4 --
+      // the car renderer never calls the CPU SetF path the scene-object pass
+      // uses. But overlaying the ACCUMULATED coverage for 3D regressed hard
+      // (user-verified: bright flashing + missing meshes -- stale shadow regs
+      // stomp live-file materials/colors). 3D therefore overlays only the
+      // FRESH set: registers written in the command-buffer delta immediately
+      // before THIS draw, which are current by construction. 2D keeps the
+      // accumulated set (user-verified improvement).
+      static constexpr bool kApplyPm4FreshTo3D = true;
+      const bool use2dOverlay =
+          noPos && g_pm4VsConstantsValid.load(std::memory_order_relaxed);
+      const bool use3dFreshOverlay =
+          !noPos && kApplyPm4FreshTo3D &&
+          g_pm4VsConstantsValid.load(std::memory_order_relaxed);
+      if (use2dOverlay || use3dFreshOverlay) {
+        const uint64_t *cover = use2dOverlay ? g_pm4VsConstantsCoverage
+                                             : g_pm4VsConstantsFreshCoverage;
         std::memcpy(s_mergedVsConstants, g_liveVsFloatConstants,
                     sizeof(s_mergedVsConstants));
+        bool any = false;
         for (uint32_t w = 0; w < 4u; ++w) {
-          uint64_t bits = g_pm4VsConstantsCoverage[w];
+          uint64_t bits = cover[w];
           while (bits != 0) {
             const uint32_t reg = w * 64u + uint32_t(std::countr_zero(bits));
             bits &= bits - 1u;
             std::memcpy(s_mergedVsConstants + reg * 4u,
                         g_pm4VsConstants + reg * 4u, 16u);
+            any = true;
           }
         }
-        vsConstSrc = s_mergedVsConstants;
+        if (any || use2dOverlay)
+          vsConstSrc = s_mergedVsConstants;
       }
     }
   } else if (g_passVsConstantsValid.load(std::memory_order_relaxed)) {
@@ -2834,6 +2872,32 @@ void FlushRenderState(GuestDevice *device) {
   const uint32_t *psConstSrc = g_livePsFloatConstants != nullptr
                                    ? g_livePsFloatConstants
                                    : device->pixelShaderFloatConstants;
+  // PS PM4 overlay (2026-07-02): material/paint colors travel as PM4 ALU
+  // writes in the PS half (idx 0x400+); unapplied, PS reads transient
+  // live-file values -> per-frame FLASHING primary colors (user-verified on
+  // the car + showroom panels). Same policy as VS: 2D = accumulated
+  // coverage, 3D = fresh-per-delta only.
+  alignas(16) static uint32_t s_mergedPsConstants[0x400];
+  if (g_livePsFloatConstants != nullptr &&
+      g_pm4PsConstantsValid.load(std::memory_order_relaxed)) {
+    const uint64_t *cover =
+        noPos ? g_pm4PsConstantsCoverage : g_pm4PsConstantsFreshCoverage;
+    std::memcpy(s_mergedPsConstants, g_livePsFloatConstants,
+                sizeof(s_mergedPsConstants));
+    bool any = false;
+    for (uint32_t w = 0; w < 4u; ++w) {
+      uint64_t bits = cover[w];
+      while (bits != 0) {
+        const uint32_t reg = w * 64u + uint32_t(std::countr_zero(bits));
+        bits &= bits - 1u;
+        std::memcpy(s_mergedPsConstants + reg * 4u, g_pm4PsConstants + reg * 4u,
+                    16u);
+        any = true;
+      }
+    }
+    if (any || noPos)
+      psConstSrc = s_mergedPsConstants;
+  }
   SetRootDescriptor(g_uploadAllocator.allocateCopy<true>(
                         psConstSrc,
                         sizeof(device->pixelShaderFloatConstants), 0x100),
@@ -3676,9 +3740,36 @@ void ApplyPm4VsConstants(uint32_t dwordIndex, const void *beDwords,
   dwordCount = std::min(dwordCount, 0x400u - dwordIndex);
   std::memcpy(g_pm4VsConstants + dwordIndex, beDwords, dwordCount * 4u);
   const uint32_t lastReg = (dwordIndex + dwordCount - 1u) / 4u;
-  for (uint32_t r = dwordIndex / 4u; r <= lastReg; ++r)
+  for (uint32_t r = dwordIndex / 4u; r <= lastReg; ++r) {
     g_pm4VsConstantsCoverage[r / 64u] |= uint64_t(1) << (r % 64u);
+    g_pm4VsConstantsFreshCoverage[r / 64u] |= uint64_t(1) << (r % 64u);
+  }
   g_pm4VsConstantsValid.store(true, std::memory_order_relaxed);
+}
+
+// PS twin of ApplyPm4VsConstants (packet idx already rebased to 0).
+void ApplyPm4PsConstants(uint32_t dwordIndex, const void *beDwords,
+                         uint32_t dwordCount) {
+  if (beDwords == nullptr || dwordIndex >= 0x400u || dwordCount == 0)
+    return;
+  dwordCount = std::min(dwordCount, 0x400u - dwordIndex);
+  std::memcpy(g_pm4PsConstants + dwordIndex, beDwords, dwordCount * 4u);
+  const uint32_t lastReg = (dwordIndex + dwordCount - 1u) / 4u;
+  for (uint32_t r = dwordIndex / 4u; r <= lastReg; ++r) {
+    g_pm4PsConstantsCoverage[r / 64u] |= uint64_t(1) << (r % 64u);
+    g_pm4PsConstantsFreshCoverage[r / 64u] |= uint64_t(1) << (r % 64u);
+  }
+  g_pm4PsConstantsValid.store(true, std::memory_order_relaxed);
+}
+
+// Called by the scanner before each command-buffer delta walk: the "fresh"
+// register set only ever describes the delta between the previous PM4 draw
+// and this one.
+void BeginPm4ConstantDelta() {
+  for (uint32_t w = 0; w < 4u; ++w) {
+    g_pm4VsConstantsFreshCoverage[w] = 0;
+    g_pm4PsConstantsFreshCoverage[w] = 0;
+  }
 }
 
 void SetUiGlyphModelView(const void *rows4) {
