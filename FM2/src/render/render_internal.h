@@ -62,6 +62,13 @@ void MirrorPassVsConstants(uint32_t startRegister, const void *src,
 // PM4 path never writes. Pass nullptr/nullptr to restore struct sourcing.
 void SetLiveFloatConstantFiles(const void *vsFile, const void *psFile);
 
+// 2026-07-02: the UI submit (FM2_Render_UiOrScreenDrawListSubmit) stages the
+// glyph ModelView (registers 0-3) on ITS context right before emitting the UI
+// draw list, but our hooks execute the glyph draws at list-RECORD time. The
+// UI-submit hook captures the staged rows (raw big-endian, 4 vec4) here; the
+// flush overlays them for no-POSITION shaders.
+void SetUiGlyphModelView(const void *rows4);
+
 struct GuestVertexDeclaration;
 GuestVertexDeclaration *LookupVertexDeclarationAlias(uint32_t guestAddress);
 // Snapshot of every D3DVERTEXELEMENT9 declaration FM2 has created. Used to match

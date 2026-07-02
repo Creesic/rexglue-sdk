@@ -548,3 +548,19 @@ inlined copies of XDK D3D primitives, and renamed:
 
 `D3DDevice_SetRenderState_ClipPlaneEnable` and `D3DBaseTexture_LockTail` remain
 unlocated (too common a byte size to disambiguate without a better caller lead).
+
+## 2026-07-02 — renderer-class cluster de-"audio"-ed (see `FM2-ida-renames-2026-07-02.md`)
+
+The overlay/UI renderer family and the graphics-manager init carried wrong
+`audio_*` / `FM2_Audio*` names; RTTI vftable symbols + `*Decl` strings gave exact
+classes: `COverlayRenderer` (+ its `Deferred` CParams wrapper — the enqueued
+execute thunks show up in `FM2_ENQ_DROP`, root-cause candidate for missing menu
+text), `CSimpleModelRenderer(+Deferred)`, `CFixedFunctionRendererX360`,
+`CDeferredLiveryRenderer`, `CRenderAdapterLink`, `CRenderThreadLink`,
+`CGraphicsStreamDeferred`, and `FM2_GraphicsManager_InitRenderersAndTargets`
+(0x822864D0, ex-"FM2_AudioManager_InitAndBindSignalGate"). Full table + evidence
+in the dated renames doc. Key structural facts: `COverlayRenderer` vtable =
+`0x82108F28`, `FM2_Render_UiOrScreenDrawListSubmit` = its slot 20 (+0x50), the
+deferred command pool global = `0x82A028DC`
+(`FM2_Render_GetDeferredCommandPool`), global render context singleton =
+`g_FM2_GlobalRenderContext_` (0x82A01570).

@@ -876,6 +876,48 @@ UploadAllocator g_uploadAllocator;
 
 UploadResult UploadGuestVertexData(const void *data, uint32_t size,
                                    uint64_t alignment) {
+  // 2026-07-02 guard: force-enqueued deferred render nodes (see the
+  // kForceAllNodeEnqueue experiment in d3d_hooks.cpp) reach draws whose
+  // vertex data pointer/size can reference unmapped guest memory; the
+  // byteswap loop below then AVs (crash at fm2.exe+0x5cab0, twice, both
+  // menu approaches). The host must never fault on guest data: validate
+  // the range against the guest heaps and fail the upload instead.
+  // The pointer may live in EITHER host mapping: the virtual window at
+  // virtual_membase() (4GB) or the physical window at physical_membase()
+  // (512MB, TranslatePhysical masks & 0x1FFFFFFF) -- PM4 geometry arrives
+  // via TranslatePhysical. (First guard version only accepted the virtual
+  // window and null-bound every PM4 vertex upload -> full black screen.)
+  {
+    auto *memory = ghp::GuestMemory();
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    bool ok = false;
+    if (memory != nullptr && size != 0) {
+      const uint8_t *pbase = memory->physical_membase();
+      const uint8_t *vbase = memory->virtual_membase();
+      if (pbase != nullptr && bytes >= pbase &&
+          bytes + size <= pbase + 0x20000000ull) {
+        const uint32_t phys = static_cast<uint32_t>(bytes - pbase);
+        ok = memory->GetPhysicalHeap()->QueryRangeAccess(
+                 phys, phys + size - 1u) != rex::memory::PageAccess::kNoAccess;
+      } else if (vbase != nullptr && bytes >= vbase &&
+                 bytes + size <= vbase + 0x100000000ull) {
+        const uint32_t va = memory->HostToGuestVirtual(bytes);
+        auto *heap = memory->LookupHeap(va);
+        ok = heap != nullptr &&
+             heap->QueryRangeAccess(va, va + size - 1u) !=
+                 rex::memory::PageAccess::kNoAccess;
+      }
+    }
+    if (!ok) {
+      static std::atomic<uint32_t> s_n{0};
+      if (s_n.fetch_add(1, std::memory_order_relaxed) < 16u) {
+        REXLOG_WARN("FM2_UPLOAD_GUARD rejected guest vertex upload host={} "
+                    "size={}",
+                    data, size);
+      }
+      return {};
+    }
+  }
   UploadResult result = g_uploadAllocator.allocate(size, alignment);
   if (result.memory == nullptr)
     return result;
@@ -1982,10 +2024,23 @@ RenderTexture *GetOversizedDepthColorTarget(uint32_t width, uint32_t height,
   return scratch.texture.get();
 }
 
+void ResizeTileSurface(GuestSurface *surface, uint32_t width, uint32_t height);
+
 void SetFramebuffer(GuestBaseTexture *renderTarget, GuestSurface *depthStencil,
                     bool forClear) {
   if (!forClear && !g_dirtyStates.renderTargetAndDepthStencil)
     return;
+
+  // Fix #18 follow-up: if the tile COLOR surface was grown to frame height
+  // but its depth partner wasn't (it wasn't bound at band-resolve time),
+  // grow the depth here where the mismatched pair actually meets --
+  // otherwise depth-tested draws are clamped to the old 256-row area.
+  if (renderTarget != nullptr && depthStencil != nullptr &&
+      depthStencil->width == renderTarget->width &&
+      depthStencil->height < renderTarget->height) {
+    ResizeTileSurface(depthStencil, renderTarget->width,
+                      renderTarget->height);
+  }
 
   GuestSurface *container = nullptr;
   RenderTexture *key = nullptr;
@@ -2061,6 +2116,58 @@ static GuestBaseTexture *g_tileRenderTarget = nullptr;
 static uint32_t g_tileFrameWidth = 0;
 static uint32_t g_tileFrameHeight = 0;
 static int32_t g_tileViewportOffsetY = 0;
+
+// Fix #18 (2026-07-02): recorded commands may still reference a resized tile
+// surface's old resources; retire them instead of destroying.
+static std::vector<std::unique_ptr<RenderTexture>> g_retiredTileTextures;
+static std::vector<std::unique_ptr<RenderTextureView>> g_retiredTileViews;
+static std::vector<std::unique_ptr<RenderFramebuffer>> g_retiredTileFramebuffers;
+
+// Grow a predicated-tiling surface's host texture to full frame size. The
+// game records its tile pass ONCE (hardware replays it per tile with
+// different window offsets, which our stream never sees), so a 256-row host
+// surface can never hold the full frame; a full-height surface lets the one
+// recorded pass rasterize all rows and the band resolves slice it.
+void ResizeTileSurface(GuestSurface *surface, uint32_t width,
+                       uint32_t height) {
+  RenderTextureDesc desc;
+  desc.dimension = RenderTextureDimension::TEXTURE_2D;
+  desc.width = width;
+  desc.height = height;
+  desc.depth = 1;
+  desc.mipLevels = 1;
+  desc.arraySize = 1;
+  desc.format = surface->format;
+  desc.flags = RenderFormatIsDepth(surface->format)
+                   ? RenderTextureFlag::DEPTH_TARGET
+                   : RenderTextureFlag::RENDER_TARGET;
+  auto texture = Device()->createTexture(desc);
+  if (texture == nullptr)
+    return;
+  g_retiredTileTextures.emplace_back(std::move(surface->textureHolder));
+  g_retiredTileViews.emplace_back(std::move(surface->textureView));
+  for (auto &entry : surface->framebuffers)
+    g_retiredTileFramebuffers.emplace_back(std::move(entry.second));
+  surface->framebuffers.clear();
+  surface->textureHolder = std::move(texture);
+  surface->texture = surface->textureHolder.get();
+  RenderTextureViewDesc viewDesc;
+  viewDesc.format = surface->format;
+  viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
+  viewDesc.mipLevels = 1;
+  surface->textureView = surface->texture->createTextureView(viewDesc);
+  surface->width = width;
+  surface->height = height;
+  surface->layout = RenderTextureLayout::UNKNOWN;
+  surface->hostInitialized = false;
+  surface->sourceTexture = nullptr;
+  if (surface->descriptorIndex != 0) {
+    TextureDescriptorSet()->setTexture(surface->descriptorIndex,
+                                       surface->texture,
+                                       RenderTextureLayout::SHADER_READ,
+                                       surface->textureView.get());
+  }
+}
 
 void FlushViewport() {
   RenderCommandList *commandList = CommandList();
@@ -2187,6 +2294,10 @@ static std::atomic<bool> g_passVsConstantsValid{false};
 // SetLiveFloatConstantFiles in render_internal.h). Render-thread only.
 static const uint32_t *g_liveVsFloatConstants = nullptr;
 static const uint32_t *g_livePsFloatConstants = nullptr;
+// UI glyph ModelView rows (registers 0-3, raw big-endian) captured by the
+// UI-submit hook (see SetUiGlyphModelView in render_internal.h).
+alignas(16) static uint32_t g_uiGlyphModelView[16] = {};
+static std::atomic<bool> g_uiGlyphModelViewValid{false};
 
 void FlushRenderState(GuestDevice *device) {
   // Forza programs per-draw color-write through its PM4 draw-list node, which the
@@ -2579,13 +2690,46 @@ void FlushRenderState(GuestDevice *device) {
     // the main one (proven by the Xenia-vs-plume arcade capture diff). Model
     // that by overlaying the cross-context SetVertexShaderConstantFN mirror
     // (g_passVsConstants, fed in call order by the 0x8236D958 hook) on top.
-    // PM4 draw: upload the ACTIVE PASS context's file verbatim (the hooks
-    // point us at g_FM2_ActivePassRenderContext_'s +0x710/+0x1710). No mirror
-    // overlay: register layouts are per-shader (one pass's ModelView rows are
-    // another shader's material colors), so cross-pass last-write-wins
-    // overlays plant wrong values -- proven by the magenta menu (a camera row
-    // landed in a shader's color register c2).
+    // PM4 draw: upload the issuing context's live file verbatim for 3D (POS)
+    // shaders -- broad mirror overlays plant wrong values (a camera row
+    // landed in a 3D shader's color register c2 -> the magenta menu).
     vsConstSrc = g_liveVsFloatConstants;
+    // Targeted cross-context fix for 2D/no-POSITION shaders (UI glyphs,
+    // sprites): their position math reads ModelView rows at registers 0-3,
+    // which the game uploads via SetVertexShaderConstantFN on the ACTIVE
+    // PASS context -- a different object than the issuing one, so the live
+    // block lacks them and all text collapses to screen center (proven by
+    // the Xenia arcade diff). The SetF mirror is call-ordered across all
+    // contexts; overlay just regs 0-3 for these shaders.
+    {
+      const GuestShader *vs2d = g_pipelineState.vertexShader;
+      bool noPos = vs2d != nullptr && !vs2d->headerElements.empty();
+      if (noPos) {
+        for (const auto &he : vs2d->headerElements)
+          if (he.usage == 0) {
+            noPos = false;
+            break;
+          }
+      }
+      // DISABLED 2026-07-02: a single captured UI matrix is wrong too --
+      // UiOrScreenDrawListSubmit runs PER UI ELEMENT, each staging its OWN
+      // ModelView before emitting its slice of the recorded list, so any one
+      // matrix smears every other element (worse than the centered collapse).
+      // The correct fix is EMIT-TIME replay: execute the UI list's draws in
+      // the Fm2EmitDirtyStateAndDrawList hook with the just-staged constants
+      // (and skip record-time execution for listed draws). Until then, UI
+      // glyphs collapse at screen center (contained, doesn't obscure the
+      // frame).
+      static constexpr bool kUseUiGlyphModelViewOverlay = false;
+      if (kUseUiGlyphModelViewOverlay && noPos &&
+          g_uiGlyphModelViewValid.load(std::memory_order_relaxed)) {
+        std::memcpy(s_mergedVsConstants, g_liveVsFloatConstants,
+                    sizeof(s_mergedVsConstants));
+        std::memcpy(s_mergedVsConstants, g_uiGlyphModelView,
+                    sizeof(g_uiGlyphModelView));
+        vsConstSrc = s_mergedVsConstants;
+      }
+    }
   } else if (g_passVsConstantsValid.load(std::memory_order_relaxed)) {
     std::memcpy(s_mergedVsConstants, device->vertexShaderFloatConstants,
                 sizeof(s_mergedVsConstants));
@@ -3437,6 +3581,11 @@ void MirrorPassVsConstants(uint32_t startRegister, const void *src,
 void SetLiveFloatConstantFiles(const void *vsFile, const void *psFile) {
   g_liveVsFloatConstants = static_cast<const uint32_t *>(vsFile);
   g_livePsFloatConstants = static_cast<const uint32_t *>(psFile);
+}
+
+void SetUiGlyphModelView(const void *rows4) {
+  std::memcpy(g_uiGlyphModelView, rows4, sizeof(g_uiGlyphModelView));
+  g_uiGlyphModelViewValid.store(true, std::memory_order_relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -4317,6 +4466,25 @@ void StretchRect(GuestDevice * /*device*/, uint32_t flags,
       surface->height < destination->height &&
       surface->width == destination->width) {
     FlushPendingStretchRects(nullptr, nullptr);
+    // Fix #18: grow the tile color surface (and its depth partner) to full
+    // frame size so the single recorded pass rasterizes every row. From the
+    // next frame on: the D3D9 RT-reset viewport covers the whole frame, the
+    // frame-coordinate band srcRects fit without rebasing, and the band
+    // copies slice the full-height image (this whole branch stops matching).
+    if (surface->type == ResourceType::RenderTarget) {
+      ResizeTileSurface(static_cast<GuestSurface *>(surface),
+                        destination->width, destination->height);
+      if (g_depthStencil != nullptr &&
+          g_depthStencil->width == destination->width &&
+          g_depthStencil->height < destination->height) {
+        ResizeTileSurface(g_depthStencil, destination->width,
+                          destination->height);
+      }
+      g_dirtyStates.renderTargetAndDepthStencil = true;
+      g_dirtyStates.viewport = true;
+      g_dirtyStates.scissorRect = true;
+      g_framebuffer = nullptr;
+    }
   }
 
   for (uint32_t i = 0; i < std::size(g_textures); ++i) {

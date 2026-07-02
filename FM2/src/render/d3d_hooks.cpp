@@ -134,6 +134,9 @@ REX_IMPORT(__imp__sub_82288948, g_origRenderWorkerFrame, void(uint32_t));
 // (under the queue+64 lock). v33 = (backlog>1 && cd38>1) || d3e0.
 REX_IMPORT(__imp__sub_8245CD38, g_cbQueueCd38, uint32_t(uint32_t));
 REX_IMPORT(__imp__sub_8245D3E0, g_cbQueueD3e0, uint32_t(uint32_t));
+// sub_8245D448: pop the next submitted command buffer into queue+56 (returns
+// nonzero if one was available). Used by the drain catch-up loop.
+REX_IMPORT(__imp__sub_8245D448, g_cbQueueSwapNext, uint32_t(uint32_t));
 // FM2_RenderContext_UploadMatrixConstants (sub_8236D958): the game uploads per-draw
 // VS transform constants here, but to a render-context object FlushRenderState's
 // GuestDevice never sees (so device VS constants are zero for scene draws -> geometry
@@ -2922,11 +2925,51 @@ uint32_t CreateVertexBufferAliased(uint32_t length) {
 // code called it "gpuOffset" and dropped it (passed 0), so every indexed draw
 // from a shared vertex pool fetched from the pool's start instead of the
 // draw's sub-range.
+// TEMP DIAGNOSTIC 2026-07-02 (glyph ModelView hunt): shared sequence counter
+// correlating SetVertexShaderConstantFN uploads (FM2_FNUP) with PM4 draws
+// (FM2_DRAWSEQ) in call order. Ground truth from the A/B arcade captures:
+// Xenia's glyph draw carries a per-element placement matrix (rows
+// [0.033,0,0,0][0,0.059,0,0][-0.59,-0.75,0.118,1]) where our upload carries
+// colors+zeros -- the placement matrix is staged on some OTHER context; the
+// interleaving identifies which and when.
+static std::atomic<uint32_t> g_constDrawSeq{0};
+static bool DiagRateAllow(std::atomic<uint64_t> &slotSec,
+                          std::atomic<uint32_t> &slotCnt, uint32_t perSec) {
+  using clock = std::chrono::steady_clock;
+  const uint64_t now = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          clock::now().time_since_epoch())
+          .count());
+  uint64_t last = slotSec.load(std::memory_order_relaxed);
+  if (last != now &&
+      slotSec.compare_exchange_strong(last, now, std::memory_order_relaxed))
+    slotCnt.store(0, std::memory_order_relaxed);
+  return slotCnt.fetch_add(1, std::memory_order_relaxed) < perSec;
+}
+
 void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
                                 uint32_t baseVertexIndex, uint32_t startIndex,
                                 uint32_t indexCount) {
   static PresentDiagSlot s_drawSubmitSlot;
   CountPresentDiag("DrawSubmit", s_drawSubmitSlot, nullptr);
+  if (indexCount <= 2000u) {
+    // seq ticks on EVERY event (logged or not) so logged-line ordering is
+    // faithful; gaps in seq = unlogged events between them.
+    const uint32_t seq =
+        g_constDrawSeq.fetch_add(1, std::memory_order_relaxed);
+    static std::atomic<uint64_t> s_sec{0};
+    static std::atomic<uint32_t> s_cnt{0};
+    if (DiagRateAllow(s_sec, s_cnt, 40u)) {
+      auto rf = [&](uint32_t reg, uint32_t c) -> double {
+        return double(std::bit_cast<float>(
+            ReadGuestU32At(context + 0x700u + reg * 16u + c * 4u)));
+      };
+      LogReplayDbg("FM2_DRAWSEQ seq=%u ctx=0x%08X prim=%u idx=%u "
+                   "c0=[%.4f %.4f %.4f %.4f] c2=[%.4f %.4f %.4f %.4f]",
+                   seq, context, primType, indexCount, rf(0, 0), rf(0, 1),
+                   rf(0, 2), rf(0, 3), rf(2, 0), rf(2, 1), rf(2, 2), rf(2, 3));
+    }
+  }
   NoteDrawContext(context, primType);
   GuestDevice *device = rr::GetActiveGuestDevice();
   static DrawDeviceSlot s_drawSubmitDevSlot;
@@ -3263,7 +3306,8 @@ void Fm2EmitDirtyStateAndDrawList(uint32_t context, uint32_t drawNode,
   static PresentDiagSlot s_dirtyDrawSlot;
   CountPresentDiag("DirtyDraw", s_dirtyDrawSlot, nullptr);
   static std::atomic<uint32_t> s_n{0};
-  if (s_n.fetch_add(1, std::memory_order_relaxed) < 16) {
+  const uint32_t callIdx = s_n.fetch_add(1, std::memory_order_relaxed);
+  if (callIdx < 16) {
     const uint32_t nodeFlags = ReadGuestU32At(drawNode + 108u);
     const uint32_t listHead = ReadGuestU32At(drawNode + 116u);
     const uint32_t count = listHead ? ReadGuestU32At(listHead + 4u) : 0;
@@ -3277,6 +3321,146 @@ void Fm2EmitDirtyStateAndDrawList(uint32_t context, uint32_t drawNode,
         listHead ? ReadGuestU32At(listHead + 20u) : 0,
         listHead ? ReadGuestU32At(listHead + 24u) : 0,
         listHead ? ReadGuestU32At(listHead + 28u) : 0);
+  }
+  // TEMP DIAGNOSTIC 2026-07-02 v3: every v2 sample was the same clip-rect
+  // slice (bin select 0x60/0x61 + predicated SET_CONSTANT 0x2D writing
+  // PA_SC_WINDOW_OFFSET/_SCISSOR regs 0x2080-82; TYPE-0 variant early in
+  // boot) and the 24-dump budget was gone by call ~155, before any draw
+  // slice could show. v3: histogram opcodes across ALL calls, and spend the
+  // dump budget only on NOVEL packet signatures (per-signature dedupe).
+  static std::atomic<uint32_t> s_novelDumps{0};
+  static std::atomic<uint32_t> s_t3OpHist[128] = {};
+  static std::atomic<uint32_t> s_t0Scissor{0};
+  static std::atomic<uint32_t> s_t0Other{0};
+  static std::atomic<uint32_t> s_t0OtherLastReg{0};
+  static std::atomic<uint32_t> s_listCountHist[8] = {};
+  // Small dedupe table of opcode-sequence hashes (diag-grade, races fine).
+  static std::atomic<uint64_t> s_sigHash[32] = {};
+  static std::atomic<uint32_t> s_sigSeen[32] = {};
+  // The list at drawNode+116 is a CHAIN: node = [next(+0), count(+4),
+  // [physAddr,size] pairs(+8..)] -- the emitter (0x82375ED0 decompile,
+  // 0x82376340 loop) follows *node until null. v3 only scanned chain node
+  // #1; draw-carrying slices live in later nodes.
+  auto *mem = ghp::GuestMemory();
+  uint32_t nodeGa = ReadGuestU32At(drawNode + 116u);
+  for (uint32_t nodeIdx = 0; nodeGa != 0 && nodeIdx < 8u; ++nodeIdx) {
+    const uint32_t count = ReadGuestU32At(nodeGa + 4u);
+    s_listCountHist[std::min<uint32_t>(count, 7u)].fetch_add(
+        1, std::memory_order_relaxed);
+    const uint32_t entries = std::min<uint32_t>(count, 32u);
+    for (uint32_t e = 0; e < entries && mem != nullptr; ++e) {
+      const uint32_t bufAddr =
+          ReadGuestU32At(nodeGa + 8u + 8u * e) & 0x1FFFFFFFu;
+      const uint32_t bufDwords = std::min<uint32_t>(
+          ReadGuestU32At(nodeGa + 12u + 8u * e) & 0xFFFFu, 512u);
+      const auto *src =
+          bufAddr != 0
+              ? mem->TranslatePhysical<const rex::be<uint32_t> *>(bufAddr)
+              : nullptr;
+      if (src == nullptr || bufDwords == 0)
+        continue;
+      char ops[160];
+      int opsOff = 0;
+      uint64_t sig = 1469598103934665603ull; // FNV-1a
+      auto sigAdd = [&sig](uint32_t v) {
+        sig = (sig ^ v) * 1099511628211ull;
+      };
+      bool novel = false;
+      for (uint32_t i = 0; i < bufDwords;) {
+        const uint32_t h = src[i].get();
+        const uint32_t type = h >> 30;
+        const uint32_t n = ((h >> 16) & 0x3FFFu) + 1u;
+        if (type == 3u) {
+          const uint32_t op = (h >> 8) & 0x7Fu;
+          s_t3OpHist[op].fetch_add(1, std::memory_order_relaxed);
+          sigAdd(0x30000u | op);
+          if (op == 0x2Du) {
+            // SET_CONSTANT: boring only if it targets the scissor/window
+            // block (payload[0] type=REGISTERS(4), index 0x80 => reg 0x2080).
+            const uint32_t p0 = i + 1u < bufDwords ? src[i + 1u].get() : 0u;
+            sigAdd(p0);
+            if (p0 != 0x00040080u)
+              novel = true;
+          } else if (op != 0x60u && op != 0x61u) {
+            novel = true;
+          }
+          if (opsOff < int(sizeof(ops)) - 8)
+            opsOff += std::snprintf(ops + opsOff, sizeof(ops) - opsOff,
+                                    " t3:%02X", op);
+          i += 1u + n;
+        } else if (type == 0u) {
+          const uint32_t base = h & 0x7FFFu;
+          sigAdd(base);
+          if (base == 0x2080u) {
+            s_t0Scissor.fetch_add(1, std::memory_order_relaxed);
+          } else {
+            s_t0Other.fetch_add(1, std::memory_order_relaxed);
+            s_t0OtherLastReg.store(base, std::memory_order_relaxed);
+            novel = true;
+          }
+          if (opsOff < int(sizeof(ops)) - 16)
+            opsOff += std::snprintf(ops + opsOff, sizeof(ops) - opsOff,
+                                    " t0:%04Xx%u", base, n);
+          i += 1u + n;
+        } else if (type == 2u) {
+          i += 1u;
+        } else {
+          novel = true;
+          sigAdd(0x10000u);
+          if (opsOff < int(sizeof(ops)) - 8)
+            opsOff += std::snprintf(ops + opsOff, sizeof(ops) - opsOff,
+                                    " t1?!");
+          break;
+        }
+      }
+      if (callIdx < 8)
+        LogReplayDbg("FM2_UIPM4 ctx=0x%08X n%u e%u @0x%08X x%u%s", context,
+                     nodeIdx, e, bufAddr, bufDwords, ops);
+      if (!novel)
+        continue;
+      // Dedupe: dump each distinct novel signature at most 3 times.
+      uint32_t slot = uint32_t(sig % 32u);
+      if (s_sigHash[slot].load(std::memory_order_relaxed) == sig &&
+          s_sigSeen[slot].fetch_add(1, std::memory_order_relaxed) >= 3u)
+        continue;
+      s_sigHash[slot].store(sig, std::memory_order_relaxed);
+      if (s_novelDumps.fetch_add(1, std::memory_order_relaxed) >= 24u)
+        continue;
+      LogReplayDbg("FM2_UIPM4T3 ctx=0x%08X call=%u n%u e%u @0x%08X x%u%s",
+                   context, callIdx, nodeIdx, e, bufAddr, bufDwords, ops);
+      for (uint32_t chunk = 0; chunk < bufDwords; chunk += 16u) {
+        char buf[192];
+        int off = std::snprintf(buf, sizeof(buf), "FM2_UIPM4D +%03X:", chunk);
+        const uint32_t end = std::min(bufDwords, chunk + 16u);
+        for (uint32_t i = chunk; i < end && off < int(sizeof(buf)) - 12; ++i)
+          off += std::snprintf(buf + off, sizeof(buf) - off, " %08X",
+                               src[i].get());
+        LogReplayDbg("%s", buf);
+      }
+    }
+    nodeGa = ReadGuestU32At(nodeGa);
+  }
+  // Periodic opcode histogram: what flows through these lists overall.
+  {
+    if (callIdx == 1024u || callIdx == 4096u || callIdx == 16384u ||
+        callIdx == 65536u) {
+      char buf[440];
+      int off = std::snprintf(
+          buf, sizeof(buf),
+          "FM2_UIPM4H call=%u listCnt=[%u %u %u %u %u %u %u %u] t0sc=%u "
+          "t0oth=%u(last=0x%04X) t3=",
+          callIdx, s_listCountHist[0].load(), s_listCountHist[1].load(),
+          s_listCountHist[2].load(), s_listCountHist[3].load(),
+          s_listCountHist[4].load(), s_listCountHist[5].load(),
+          s_listCountHist[6].load(), s_listCountHist[7].load(),
+          s_t0Scissor.load(), s_t0Other.load(), s_t0OtherLastReg.load());
+      for (uint32_t op = 0; op < 128u && off < int(sizeof(buf)) - 20; ++op) {
+        const uint32_t c = s_t3OpHist[op].load(std::memory_order_relaxed);
+        if (c != 0)
+          off += std::snprintf(buf + off, sizeof(buf) - off, "%02X:%u ", op, c);
+      }
+      LogReplayDbg("%s", buf);
+    }
   }
 }
 
@@ -3546,6 +3730,24 @@ REX_HOOK_RAW(sub_8236D958) {
       LogReplayDbg("FM2_UPLOADMTX destReg=%u count=%u src=0x%08X srcHost=%p",
                    destReg, count, srcAddr, src);
     }
+    // Glyph-ModelView hunt (see g_constDrawSeq): sample ModelView-shaped
+    // uploads with target ctx + guest caller + matrix fingerprint.
+    if (destReg <= 4u && count >= 3u && src != nullptr) {
+      const uint32_t seq =
+          g_constDrawSeq.fetch_add(1, std::memory_order_relaxed);
+      static std::atomic<uint64_t> s_sec{0};
+      static std::atomic<uint32_t> s_cnt{0};
+      if (DiagRateAllow(s_sec, s_cnt, 40u)) {
+        const auto *f = static_cast<const rex::be<uint32_t> *>(src);
+        auto ff = [&](uint32_t i) -> double {
+          return double(std::bit_cast<float>(f[i].get()));
+        };
+        LogReplayDbg("FM2_FNUP seq=%u ctx=0x%08X reg=%u cnt=%u lr=0x%08X "
+                     "r0=[%.4f %.4f %.4f %.4f] r2=[%.4f %.4f %.4f %.4f]",
+                     seq, ctx.r3.u32, destReg, count, (uint32_t)ctx.lr, ff(0),
+                     ff(1), ff(2), ff(3), ff(8), ff(9), ff(10), ff(11));
+      }
+    }
   }
 }
 
@@ -3658,7 +3860,35 @@ REX_HOOK_RAW(FM2_Render_PrepareAndWalkObjectPassDrawPackets) {
 REX_HOOK_RAW(FM2_Render_UiOrScreenDrawListSubmit) {
   static PresentDiagSlot s_slot;
   CountPresentDiag("UiScreenSubmit", s_slot, nullptr);
+  const uint32_t uiObj = ctx.r3.u32;
+  // TEMP DIAGNOSTIC 2026-07-02: this handler has never fired in plume_native
+  // (glyph placement matrices are staged here -- no text without it). It is
+  // vtable/pointer-dispatched (no static callers). Log the guest caller in
+  // whatever mode it DOES fire (xenos reference run) to find the gate.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 16)
+      LogReplayDbg("FM2_UISUBMIT uiObj=0x%08X uiCtx=0x%08X caller=0x%08X "
+                   "tid=%u mirror=%d",
+                   uiObj, ReadGuestU32At(uiObj + 164u), (uint32_t)ctx.lr,
+                   (unsigned)::GetCurrentThreadId(),
+                   ShouldMirrorPlumeRenderState() ? 1 : 0);
+  }
   g_origUiOrScreenDrawListSubmit.fn(ctx, base);
+  if (!ShouldMirrorPlumeRenderState())
+    return;
+  // 2026-07-02: this function stages the UI/glyph ModelView
+  // (SetVertexShaderConstantFN reg 0 count 4 on *(uiObj+164), decompile
+  // 0x825B8A60) immediately before emitting the UI draw list. Our draw hooks
+  // execute the glyph draws at list-RECORD time -- before this staging -- so
+  // capture the freshly staged matrix here for the no-POSITION shader
+  // constant overlay (menu transforms are static; one frame stale is fine).
+  const uint32_t uiCtx = ReadGuestU32At(uiObj + 164u);
+  if (uiCtx != 0) {
+    const void *rows = ghp::ToHost<const void>(uiCtx + 0x700u);
+    if (rows != nullptr)
+      rr::SetUiGlyphModelView(rows);
+  }
 }
 // SCENE-entry chain counters (FramePipeline may be table-dispatched; if its counter
 // stays 0 while ViewTraversal/SubmitPassWrapper also 0, the scene entry isn't reached).
@@ -3825,6 +4055,47 @@ REX_HOOK_RAW(sub_8245D048) {
     ctx.r4.u32 = 0u;
   }
   g_origCbQueueDispatch.fn(ctx, base);
+  // DRAIN CATCH-UP (2026-07-02, missing-text root cause): the render thread
+  // consumes exactly one submitted buffer per frame while the game submits
+  // one per frame, so the ~7-buffer boot-time backlog NEVER drains
+  // (FM2_POOLSTATE: pend36 pinned at 6-7 vs thresh132=3). backlog>threshold
+  // latches p145, and with the scope credit closed EVERY deferred render
+  // command (incl. the whole COverlayRenderer text pipeline) is dropped at
+  // enqueue. Consume extra buffers with the game's own swap+drain until the
+  // backlog is at/below threshold -- p145 then unlatches naturally at the
+  // next submit and commands flow again, executed promptly with live params
+  // (unlike the reverted force-enqueue experiment).
+  // RE-ENABLED 2026-07-02 (black-screen triage): the catch-up WORKS
+  // (backlog 7->3, p145 unlatched, drops -> 0). The un-dropped stream is the
+  // ORGANIC CRenderAdapterLink state stream (SetRenderState 107k/s,
+  // SetPredication 22k/s, SetWorldTransform 12k/s -- RTTI-identified), and
+  // tid comparison proves draws ALREADY execute on this same drain thread,
+  // so ordering is correct. The black screen therefore comes from specific
+  // state VALUES interacting with our mirror layer (colorWrite/blend/
+  // constant churn/present source) -- being triaged via RenderDoc capture.
+  // ALSO PROVEN: even with zero drops, UiOrScreenDrawListSubmit never fires
+  // => the overlay Render command is never recorded (second gate upstream).
+  static constexpr bool kDrainCatchUp = true;
+  if (kDrainCatchUp && ShouldMirrorPlumeRenderState() && a1 == 0x4001CA20u) {
+    uint32_t drained = 0;
+    for (; drained < 8u; ++drained) {
+      const int32_t backlog = static_cast<int32_t>(rd(a1 + 128u));
+      const int32_t thresh = static_cast<int32_t>(rd(a1 + 132u));
+      if (thresh < 0 || backlog <= thresh)
+        break;
+      if (g_cbQueueSwapNext(a1) == 0u)
+        break;
+      ctx.r3.u32 = a1;
+      ctx.r4.u32 = a2;
+      g_origCbQueueDispatch.fn(ctx, base);
+    }
+    if (drained != 0) {
+      static std::atomic<uint32_t> s_n{0};
+      if (s_n.fetch_add(1, std::memory_order_relaxed) < 24u)
+        LogReplayDbg("FM2_DRAIN_CATCHUP extra=%u backlogNow=%d tid=%u", drained,
+                     (int32_t)rd(a1 + 128u), (unsigned)::GetCurrentThreadId());
+    }
+  }
 }
 // Enqueue API probe: capture the PRODUCER that schedules the scene render
 // (fn==sub_825E8BF8). Fires in Xenos (scene enqueued); silent in plume_native.
@@ -3858,7 +4129,7 @@ REX_HOOK_RAW(sub_8245CED8) {
   //   pathBP : *(pool+145) && !a5 && *(pool+140)<=0 -> spin then FreeIfOutsidePool (DROPPED)
   //   else   : ENQUEUE into *(pool+52) list
   // Log a5(r7)/pool flags + predicted path to see why 14/16 are lost.
-  if (fn == 0x82279610u && ShouldMirrorPlumeRenderState()) {
+  if (ShouldMirrorPlumeRenderState()) {
     auto rd = [&](uint32_t ga) -> uint32_t {
       auto *p = ghp::ToHost<rex::be<uint32_t>>(ga);
       return p ? p->get() : 0u;
@@ -3871,6 +4142,98 @@ REX_HOOK_RAW(sub_8245CED8) {
     const char *path = p144 ? "exec144"
                        : (p145 && a5 == 0u && p140 <= 0) ? "DROP_bp"
                                                          : "enqueue";
+    // TEMP DIAGNOSTIC 2026-07-02 (missing UI text): UiOrScreenDrawListSubmit
+    // (0x825B8A60, the overlay handler that stages glyph placement matrices)
+    // has NEVER fired in any logged plume run; it is enqueued-by-pointer
+    // through here. (a) sample the overlay handler family explicitly;
+    // (b) sample EVERY fn taking the backpressure-drop path -- the car node
+    // was lost to it in session 6P-2 and UI nodes may be too.
+    if (fn >= 0x825B0000u && fn < 0x825C0000u) {
+      static std::atomic<uint32_t> s_uiLogs{0};
+      if (s_uiLogs.fetch_add(1, std::memory_order_relaxed) < 64u)
+        LogReplayDbg("FM2_UIENQ fn=0x%08X pool=0x%08X a5=%u p144=%u p145=%u "
+                     "p140=%d path=%s caller=0x%08X tid=%u",
+                     fn, pool, a5, p144, p145, p140, path, (uint32_t)ctx.lr,
+                     (unsigned)::GetCurrentThreadId());
+    }
+    // EXPERIMENT CLOSED 2026-07-02: force-enqueueing EVERY dropped node
+    // crashed deterministically (UploadGuestVertexData byteswap, then
+    // Fm2BindIndexBuffer/IsFm2Resource) -- the revived commands' CParams are
+    // bump-pool allocations the game already recycled. The drop latch is
+    // legitimate backpressure: p145 = (submitted-buffer backlog > pool+132
+    // threshold), set in the pool's per-frame submit/retire (0x8245D5B8).
+    // The REAL bug is that the backlog never drains in plume (buffer retire
+    // appears tied to D3D frame-completion) -- see FM2_POOLSTATE diag below.
+    static constexpr bool kForceAllNodeEnqueue = false;
+    if (p144 == 0u && p145 && a5 == 0u && p140 <= 0) {
+      static std::atomic<uint32_t> s_dropLogs{0};
+      if (s_dropLogs.fetch_add(1, std::memory_order_relaxed) < 64u)
+        LogReplayDbg("FM2_ENQ_DROP fn=0x%08X pool=0x%08X caller=0x%08X "
+                     "forced=%u tid=%u",
+                     fn, pool, (uint32_t)ctx.lr, kForceAllNodeEnqueue ? 1u : 0u,
+                     (unsigned)::GetCurrentThreadId());
+      if (kForceAllNodeEnqueue)
+        ctx.r7.u32 = 1u;
+    }
+    // Enqueue-rate histogram (1 line/sec): with the drain catch-up keeping
+    // p145 unlatched, the enqueue counter explodes (~280k/s vs ~140/s) --
+    // some command re-schedules itself endlessly (likely waiting on a GPU
+    // completion plume never signals). Identify the flooding fn + caller.
+    {
+      static std::atomic<uint64_t> s_histSec{0};
+      static uint32_t s_histFn[12] = {};
+      static uint32_t s_histCnt[12] = {};
+      static uint32_t s_histLr[12] = {};
+      using clock = std::chrono::steady_clock;
+      const uint64_t now = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::seconds>(
+              clock::now().time_since_epoch())
+              .count());
+      uint64_t last = s_histSec.load(std::memory_order_relaxed);
+      if (last != now && s_histSec.compare_exchange_strong(
+                             last, now, std::memory_order_relaxed)) {
+        char buf[360];
+        int off = std::snprintf(buf, sizeof(buf), "FM2_ENQ_HIST");
+        for (uint32_t i = 0; i < 12u && off < int(sizeof(buf)) - 40; ++i) {
+          if (s_histCnt[i] != 0)
+            off += std::snprintf(buf + off, sizeof(buf) - off,
+                                 " %08X:%u(lr %08X)", s_histFn[i], s_histCnt[i],
+                                 s_histLr[i]);
+          s_histFn[i] = 0;
+          s_histCnt[i] = 0;
+        }
+        if (off > int(sizeof("FM2_ENQ_HIST")) - 1)
+          LogReplayDbg("%s", buf);
+      }
+      for (uint32_t i = 0; i < 12u; ++i) {
+        if (s_histFn[i] == fn || s_histFn[i] == 0) {
+          s_histFn[i] = fn;
+          ++s_histCnt[i];
+          s_histLr[i] = (uint32_t)ctx.lr;
+          break;
+        }
+      }
+    }
+    // Pool-starvation diag (1/sec): p145 latches when the submitted-buffer
+    // backlog (+36, snapshotted to +128 at submit) exceeds the threshold
+    // (+132); +140 is the open-scope credit. If backlog grows monotonically
+    // in plume, buffer RETIRE never happens (likely gated on D3D frame
+    // completion) and that is the root cause of all the dropped render
+    // commands (missing text included).
+    {
+      static std::atomic<uint64_t> s_sec{0};
+      static std::atomic<uint32_t> s_cnt{0};
+      if (DiagRateAllow(s_sec, s_cnt, 1u)) {
+        LogReplayDbg("FM2_POOLSTATE pool=0x%08X credits140=%d p144=%u p145=%u "
+                     "pend36=%u backlog128=%u thresh132=%d enq124=%u "
+                     "ret120=%u p60=0x%08X",
+                     pool, (int32_t)rd(pool + 140u), p144, p145,
+                     rd(pool + 36u), rd(pool + 128u),
+                     (int32_t)rd(pool + 132u), rd(pool + 124u),
+                     rd(pool + 120u), rd(pool + 60u));
+      }
+    }
+    if (fn == 0x82279610u) {
     // FIX TEST (session 6P-2): the backpressure-drop path requires `!a5`. Force the
     // node flag a5(r7)=1 so the condition is false -> the car node ENQUEUEs instead of
     // being freed. a5 also becomes node[16]=1; the drain still dispatches it when v6=1
@@ -3886,6 +4249,7 @@ REX_HOOK_RAW(sub_8245CED8) {
                    pool, a5, p144, p145, p140, ctx.r5.u32, ctx.r6.u32,
                    (uint32_t)ctx.lr, path, (kForceCarNodeEnqueue ? 1u : 0u),
                    (unsigned)::GetCurrentThreadId());
+    }
     }
   }
   g_origScheduleCallback.fn(ctx, base);
