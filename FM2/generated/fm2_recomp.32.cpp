@@ -10552,7 +10552,7 @@ DEFINE_REX_FUNC(sub_825AD9D0) {
 	REX_STORE_U32(ctx.r1.u32 + 140, ctx.r11.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825ADAD4;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// lis r4,-2048
 	ctx.r4.s64 = -134217728;
 	// lwz r3,84(r31)
@@ -10580,7 +10580,7 @@ DEFINE_REX_FUNC(sub_825AD9D0) {
 	ctx.r4.u64 = ctx.r4.u64 | 512;
 	// bl 0x8237d158
 	ctx.lr = 0x825ADB08;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// addi r1,r1,256
 	ctx.r1.s64 = ctx.r1.s64 + 256;
 	// lfd f31,-96(r1)
@@ -10694,7 +10694,7 @@ loc_825ADB94:
 	ctx.r4.s64 = 20;
 	// bl 0x8237d158
 	ctx.lr = 0x825ADBCC;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// clrlwi. r11,r29,24
 	ctx.r11.u64 = ctx.r29.u32 & 0xFF;
 	ctx.cr0.compare<int32_t>(ctx.r11.s32, 0, ctx.xer);
@@ -10730,7 +10730,7 @@ loc_825ADB94:
 	ctx.r4.s64 = 512;
 	// bl 0x8237d158
 	ctx.lr = 0x825ADC0C;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 loc_825ADC0C:
 	// clrlwi. r11,r29,24
 	ctx.r11.u64 = ctx.r29.u32 & 0xFF;
@@ -10816,7 +10816,7 @@ loc_825ADC50:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r30.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825ADC94;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// addi r10,r1,112
 	ctx.r10.s64 = ctx.r1.s64 + 112;
 	// li r9,0
@@ -10842,7 +10842,7 @@ loc_825ADC50:
 	ctx.r4.u64 = ctx.r25.u64 | 4160749568;
 	// bl 0x8237d158
 	ctx.lr = 0x825ADCC4;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// b 0x825ade0c
 	goto loc_825ADE0C;
 loc_825ADCC8:
@@ -10854,7 +10854,7 @@ loc_825ADCC8:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r30.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825ADCD8;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// b 0x825ade0c
 	goto loc_825ADE0C;
 loc_825ADCDC:
@@ -10956,7 +10956,7 @@ loc_825ADD3C:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r30.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825ADD98;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// addi r10,r1,112
 	ctx.r10.s64 = ctx.r1.s64 + 112;
 	// li r9,0
@@ -10982,7 +10982,7 @@ loc_825ADD3C:
 	ctx.r4.u64 = ctx.r25.u64 | 4160749568;
 	// bl 0x8237d158
 	ctx.lr = 0x825ADDC8;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// b 0x825adddc
 	goto loc_825ADDDC;
 loc_825ADDCC:
@@ -10994,7 +10994,7 @@ loc_825ADDCC:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r30.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825ADDDC;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 loc_825ADDDC:
 	// addic. r28,r28,-1
 	ctx.xer.ca = ctx.r28.u32 > 0;
@@ -11073,7 +11073,7 @@ DEFINE_REX_FUNC(sub_825ADE20) {
 	ctx.r4.u64 = ctx.r30.u64;
 	// bl 0x8236cb28
 	ctx.lr = 0x825ADE54;
-	FM2_GpuCommandBuffer_BuildAndSubmit(ctx, base);
+	D3DDevice_Swap(ctx, base);
 	// li r3,1
 	ctx.r3.s64 = 1;
 	// addi r1,r1,112
@@ -14482,7 +14482,7 @@ loc_825AF468:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236eaf8
 	ctx.lr = 0x825AF558;
-	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
+	D3DDevice_SetRenderState_AlphaBlendEnable(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// b 0x825af578
@@ -14499,7 +14499,7 @@ loc_825AF560:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236eaf8
 	ctx.lr = 0x825AF574;
-	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
+	D3DDevice_SetRenderState_AlphaBlendEnable(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 loc_825AF578:
@@ -14507,7 +14507,7 @@ loc_825AF578:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236eac0
 	ctx.lr = 0x825AF580;
-	sub_8236EAC0(ctx, base);
+	D3DDevice_SetRenderState_AlphaTestEnable(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,56(r31)
@@ -14528,14 +14528,14 @@ loc_825AF578:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236f180
 	ctx.lr = 0x825AF5A4;
-	sub_8236F180(ctx, base);
+	D3DDevice_SetRenderState_ZEnable(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,56(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236f1c0
 	ctx.lr = 0x825AF5B0;
-	sub_8236F1C0(ctx, base);
+	D3DDevice_SetRenderState_ZWriteEnable(ctx, base);
 	// li r4,6
 	ctx.r4.s64 = 6;
 	// lwz r3,56(r31)
@@ -14827,7 +14827,7 @@ loc_825AF740:
 	ctx.r6.s64 = static_cast<int64_t>(ctx.r11.u64 * static_cast<uint64_t>(3));
 	// bl 0x827313b0
 	ctx.lr = 0x825AF7C8;
-	FM2_D3D_EmitIndexedDrawPm4Packets(ctx, base);
+	D3DDevice_DrawVertices(ctx, base);
 	// lwz r10,212(r1)
 	ctx.r10.u64 = REX_LOAD_U32(ctx.r1.u32 + 212);
 	// addi r11,r10,532
@@ -14882,7 +14882,7 @@ loc_825AF740:
 	ctx.r4.u64 = ctx.r4.u64 | 256;
 	// bl 0x8237d158
 	ctx.lr = 0x825AF830;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// b 0x825af844
 	goto loc_825AF844;
 loc_825AF834:
@@ -14894,7 +14894,7 @@ loc_825AF834:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r22.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825AF844;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 loc_825AF844:
 	// mr r4,r18
 	ctx.r4.u64 = ctx.r18.u64;
@@ -14902,7 +14902,7 @@ loc_825AF844:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236eaf8
 	ctx.lr = 0x825AF850;
-	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
+	D3DDevice_SetRenderState_AlphaBlendEnable(ctx, base);
 	// mr r4,r19
 	ctx.r4.u64 = ctx.r19.u64;
 	// lwz r3,56(r31)
@@ -14923,21 +14923,21 @@ loc_825AF844:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236f180
 	ctx.lr = 0x825AF874;
-	sub_8236F180(ctx, base);
+	D3DDevice_SetRenderState_ZEnable(ctx, base);
 	// mr r4,r15
 	ctx.r4.u64 = ctx.r15.u64;
 	// lwz r3,56(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236eac0
 	ctx.lr = 0x825AF880;
-	sub_8236EAC0(ctx, base);
+	D3DDevice_SetRenderState_AlphaTestEnable(ctx, base);
 	// mr r4,r14
 	ctx.r4.u64 = ctx.r14.u64;
 	// lwz r3,56(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 56);
 	// bl 0x8236f1c0
 	ctx.lr = 0x825AF88C;
-	sub_8236F1C0(ctx, base);
+	D3DDevice_SetRenderState_ZWriteEnable(ctx, base);
 	// lwz r4,116(r1)
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r1.u32 + 116);
 	// lwz r3,56(r31)
@@ -23648,7 +23648,7 @@ DEFINE_REX_FUNC(sub_825B32E8) {
 	// add r7,r11,r10
 	ctx.r7.u64 = ctx.r11.u64 + ctx.r10.u64;
 	// b 0x827317a0
-	FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset(ctx, base);
+	D3DDevice_DrawIndexedVertices(ctx, base);
 	return;
 }
 
@@ -23676,7 +23676,7 @@ DEFINE_REX_FUNC(sub_825B3320) {
 	// add r7,r11,r10
 	ctx.r7.u64 = ctx.r11.u64 + ctx.r10.u64;
 	// b 0x827317a0
-	FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset(ctx, base);
+	D3DDevice_DrawIndexedVertices(ctx, base);
 	return;
 }
 
@@ -23751,7 +23751,7 @@ DEFINE_REX_FUNC(sub_825B3390) {
 	// add r6,r11,r10
 	ctx.r6.u64 = ctx.r11.u64 + ctx.r10.u64;
 	// b 0x827313b0
-	FM2_D3D_EmitIndexedDrawPm4Packets(ctx, base);
+	D3DDevice_DrawVertices(ctx, base);
 	return;
 }
 
@@ -23776,7 +23776,7 @@ DEFINE_REX_FUNC(sub_825B33C0) {
 	// add r5,r11,r10
 	ctx.r5.u64 = ctx.r11.u64 + ctx.r10.u64;
 	// b 0x82730d60
-	sub_82730D60(ctx, base);
+	D3DDevice_DrawVerticesUP(ctx, base);
 	return;
 }
 
@@ -23785,7 +23785,7 @@ DEFINE_REX_FUNC(sub_825B33E8) {
 	// lwz r3,20(r3)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r3.u32 + 20);
 	// b 0x82730d60
-	sub_82730D60(ctx, base);
+	D3DDevice_DrawVerticesUP(ctx, base);
 	return;
 }
 
@@ -23882,7 +23882,7 @@ DEFINE_REX_FUNC(sub_825B3430) {
 	ctx.r5.u64 = ctx.r11.u64 + ctx.r10.u64;
 	// bl 0x82730d60
 	ctx.lr = 0x825B348C;
-	sub_82730D60(ctx, base);
+	D3DDevice_DrawVerticesUP(ctx, base);
 	// lwz r3,4(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 4);
 	// bl 0x823636e0
@@ -26640,7 +26640,7 @@ loc_825B4620:
 	REX_STORE_U32(ctx.r1.u32 + 92, ctx.r11.u32);
 	// bl 0x8237d158
 	ctx.lr = 0x825B4670;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// addi r3,r1,112
 	ctx.r3.s64 = ctx.r1.s64 + 112;
 	// bl 0x8224b048
@@ -31957,7 +31957,7 @@ loc_825B69D4:
 	ctx.r7.u64 = ctx.r11.u64 + ctx.r9.u64;
 	// bl 0x827317a0
 	ctx.lr = 0x825B6A48;
-	FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset(ctx, base);
+	D3DDevice_DrawIndexedVertices(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r21

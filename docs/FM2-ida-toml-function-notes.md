@@ -55,6 +55,24 @@ Practical interpretation: "raw PM4-only/no Direct3D" was too strong. The right
 native-renderer boundary is "D3D-internal command-buffer/PM4 layer instead of a
 public immediate `D3DDevice_Draw*` hook layer."
 
+## July 1 Update: the functions above ARE the D3DDevice_Draw*/Swap/Resolve primitives
+
+**Correction to the June 29 entry above.** `FM2_D3D_EmitIndexedDrawPm4Packets*`
+and `FM2_GpuCommandBuffer_BuildAndSubmit` aren't merely *adjacent to* the XDK
+Draw/Swap primitives — decompile-diffing against Lost Odyssey line-for-line
+proved they **are** those primitives, compiler-inlined into FM2's engine at their
+call sites and named for their PM4/engine role rather than their XDK identity.
+Renamed accordingly; full evidence and the still-open items in
+`docs/FM2-ida-renames-2026-07-01.md`, cross-referenced from
+`docs/FM2-d3d-native-hook-feasibility.md`.
+
+Practical consequence: because each primitive exists as 2-3 separately inlined
+copies (not one shared symbol), a ReOdyssey-style single-address `REX_HOOK` can't
+intercept all draws the way it does for LO. The native-hook boundary has to be
+the `FM2_RenderContext_*`/command-buffer layer instead — consistent with what
+this file already concluded on June 29, now with the missing piece (why that
+layer, specifically) confirmed by decompiled evidence.
+
 ## Renamed Functions
 
 | Address | IDA name | Notes |
@@ -510,3 +528,23 @@ Verification:
   passed.
 - `out/win-amd64/RelWithDebInfo/unit_tests.exe "[fm2][plume]"` passed with
   729 assertions in 61 test cases.
+
+## 2026-07-01: D3DDevice_Draw*/Swap/Resolve corrections
+
+See "July 1 Update" above and `docs/FM2-ida-renames-2026-07-01.md` for full
+evidence. Six functions previously misnamed under engine-purpose `FM2_*` names
+were confirmed (via line-for-line decompile diff against Lost Odyssey) to be
+inlined copies of XDK D3D primitives, and renamed:
+
+| Address | Old IDA name | New IDA name |
+| --- | --- | --- |
+| `0x827313B0` | `FM2_D3D_EmitIndexedDrawPm4Packets` | `D3DDevice_DrawVertices` |
+| `0x827317A0` | `FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset` | `D3DDevice_DrawIndexedVertices` |
+| `0x82731C00` | `FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup` | `D3DDevice_DrawIndexedVertices_WithVertexFormatSetup` |
+| `0x8237D158` | `FM2_AudioMix_SubmitPendingOutputBody` | `D3DDevice_Resolve` |
+| `0x8236CB28` | `FM2_GpuCommandBuffer_BuildAndSubmit` | `D3DDevice_Swap` |
+| `0x8236B010` | `FM2_AudioRender_SampleFrontBufferRegionBody` | `D3DBaseTexture_FindSurfaceWithinTexture` |
+| `0x82730D60` | `FM2_Render_AllocSurfaceAndMemcpyPixels` | `D3DDevice_DrawVerticesUP` |
+
+`D3DDevice_SetRenderState_ClipPlaneEnable` and `D3DBaseTexture_LockTail` remain
+unlocated (too common a byte size to disambiguate without a better caller lead).

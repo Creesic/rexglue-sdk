@@ -118,7 +118,9 @@ REX_IMPORT(__imp__FM2_RenderContext_SetBoundSurface,
            g_origFm2SetBoundSurface, void(uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_D3D_TryPresentAndUpdateStatus,
            g_origFm2TryPresentAndUpdateStatus, void(uint32_t));
-REX_IMPORT(__imp__FM2_GpuCommandBuffer_BuildAndSubmit,
+// D3DDevice_Swap (was FM2_GpuCommandBuffer_BuildAndSubmit; renamed 2026-07-01,
+// see docs/FM2-ida-renames-2026-07-01.md -- confirmed == LO rex_D3DDevice_Swap).
+REX_IMPORT(__imp__D3DDevice_Swap,
            g_origFm2GpuCommandBufferBuildAndSubmit,
            void(uint32_t, uint32_t, uint32_t));
 // Guest render-worker per-frame dispatch (sub_82288948), called in an infinite
@@ -175,16 +177,40 @@ REX_IMPORT(__imp__FM2_Render_AllocGpuPassMemoryBlock,
 REX_IMPORT(__imp__FM2_D3D_CreateGpuMemoryBlock,
            g_origFm2CreateGpuMemoryBlock, uint32_t(uint32_t));
 
-REX_IMPORT(__imp__FM2_RenderContext_SetDepthStencilEnableState,
-           g_origFm2SetDepthStencilEnableState, void(uint32_t, uint32_t));
-REX_IMPORT(__imp__FM2_RenderContext_SetAlphaBlendEnableBits,
-           g_origFm2SetAlphaBlendEnableBits, void(uint32_t, uint32_t));
-REX_IMPORT(__imp__FM2_RenderContext_SetAlphaTestState,
-           g_origFm2SetAlphaTestState, void(uint32_t, uint32_t));
-REX_IMPORT(__imp__FM2_RenderContext_SetDepthCompareBits,
-           g_origFm2SetDepthCompareBits, void(uint32_t, uint32_t));
-REX_IMPORT(__imp__FM2_RenderContext_SetColorWriteMaskBits,
-           g_origFm2SetColorWriteMaskBits, void(uint32_t, uint32_t));
+// Rewired 2026-07-01 (manifest/IDA drift fix #3, docs/FM2-ida-renames-2026-07-01.md):
+// the June-18 "packed state" cluster at 0x8236Exxx-0x8236Fxxx is the ordinary
+// XDK D3DDevice_SetRenderState_* family writing RB_DEPTHCONTROL fields (ctx+
+// 10420) etc., and nearly every old FM2_RenderContext_* hook mirrored the
+// WRONG semantic. The killers: the real ZFunc (0x8236F1F0) was mirrored into
+// D3DRS_ALPHABLENDENABLE, while D3DRS_ZFUNC was driven by 0x8236F2D0
+// (StencilFail, always 0=KEEP) -> depth compare NEVER -> every fragment
+// rejected -> black screen. StencilPass (0x8236F340) drove
+// D3DRS_COLORWRITEENABLE (the historic colorWrite=0 depth-only bug), and
+// AlphaBlendEnable (0x8236EAF8) drove D3DRS_ZENABLE. The stencil-op setters
+// (TwoSidedStencilMode/StencilFail/StencilPass) are no longer hooked at all:
+// their originals run untouched, which is the correct passthrough.
+REX_IMPORT(__imp__D3DDevice_SetRenderState_AlphaBlendEnable,
+           g_origRsAlphaBlendEnable, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetRenderState_AlphaTestEnable,
+           g_origRsAlphaTestEnable, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetRenderState_ZEnable,
+           g_origRsZEnable, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetRenderState_ZWriteEnable,
+           g_origRsZWriteEnable, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetRenderState_ZFunc,
+           g_origRsZFunc, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetRenderState_ColorWriteEnable,
+           g_origRsColorWriteEnable, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetRenderState_BlendOp,
+           g_origRsBlendOp, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetRenderState_SrcBlend,
+           g_origRsSrcBlend, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetRenderState_DestBlend,
+           g_origRsDestBlend, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetRenderState_SrcBlendAlpha,
+           g_origRsSrcBlendAlpha, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetRenderState_DestBlendAlpha,
+           g_origRsDestBlendAlpha, void(uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane0Enable,
            g_origFm2SetClipPlane0Enable, void(uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane1Enable,
@@ -208,15 +234,28 @@ REX_IMPORT(__imp__FM2_D3DSurface_LockRect, g_origSurfaceLockRect,
            void(rr::GuestTexture *, void *, void *, uint32_t));
 REX_IMPORT(__imp__FM2_D3DResource_UnlockResource, g_origUnlockResource,
            void(rr::GuestResource *, uint32_t, uint32_t));
-REX_IMPORT(__imp__FM2_D3D_EmitIndexedDrawPm4Packets,
+// Renamed 2026-07-01 (see docs/FM2-ida-renames-2026-07-01.md): these are the
+// XDK D3DDevice_Draw* primitives, compiler-inlined into these engine call
+// sites and previously named for their PM4/engine role rather than their XDK
+// identity. D3DDevice_DrawVertices was misnamed "Indexed" despite being the
+// non-indexed primitive; the two indexed variants are separate inlined copies
+// of D3DDevice_DrawIndexedVertices (one with fused vertex-format setup).
+REX_IMPORT(__imp__D3DDevice_DrawVertices,
            g_origFm2EmitIndexedDrawPm4Packets,
            void(uint32_t, uint32_t, uint32_t, uint32_t));
-REX_IMPORT(__imp__FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset,
+REX_IMPORT(__imp__D3DDevice_DrawIndexedVertices,
            g_origFm2EmitIndexedDrawPm4PacketsWithGpuOffset,
            void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
-REX_IMPORT(__imp__FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup,
+REX_IMPORT(__imp__D3DDevice_DrawIndexedVertices_WithVertexFormatSetup,
            g_origFm2EmitIndexedDrawPm4WithVertexFormatSetup,
            void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+// 2026-07-01: originals for the newly-named XDK entry points below. These are
+// used ONLY via .fn(ctx, base) raw passthrough (no typed marshaling), so the
+// signature here is a placeholder -- same pattern as g_origRenderWorkerFrame.
+REX_IMPORT(__imp__D3DDevice_ClearF, g_origD3DClearF, void(uint32_t));
+REX_IMPORT(__imp__D3DDevice_DrawVerticesUP, g_origD3DDrawVerticesUP,
+           void(uint32_t));
+REX_IMPORT(__imp__D3DDevice_Resolve, g_origD3DResolve, void(uint32_t));
 // Forward/opaque object pass draw emitter (a1=CDevice/context, a2=drawListNode,
 // a3=flags). The depth prepass uses EmitIndexedDrawPm4* (hooked above); the
 // forward COLOR pass goes through here and is NOT translated to native draws ->
@@ -292,11 +331,16 @@ REX_IMPORT(__imp__sub_82279610, g_origCarReflectionExec, void(uint32_t));
 // if the scene CParams goes to a different/dead pool in plume (vs the drained queue), that's why its
 // execute (sub_82279610) is never dispatched. Compare Xenos vs plume.
 REX_IMPORT(__imp__sub_82363800, g_origAllocPoolBump, void(uint32_t));
-// EDRAM resolve emitter: copies the rendered surface to guest memory that the
-// game then samples as a texture. Untranslated in plume_native -> sampled
-// memory is empty/black. Hooked to register the resolved surface so samples hit
-// the real rendered plume texture.
-REX_IMPORT(__imp__FM2_D3D_EmitSurfaceResolvePackets, g_origEmitSurfaceResolve,
+// Renamed 2026-07-01 (docs/FM2-ida-renames-2026-07-01.md): this is D3D's
+// per-draw predication-state flush (D3D::SetPending_Predicated), called from
+// BeginVertices/DrawVertices/DrawIndexedVertices/Resolve alike -- NOT an EDRAM
+// "resolve packet emitter". It was misidentified/misnamed by an earlier pass
+// (the IDA database was later correctly typed as SetPending_Predicated, but
+// the manifest name and this hook's logic were never updated to match), which
+// is why the resolve-surface-aliasing logic that used to live in this hook
+// fired on every draw instead of only at actual resolve time. See the real
+// D3DDevice_Resolve (0x8237D158) for the function that should own that logic.
+REX_IMPORT(__imp__D3D_SetPending_Predicated, g_origSetPendingPredicated,
            uint32_t(uint32_t, uint32_t, uint32_t));
 
 namespace {
@@ -842,6 +886,22 @@ void Fm2BindVertexStream(uint32_t renderContext, uint32_t slot,
                          uint32_t stride_bytes, uint64_t dirty_mask) {
   g_origFm2BindVertexStream(renderContext, slot, resource, byte_offset,
                             stride_bytes, dirty_mask);
+  // TEMP DIAGNOSTIC 2026-07-01: does the standard SetStreamSource path ever
+  // actually get called for the "big" streamed/compressed-geometry draws, or
+  // do they bypass it entirely (leaving BindPm4GeometryFromContext reading
+  // stale ctx+0x2F94 data from an unrelated earlier bind)? Log every call
+  // with the resource's decoded physBase so it can be cross-checked against
+  // FM2_PM4GEO_BIG's physBase for the same frame.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 200) {
+      const uint32_t physBase = resource ? (ReadGuestU32At(resource + 0x18u) & 0x1FFFFFFCu) : 0u;
+      LogReplayDbg("FM2_BINDSTREAM ctx=0x%08X slot=%u res=0x%08X physBase=0x%08X "
+                   "off=%u stride=%u",
+                   renderContext, slot, resource, physBase, byte_offset,
+                   stride_bytes);
+    }
+  }
   if (!ShouldMirrorPlumeRenderState()) {
     return;
   }
@@ -1196,6 +1256,62 @@ void LockSurface(GuestTexture *texture, uint32_t arrayIndex, uint32_t level,
     *pTailOffset = 0;
 }
 
+// 2026-07-01 (black-screen fix, see docs/FM2-plume-native-vertex-pulling-gap-
+// 2026-07-01.md): write the staged lock data through to the XDK buffer's real
+// guest PHYSICAL memory. The Lock hook redirects the game's writes into a
+// separate staging allocation (rr::LockBuffer) that Unlock uploads into the
+// host Plume buffer only -- so the XDK buffer's own data address (the one the
+// Xenos vertex/index FETCH constants reference, D3DResource+0x18) never
+// received the data. The PM4 draw path (BindPm4GeometryFromContext) reads
+// exactly that raw physical memory, so without this write-through every
+// Lock-populated buffer looks like unwritten allocator fill at draw time
+// (observed in RenderDoc: uniform 00 00 00 FF pattern -> NaN Float16 verts ->
+// zero rasterized fragments -> black). ReOdyssey never needs this: its draws
+// consume the host Plume buffer, never raw guest memory.
+void WriteLockedDataThroughToGuest(rr::GuestResource *xdkResource,
+                                   GuestBuffer *native) {
+  if (native->lockedReadOnly || native->mappedMemory == nullptr)
+    return;
+  auto *mem = ghp::GuestMemory();
+  if (mem == nullptr)
+    return;
+  const uint32_t xdkAddr = ghp::ToGuest(xdkResource);
+  // Same base decode as BindPm4GeometryFromContext: vertex bases clear the 2
+  // endian-select bits; index bases keep them (they are address bits there).
+  const uint32_t baseMask = native->type == rr::ResourceType::IndexBuffer
+                                ? 0x1FFFFFFFu
+                                : 0x1FFFFFFCu;
+  const uint32_t physBase = ReadGuestU32At(xdkAddr + 0x18u) & baseMask;
+  // D3DResource+0x1C is fetch-constant encoded: bits[25:2] = size in dwords.
+  const uint32_t fetchSize =
+      ((ReadGuestU32At(xdkAddr + 0x1Cu) >> 2) & 0xFFFFFFu) * 4u;
+  uint32_t copySize = native->dataSize;
+  if (fetchSize != 0 && fetchSize < copySize)
+    copySize = fetchSize;
+  bool wrote = false;
+  if (physBase != 0 && copySize != 0 && copySize <= 0x4000000u &&
+      physBase + copySize <= 0x20000000u) {
+    // Require writable pages: a host-side memcpy into a protected watch page
+    // would raise an access violation the guest fault handler doesn't own.
+    const auto access = mem->GetPhysicalHeap()->QueryRangeAccess(
+        physBase, physBase + copySize - 1);
+    if (access == rex::memory::PageAccess::kReadWrite ||
+        access == rex::memory::PageAccess::kExecuteReadWrite) {
+      if (uint8_t *dst = mem->TranslatePhysical<uint8_t *>(physBase)) {
+        std::memcpy(dst, native->mappedMemory, copySize);
+        wrote = true;
+      }
+    }
+  }
+  static std::atomic<uint32_t> s_n{0};
+  if (s_n.fetch_add(1, std::memory_order_relaxed) < 32) {
+    LogReplayDbg("FM2_LOCK_WRITETHROUGH xdk=0x%08X phys=0x%08X size=%u type=%d "
+                 "ok=%d",
+                 xdkAddr, physBase, copySize, int(native->type),
+                 wrote ? 1 : 0);
+  }
+}
+
 void UnlockResourceHook(rr::GuestResource *resource, uint32_t base,
                         uint32_t mip) {
   if (!ShouldMirrorPlumeRenderState()) {
@@ -1215,12 +1331,19 @@ void UnlockResourceHook(rr::GuestResource *resource, uint32_t base,
     }
     return;
   }
-  // XDK resource aliased by a creation hook: upload the staging data.
+  // XDK resource aliased by a creation hook: upload the staging data to the
+  // host Plume buffer, then write it through to the XDK buffer's real guest
+  // physical memory so the PM4 draw path (which reads raw guest memory via
+  // the fetch constants) sees the same data.
   if (GuestBuffer *native = rr::LookupBufferAlias(ghp::ToGuest(resource))) {
+    const bool wasLockedWritable =
+        !native->lockedReadOnly && native->mappedMemory != nullptr;
     if (native->type == rr::ResourceType::VertexBuffer)
       rr::UnlockVertexBuffer(native);
     else
       rr::UnlockIndexBuffer(native);
+    if (wasLockedWritable)
+      WriteLockedDataThroughToGuest(resource, native);
   }
 }
 
@@ -2021,6 +2144,21 @@ void Resolve(GuestDevice *device, uint32_t flags, const rr::GuestRect *source,
                   static_cast<const void *>(destination));
     }
   }
+  // TEMP DIAGNOSTIC 2026-07-01: confirm D3DDevice_Resolve now fires at all
+  // (it was never hooked before today) and whether destination translates.
+  // Remove once the present pipeline is confirmed to consume resolved data.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 40) {
+      GuestBaseTexture *rt = rr::GetCurrentColorRenderTarget();
+      LogReplayDbg("FM2_RESOLVE_HOOK dest=%p reo=%p reoTex=%p srcRT=%p "
+                   "srcRTtex=%p flags=0x%X",
+                   static_cast<void *>(destination), static_cast<void *>(reo),
+                   reo ? static_cast<void *>(reo->texture) : nullptr,
+                   static_cast<void *>(rt),
+                   rt ? static_cast<void *>(rt->texture) : nullptr, flags);
+    }
+  }
   rr::StretchRect(device, flags, source, reo, destPoint);
 }
 
@@ -2066,29 +2204,64 @@ void MirrorFm2ClipPlanes(uint32_t renderContext) {
   rr::UpdateClipPlaneConstants(device);
 }
 
-void Fm2SetDepthStencilEnableState(uint32_t renderContext, uint32_t value) {
-  g_origFm2SetDepthStencilEnableState(renderContext, value);
-  MirrorFm2RenderState(renderContext, rr::D3DRS_ZENABLE, value);
+// Rewired 2026-07-01: correct XDK-identity render-state mirrors (see the
+// import block comment). Each calls the original first (mirror architecture),
+// then forwards the API-level value into rr:: under its REAL D3DRS semantic.
+void Fm2RsAlphaBlendEnable(uint32_t device, uint32_t value) {
+  g_origRsAlphaBlendEnable(device, value);
+  MirrorFm2RenderState(device, rr::D3DRS_ALPHABLENDENABLE, value);
 }
 
-void Fm2SetAlphaBlendEnableBits(uint32_t renderContext, uint32_t value) {
-  g_origFm2SetAlphaBlendEnableBits(renderContext, value);
-  MirrorFm2RenderState(renderContext, rr::D3DRS_ALPHABLENDENABLE, value);
+void Fm2RsAlphaTestEnable(uint32_t device, uint32_t value) {
+  g_origRsAlphaTestEnable(device, value);
+  MirrorFm2RenderState(device, rr::D3DRS_ALPHATESTENABLE, value);
 }
 
-void Fm2SetAlphaTestState(uint32_t renderContext, uint32_t value) {
-  g_origFm2SetAlphaTestState(renderContext, value);
-  MirrorFm2RenderState(renderContext, rr::D3DRS_ALPHATESTENABLE, value);
+void Fm2RsZEnable(uint32_t device, uint32_t value) {
+  g_origRsZEnable(device, value);
+  MirrorFm2RenderState(device, rr::D3DRS_ZENABLE, value);
 }
 
-void Fm2SetDepthCompareBits(uint32_t renderContext, uint32_t value) {
-  g_origFm2SetDepthCompareBits(renderContext, value);
-  MirrorFm2RenderState(renderContext, rr::D3DRS_ZFUNC, value);
+void Fm2RsZWriteEnable(uint32_t device, uint32_t value) {
+  g_origRsZWriteEnable(device, value);
+  MirrorFm2RenderState(device, rr::D3DRS_ZWRITEENABLE, value);
 }
 
-void Fm2SetColorWriteMaskBits(uint32_t renderContext, uint32_t value) {
-  g_origFm2SetColorWriteMaskBits(renderContext, value);
-  MirrorFm2RenderState(renderContext, rr::D3DRS_COLORWRITEENABLE, value);
+void Fm2RsZFunc(uint32_t device, uint32_t value) {
+  g_origRsZFunc(device, value);
+  // value is the 360 D3DCMP enum (0-based, == Xenos hw ZFUNC field), exactly
+  // what rr::SetRenderState's ConvertCmpFunc expects (guest_device.h enums).
+  MirrorFm2RenderState(device, rr::D3DRS_ZFUNC, value);
+}
+
+void Fm2RsColorWriteEnable(uint32_t device, uint32_t value) {
+  g_origRsColorWriteEnable(device, value);
+  MirrorFm2RenderState(device, rr::D3DRS_COLORWRITEENABLE, value);
+}
+
+void Fm2RsBlendOp(uint32_t device, uint32_t value) {
+  g_origRsBlendOp(device, value);
+  MirrorFm2RenderState(device, rr::D3DRS_BLENDOP, value);
+}
+
+void Fm2RsSrcBlend(uint32_t device, uint32_t value) {
+  g_origRsSrcBlend(device, value);
+  MirrorFm2RenderState(device, rr::D3DRS_SRCBLEND, value);
+}
+
+void Fm2RsDestBlend(uint32_t device, uint32_t value) {
+  g_origRsDestBlend(device, value);
+  MirrorFm2RenderState(device, rr::D3DRS_DESTBLEND, value);
+}
+
+void Fm2RsSrcBlendAlpha(uint32_t device, uint32_t value) {
+  g_origRsSrcBlendAlpha(device, value);
+  MirrorFm2RenderState(device, rr::D3DRS_SRCBLENDALPHA, value);
+}
+
+void Fm2RsDestBlendAlpha(uint32_t device, uint32_t value) {
+  g_origRsDestBlendAlpha(device, value);
+  MirrorFm2RenderState(device, rr::D3DRS_DESTBLENDALPHA, value);
 }
 
 void Fm2SetClipPlane0Enable(uint32_t renderContext, uint32_t value) {
@@ -2369,9 +2542,13 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
 }
 
 // PM4 indexed draw emitters → replaced with native Plume draw calls.
-// FM2_D3D_EmitIndexedDrawPm4Packets:              (context, primType, indexBufferBase, indexCount)
-// FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset: (context, primType, gpuOffset, startIndex, indexCount)
-// FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup:(context, primType, gpuOffset, startIndex, indexCount)
+// Renamed 2026-07-01 (docs/FM2-ida-renames-2026-07-01.md): these are inlined
+// copies of the XDK D3DDevice_Draw* primitives, not FM2-specific emitters.
+// Signatures corrected 2026-07-01 (decompile evidence: the dword after the
+// PM4 0x2102/VGT_INDX_OFFSET header is StartVertex / BaseVertexIndex):
+// D3DDevice_DrawVertices:                              (device, primType, startVertex, vertexCount) [NON-indexed]
+// D3DDevice_DrawIndexedVertices:                       (device, primType, baseVertexIndex, startIndex, indexCount)
+// D3DDevice_DrawIndexedVertices_WithVertexFormatSetup: (device, primType, baseVertexIndex, startIndex, indexCount)
 // Bind the PM4 draw's REAL geometry directly from the render context. In
 // plume_native the D3D9 SetStreamSource/SetIndices hooks receive NULL -- the
 // geometry comes through the PM4 stream, with the bound D3DResources stored in the
@@ -2605,12 +2782,22 @@ void BindPm4GeometryFromContext(GuestDevice *device, uint32_t context,
   }
 }
 
+// CORRECTED 2026-07-01: this hooks D3DDevice_DrawVertices, the NON-indexed
+// XDK draw primitive -- real args are (device, primType, StartVertex,
+// VertexCount), confirmed by decompile diff vs Lost Odyssey (see
+// docs/FM2-ida-renames-2026-07-01.md; the PM4 packet writes StartVertex to
+// VGT_INDX_OFFSET and tags the initiator |0x80 = auto-index). The old handler
+// body predated that identification (the function was misnamed
+// "EmitIndexedDrawPm4Packets") and submitted these as INDEXED draws with
+// whatever stale index buffer was bound. Now matches ReOdyssey: DrawVertices
+// -> rr::DrawPrimitive. BindPm4GeometryFromContext still runs to bind the PM4
+// vertex streams (its index-buffer bind is unused by a non-indexed draw).
 void Fm2EmitIndexedDrawPm4Base(uint32_t context, uint32_t primType,
-                               uint32_t indexBufferBase,
-                               uint32_t indexCount) {
+                               uint32_t startVertex,
+                               uint32_t vertexCount) {
   if (!ShouldMirrorPlumeRenderState()) {
-    g_origFm2EmitIndexedDrawPm4Packets(context, primType, indexBufferBase,
-                                       indexCount);
+    g_origFm2EmitIndexedDrawPm4Packets(context, primType, startVertex,
+                                       vertexCount);
     return;
   }
   static PresentDiagSlot s_drawEmitSlot;
@@ -2621,8 +2808,8 @@ void Fm2EmitIndexedDrawPm4Base(uint32_t context, uint32_t primType,
   if (device == nullptr) return;
   ApplyLiveColorWriteFromContext(device, context);
   ApplyLiveTexturesFromContext(device, context);
-  BindPm4GeometryFromContext(device, context, 0, indexCount);
-  DrawIndexedVertices(device, primType, 0, 0, indexCount);
+  BindPm4GeometryFromContext(device, context, 0, vertexCount);
+  DrawVertices(device, primType, startVertex, vertexCount);
   rr::SetScenePresentRT(rr::GetCurrentColorRenderTarget());
   g_sceneDrawsThisCL.fetch_add(1, std::memory_order_relaxed);
 }
@@ -2642,8 +2829,16 @@ uint32_t CreateVertexBufferAliased(uint32_t length) {
   return xdkHandle;
 }
 
+// CORRECTED 2026-07-01: arg3 of the XDK D3DDevice_DrawIndexedVertices is the
+// BASE VERTEX INDEX (the original writes it verbatim into the PM4 TYPE-0
+// packet for Xenos register 0x2102 = VGT_INDX_OFFSET; ReOdyssey's hook on the
+// same XDK function names it baseVertexIndex and passes it through). The old
+// code called it "gpuOffset" and dropped it (passed 0), so every indexed draw
+// from a shared vertex pool fetched from the pool's start instead of the
+// draw's sub-range.
 void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
-                                uint32_t startIndex, uint32_t indexCount) {
+                                uint32_t baseVertexIndex, uint32_t startIndex,
+                                uint32_t indexCount) {
   static PresentDiagSlot s_drawSubmitSlot;
   CountPresentDiag("DrawSubmit", s_drawSubmitSlot, nullptr);
   GuestDevice *device = rr::GetActiveGuestDevice();
@@ -2656,11 +2851,13 @@ void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
   {
     static std::atomic<uint32_t> s_n{0};
     if (s_n.fetch_add(1, std::memory_order_relaxed) < 24)
-      LogReplayDbg("FM2_PM4_DRAW ctx=0x%08X prim=%u startIndex=%u indexCount=%u",
-                   context, primType, startIndex, indexCount);
+      LogReplayDbg("FM2_PM4_DRAW ctx=0x%08X prim=%u baseVertex=%u startIndex=%u "
+                   "indexCount=%u",
+                   context, primType, baseVertexIndex, startIndex, indexCount);
   }
   BindPm4GeometryFromContext(device, context, startIndex, indexCount);
-  DrawIndexedVertices(device, primType, 0, startIndex, indexCount);
+  DrawIndexedVertices(device, primType, int32_t(baseVertexIndex), startIndex,
+                      indexCount);
   // B: present the SCENE RT (the RT these PM4 3D draws render to), not the
   // last-touched UI RT. A: count scene draws to see if they reach the submit.
   rr::SetScenePresentRT(rr::GetCurrentColorRenderTarget());
@@ -2913,32 +3110,34 @@ static void TryBuildAndSubmitDebugReplayForPm4Draw(uint32_t context,
 }
 
 void Fm2EmitIndexedDrawPm4WithGpuOffset(uint32_t context, uint32_t primType,
-                                        uint32_t gpuOffset,
+                                        uint32_t baseVertexIndex,
                                         uint32_t startIndex,
                                         uint32_t indexCount) {
   if (!ShouldMirrorPlumeRenderState()) {
     g_origFm2EmitIndexedDrawPm4PacketsWithGpuOffset(
-        context, primType, gpuOffset, startIndex, indexCount);
-    TryBuildAndSubmitDebugReplayForPm4Draw(context, primType, gpuOffset,
+        context, primType, baseVertexIndex, startIndex, indexCount);
+    TryBuildAndSubmitDebugReplayForPm4Draw(context, primType, baseVertexIndex,
                                           startIndex, indexCount);
     return;
   }
-  SubmitNativeIndexedDrawPm4(context, primType, startIndex, indexCount);
+  SubmitNativeIndexedDrawPm4(context, primType, baseVertexIndex, startIndex,
+                             indexCount);
 }
 
 void Fm2EmitIndexedDrawPm4WithVertexFormatSetup(uint32_t context,
                                                 uint32_t primType,
-                                                uint32_t gpuOffset,
+                                                uint32_t baseVertexIndex,
                                                 uint32_t startIndex,
                                                 uint32_t indexCount) {
   if (!ShouldMirrorPlumeRenderState()) {
     g_origFm2EmitIndexedDrawPm4WithVertexFormatSetup(
-        context, primType, gpuOffset, startIndex, indexCount);
-    TryBuildAndSubmitDebugReplayForPm4Draw(context, primType, gpuOffset,
+        context, primType, baseVertexIndex, startIndex, indexCount);
+    TryBuildAndSubmitDebugReplayForPm4Draw(context, primType, baseVertexIndex,
                                           startIndex, indexCount);
     return;
   }
-  SubmitNativeIndexedDrawPm4(context, primType, startIndex, indexCount);
+  SubmitNativeIndexedDrawPm4(context, primType, baseVertexIndex, startIndex,
+                             indexCount);
 }
 
 // Forward/opaque object-pass draw emitter. DIAGNOSTIC: call the original (keeps
@@ -3042,7 +3241,7 @@ void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
   if (hasTexture) {
     rr::SetPresentSource(presentSource);
   }
-  // FM2PlumeTraceVdSwap fires inside FM2_GpuCommandBuffer_BuildAndSubmit
+  // FM2PlumeTraceVdSwap fires inside D3DDevice_Swap
   // (0x8236CB28), NOT inside FM2_D3D_TryPresentAndUpdateStatus (0x824F83D8).
   // Fm2Present hooks TryPresentAndUpdateStatus but that function is NOT on the
   // FMOD pump path that drives VdSwap, so Video::Present() would never be
@@ -3075,26 +3274,36 @@ REX_HOOK(FM2_Render_LoadPixelShaderResourceById,
 REX_HOOK(FM2_Render_LoadVertexShaderResourceById,
          Fm2LoadVertexShaderResourceById);
 
-REX_HOOK(FM2_RenderContext_SetDepthStencilEnableState,
-         Fm2SetDepthStencilEnableState);
-REX_HOOK(FM2_RenderContext_SetAlphaBlendEnableBits,
-         Fm2SetAlphaBlendEnableBits);
-REX_HOOK(FM2_RenderContext_SetAlphaTestState, Fm2SetAlphaTestState);
-REX_HOOK(FM2_RenderContext_SetDepthCompareBits, Fm2SetDepthCompareBits);
-REX_HOOK(FM2_RenderContext_SetColorWriteMaskBits, Fm2SetColorWriteMaskBits);
+// Rewired 2026-07-01 to the true XDK identities (see import-block comment).
+// The three wrongly-hooked stencil-op setters (TwoSidedStencilMode 0x8236F268,
+// StencilFail 0x8236F2D0, StencilPass 0x8236F340) are deliberately NOT hooked
+// anymore -- their generated originals run untouched.
+REX_HOOK(D3DDevice_SetRenderState_AlphaBlendEnable, Fm2RsAlphaBlendEnable);
+REX_HOOK(D3DDevice_SetRenderState_AlphaTestEnable, Fm2RsAlphaTestEnable);
+REX_HOOK(D3DDevice_SetRenderState_ZEnable, Fm2RsZEnable);
+REX_HOOK(D3DDevice_SetRenderState_ZWriteEnable, Fm2RsZWriteEnable);
+REX_HOOK(D3DDevice_SetRenderState_ZFunc, Fm2RsZFunc);
+REX_HOOK(D3DDevice_SetRenderState_ColorWriteEnable, Fm2RsColorWriteEnable);
+REX_HOOK(D3DDevice_SetRenderState_BlendOp, Fm2RsBlendOp);
+REX_HOOK(D3DDevice_SetRenderState_SrcBlend, Fm2RsSrcBlend);
+REX_HOOK(D3DDevice_SetRenderState_DestBlend, Fm2RsDestBlend);
+REX_HOOK(D3DDevice_SetRenderState_SrcBlendAlpha, Fm2RsSrcBlendAlpha);
+REX_HOOK(D3DDevice_SetRenderState_DestBlendAlpha, Fm2RsDestBlendAlpha);
 REX_HOOK(FM2_RenderContext_SetClipPlane0Enable, Fm2SetClipPlane0Enable);
 REX_HOOK(FM2_RenderContext_SetClipPlane1Enable, Fm2SetClipPlane1Enable);
 REX_HOOK(FM2_RenderContext_SetClipPlane2Enable, Fm2SetClipPlane2Enable);
 REX_HOOK(FM2_RenderContext_SetClipPlane3Enable, Fm2SetClipPlane3Enable);
 
 REX_HOOK(FM2_D3D_TryPresentAndUpdateStatus, Fm2Present);
-REX_HOOK(FM2_GpuCommandBuffer_BuildAndSubmit,
+REX_HOOK(D3DDevice_Swap,
          Fm2GpuCommandBufferBuildAndSubmit);
 // DIAGNOSTIC (session 6P-2, test b): present the SCENE RT directly instead of
 // GetLastDrawnColorRenderTarget() (which returns the UI/backbuffer 0x130C41000 not the
-// scene 0x130C7F000). Captured in Fm2EmitSurfaceResolve = the scene color surface the
-// game resolves. If the scene appears -> geometry IS rendered, only present-selection
-// is wrong. If still black -> the scene RT is empty (the colorWrite=0 per-draw issue).
+// scene 0x130C7F000). g_sceneResolveSource was captured from the (since-corrected,
+// see docs/FM2-ida-renames-2026-07-01.md) SetPending_Predicated hook and is no longer
+// populated -- this path is dead until the real D3DDevice_Resolve hook sets it. If the
+// scene appears -> geometry IS rendered, only present-selection is wrong. If still
+// black -> the scene RT is empty (the colorWrite=0 per-draw issue).
 // session 6P-2: OFF. true forced presenting g_sceneResolveSource (a black scene
 // snapshot), overriding GetLastDrawnColorRenderTarget -- which for the 2D menu is
 // the menu RT. Present the last-drawn RT so the menu actually shows.
@@ -3256,12 +3465,51 @@ REX_HOOK(FM2_D3DSurface_LockRect, SurfaceLockRect);
 REX_HOOK(FM2_D3DResource_UnlockResource, UnlockResourceHook);
 REX_HOOK(FM2_D3DSurface_GetDesc, SurfaceGetDesc);
 
-REX_HOOK(FM2_D3D_EmitIndexedDrawPm4Packets, Fm2EmitIndexedDrawPm4Base);
-REX_HOOK(FM2_D3D_EmitIndexedDrawPm4PacketsWithGpuOffset,
+REX_HOOK(D3DDevice_DrawVertices, Fm2EmitIndexedDrawPm4Base);
+REX_HOOK(D3DDevice_DrawIndexedVertices,
          Fm2EmitIndexedDrawPm4WithGpuOffset);
-REX_HOOK(FM2_D3D_EmitIndexedDrawPm4WithVertexFormatSetup,
+REX_HOOK(D3DDevice_DrawIndexedVertices_WithVertexFormatSetup,
          Fm2EmitIndexedDrawPm4WithVertexFormatSetup);
 REX_HOOK(FM2_D3D_EmitDirtyStateAndDrawList, Fm2EmitDirtyStateAndDrawList);
+// Added 2026-07-01 (docs/FM2-ida-renames-2026-07-01.md): D3DDevice_Resolve was
+// only correctly identified today (previously misattributed as the audio-mix
+// path). `Resolve()` above (line ~2019) is an existing verbatim port of
+// ReOdyssey's Resolve hook -- it was already written, along with the
+// StretchRect/FlushPendingStretchRects deferred-resolve machinery in
+// render_state.cpp, but had never been wired to a REX_HOOK because nothing
+// pointed at the right guest address until now.
+// Mode-gated RAW (upgraded same day): unlike ReOdyssey (whose hooks ARE the
+// only renderer), FM2 still runs the real guest path in kXenos mode, so the
+// original body must run untouched there. `.fn(ctx, base)` passes the full
+// PPC context through with no marshaling; the mirror path marshals to the
+// ported handler exactly as a plain REX_HOOK would.
+REX_HOOK_RAW(D3DDevice_Resolve) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    g_origD3DResolve.fn(ctx, base);
+    return;
+  }
+  rex::ppc::HostToGuestFunction<Resolve>(ctx, base);
+}
+// Wired 2026-07-01: same story as Resolve -- ClearF and DrawVerticesUP were
+// verbatim ReOdyssey-ported handlers sitting orphaned (no REX_HOOK) because
+// their FM2 addresses (0x827306C0 / 0x82730D60, both confirmed against Lost
+// Odyssey by decompile diff) were only named in the manifest today. ReOdyssey
+// hooks both; without them the game's clears and immediate-mode UP draws
+// never reach the native renderer.
+REX_HOOK_RAW(D3DDevice_ClearF) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    g_origD3DClearF.fn(ctx, base);
+    return;
+  }
+  rex::ppc::HostToGuestFunction<ClearF>(ctx, base);
+}
+REX_HOOK_RAW(D3DDevice_DrawVerticesUP) {
+  if (!ShouldMirrorPlumeRenderState()) {
+    g_origD3DDrawVerticesUP.fn(ctx, base);
+    return;
+  }
+  rex::ppc::HostToGuestFunction<DrawVerticesUP>(ctx, base);
+}
 
 // Diagnostic: count how often Forza's PM4 draw-list interpreter runs. Confirms
 // whether the 3D-scene render path executes in plume_native (vs only the
@@ -3618,47 +3866,20 @@ REX_HOOK_RAW(sub_82363800) {
   g_origAllocPoolBump.fn(ctx, base);
 }
 
-// EDRAM resolve. DIAGNOSTIC PASS: scan the context block for the destination
-// base address (a texture-range guest address) so we learn which register
-// holds it, then we can register the resolved surface there.
-uint32_t Fm2EmitSurfaceResolve(uint32_t context, uint32_t flags, uint32_t a3) {
-  if (ShouldMirrorPlumeRenderState() && context != 0) {
-    // ctx+10652 (RB_COPY_DEST_BASE) holds the guest address this resolve copies
-    // the rendered surface TO -- exactly the address the game later samples.
-    // Alias it to the plume surface we rendered, so post-process passes sample
-    // the real rendered content instead of black resolve-dest memory.
-    const uint32_t destBase = ReadGuestU32At(context + 10652u);
-    const uint32_t colorSurf = ReadGuestU32At(context + 12160u);
-    // Widened upper bound 0x1A000000 -> 0x20000000 to capture the SWAP FRAMEBUFFER
-    // resolve (guest ~0x1F90F000, the final composited display) which the old range
-    // filtered out -- that's the surface the menu/game image actually lands in.
-    if (colorSurf != 0 && destBase >= 0x08000000u && destBase < 0x20000000u) {
-      GuestSurface *gs = ghp::ToHost<GuestSurface>(colorSurf);
-      rr::GuestBaseTexture *host = AsFm2(gs);
-      if (host == nullptr && gs != nullptr)
-        host = rr::TranslateGuestSurface(gs);
-      if (host == nullptr)
-        host = rr::GetLastDrawnColorRenderTarget();
-      // Freeze a snapshot of the source surface (the game reuses the live RT
-      // across passes) and alias the resolve-dest to the snapshot, so later
-      // composite passes sample the resolved content, not the overwritten RT.
-      rr::GuestBaseTexture *snap = rr::SnapshotSurfaceForResolve(host, destBase);
-      RegisterSurfaceAperture(destBase, snap != nullptr ? snap : host);
-      // test b: remember the scene RT (frozen snapshot preferred) so RenderWorker
-      // can present it directly instead of the UI/backbuffer.
-      if (host != nullptr) {
-        g_sceneResolveSource.store(snap != nullptr ? snap : host,
-                                   std::memory_order_relaxed);
-      }
-      static std::atomic<uint32_t> s_n{0};
-      if (s_n.fetch_add(1, std::memory_order_relaxed) < 20) {
-        LogReplayDbg("FM2_RESOLVE_ALIAS dest=0x%08X colorSurf=0x%08X host=%p "
-                     "snap=%p",
-                     destBase, colorSurf, static_cast<void *>(host),
-                     static_cast<void *>(snap));
-      }
-    }
-  }
-  return g_origEmitSurfaceResolve(context, flags, a3);
+// Renamed 2026-07-01 (was Fm2EmitSurfaceResolve, hooking the then-misnamed
+// FM2_D3D_EmitSurfaceResolvePackets -- see docs/FM2-ida-renames-2026-07-01.md).
+// This hooks D3D::SetPending_Predicated, a per-draw GPU predication-state
+// flush called from BeginVertices/DrawVertices/DrawIndexedVertices/Resolve
+// alike. It is NOT an EDRAM resolve emitter: the resolve-surface-aliasing
+// logic that used to live here (RegisterSurfaceAperture / SnapshotSurfaceFor-
+// Resolve / g_sceneResolveSource, reading context+10652/context+12160 as if
+// this call meant "a resolve is happening now") fired on every draw, not just
+// actual resolves, with whatever stale value those offsets happened to hold.
+// Left as a plain passthrough. The real resolve-destination tracking belongs
+// on D3DDevice_Resolve (0x8237D158), which genuine render-pass code (not just
+// the audio-mix path) calls with a proper typed destination surface -- same
+// shape as ReOdyssey's D3DDevice_Resolve/StretchRect hook.
+uint32_t SetPendingPredicated(uint32_t context, uint32_t flags, uint32_t a3) {
+  return g_origSetPendingPredicated(context, flags, a3);
 }
-REX_HOOK(FM2_D3D_EmitSurfaceResolvePackets, Fm2EmitSurfaceResolve);
+REX_HOOK(D3D_SetPending_Predicated, SetPendingPredicated);

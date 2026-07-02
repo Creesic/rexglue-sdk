@@ -62586,7 +62586,7 @@ loc_8256815C:
 	ctx.r4.s64 = 0;
 	// bl 0x8236eaf8
 	ctx.lr = 0x82568214;
-	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
+	D3DDevice_SetRenderState_AlphaBlendEnable(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// b 0x8256825c
@@ -62628,7 +62628,7 @@ loc_8256824C:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8236eaf8
 	ctx.lr = 0x82568258;
-	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
+	D3DDevice_SetRenderState_AlphaBlendEnable(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 loc_8256825C:

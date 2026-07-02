@@ -51026,7 +51026,7 @@ DEFINE_REX_FUNC(sub_82760B90) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r11.u32 + 7148);
 	// bl 0x8237d158
 	ctx.lr = 0x82760BF8;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// addi r1,r1,112
 	ctx.r1.s64 = ctx.r1.s64 + 112;
 	// lwz r12,-8(r1)
@@ -51093,7 +51093,7 @@ DEFINE_REX_FUNC(sub_82760C08) {
 	ctx.r6.u64 = REX_LOAD_U32(ctx.r6.u32 + 260);
 	// bl 0x8237d158
 	ctx.lr = 0x82760C68;
-	FM2_AudioMix_SubmitPendingOutputBody(ctx, base);
+	D3DDevice_Resolve(ctx, base);
 	// addi r1,r1,112
 	ctx.r1.s64 = ctx.r1.s64 + 112;
 	// lwz r12,-8(r1)

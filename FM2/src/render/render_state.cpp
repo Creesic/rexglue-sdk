@@ -2038,6 +2038,22 @@ void FlushViewport() {
       vp.minDepth = 1.0f;
       vp.maxDepth = 0.0f;
     }
+    // TEMP DIAGNOSTIC 2026-07-01 (depth-rejection investigation): capture the
+    // game-side viewport depth range vs what the reverse-Z override submits.
+    {
+      static std::atomic<uint32_t> s_n{0};
+      if (s_n.fetch_add(1, std::memory_order_relaxed) < 32) {
+        if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          std::fprintf(f,
+                       "FM2_ZVIEWPORT game=(%f..%f) applied=(%f..%f) revZ=%d "
+                       "size=%.0fx%.0f\n",
+                       g_viewport.minDepth, g_viewport.maxDepth, vp.minDepth,
+                       vp.maxDepth, SceneReverseZ() ? 1 : 0, g_viewport.width,
+                       g_viewport.height);
+          std::fclose(f);
+        }
+      }
+    }
     commandList->setViewports(vp);
     g_dirtyStates.viewport = false;
   }
@@ -3354,9 +3370,24 @@ void SetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc) {
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zEnable, ze);
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zWriteEnable,
                 zWriteEnable != 0);
+  // 2026-07-01: NO FlipCmpFunc. The viewport keeps FM2's reversed depth range
+  // (FlushViewport), so the game's compare function is already correct as-is;
+  // flipping it here double-reversed the scheme (see Clear comment).
   RenderComparisonFunction zf = ConvertCmpFunc(cmpFunc);
-  if (SceneReverseZ())
-    zf = FlipCmpFunc(zf);
+  // TEMP DIAGNOSTIC 2026-07-01 (depth-rejection investigation).
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 32) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_ZFUNC src=SetDepthState raw=%u conv=%d final=%d "
+                     "revZ=%d zEnable=%u\n",
+                     cmpFunc, int(ConvertCmpFunc(cmpFunc)), int(zf),
+                     SceneReverseZ() ? 1 : 0, zEnable);
+        std::fclose(f);
+      }
+    }
+  }
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zFunc, zf);
 }
 
@@ -3439,9 +3470,21 @@ void SetRenderState(GuestDevice *device, uint32_t state, uint32_t value) {
     break;
   }
   case D3DRS_ZFUNC: {
+    // 2026-07-01: NO FlipCmpFunc -- see SetDepthState/Clear comments. The
+    // reversed viewport already carries FM2's reverse-Z scheme faithfully.
     RenderComparisonFunction zf = ConvertCmpFunc(value);
-    if (SceneReverseZ())
-      zf = FlipCmpFunc(zf);
+    // TEMP DIAGNOSTIC 2026-07-01 (depth-rejection investigation).
+    {
+      static std::atomic<uint32_t> s_n{0};
+      if (s_n.fetch_add(1, std::memory_order_relaxed) < 32) {
+        if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          std::fprintf(f, "FM2_ZFUNC src=D3DRS_ZFUNC raw=%u conv=%d final=%d revZ=%d\n",
+                       value, int(ConvertCmpFunc(value)), int(zf),
+                       SceneReverseZ() ? 1 : 0);
+          std::fclose(f);
+        }
+      }
+    }
     SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zFunc, zf);
     break;
   }
@@ -4036,7 +4079,29 @@ void Clear(GuestDevice * /*device*/, uint32_t flags, const float *color,
   if (g_depthStencil != nullptr && (clearDepth || clearStencil)) {
     if (!onePass)
       SetFramebuffer(nullptr, g_depthStencil, true);
-    const float depthValue = SceneReverseZ() ? (1.0f - z) : z;
+    // 2026-07-01: pass the game's clear z through UNFLIPPED. FM2 is natively
+    // reverse-Z (D24FS8 scene depth, viewport minZ=1/maxZ=0, clears z to 0.0 =
+    // far, ZFunc GREATER-family) and FlushViewport already keeps the reversed
+    // depth range, so the previous `1.0f - z` flip double-reversed the scheme:
+    // buffer cleared to the NEAR value while fragments compared GREATER ->
+    // everything depth-rejected. Faithful passthrough is coherent end to end.
+    const float depthValue = z;
+    // TEMP DIAGNOSTIC 2026-07-01 (depth-rejection investigation): capture the
+    // game's raw clear z vs what we submit, plus the reverse-Z decision inputs.
+    {
+      static std::atomic<uint32_t> s_n{0};
+      if (s_n.fetch_add(1, std::memory_order_relaxed) < 32) {
+        if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          std::fprintf(f,
+                       "FM2_ZCLEAR flags=0x%X z=%f applied=%f revZ=%d "
+                       "dsFmt=0x%08X ds=%p\n",
+                       flags, z, depthValue, SceneReverseZ() ? 1 : 0,
+                       g_depthStencil->guestFormat,
+                       static_cast<void *>(g_depthStencil));
+          std::fclose(f);
+        }
+      }
+    }
     commandList->clearDepthStencil(clearDepth, clearStencil, depthValue, 0,
                                    &clearRect, 1);
     MarkAttachmentInitialized(g_depthStencil);

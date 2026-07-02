@@ -45515,7 +45515,7 @@ loc_82506430:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r11.u32 + 7148);
 	// bl 0x8236f180
 	ctx.lr = 0x82506460;
-	sub_8236F180(ctx, base);
+	D3DDevice_SetRenderState_ZEnable(ctx, base);
 	// lwz r11,80(r1)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r1.u32 + 80);
 	// stw r29,192(r11)
@@ -50179,7 +50179,7 @@ loc_82508140:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f718
 	ctx.lr = 0x825081CC;
-	sub_8236F718(ctx, base);
+	D3DDevice_SetRenderState_ColorWriteEnable(ctx, base);
 	// b 0x825081ec
 	goto loc_825081EC;
 loc_825081D0:
@@ -50342,14 +50342,14 @@ loc_825082B8:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f268
 	ctx.lr = 0x825082F0;
-	FM2_RenderContext_SetAlphaTestState(ctx, base);
+	D3DDevice_SetRenderState_TwoSidedStencilMode(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f340
 	ctx.lr = 0x825082FC;
-	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
+	D3DDevice_SetRenderState_StencilPass(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r30
@@ -50505,14 +50505,14 @@ loc_825083E4:
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f268
 	ctx.lr = 0x82508408;
-	FM2_RenderContext_SetAlphaTestState(ctx, base);
+	D3DDevice_SetRenderState_TwoSidedStencilMode(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
 	// bl 0x8236f340
 	ctx.lr = 0x82508414;
-	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
+	D3DDevice_SetRenderState_StencilPass(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r30
@@ -59674,14 +59674,14 @@ loc_8250C048:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8236f180
 	ctx.lr = 0x8250C0B0;
-	sub_8236F180(ctx, base);
+	D3DDevice_SetRenderState_ZEnable(ctx, base);
 	// mr r4,r23
 	ctx.r4.u64 = ctx.r23.u64;
 	// mr r3,r29
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8236f1c0
 	ctx.lr = 0x8250C0BC;
-	sub_8236F1C0(ctx, base);
+	D3DDevice_SetRenderState_ZWriteEnable(ctx, base);
 	// lwz r3,208(r1)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r1.u32 + 208);
 	// cmplwi cr6,r3,0
@@ -68394,14 +68394,14 @@ loc_8250F910:
 	if (ctx.cr0.eq) goto loc_8250F9AC;
 	// bl 0x8236f1c0
 	ctx.lr = 0x8250F93C;
-	sub_8236F1C0(ctx, base);
+	D3DDevice_SetRenderState_ZWriteEnable(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236eaf8
 	ctx.lr = 0x8250F948;
-	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
+	D3DDevice_SetRenderState_AlphaBlendEnable(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,0(r31)
@@ -68422,35 +68422,35 @@ loc_8250F910:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236f1f0
 	ctx.lr = 0x8250F96C;
-	FM2_RenderContext_SetAlphaBlendEnableBits(ctx, base);
+	D3DDevice_SetRenderState_ZFunc(ctx, base);
 	// li r4,6
 	ctx.r4.s64 = 6;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236ec18
 	ctx.lr = 0x8250F978;
-	sub_8236EC18(ctx, base);
+	D3DDevice_SetRenderState_SrcBlend(ctx, base);
 	// li r4,6
 	ctx.r4.s64 = 6;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236eda8
 	ctx.lr = 0x8250F984;
-	sub_8236EDA8(ctx, base);
+	D3DDevice_SetRenderState_SrcBlendAlpha(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236eca8
 	ctx.lr = 0x8250F990;
-	sub_8236ECA8(ctx, base);
+	D3DDevice_SetRenderState_DestBlend(ctx, base);
 	// li r4,7
 	ctx.r4.s64 = 7;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236ee18
 	ctx.lr = 0x8250F99C;
-	sub_8236EE18(ctx, base);
+	D3DDevice_SetRenderState_DestBlendAlpha(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,0(r31)
@@ -68470,14 +68470,14 @@ loc_8250F9AC:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236f1c0
 	ctx.lr = 0x8250F9BC;
-	sub_8236F1C0(ctx, base);
+	D3DDevice_SetRenderState_ZWriteEnable(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236eaf8
 	ctx.lr = 0x8250F9C8;
-	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
+	D3DDevice_SetRenderState_AlphaBlendEnable(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,0(r31)
@@ -68498,7 +68498,7 @@ loc_8250F9AC:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236f1f0
 	ctx.lr = 0x8250F9EC;
-	FM2_RenderContext_SetAlphaBlendEnableBits(ctx, base);
+	D3DDevice_SetRenderState_ZFunc(ctx, base);
 loc_8250F9EC:
 	// li r4,1
 	ctx.r4.s64 = 1;
@@ -68513,14 +68513,14 @@ loc_8250F9EC:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236f268
 	ctx.lr = 0x8250FA04;
-	FM2_RenderContext_SetAlphaTestState(ctx, base);
+	D3DDevice_SetRenderState_TwoSidedStencilMode(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236f340
 	ctx.lr = 0x8250FA10;
-	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
+	D3DDevice_SetRenderState_StencilPass(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,0(r31)
@@ -68573,14 +68573,14 @@ loc_8250FA44:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236f1c0
 	ctx.lr = 0x8250FA68;
-	sub_8236F1C0(ctx, base);
+	D3DDevice_SetRenderState_ZWriteEnable(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236eaf8
 	ctx.lr = 0x8250FA74;
-	FM2_RenderContext_SetDepthStencilEnableState(ctx, base);
+	D3DDevice_SetRenderState_AlphaBlendEnable(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,0(r31)
@@ -68601,35 +68601,35 @@ loc_8250FA44:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236f1f0
 	ctx.lr = 0x8250FA98;
-	FM2_RenderContext_SetAlphaBlendEnableBits(ctx, base);
+	D3DDevice_SetRenderState_ZFunc(ctx, base);
 	// li r4,6
 	ctx.r4.s64 = 6;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236ec18
 	ctx.lr = 0x8250FAA4;
-	sub_8236EC18(ctx, base);
+	D3DDevice_SetRenderState_SrcBlend(ctx, base);
 	// li r4,6
 	ctx.r4.s64 = 6;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236eda8
 	ctx.lr = 0x8250FAB0;
-	sub_8236EDA8(ctx, base);
+	D3DDevice_SetRenderState_SrcBlendAlpha(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236eca8
 	ctx.lr = 0x8250FABC;
-	sub_8236ECA8(ctx, base);
+	D3DDevice_SetRenderState_DestBlend(ctx, base);
 	// li r4,1
 	ctx.r4.s64 = 1;
 	// lwz r3,0(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236ee18
 	ctx.lr = 0x8250FAC8;
-	sub_8236EE18(ctx, base);
+	D3DDevice_SetRenderState_DestBlendAlpha(ctx, base);
 loc_8250FAC8:
 	// li r4,0
 	ctx.r4.s64 = 0;
@@ -68637,7 +68637,7 @@ loc_8250FAC8:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236eac0
 	ctx.lr = 0x8250FAD4;
-	sub_8236EAC0(ctx, base);
+	D3DDevice_SetRenderState_AlphaTestEnable(ctx, base);
 	// lwz r5,4(r28)
 	ctx.r5.u64 = REX_LOAD_U32(ctx.r28.u32 + 4);
 	// mr r4,r26
@@ -68669,7 +68669,7 @@ loc_8250FAC8:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236f340
 	ctx.lr = 0x8250FB0C;
-	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
+	D3DDevice_SetRenderState_StencilPass(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,0(r31)
@@ -68683,7 +68683,7 @@ loc_8250FAC8:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236f2d0
 	ctx.lr = 0x8250FB24;
-	FM2_RenderContext_SetDepthCompareBits(ctx, base);
+	D3DDevice_SetRenderState_StencilFail(ctx, base);
 	// li r30,-1
 	ctx.r30.s64 = -1;
 	// lwz r3,0(r31)

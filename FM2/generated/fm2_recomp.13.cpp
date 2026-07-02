@@ -622,7 +622,7 @@ DEFINE_REX_FUNC(sub_8237BD48) {
 	ctx.r5.u64 = REX_LOAD_U32(ctx.r31.u32 + 10432);
 	// bl 0x82382590
 	ctx.lr = 0x8237BD98;
-	FM2_D3D_EmitSurfaceResolvePackets(ctx, base);
+	D3D_SetPending_Predicated(ctx, base);
 	// std r3,16(r31)
 	REX_STORE_U64(ctx.r31.u32 + 16, ctx.r3.u64);
 loc_8237BD9C:
@@ -644,7 +644,7 @@ loc_8237BD9C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BDC0;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// ld r11,16(r31)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r31.u32 + 16);
 	// rldicr r11,r11,0,51
@@ -670,7 +670,7 @@ loc_8237BDCC:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BDF0;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// lis r12,-2
 	ctx.r12.s64 = -131072;
 	// ld r11,16(r31)
@@ -706,7 +706,7 @@ loc_8237BE04:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BE34;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// lis r12,-1
 	ctx.r12.s64 = -65536;
 	// ld r11,16(r31)
@@ -742,7 +742,7 @@ loc_8237BE4C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BE78;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
 	// ld r11,16(r31)
@@ -784,7 +784,7 @@ loc_8237BE90:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BEC8;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
 	// ld r11,24(r31)
@@ -820,7 +820,7 @@ loc_8237BEE0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237BF0C;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// ld r11,32(r31)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r31.u32 + 32);
 	// rldicr r11,r11,0,25
@@ -3620,7 +3620,7 @@ loc_8237D134:
 	return;
 }
 
-DEFINE_REX_FUNC(FM2_AudioMix_SubmitPendingOutputBody) {
+DEFINE_REX_FUNC(D3DDevice_Resolve) {
 	REX_FUNC_PROLOGUE();
 	PPCRegister temp{};
 	uint32_t ea{};
@@ -4257,7 +4257,7 @@ loc_8237D5B0:
 	ctx.r5.u64 = REX_LOAD_U32(ctx.r31.u32 + 10432);
 	// bl 0x82382590
 	ctx.lr = 0x8237D5D8;
-	FM2_D3D_EmitSurfaceResolvePackets(ctx, base);
+	D3D_SetPending_Predicated(ctx, base);
 	// std r3,16(r31)
 	REX_STORE_U64(ctx.r31.u32 + 16, ctx.r3.u64);
 loc_8237D5DC:
@@ -4279,7 +4279,7 @@ loc_8237D5DC:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D600;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// ld r11,16(r31)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r31.u32 + 16);
 	// rldicr r11,r11,0,51
@@ -4305,7 +4305,7 @@ loc_8237D60C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D630;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// lis r12,-2
 	ctx.r12.s64 = -131072;
 	// ld r11,16(r31)
@@ -4341,7 +4341,7 @@ loc_8237D644:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D674;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// lis r12,-1
 	ctx.r12.s64 = -65536;
 	// ld r11,16(r31)
@@ -4377,7 +4377,7 @@ loc_8237D68C:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D6B8;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
 	// ld r11,16(r31)
@@ -4419,7 +4419,7 @@ loc_8237D6D0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D708;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// lis r12,-32
 	ctx.r12.s64 = -2097152;
 	// ld r11,24(r31)
@@ -4455,7 +4455,7 @@ loc_8237D720:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x82382928
 	ctx.lr = 0x8237D74C;
-	FM2_D3D_CountLeadingDirtyBits(ctx, base);
+	D3D_SetPending_RenderStates(ctx, base);
 	// ld r11,32(r31)
 	ctx.r11.u64 = REX_LOAD_U64(ctx.r31.u32 + 32);
 	// rldicr r11,r11,0,25
@@ -4933,7 +4933,7 @@ loc_8237DA34:
 	REX_STORE_U32(ctx.r31.u32 + 48, ctx.r11.u32);
 	// bl 0x82382590
 	ctx.lr = 0x8237DA54;
-	FM2_D3D_EmitSurfaceResolvePackets(ctx, base);
+	D3D_SetPending_Predicated(ctx, base);
 	// lwz r11,48(r31)
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r31.u32 + 48);
 	// lwz r10,56(r31)
@@ -15501,7 +15501,7 @@ loc_82381DA4:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236cb28
 	ctx.lr = 0x82381DDC;
-	FM2_GpuCommandBuffer_BuildAndSubmit(ctx, base);
+	D3DDevice_Swap(ctx, base);
 loc_82381DDC:
 	// mr r3,r30
 	ctx.r3.u64 = ctx.r30.u64;
@@ -16644,7 +16644,7 @@ loc_82382570:
 	return;
 }
 
-DEFINE_REX_FUNC(FM2_D3D_EmitSurfaceResolvePackets) {
+DEFINE_REX_FUNC(D3D_SetPending_Predicated) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -17231,7 +17231,7 @@ loc_82382914:
 	return;
 }
 
-DEFINE_REX_FUNC(FM2_D3D_CountLeadingDirtyBits) {
+DEFINE_REX_FUNC(D3D_SetPending_RenderStates) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12

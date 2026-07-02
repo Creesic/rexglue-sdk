@@ -3140,7 +3140,7 @@ void FM2FmodPumpThread82381D60(PPCRegister& r26) {
 }
 
 void FM2FmodPumpForceGpuBit82381DBC(PPCRegister& r11) {
-  // Bit-forcing disabled: FM2_GpuCommandBuffer_BuildAndSubmit crashes in
+  // Bit-forcing disabled: D3DDevice_Swap crashes in
   // plume_native (Xenia CP disabled). Video::Present() is driven by Fm2Present
   // on the game render thread instead; pump runs normally without GPU submit.
   (void)r11;

@@ -3616,7 +3616,7 @@ loc_8253025C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r28.u32 + 0);
 	// bl 0x8236f718
 	ctx.lr = 0x825302B4;
-	sub_8236F718(ctx, base);
+	D3DDevice_SetRenderState_ColorWriteEnable(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// lwz r3,0(r28)
@@ -3649,7 +3649,7 @@ loc_8253025C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r28.u32 + 0);
 	// bl 0x8236f718
 	ctx.lr = 0x825302F0;
-	sub_8236F718(ctx, base);
+	D3DDevice_SetRenderState_ColorWriteEnable(ctx, base);
 	// b 0x82530318
 	goto loc_82530318;
 loc_825302F4:
@@ -5734,7 +5734,7 @@ loc_825310E8:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236eac0
 	ctx.lr = 0x82531104;
-	sub_8236EAC0(ctx, base);
+	D3DDevice_SetRenderState_AlphaTestEnable(ctx, base);
 loc_82531104:
 	// lis r11,-32097
 	ctx.r11.s64 = -2103508992;
@@ -5750,7 +5750,7 @@ loc_82531104:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 0);
 	// bl 0x8236eac0
 	ctx.lr = 0x82531120;
-	sub_8236EAC0(ctx, base);
+	D3DDevice_SetRenderState_AlphaTestEnable(ctx, base);
 loc_82531120:
 	// mr r9,r29
 	ctx.r9.u64 = ctx.r29.u64;
@@ -6292,14 +6292,14 @@ loc_825314B8:
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8236f268
 	ctx.lr = 0x825314F0;
-	FM2_RenderContext_SetAlphaTestState(ctx, base);
+	D3DDevice_SetRenderState_TwoSidedStencilMode(ctx, base);
 	// li r4,2
 	ctx.r4.s64 = 2;
 	// mr r3,r29
 	ctx.r3.u64 = ctx.r29.u64;
 	// bl 0x8236f340
 	ctx.lr = 0x825314FC;
-	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
+	D3DDevice_SetRenderState_StencilPass(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r29
@@ -8085,7 +8085,7 @@ loc_825320BC:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236f718
 	ctx.lr = 0x82532138;
-	sub_8236F718(ctx, base);
+	D3DDevice_SetRenderState_ColorWriteEnable(ctx, base);
 	// b 0x82532158
 	goto loc_82532158;
 loc_8253213C:
@@ -8603,14 +8603,14 @@ loc_825324C0:
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236f268
 	ctx.lr = 0x825324D8;
-	FM2_RenderContext_SetAlphaTestState(ctx, base);
+	D3DDevice_SetRenderState_TwoSidedStencilMode(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r31
 	ctx.r3.u64 = ctx.r31.u64;
 	// bl 0x8236f340
 	ctx.lr = 0x825324E4;
-	FM2_RenderContext_SetColorWriteMaskBits(ctx, base);
+	D3DDevice_SetRenderState_StencilPass(ctx, base);
 	// li r4,0
 	ctx.r4.s64 = 0;
 	// mr r3,r31
