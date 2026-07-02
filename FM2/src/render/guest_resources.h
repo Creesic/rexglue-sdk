@@ -109,6 +109,11 @@ struct GuestBuffer : GuestResource {
 struct GuestSurface : GuestBaseTexture {
   uint32_t guestFormat = 0;
   plume::RenderSampleCounts sampleCount = plume::RenderSampleCount::COUNT_1;
+  // Original guest height before ResizeTileSurface grew this surface to full
+  // frame height (0 = never grown). TranslateGuestSurface treats a lookup
+  // with the original dimensions as a cache HIT so the per-frame guest
+  // header re-translation does not erase + recreate (and leak) the pair.
+  uint32_t tileGrownFromHeight = 0;
   // Framebuffers keyed by their (paired) color attachment; the backbuffer's
   // texture changes per frame, so the depth surface owns the cache.
   std::unordered_map<const plume::RenderTexture *,

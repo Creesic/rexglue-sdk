@@ -1242,8 +1242,16 @@ GuestBaseTexture *TranslateGuestSurface(void *guestHeader) {
     auto it = g_guestSurfaceAliases.find(guestAddress);
     if (it != g_guestSurfaceAliases.end()) {
       GuestSurface *cached = it->second;
-      if (cached->width == width && cached->height == height &&
-          cached->format == format && cached->sampleCount == sampleCount) {
+      // A surface grown to full frame height by ResizeTileSurface still
+      // corresponds to the game's unchanged guest header: match it by its
+      // ORIGINAL dimensions too, otherwise every re-translation recreates
+      // (and leaks) the tile RT/depth pair each menu frame.
+      const bool dimsMatch =
+          (cached->width == width && cached->height == height) ||
+          (cached->tileGrownFromHeight != 0 && cached->width == width &&
+           cached->tileGrownFromHeight == height);
+      if (dimsMatch && cached->format == format &&
+          cached->sampleCount == sampleCount) {
         return cached;
       }
       g_guestSurfaceAliases.erase(it); // header rebuilt with a new desc

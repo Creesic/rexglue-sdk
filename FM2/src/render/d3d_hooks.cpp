@@ -306,6 +306,26 @@ REX_IMPORT(__imp__sub_825E8BF8, g_origSceneViewDispatch, void(uint32_t));
 // && sub_8245D448(). Probe: in plume_native, is this called at all, and is the
 // scene callback enqueued in its node list?
 REX_IMPORT(__imp__sub_8245D048, g_origCbQueueDispatch, void(uint32_t));
+// TEMP PROBE 2026-07-02 (missing PlayCommandBuffer / no UI text): does the
+// UI's D3D command-buffer compilation chain run and succeed in plume? The
+// frontend only records CParams3IOverlayRendererPlayCommandBuffer when it
+// has a compiled CB to play; if Finalize/Clone fail or never run, the UI
+// silently skips the glyph submit.
+REX_IMPORT(__imp__FM2_D3D_BeginCommandBufferBatch, g_origCbBatchBegin,
+           uint32_t(uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3D_FinalizeCommandBufferBatch, g_origCbBatchFinalize,
+           uint32_t(uint32_t));
+REX_IMPORT(__imp__sub_823759A8, g_origCbCreateClone,
+           uint32_t(uint32_t, uint32_t));
+// TEMP PROBE 2026-07-02 (missing text, layer-2 gate): catch the UI frontend
+// function that drives the overlay renderer. RecordSetGlobalOffset is KNOWN
+// to record (its execute thunk shows in FM2_ENQ_HIST); its guest caller (lr)
+// is the frontend function whose decompile should contain the
+// PlayCommandBuffer branch that never runs.
+REX_IMPORT(__imp__sub_82278F80, g_origOvlRecSetGlobalOffset,
+           uint32_t(uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_82279210, g_origOvlRecPlayCommandBuffer,
+           uint32_t(uint32_t, uint32_t));
 // sub_8245CED8 = the ENQUEUE API (queue=r3, fn=r4, this=r5, arg2=r6, flag=r7):
 // allocates an 0x18 node, node[0]=fn, node[4]=this, links it. The scene render is
 // enqueued via fn=sub_825E8BF8. Hook + filter fn==0x825E8BF8 to capture the
@@ -2556,6 +2576,33 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
   if (block == 0)
     return;
 
+  // TEMP DIAGNOSTIC 2026-07-02 (textures front): per-second outcome
+  // histogram -- how many slots are empty vs aperture-bound vs
+  // translated-ok vs translate-failed. Tells whether the fetch constants at
+  // ctx+1024 are populated at all under the live state stream and where the
+  // pipeline loses them.
+  static std::atomic<uint64_t> s_texSec{0};
+  static std::atomic<uint32_t> s_texCalls{0}, s_texSkip{0}, s_texApt{0},
+      s_texOk{0}, s_texNull{0};
+  s_texCalls.fetch_add(1, std::memory_order_relaxed);
+  {
+    using clock = std::chrono::steady_clock;
+    const uint64_t now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            clock::now().time_since_epoch())
+            .count());
+    uint64_t last = s_texSec.load(std::memory_order_relaxed);
+    if (last != now &&
+        s_texSec.compare_exchange_strong(last, now,
+                                         std::memory_order_relaxed)) {
+      LogReplayDbg("FM2_TEXBIND calls=%u skipEmpty=%u aperture=%u ok=%u "
+                   "null=%u",
+                   s_texCalls.exchange(0), s_texSkip.exchange(0),
+                   s_texApt.exchange(0), s_texOk.exchange(0),
+                   s_texNull.exchange(0));
+    }
+  }
+
   // Bind textures the engine resolved into the fetch-constant array. The upload
   // path is now bounds-checked (skips unmapped guest memory instead of
   // faulting), so we can translate+upload directly. TranslateGuestTextureFetch
@@ -2565,13 +2612,16 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
     const uint32_t fcAddr = block + 1024u + slot * 24u;
     const uint32_t fc0 = ReadGuestU32At(fcAddr);
     const uint32_t fc1 = ReadGuestU32At(fcAddr + 4u);
-    if ((fc0 & 0x3u) != 2u && fc1 == 0u)
+    if ((fc0 & 0x3u) != 2u && fc1 == 0u) {
+      s_texSkip.fetch_add(1, std::memory_order_relaxed);
       continue;
+    }
     const uint32_t base = ((fc1 >> 12) & 0xFFFFFu) << 12;
     // Prefer a registered host surface (the rendered/resolved plume texture)
     // over uploading from black guest memory.
     rr::GuestBaseTexture *surf = LookupSurfaceAperture(base);
     if (surf != nullptr) {
+      s_texApt.fetch_add(1, std::memory_order_relaxed);
       rr::SetTextureBase(device, slot, surf);
       rr::SetTestGameTexture(surf);
       // NOTE: do NOT record aperture/snapshot surfaces into the VRAM viewer --
@@ -2590,9 +2640,12 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
                    slot, fc0, fc1, base, static_cast<void *>(tex));
     }
     if (tex != nullptr) {
+      s_texOk.fetch_add(1, std::memory_order_relaxed);
       rr::SetTexture(device, slot, tex);
       rr::SetTestGameTexture(tex); // diagnostic: expose to the present test grid
       rr::RecordVramViewTexture(base, tex);
+    } else {
+      s_texNull.fetch_add(1, std::memory_order_relaxed);
     }
   }
 }
@@ -4075,10 +4128,14 @@ REX_HOOK_RAW(sub_8245D048) {
   // constant churn/present source) -- being triaged via RenderDoc capture.
   // ALSO PROVEN: even with zero drops, UiOrScreenDrawListSubmit never fires
   // => the overlay Render command is never recorded (second gate upstream).
+  // Cap raised 16->64 (2026-07-02 session 3): with the drop threshold lifted
+  // the organic stream records ~115 buffers/s while the drain fires ~10/s;
+  // 16 per call could never clear the ~31-buffer steady-state backlog, so
+  // p145 stayed latched. 64 fully clears the ring every call.
   static constexpr bool kDrainCatchUp = true;
   if (kDrainCatchUp && ShouldMirrorPlumeRenderState() && a1 == 0x4001CA20u) {
     uint32_t drained = 0;
-    for (; drained < 16u; ++drained) {
+    for (; drained < 64u; ++drained) {
       const int32_t backlog = static_cast<int32_t>(rd(a1 + 128u));
       const int32_t thresh = static_cast<int32_t>(rd(a1 + 132u));
       // Drain BELOW the threshold, not to it: p145 re-latches at submit time
@@ -4141,6 +4198,34 @@ REX_HOOK_RAW(sub_8245CED8) {
     };
     const uint32_t pool = ctx.r3.u32;
     const uint32_t a5 = ctx.r7.u32;
+    // THRESHOLD LIFT (2026-07-02 session 3): p145 is the game's flow control
+    // sized for a 60fps render thread (thresh132=3 buffers). In plume the
+    // render thread turns ~10fps in menus, so the backlog legitimately sits
+    // at 4-11 between drain calls and p145 stays latched most of every
+    // second -- the resulting bursts of dropped CParams (SetWorldTransform /
+    // SetRenderState, RTTI-identified) ARE the jumbled/unplaced 2D menu
+    // elements (proof chain: docs/FM2-handoff-2026-07-02-session3.md).
+    // Lift the threshold and unlatch an armed p145 whenever the backlog is
+    // within the lifted threshold (same rule the game's submit/retire
+    // 0x8245D5B8 applies). Nothing is force-enqueued; the game keeps all its
+    // own invariants (unlike the reverted kForceAllNodeEnqueue experiment).
+    // 15 was not enough: with drops gone the ORGANIC record rate (~80k
+    // SetRenderState/s) fills bump-pool buffers so fast that submits run
+    // ~115/s and the backlog rides at the ring ceiling (~31 observed) while
+    // the drain fires only ~10/s. 31 = arm the latch only at ring-full as a
+    // last resort; the drain catch-up cap was raised 16->64 to fully clear
+    // the backlog on every drain call (see kDrainCatchUp).
+    static constexpr bool kLiftDropThreshold = true;
+    static constexpr int32_t kLiftedThreshold = 31;
+    if (kLiftDropThreshold && pool == 0x4001CA20u) {
+      if (auto *th = ghp::ToHost<rex::be<uint32_t>>(pool + 132u);
+          th && static_cast<int32_t>(th->get()) < kLiftedThreshold)
+        th->set(static_cast<uint32_t>(kLiftedThreshold));
+      if (static_cast<int32_t>(rd(pool + 128u)) <= kLiftedThreshold) {
+        if (auto *latch = ghp::ToHost<uint8_t>(pool + 145u); latch && *latch)
+          *latch = 0;
+      }
+    }
     const uint32_t p144 = (rd(pool + 144u) >> 24) & 0xFFu;
     const uint32_t p145 = (rd(pool + 144u) >> 16) & 0xFFu;
     const int32_t p140 = static_cast<int32_t>(rd(pool + 140u));
@@ -4258,6 +4343,55 @@ REX_HOOK_RAW(sub_8245CED8) {
     }
   }
   g_origScheduleCallback.fn(ctx, base);
+}
+// CB compile-chain probes (see g_origCbBatch* imports): entry counters print
+// once/sec via FM2_PRESENT_DIAG; sampled arg/return logs identify failures.
+REX_HOOK_RAW(FM2_D3D_BeginCommandBufferBatch) {
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("CbBatchBegin", s_slot, nullptr);
+  g_origCbBatchBegin.fn(ctx, base);
+}
+REX_HOOK_RAW(FM2_D3D_FinalizeCommandBufferBatch) {
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("CbBatchFin", s_slot, nullptr);
+  const uint32_t a1 = ctx.r3.u32;
+  const uint32_t lr = (uint32_t)ctx.lr;
+  g_origCbBatchFinalize.fn(ctx, base);
+  static std::atomic<uint32_t> s_n{0};
+  if (s_n.fetch_add(1, std::memory_order_relaxed) < 24)
+    LogReplayDbg("FM2_CBFINALIZE a1=0x%08X ret=0x%08X caller=0x%08X tid=%u",
+                 a1, ctx.r3.u32, lr, (unsigned)::GetCurrentThreadId());
+}
+REX_HOOK_RAW(sub_823759A8) { // D3DCommandBuffer_CreateClone
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("CbClone", s_slot, nullptr);
+  const uint32_t a1 = ctx.r3.u32;
+  const uint32_t a2 = ctx.r4.u32;
+  const uint32_t lr = (uint32_t)ctx.lr;
+  g_origCbCreateClone.fn(ctx, base);
+  static std::atomic<uint32_t> s_n{0};
+  if (s_n.fetch_add(1, std::memory_order_relaxed) < 24)
+    LogReplayDbg("FM2_CBCLONE a1=0x%08X a2=0x%08X ret=0x%08X caller=0x%08X",
+                 a1, a2, ctx.r3.u32, lr);
+}
+// Overlay frontend-caller probes (see g_origOvlRec* imports).
+REX_HOOK_RAW(sub_82278F80) { // COverlayRendererDeferred::RecordSetGlobalOffset
+  static std::atomic<uint32_t> s_n{0};
+  if (s_n.fetch_add(1, std::memory_order_relaxed) < 24)
+    LogReplayDbg("FM2_OVL_SETGOFF this=0x%08X arg=0x%08X caller=0x%08X tid=%u",
+                 ctx.r3.u32, ctx.r4.u32, (uint32_t)ctx.lr,
+                 (unsigned)::GetCurrentThreadId());
+  g_origOvlRecSetGlobalOffset.fn(ctx, base);
+}
+REX_HOOK_RAW(sub_82279210) { // COverlayRendererDeferred::RecordPlayCommandBuffer
+  static PresentDiagSlot s_slot;
+  CountPresentDiag("OvlPlayCb", s_slot, nullptr);
+  static std::atomic<uint32_t> s_n{0};
+  if (s_n.fetch_add(1, std::memory_order_relaxed) < 24)
+    LogReplayDbg("FM2_OVL_PLAYCB this=0x%08X cb=0x%08X caller=0x%08X tid=%u",
+                 ctx.r3.u32, ctx.r4.u32, (uint32_t)ctx.lr,
+                 (unsigned)::GetCurrentThreadId());
+  g_origOvlRecPlayCommandBuffer.fn(ctx, base);
 }
 // Render-pass trigger probe: which owners have a non-empty entry list, per mode.
 static thread_local uint32_t g_curTrigA1 = 0;

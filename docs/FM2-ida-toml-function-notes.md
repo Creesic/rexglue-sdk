@@ -564,3 +564,26 @@ in the dated renames doc. Key structural facts: `COverlayRenderer` vtable =
 deferred command pool global = `0x82A028DC`
 (`FM2_Render_GetDeferredCommandPool`), global render context singleton =
 `g_FM2_GlobalRenderContext_` (0x82A01570).
+
+## 2026-07-02 session 3 — UI screen render pipeline named (see `FM2-ida-renames-2026-07-02-session3.md`)
+
+The overlay-gate hunt (handoff session 3 doc) recovered the whole frontend
+2D/UI screen render pipeline; 20 renames landed, incl. two MISNAME fixes that
+were also synced into `fm2_manifest.toml`: `FM2_ReleaseOwnedChildObjects`
+(0x82603BE0) → `FM2_UIScreenPassList_PreRenderRenderers` (it records
+PreRender on CRenderAdapterLink + COverlayRendererDeferred, releases nothing)
+and `FM2_SceneCamera_CallVfunc20` (0x82277CB0) →
+`FM2_GraphicsManager_TickUIScreenHost`. New cluster names:
+`FM2_UIScreenHost_TickScreenAndDispatchEvents` (0x825DEFC0, vtbl slot 5),
+`FM2_UIScreenHost_RenderPassListIfPending` (0x825DCE08, slot 6, new func),
+`FM2_UIScreenPassList_RenderPasses` (0x82609AB8),
+`FM2_UIScreenPassList_AddElementPass` (0x8260A868),
+`FM2_UIScreenPass_ApplyStateAndDrawElements` (0x826092F0),
+`FM2_UIScreenElement_RenderWithTilePredication` (0x826091C8),
+`FM2_UIScreenElement_ComputeTileBandMask` (0x82603DA0), and seven
+`FM2_CRenderAdapterLink_Record*` recorders identified by their mangled
+CParams vftables (`IFixedFunctionRenderer`: PreRender, SetRenderStateInline,
+SetPredication, AddLight, SetWorld/View/ProjTransform — slot 20 is
+SetPredication, NOT PlayCommandBuffer). Key structural fact: menu 2D never
+uses `IOverlayRenderer::PlayCommandBuffer`; per-element placement travels as
+`SetWorldTransform` CParams through deferred pool 0x4001CA20.

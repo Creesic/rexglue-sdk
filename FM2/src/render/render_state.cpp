@@ -2174,6 +2174,11 @@ void ResizeTileSurface(GuestSurface *surface, uint32_t width,
   auto texture = Device()->createTexture(desc);
   if (texture == nullptr)
     return;
+  // Remember the pre-grow guest height so TranslateGuestSurface keeps
+  // treating the game's unchanged guest header as a cache hit (leak fix:
+  // the mismatch used to recreate + regrow the pair every frame).
+  if (surface->tileGrownFromHeight == 0)
+    surface->tileGrownFromHeight = surface->height;
   g_retiredTileTextures.emplace_back(std::move(surface->textureHolder));
   g_retiredTileViews.emplace_back(std::move(surface->textureView));
   for (auto &entry : surface->framebuffers)
