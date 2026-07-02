@@ -2881,14 +2881,19 @@ void Fm2EmitIndexedDrawPm4Base(uint32_t context, uint32_t primType,
   ApplyLiveColorWriteFromContext(device, context);
   ApplyLiveTexturesFromContext(device, context);
   BindPm4GeometryFromContext(device, context, 0, vertexCount);
-  // Source VS/PS float constants from the game's render context for this draw.
-  // 2026-07-02 off-by-one fix: the ALU blocks at ctx+0x700/+0x1700 carry a
-  // 16-byte header; SetVertexShaderConstantFN (0x8236D958) writes register R
-  // at base+0x10+16R (decompile: Vertex[2*StartRegister + 2]) and the
-  // Xenia-vs-plume constant diff confirmed the whole file was shifted by one
-  // register. Real files: VS ctx+0x710, PS ctx+0x1710.
-  rr::SetLiveFloatConstantFiles(ghp::ToHost<const void>(context + 0x710u),
-                                ghp::ToHost<const void>(context + 0x1710u));
+  // Source VS/PS float constants from the ISSUING context's live ALU blocks
+  // at ctx+0x700/+0x1700. IMPORTANT (2026-07-02, hard-won): our XenosRecomp-
+  // translated shaders index their constant buffer by the game shader
+  // container's register table, which is aligned to the 0x700-based block
+  // (register 0 = the block's first vec4). Xenia's files LOOK shifted by one
+  // relative to this because its ucode translation uses a different internal
+  // alignment -- do NOT "fix" this to 0x710 (tried; semantic check of
+  // offsetScale/Proj/horizon table slots + an all-black screen proved the
+  // 0x700 base is what OUR shaders expect). Reading
+  // g_FM2_ActivePassRenderContext_ instead was also tried and went all-black
+  // (the global tracks the pass being BUILT on another thread).
+  rr::SetLiveFloatConstantFiles(ghp::ToHost<const void>(context + 0x700u),
+                                ghp::ToHost<const void>(context + 0x1700u));
   DrawVertices(device, primType, startVertex, vertexCount);
   rr::SetLiveFloatConstantFiles(nullptr, nullptr);
   rr::SetScenePresentRT(rr::GetCurrentColorRenderTarget());
@@ -2957,11 +2962,10 @@ void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
                    rf(253, 2), rf(253, 3));
     }
   }
-  // Source VS/PS float constants from the game's render context for this draw
-  // (real ALU files at ctx+0x710/+0x1710 -- see the DrawVertices hook comment
-  // for the 16-byte-header off-by-one evidence).
-  rr::SetLiveFloatConstantFiles(ghp::ToHost<const void>(context + 0x710u),
-                                ghp::ToHost<const void>(context + 0x1710u));
+  // Source VS/PS float constants from the ISSUING context's live ALU blocks
+  // at +0x700/+0x1700 (see the DrawVertices hook comment for why NOT 0x710).
+  rr::SetLiveFloatConstantFiles(ghp::ToHost<const void>(context + 0x700u),
+                                ghp::ToHost<const void>(context + 0x1700u));
   DrawIndexedVertices(device, primType, int32_t(baseVertexIndex), startIndex,
                       indexCount);
   rr::SetLiveFloatConstantFiles(nullptr, nullptr);

@@ -2579,25 +2579,13 @@ void FlushRenderState(GuestDevice *device) {
     // the main one (proven by the Xenia-vs-plume arcade capture diff). Model
     // that by overlaying the cross-context SetVertexShaderConstantFN mirror
     // (g_passVsConstants, fed in call order by the 0x8236D958 hook) on top.
-    if (g_passVsConstantsValid.load(std::memory_order_relaxed)) {
-      std::memcpy(s_mergedVsConstants, g_liveVsFloatConstants,
-                  sizeof(s_mergedVsConstants));
-      // Overlay ONLY the per-pass ModelView rows (c0-c2): those are the
-      // registers uploaded on whichever context is active for the pass, which
-      // the issuing context's file misses (proven by the Xenia diff). Wider
-      // overlays clobber correct live registers with stale cross-pass writes
-      // (mirror is last-write-wins across all contexts).
-      uint64_t bits = g_passVsConstantsCoverage[0] & 0x7u;
-      while (bits != 0) {
-        const uint32_t reg = uint32_t(std::countr_zero(bits));
-        bits &= bits - 1u;
-        std::memcpy(s_mergedVsConstants + reg * 4u,
-                    g_passVsConstants + reg * 4u, 16u);
-      }
-      vsConstSrc = s_mergedVsConstants;
-    } else {
-      vsConstSrc = g_liveVsFloatConstants;
-    }
+    // PM4 draw: upload the ACTIVE PASS context's file verbatim (the hooks
+    // point us at g_FM2_ActivePassRenderContext_'s +0x710/+0x1710). No mirror
+    // overlay: register layouts are per-shader (one pass's ModelView rows are
+    // another shader's material colors), so cross-pass last-write-wins
+    // overlays plant wrong values -- proven by the magenta menu (a camera row
+    // landed in a shader's color register c2).
+    vsConstSrc = g_liveVsFloatConstants;
   } else if (g_passVsConstantsValid.load(std::memory_order_relaxed)) {
     std::memcpy(s_mergedVsConstants, device->vertexShaderFloatConstants,
                 sizeof(s_mergedVsConstants));
@@ -3434,22 +3422,14 @@ void MirrorPassVsConstants(uint32_t startRegister, const void *src,
                            uint32_t vector4fCount) {
   if (src == nullptr || startRegister >= 0x100u || vector4fCount == 0)
     return;
-  // 2026-07-02 off-by-one: SetVertexShaderConstantFN's API register D writes
-  // guest ctx+0x700+16D while the hardware ALU file starts at ctx+0x710, so
-  // hardware register = D-1. A D=0 call's first vec4 lands in the block's
-  // 16-byte header and is not hardware-visible -- skip it.
-  uint32_t hwStart;
-  if (startRegister == 0) {
-    src = static_cast<const uint8_t *>(src) + 16;
-    if (--vector4fCount == 0)
-      return;
-    hwStart = 0;
-  } else {
-    hwStart = startRegister - 1u;
-  }
-  const uint32_t count = std::min(vector4fCount, 0x100u - hwStart);
-  std::memcpy(g_passVsConstants + hwStart * 4u, src, count * 16u);
-  for (uint32_t r = hwStart; r < hwStart + count; ++r)
+  // Register indexing matches the 0x700-based block convention our
+  // XenosRecomp shaders are compiled against (SetVertexShaderConstantFN's
+  // API register D == shader-table register D). A "-1 hardware alignment"
+  // correction was tried 2026-07-02 and shifted every shader's constants ->
+  // all black; see the PM4 draw hooks' comment.
+  const uint32_t count = std::min(vector4fCount, 0x100u - startRegister);
+  std::memcpy(g_passVsConstants + startRegister * 4u, src, count * 16u);
+  for (uint32_t r = startRegister; r < startRegister + count; ++r)
     g_passVsConstantsCoverage[r / 64u] |= uint64_t(1) << (r % 64u);
   g_passVsConstantsValid.store(true, std::memory_order_relaxed);
 }
