@@ -69,6 +69,18 @@ void SetLiveFloatConstantFiles(const void *vsFile, const void *psFile);
 // flush overlays them for no-POSITION shaders.
 void SetUiGlyphModelView(const void *rows4);
 
+// 2026-07-02 session 3 (2D spike root cause): the per-element 2D placement
+// matrices are emitted ONLY as PM4 SET_CONSTANT / Type-0 ALU / LOAD_ALU
+// packets in the FM2 command buffer -- plume_native's disabled CP never
+// applied them, so 2D vertex shaders read c0-c3 = leftovers (colors) + zeros
+// and elements collapse into wedges/spikes. The command-buffer scanner in
+// d3d_hooks (ProcessPm4VsConstantsDiag) now APPLIES ALU float writes here in
+// stream order (dword-indexed VS file, raw big-endian dwords, coverage per
+// vec4 register); FlushRenderState overlays covered registers over the live
+// context file for no-POSITION (2D) shaders.
+void ApplyPm4VsConstants(uint32_t dwordIndex, const void *beDwords,
+                         uint32_t dwordCount);
+
 struct GuestVertexDeclaration;
 GuestVertexDeclaration *LookupVertexDeclarationAlias(uint32_t guestAddress);
 // Snapshot of every D3DVERTEXELEMENT9 declaration FM2 has created. Used to match

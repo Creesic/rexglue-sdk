@@ -2343,6 +2343,14 @@ void FlushSamplerStates(GuestDevice *device) {
 // plume_native. FlushRenderState uploads this (byte-swapped) instead of device+0x700
 // once any pass upload has happened.
 alignas(16) static uint32_t g_passVsConstants[0x400] = {};
+// PM4-applied VS ALU constants (2026-07-02 session 3): fed in stream order by
+// the command-buffer scanner (ApplyPm4VsConstants) from SET_CONSTANT /
+// Type-0 ALU / LOAD_ALU_CONSTANT packets -- the ONLY carrier of the
+// per-element 2D placement matrices. Raw big-endian dwords, dword-indexed;
+// coverage tracked per vec4 register.
+alignas(16) static uint32_t g_pm4VsConstants[0x400] = {};
+static uint64_t g_pm4VsConstantsCoverage[4] = {};
+static std::atomic<bool> g_pm4VsConstantsValid{false};
 // Bit N set = register N was written by a pass upload (drives the per-register
 // overlay in FlushRenderState; see the merged-file comment there).
 static uint64_t g_passVsConstantsCoverage[4] = {};
@@ -2772,11 +2780,6 @@ void FlushRenderState(GuestDevice *device) {
       // UiOrScreenDrawListSubmit runs PER UI ELEMENT, each staging its OWN
       // ModelView before emitting its slice of the recorded list, so any one
       // matrix smears every other element (worse than the centered collapse).
-      // The correct fix is EMIT-TIME replay: execute the UI list's draws in
-      // the Fm2EmitDirtyStateAndDrawList hook with the just-staged constants
-      // (and skip record-time execution for listed draws). Until then, UI
-      // glyphs collapse at screen center (contained, doesn't obscure the
-      // frame).
       static constexpr bool kUseUiGlyphModelViewOverlay = false;
       if (kUseUiGlyphModelViewOverlay && noPos &&
           g_uiGlyphModelViewValid.load(std::memory_order_relaxed)) {
@@ -2784,6 +2787,29 @@ void FlushRenderState(GuestDevice *device) {
                     sizeof(s_mergedVsConstants));
         std::memcpy(s_mergedVsConstants, g_uiGlyphModelView,
                     sizeof(g_uiGlyphModelView));
+        vsConstSrc = s_mergedVsConstants;
+      }
+      // 2026-07-02 session 3 (supersedes the disabled single-matrix overlay):
+      // the per-element placement matrices travel as PM4 SET_CONSTANT /
+      // Type-0 ALU packets in the command buffer (RenderDoc: SET_CONSTANT
+      // idx=0 regs=16 with the 0.05-scale row right before each 2D element
+      // draw; live file has color+zeros there). The scanner applies them in
+      // stream order into g_pm4VsConstants BEFORE each draw, so each 2D draw
+      // sees exactly the constants the Xenos CP would have applied. Overlay
+      // covered registers for no-POSITION (2D) shaders only -- 3D shaders
+      // stay on the pure live file, which is proven correct for them.
+      if (noPos && g_pm4VsConstantsValid.load(std::memory_order_relaxed)) {
+        std::memcpy(s_mergedVsConstants, g_liveVsFloatConstants,
+                    sizeof(s_mergedVsConstants));
+        for (uint32_t w = 0; w < 4u; ++w) {
+          uint64_t bits = g_pm4VsConstantsCoverage[w];
+          while (bits != 0) {
+            const uint32_t reg = w * 64u + uint32_t(std::countr_zero(bits));
+            bits &= bits - 1u;
+            std::memcpy(s_mergedVsConstants + reg * 4u,
+                        g_pm4VsConstants + reg * 4u, 16u);
+          }
+        }
         vsConstSrc = s_mergedVsConstants;
       }
     }
@@ -3638,6 +3664,21 @@ void MirrorPassVsConstants(uint32_t startRegister, const void *src,
 void SetLiveFloatConstantFiles(const void *vsFile, const void *psFile) {
   g_liveVsFloatConstants = static_cast<const uint32_t *>(vsFile);
   g_livePsFloatConstants = static_cast<const uint32_t *>(psFile);
+}
+
+// 2026-07-02 session 3: PM4 ALU constant apply (see render_internal.h). The
+// scanner hands us the packet payload verbatim (big-endian dwords, same
+// layout as the live context file), dword-indexed into the 256-vec4 VS file.
+void ApplyPm4VsConstants(uint32_t dwordIndex, const void *beDwords,
+                         uint32_t dwordCount) {
+  if (beDwords == nullptr || dwordIndex >= 0x400u || dwordCount == 0)
+    return;
+  dwordCount = std::min(dwordCount, 0x400u - dwordIndex);
+  std::memcpy(g_pm4VsConstants + dwordIndex, beDwords, dwordCount * 4u);
+  const uint32_t lastReg = (dwordIndex + dwordCount - 1u) / 4u;
+  for (uint32_t r = dwordIndex / 4u; r <= lastReg; ++r)
+    g_pm4VsConstantsCoverage[r / 64u] |= uint64_t(1) << (r % 64u);
+  g_pm4VsConstantsValid.store(true, std::memory_order_relaxed);
 }
 
 void SetUiGlyphModelView(const void *rows4) {

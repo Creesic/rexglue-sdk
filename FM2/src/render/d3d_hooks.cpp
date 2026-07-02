@@ -915,6 +915,8 @@ void Fm2SetVertexShaderState(uint32_t renderContext, uint32_t shader) {
   SetVertexShaderNative(device, ghp::ToHost<GuestShader>(shader));
 }
 
+static bool IsReadableHostPtr(const void *p); // defined near Fm2BindIndexBuffer
+
 void Fm2BindVertexStream(uint32_t renderContext, uint32_t slot,
                          uint32_t resource, uint32_t byte_offset,
                          uint32_t stride_bytes, uint64_t dirty_mask) {
@@ -945,10 +947,33 @@ void Fm2BindVertexStream(uint32_t renderContext, uint32_t slot,
   // Prefer the native alias (uploaded Plume buffer); fall back to the raw XDK
   // header path in SetStreamSourceNative which reads the guest data pointer.
   GuestBuffer *buf = ghp::ToHost<GuestBuffer>(resource);
+  if (!IsReadableHostPtr(buf)) {
+    if (GuestBuffer *alias = rr::LookupBufferAlias(resource)) {
+      SetStreamSourceNative(device, slot, alias, byte_offset, stride_bytes,
+                            dirty_mask);
+    }
+    return;
+  }
   if (!rr::IsFm2Resource(buf))
     if (GuestBuffer *alias = rr::LookupBufferAlias(resource))
       buf = alias;
   SetStreamSourceNative(device, slot, buf, byte_offset, stride_bytes, dirty_mask);
+}
+
+// Commit-probe before IsFm2Resource dereferences a guest-derived pointer:
+// a deferred command executing after its bump-pool payload page was recycled
+// can hand the bind hooks a wild handle (crash signature: IsFm2Resource
+// inlined in Fm2BindIndexBuffer, WER 2026-07-02). A wild-but-unmapped handle
+// must degrade to a skipped bind, not a process fault.
+static bool IsReadableHostPtr(const void *p) {
+  if (p == nullptr)
+    return false;
+  MEMORY_BASIC_INFORMATION mbi{};
+  if (::VirtualQuery(p, &mbi, sizeof(mbi)) == 0)
+    return false;
+  return mbi.State == MEM_COMMIT && (mbi.Protect & PAGE_GUARD) == 0 &&
+         (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                         PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) != 0;
 }
 
 void Fm2BindIndexBuffer(uint32_t renderContext, uint32_t resource) {
@@ -960,6 +985,12 @@ void Fm2BindIndexBuffer(uint32_t renderContext, uint32_t resource) {
   if (device == nullptr)
     return;
   GuestBuffer *buf = ghp::ToHost<GuestBuffer>(resource);
+  if (!IsReadableHostPtr(buf)) {
+    if (GuestBuffer *alias = rr::LookupBufferAlias(resource)) {
+      SetIndicesNative(device, alias);
+    }
+    return;
+  }
   if (!rr::IsFm2Resource(buf))
     if (GuestBuffer *alias = rr::LookupBufferAlias(resource))
       buf = alias;
@@ -2666,13 +2697,16 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
 //   vtx stream s res   @ ctx+0x2F94 + 4*s ; stride/4 byte @ ctx+0x2FD8 + s
 //   in each D3DResource: GPU phys base @ +0x18, size @ +0x1C, common(format) @ +0.
 // Bases are guest PHYSICAL addresses (read via TranslatePhysical).
-// DIAGNOSTIC: the per-object world-view matrix (VS ALU consts, regs c7..c18) is
-// emitted as PM4 SET_CONSTANT into the FM2 command buffer (ctx+0x30 = write ptr,
-// a GPU write-combined physical-alias addr) which plume_native's disabled CP
-// never processes -> those regs read zero -> car geometry collapses. Scan the
-// command-buffer delta since the last draw for PM4_SET_CONSTANT(type=0 ALU)
-// packets and log them; idx is the ALU register (const = idx/4). Confirm the
-// WVP (idx ~28..75) is here before feeding g_passVsConstants.
+// The per-object/per-element VS ALU constants (incl. the 2D placement
+// matrices -- RenderDoc session 3: SET_CONSTANT idx=0 regs=16 right before
+// each 2D element draw) are emitted as PM4 SET_CONSTANT / Type-0 ALU /
+// LOAD_ALU_CONSTANT into the FM2 command buffer (ctx+0x30 = write ptr, a GPU
+// write-combined physical-alias addr) which plume_native's disabled CP never
+// processes. This scanner walks the command-buffer delta since the last draw
+// and now APPLIES those ALU float writes in stream order into the PM4
+// constant shadow (rr::ApplyPm4VsConstants; overlaid for no-POSITION 2D
+// shaders in FlushRenderState), plus keeps the original one-shot histogram
+// logging (FM2_PM4SETC / FM2_PM4T0ALU / FM2_PM4LOADALU).
 void ProcessPm4VsConstantsDiag(uint32_t context) {
   auto *mem = ghp::GuestMemory();
   if (mem == nullptr) return;
@@ -2707,6 +2741,14 @@ void ProcessPm4VsConstantsDiag(uint32_t context) {
         const uint32_t ot = be(off + 4u);
         const uint32_t idx = ot & 0x7FFu;
         const uint32_t ctype = (ot >> 16) & 0xFFu;
+        // APPLY (2026-07-02 session 3): ALU float writes below the VS file
+        // ceiling carry the per-element 2D placement matrices -- feed them
+        // into the PM4 constant shadow in stream order (payload is already
+        // big-endian dwords in guest memory, pass verbatim).
+        if (ctype == 0u && idx < 0x400u && cnt >= 2u &&
+            off + 8u + 4u * (cnt - 1u) <= len) {
+          rr::ApplyPm4VsConstants(idx, buf + off + 8u, cnt - 1u);
+        }
         // Log each DISTINCT (type,idx) once -> full histogram of which ALU regs
         // the game SET_CONSTANTs. WVP for the VS is regs ~28..75 (c7..c18).
         static bool s_seen[6][2048] = {};
@@ -2727,6 +2769,12 @@ void ProcessPm4VsConstantsDiag(uint32_t context) {
         const uint32_t idx = ot & 0x7FFu;
         const uint32_t ctype = (ot >> 16) & 0xFFu;
         const uint32_t sz = be(off + 12u) & 0xFFFu;
+        // APPLY: indirect ALU load -- copy the source block into the shadow.
+        if (ctype == 0u && idx < 0x400u && sz != 0u && sz <= 0x400u) {
+          if (const auto *lsrc =
+                  mem->TranslatePhysical<const uint8_t *>(addr & 0x1FFFFFFFu))
+            rr::ApplyPm4VsConstants(idx, lsrc, sz);
+        }
         static bool s_seenL[2048] = {};
         if (ctype == 0u && idx < 2048u && !s_seenL[idx]) {
           s_seenL[idx] = true;
@@ -2747,6 +2795,13 @@ void ProcessPm4VsConstantsDiag(uint32_t context) {
       const uint32_t cnt0 = ((hdr >> 16) & 0x3FFFu) + 1u;
       const uint32_t base = hdr & 0x7FFFu;
       if (base >= 0x4000u && base < 0x4400u) {
+        // APPLY: Type-0 direct ALU register burst (dword-indexed at
+        // base-0x4000). Clamp to the VS file and the scanned window.
+        const uint32_t r0 = base - 0x4000u;
+        if (r0 < 0x400u && off + 4u + 4u * cnt0 <= len) {
+          rr::ApplyPm4VsConstants(r0, buf + off + 4u,
+                                  std::min(cnt0, 0x400u - r0));
+        }
         static bool s_seen0[2048] = {};
         const uint32_t r = base - 0x4000u;
         if (r < 2048u && !s_seen0[r]) {
@@ -4212,11 +4267,16 @@ REX_HOOK_RAW(sub_8245CED8) {
     // 15 was not enough: with drops gone the ORGANIC record rate (~80k
     // SetRenderState/s) fills bump-pool buffers so fast that submits run
     // ~115/s and the backlog rides at the ring ceiling (~31 observed) while
-    // the drain fires only ~10/s. 31 = arm the latch only at ring-full as a
-    // last resort; the drain catch-up cap was raised 16->64 to fully clear
-    // the backlog on every drain call (see kDrainCatchUp).
+    // the drain fires only ~10/s. The drain catch-up cap was raised 16->64 to
+    // fully clear the backlog on every drain call (see kDrainCatchUp).
+    // 31 CRASHED (WER 2026-07-02 17:41, IsFm2Resource in Fm2BindIndexBuffer)
+    // and drew spike geometry: commands executing ~30 buffers late reference
+    // bump-pool payload pages the game has already recycled -- thresh isn't
+    // just flow control, it bounds PAYLOAD LIFETIME. 8 = deep enough that the
+    // now-fast drain (~130/s after the tile-surface leak fix) keeps p145
+    // unlatched in steady state, shallow enough that payloads stay live.
     static constexpr bool kLiftDropThreshold = true;
-    static constexpr int32_t kLiftedThreshold = 31;
+    static constexpr int32_t kLiftedThreshold = 8;
     if (kLiftDropThreshold && pool == 0x4001CA20u) {
       if (auto *th = ghp::ToHost<rex::be<uint32_t>>(pool + 132u);
           th && static_cast<int32_t>(th->get()) < kLiftedThreshold)
