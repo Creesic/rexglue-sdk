@@ -989,6 +989,7 @@ void Fm2RememberGuestDevice(GuestDevice *device) {
 // target like the depth path mirrors SetBoundSurface.
 void RegisterSurfaceApertures(uint32_t descriptorAddr,
                               rr::GuestBaseTexture *host);
+void RegisterSurfaceAperture(uint32_t guestAddr, rr::GuestBaseTexture *host);
 
 void Fm2BindSurface(uint32_t renderContext, uint32_t slot, uint32_t surface) {
   g_origBindSurfaceInternal(renderContext, slot, surface);
@@ -2160,14 +2161,20 @@ void Resolve(GuestDevice *device, uint32_t flags, const rr::GuestRect *source,
   // Remove once the present pipeline is confirmed to consume resolved data.
   {
     static std::atomic<uint32_t> s_n{0};
-    if (s_n.fetch_add(1, std::memory_order_relaxed) < 40) {
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 96) {
       GuestBaseTexture *rt = rr::GetCurrentColorRenderTarget();
       LogReplayDbg("FM2_RESOLVE_HOOK dest=%p reo=%p reoTex=%p srcRT=%p "
-                   "srcRTtex=%p flags=0x%X",
+                   "srcRTtex=%p flags=0x%X destPt=(%d,%d) srcRect=(%d,%d,%d,%d)",
                    static_cast<void *>(destination), static_cast<void *>(reo),
                    reo ? static_cast<void *>(reo->texture) : nullptr,
                    static_cast<void *>(rt),
-                   rt ? static_cast<void *>(rt->texture) : nullptr, flags);
+                   rt ? static_cast<void *>(rt->texture) : nullptr, flags,
+                   destPoint ? destPoint->x.get() : -1,
+                   destPoint ? destPoint->y.get() : -1,
+                   source ? source->left.get() : -1,
+                   source ? source->top.get() : -1,
+                   source ? source->right.get() : -1,
+                   source ? source->bottom.get() : -1);
     }
   }
   // 2026-07-02 (present-source fix): register the resolve DESTINATION in the
@@ -2177,8 +2184,24 @@ void Resolve(GuestDevice *device, uint32_t flags, const rr::GuestRect *source,
   // composited frame instead of the last-drawn tile RT. This is the correct,
   // resolve-driven replacement for the aliasing that was stripped from the
   // misidentified SetPending_Predicated hook.
-  if (reo != nullptr && reo->texture != nullptr && destination != nullptr)
-    RegisterSurfaceApertures(ghp::ToGuest(destination), reo);
+  if (reo != nullptr && reo->texture != nullptr && destination != nullptr) {
+    // Register ONLY the destination texture's data base: D3DBaseTexture header
+    // word at +32 (fetch form; confirmed in the D3DDevice_Resolve decompile as
+    // `*(dest+32) & 0xFFFFF000` = the resolve copy-dest base), masked to the
+    // physical page. A broad header scan would register every plausible word
+    // and alias unrelated textures over the frontbuffer base -> garbage frame.
+    const uint32_t destAddr = ghp::ToGuest(destination);
+    const uint32_t dataBase =
+        ReadGuestU32At(destAddr + 32u) & 0x1FFFFFFFu & ~0xFFFu;
+    RegisterSurfaceAperture(dataBase, reo);
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 24) {
+      LogReplayDbg("FM2_RESOLVE_APERTURE dest=0x%08X dataBase=0x%08X reo=%p "
+                   "%ux%u",
+                   destAddr, dataBase, static_cast<void *>(reo), reo->width,
+                   reo->height);
+    }
+  }
   rr::StretchRect(device, flags, source, reo, destPoint);
 }
 
@@ -2490,7 +2513,10 @@ void RegisterSurfaceAperture(uint32_t guestAddr, rr::GuestBaseTexture *host) {
 
 rr::GuestBaseTexture *LookupSurfaceAperture(uint32_t guestAddr) {
   std::lock_guard<std::mutex> lk(g_surfaceApertureMutex);
-  auto it = g_surfaceAperture.find(guestAddr & ~0xFFFu);
+  // 2026-07-02: registry keys are raw-physical (alias windows stripped at
+  // registration); strip them on lookup too so 0xA/0xC/0xE0000000-form fetch
+  // bases match. Covers all callers (present + texture sampling).
+  auto it = g_surfaceAperture.find(guestAddr & 0x1FFFFFFFu & ~0xFFFu);
   return it != g_surfaceAperture.end() ? it->second : nullptr;
 }
 
@@ -2809,6 +2835,24 @@ void BindPm4GeometryFromContext(GuestDevice *device, uint32_t context,
   }
 }
 
+// TEMP DIAGNOSTIC 2026-07-02: g_FM2_ActivePassRenderContext_ (0x82A41BEC) is
+// per-pass and switches; if UI passes draw with a DIFFERENT context object,
+// our live-constant read (ctx+0x700) targets the wrong object for them.
+// Log the first few draws whose context differs from the first one seen.
+void NoteDrawContext(uint32_t context, uint32_t primType) {
+  static std::atomic<uint32_t> s_firstCtx{0};
+  uint32_t expected = 0;
+  if (!s_firstCtx.compare_exchange_strong(expected, context,
+                                          std::memory_order_relaxed)) {
+    if (expected != context) {
+      static std::atomic<uint32_t> s_n{0};
+      if (s_n.fetch_add(1, std::memory_order_relaxed) < 16)
+        LogReplayDbg("FM2_PM4_CTX_ALT ctx=0x%08X first=0x%08X prim=%u", context,
+                     expected, primType);
+    }
+  }
+}
+
 // CORRECTED 2026-07-01: this hooks D3DDevice_DrawVertices, the NON-indexed
 // XDK draw primitive -- real args are (device, primType, StartVertex,
 // VertexCount), confirmed by decompile diff vs Lost Odyssey (see
@@ -2829,6 +2873,7 @@ void Fm2EmitIndexedDrawPm4Base(uint32_t context, uint32_t primType,
   }
   static PresentDiagSlot s_drawEmitSlot;
   CountPresentDiag("DrawEmit", s_drawEmitSlot, nullptr);
+  NoteDrawContext(context, primType);
   GuestDevice *device = rr::GetActiveGuestDevice();
   static DrawDeviceSlot s_drawEmitDevSlot;
   CountDrawDevice("DrawEmit", s_drawEmitDevSlot, device != nullptr);
@@ -2836,7 +2881,16 @@ void Fm2EmitIndexedDrawPm4Base(uint32_t context, uint32_t primType,
   ApplyLiveColorWriteFromContext(device, context);
   ApplyLiveTexturesFromContext(device, context);
   BindPm4GeometryFromContext(device, context, 0, vertexCount);
+  // Source VS/PS float constants from the game's render context for this draw.
+  // 2026-07-02 off-by-one fix: the ALU blocks at ctx+0x700/+0x1700 carry a
+  // 16-byte header; SetVertexShaderConstantFN (0x8236D958) writes register R
+  // at base+0x10+16R (decompile: Vertex[2*StartRegister + 2]) and the
+  // Xenia-vs-plume constant diff confirmed the whole file was shifted by one
+  // register. Real files: VS ctx+0x710, PS ctx+0x1710.
+  rr::SetLiveFloatConstantFiles(ghp::ToHost<const void>(context + 0x710u),
+                                ghp::ToHost<const void>(context + 0x1710u));
   DrawVertices(device, primType, startVertex, vertexCount);
+  rr::SetLiveFloatConstantFiles(nullptr, nullptr);
   rr::SetScenePresentRT(rr::GetCurrentColorRenderTarget());
   g_sceneDrawsThisCL.fetch_add(1, std::memory_order_relaxed);
 }
@@ -2868,6 +2922,7 @@ void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
                                 uint32_t indexCount) {
   static PresentDiagSlot s_drawSubmitSlot;
   CountPresentDiag("DrawSubmit", s_drawSubmitSlot, nullptr);
+  NoteDrawContext(context, primType);
   GuestDevice *device = rr::GetActiveGuestDevice();
   static DrawDeviceSlot s_drawSubmitDevSlot;
   CountDrawDevice("DrawSubmit", s_drawSubmitDevSlot, device != nullptr);
@@ -2883,8 +2938,33 @@ void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
                    context, primType, baseVertexIndex, startIndex, indexCount);
   }
   BindPm4GeometryFromContext(device, context, startIndex, indexCount);
+  // TEMP DIAGNOSTIC 2026-07-02: verify the context register file holds live
+  // data at both low (transform) and high (material/global) registers.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 8) {
+      auto rf = [&](uint32_t reg, uint32_t comp) -> double {
+        const uint32_t v =
+            ReadGuestU32At(context + 0x710u + reg * 16u + comp * 4u);
+        return double(std::bit_cast<float>(v));
+      };
+      LogReplayDbg("FM2_LIVECONST ctx=0x%08X dev=0x%08X c0=[%.3f %.3f %.3f "
+                   "%.3f] c9=[%.3f %.3f %.3f %.3f] c250=[%.3f %.3f %.3f %.3f] "
+                   "c253=[%.3f %.3f %.3f %.3f]",
+                   context, ghp::ToGuest(device), rf(0, 0), rf(0, 1), rf(0, 2),
+                   rf(0, 3), rf(9, 0), rf(9, 1), rf(9, 2), rf(9, 3), rf(250, 0),
+                   rf(250, 1), rf(250, 2), rf(250, 3), rf(253, 0), rf(253, 1),
+                   rf(253, 2), rf(253, 3));
+    }
+  }
+  // Source VS/PS float constants from the game's render context for this draw
+  // (real ALU files at ctx+0x710/+0x1710 -- see the DrawVertices hook comment
+  // for the 16-byte-header off-by-one evidence).
+  rr::SetLiveFloatConstantFiles(ghp::ToHost<const void>(context + 0x710u),
+                                ghp::ToHost<const void>(context + 0x1710u));
   DrawIndexedVertices(device, primType, int32_t(baseVertexIndex), startIndex,
                       indexCount);
+  rr::SetLiveFloatConstantFiles(nullptr, nullptr);
   // B: present the SCENE RT (the RT these PM4 3D draws render to), not the
   // last-touched UI RT. A: count scene draws to see if they reach the submit.
   rr::SetScenePresentRT(rr::GetCurrentColorRenderTarget());

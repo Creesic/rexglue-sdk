@@ -1211,6 +1211,28 @@ void ExecutePendingStretchRects(GuestBaseTexture *surface) {
     }
 
     const bool fullSurface = IsFullSurfaceResolve(surface, destination, resolve);
+    // TEMP DIAGNOSTIC 2026-07-02: trace every executed resolve copy (tile-band
+    // placement investigation). Remove with the other FM2_* diagnostics.
+    {
+      static std::atomic<uint32_t> s_n{0};
+      if (s_n.fetch_add(1, std::memory_order_relaxed) < 96) {
+        if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          std::fprintf(f,
+                       "FM2_STRETCH_EXEC src=%p %ux%u fmt=%d msaa=%d -> dst=%p "
+                       "%ux%u fmt=%d dstXY=(%u,%u) srcRect=(%d,%d,%d,%d) "
+                       "full=%d\n",
+                       static_cast<void *>(surface), surface->width,
+                       surface->height, int(surface->format),
+                       sampleCount != RenderSampleCount::COUNT_1 ? 1 : 0,
+                       static_cast<void *>(destination), destination->width,
+                       destination->height, int(destination->format), dstX,
+                       dstY, srcRect.left, srcRect.top, srcRect.right,
+                       srcRect.bottom, fullSurface ? 1 : 0);
+          std::fflush(f);
+          std::fclose(f);
+        }
+      }
+    }
     AddBarrier(destination, sampleCount != RenderSampleCount::COUNT_1
                                 ? RenderTextureLayout::RESOLVE_DEST
                                 : RenderTextureLayout::COPY_DEST);
@@ -2030,10 +2052,59 @@ void SetFramebuffer(GuestBaseTexture *renderTarget, GuestSurface *depthStencil,
   g_dirtyStates.renderTargetAndDepthStencil = forClear;
 }
 
+// Predicated-tiling window emulation (2026-07-02). Each tile pass renders the
+// FULL frame viewport shifted so its 256-row band lands at tile row 0 (Xenos
+// PA_SC_WINDOW_OFFSET); SetRenderTargetInternal's D3D9 viewport reset instead
+// squished the whole frame into the tile. The band resolves in StretchRect
+// identify the tile surface + frame dims and advance the offset per pass.
+static GuestBaseTexture *g_tileRenderTarget = nullptr;
+static uint32_t g_tileFrameWidth = 0;
+static uint32_t g_tileFrameHeight = 0;
+static int32_t g_tileViewportOffsetY = 0;
+
 void FlushViewport() {
   RenderCommandList *commandList = CommandList();
+  // The tiling window offset changes between passes without any viewport/RT
+  // state change (the dirty flag may have been consumed by non-tile draws in
+  // between), so force a re-flush whenever the applied offset is stale.
+  static int32_t s_appliedTileOffsetY = INT32_MIN;
+  const bool tileBound = g_renderTarget != nullptr &&
+                         g_renderTarget == g_tileRenderTarget &&
+                         g_tileFrameHeight > g_renderTarget->height;
+  if (tileBound && s_appliedTileOffsetY != g_tileViewportOffsetY)
+    g_dirtyStates.viewport = true;
   if (g_dirtyStates.viewport) {
+    s_appliedTileOffsetY = tileBound ? g_tileViewportOffsetY : INT32_MIN;
     RenderViewport vp = g_viewport;
+    if (g_renderTarget != nullptr && g_renderTarget == g_tileRenderTarget &&
+        g_tileFrameHeight > g_renderTarget->height && vp.x == 0.0f &&
+        vp.y == 0.0f) {
+      if (uint32_t(vp.height) == g_renderTarget->height) {
+        // Tile pass with the RT-reset viewport: restore the full-frame
+        // viewport shifted by the current tiling window offset.
+        vp.y = float(g_tileViewportOffsetY);
+        vp.width = float(g_tileFrameWidth);
+        vp.height = float(g_tileFrameHeight);
+      } else if (uint32_t(vp.height) == g_tileFrameHeight) {
+        // Game-set full-frame viewport on the tile RT: apply the offset only.
+        vp.y = float(g_tileViewportOffsetY);
+      }
+      // TEMP DIAGNOSTIC 2026-07-02: confirm the tiling viewport override.
+      static std::atomic<uint32_t> s_tvp{0};
+      if (s_tvp.fetch_add(1, std::memory_order_relaxed) < 24) {
+        if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          std::fprintf(f,
+                       "FM2_TILEVP in=(%.0f,%.0f %.0fx%.0f) out=(%.0f,%.0f "
+                       "%.0fx%.0f) offY=%d rt=%ux%u frame=%ux%u\n",
+                       g_viewport.x, g_viewport.y, g_viewport.width,
+                       g_viewport.height, vp.x, vp.y, vp.width, vp.height,
+                       g_tileViewportOffsetY, g_renderTarget->width,
+                       g_renderTarget->height, g_tileFrameWidth,
+                       g_tileFrameHeight);
+          std::fclose(f);
+        }
+      }
+    }
     if (SceneReverseZ()) {
       vp.minDepth = 1.0f;
       vp.maxDepth = 0.0f;
@@ -2108,7 +2179,14 @@ void FlushSamplerStates(GuestDevice *device) {
 // plume_native. FlushRenderState uploads this (byte-swapped) instead of device+0x700
 // once any pass upload has happened.
 alignas(16) static uint32_t g_passVsConstants[0x400] = {};
+// Bit N set = register N was written by a pass upload (drives the per-register
+// overlay in FlushRenderState; see the merged-file comment there).
+static uint64_t g_passVsConstantsCoverage[4] = {};
 static std::atomic<bool> g_passVsConstantsValid{false};
+// Live register files on the game's PM4 render context (see
+// SetLiveFloatConstantFiles in render_internal.h). Render-thread only.
+static const uint32_t *g_liveVsFloatConstants = nullptr;
+static const uint32_t *g_livePsFloatConstants = nullptr;
 
 void FlushRenderState(GuestDevice *device) {
   // Forza programs per-draw color-write through its PM4 draw-list node, which the
@@ -2479,26 +2557,71 @@ void FlushRenderState(GuestDevice *device) {
       }
     }
   }
-  // VS float-constant base. UploadMatrixConstants (0x8236D958) writes register r to
-  // context+0x700+r*16, so +0x700 is the real upload base (NOT the struct field's
-  // +0x780). But device+0x700 reads zero for the scene draws -> the matrices are
-  // uploaded to a DIFFERENT context object (or via PM4 the disabled CP drops), not
-  // the GuestDevice we read here. (see FM2_DRAWSTATE / memory project note)
-  static constexpr uint32_t kVsConstBase = 0x700;
-  const uint8_t *devBytes = reinterpret_cast<const uint8_t *>(device);
-  // Prefer the mirrored render-pass constants (the scene transforms the GuestDevice
-  // never receives). Fall back to the device block until the first pass upload.
-  const uint32_t *vsConstSrc =
-      g_passVsConstantsValid.load(std::memory_order_relaxed)
-          ? g_passVsConstants
-          : reinterpret_cast<const uint32_t *>(devBytes + kVsConstBase);
+  // VS float-constant file (2026-07-02 rework). Two register-aligned sources:
+  //  - the XDK SetVertexShaderConstantF file (struct field, device+0x780) --
+  //    holds everything the game sets through the D3D API (globals like
+  //    c253-c255, materials);
+  //  - the render-pass uploads (UploadMatrixConstants writes register r to
+  //    context+0x700+r*16 on the RENDER CONTEXT, mirrored per-register into
+  //    g_passVsConstants) -- holds the scene transforms.
+  // The previous code uploaded ONLY g_passVsConstants once valid, zeroing every
+  // register the pass never wrote (c0-c8 in practice) -> scene VS color math
+  // read zeros -> black tile scene. Merge instead: SetF file as base, overlay
+  // exactly the registers a pass upload has written.
+  alignas(16) static uint32_t s_mergedVsConstants[0x400];
+  const uint32_t *vsConstSrc = device->vertexShaderFloatConstants;
+  if (g_liveVsFloatConstants != nullptr) {
+    // PM4 draw: base = the issuing context's real ALU register file
+    // (ctx+0x710, register-aligned). FM2 uses MULTIPLE render contexts
+    // (g_FM2_ActivePassRenderContext_ switches per pass) and on hardware the
+    // ring merges their constant emits -- e.g. the UI ModelView (c0-c2) is
+    // uploaded on the UI/movie context while the glyph draws are issued on
+    // the main one (proven by the Xenia-vs-plume arcade capture diff). Model
+    // that by overlaying the cross-context SetVertexShaderConstantFN mirror
+    // (g_passVsConstants, fed in call order by the 0x8236D958 hook) on top.
+    if (g_passVsConstantsValid.load(std::memory_order_relaxed)) {
+      std::memcpy(s_mergedVsConstants, g_liveVsFloatConstants,
+                  sizeof(s_mergedVsConstants));
+      // Overlay ONLY the per-pass ModelView rows (c0-c2): those are the
+      // registers uploaded on whichever context is active for the pass, which
+      // the issuing context's file misses (proven by the Xenia diff). Wider
+      // overlays clobber correct live registers with stale cross-pass writes
+      // (mirror is last-write-wins across all contexts).
+      uint64_t bits = g_passVsConstantsCoverage[0] & 0x7u;
+      while (bits != 0) {
+        const uint32_t reg = uint32_t(std::countr_zero(bits));
+        bits &= bits - 1u;
+        std::memcpy(s_mergedVsConstants + reg * 4u,
+                    g_passVsConstants + reg * 4u, 16u);
+      }
+      vsConstSrc = s_mergedVsConstants;
+    } else {
+      vsConstSrc = g_liveVsFloatConstants;
+    }
+  } else if (g_passVsConstantsValid.load(std::memory_order_relaxed)) {
+    std::memcpy(s_mergedVsConstants, device->vertexShaderFloatConstants,
+                sizeof(s_mergedVsConstants));
+    for (uint32_t w = 0; w < 4u; ++w) {
+      uint64_t bits = g_passVsConstantsCoverage[w];
+      while (bits != 0) {
+        const uint32_t reg = w * 64u + uint32_t(std::countr_zero(bits));
+        bits &= bits - 1u;
+        std::memcpy(s_mergedVsConstants + reg * 4u,
+                    g_passVsConstants + reg * 4u, 16u);
+      }
+    }
+    vsConstSrc = s_mergedVsConstants;
+  }
   SetRootDescriptor(g_uploadAllocator.allocateCopy<true>(
                         vsConstSrc,
                         sizeof(device->vertexShaderFloatConstants), 0x100),
                     0);
+  const uint32_t *psConstSrc = g_livePsFloatConstants != nullptr
+                                   ? g_livePsFloatConstants
+                                   : device->pixelShaderFloatConstants;
   SetRootDescriptor(g_uploadAllocator.allocateCopy<true>(
-                        reinterpret_cast<const uint32_t *>(devBytes + 0x1700),
-                        0x380 * sizeof(uint32_t), 0x100),
+                        psConstSrc,
+                        sizeof(device->pixelShaderFloatConstants), 0x100),
                     1);
   SetRootDescriptor(g_uploadAllocator.allocateCopy<false>(
                         &g_sharedConstants, sizeof(g_sharedConstants), 0x100),
@@ -3311,9 +3434,29 @@ void MirrorPassVsConstants(uint32_t startRegister, const void *src,
                            uint32_t vector4fCount) {
   if (src == nullptr || startRegister >= 0x100u || vector4fCount == 0)
     return;
-  const uint32_t count = std::min(vector4fCount, 0x100u - startRegister);
-  std::memcpy(g_passVsConstants + startRegister * 4u, src, count * 16u);
+  // 2026-07-02 off-by-one: SetVertexShaderConstantFN's API register D writes
+  // guest ctx+0x700+16D while the hardware ALU file starts at ctx+0x710, so
+  // hardware register = D-1. A D=0 call's first vec4 lands in the block's
+  // 16-byte header and is not hardware-visible -- skip it.
+  uint32_t hwStart;
+  if (startRegister == 0) {
+    src = static_cast<const uint8_t *>(src) + 16;
+    if (--vector4fCount == 0)
+      return;
+    hwStart = 0;
+  } else {
+    hwStart = startRegister - 1u;
+  }
+  const uint32_t count = std::min(vector4fCount, 0x100u - hwStart);
+  std::memcpy(g_passVsConstants + hwStart * 4u, src, count * 16u);
+  for (uint32_t r = hwStart; r < hwStart + count; ++r)
+    g_passVsConstantsCoverage[r / 64u] |= uint64_t(1) << (r % 64u);
   g_passVsConstantsValid.store(true, std::memory_order_relaxed);
+}
+
+void SetLiveFloatConstantFiles(const void *vsFile, const void *psFile) {
+  g_liveVsFloatConstants = static_cast<const uint32_t *>(vsFile);
+  g_livePsFloatConstants = static_cast<const uint32_t *>(psFile);
 }
 
 // ---------------------------------------------------------------------------
@@ -4142,6 +4285,38 @@ void StretchRect(GuestDevice * /*device*/, uint32_t flags,
     resolve.destX = uint32_t(std::max(destPoint->x.get(), int32_t(0)));
     resolve.destY = uint32_t(std::max(destPoint->y.get(), int32_t(0)));
   }
+  // Xenos predicated tiling: tile-pass resolves pass pSourceRect in FRAME
+  // coordinates while the tile RT only holds the current band (the tile
+  // window maps frame row destY to tile row 0). Rebase the rect into tile
+  // space when it lies outside the source surface; otherwise
+  // ClipResolveRegion clamps it to an empty region and the band is dropped.
+  if (resolve.hasSourceRect &&
+      (resolve.sourceRect.bottom > int32_t(surface->height) ||
+       resolve.sourceRect.right > int32_t(surface->width))) {
+    resolve.sourceRect.left -= int32_t(resolve.destX);
+    resolve.sourceRect.top -= int32_t(resolve.destY);
+    resolve.sourceRect.right -= int32_t(resolve.destX);
+    resolve.sourceRect.bottom -= int32_t(resolve.destY);
+  }
+  // Band resolve = end of a tile pass: remember the tile surface + frame dims
+  // and advance the tiling window offset for the NEXT pass (band k resolves at
+  // destY=k*tileHeight; the next pass renders the following band, so frame row
+  // destY+tileHeight must land at tile row 0). Reset after the last band.
+  if (!isDepthStencil && destPoint != nullptr &&
+      surface->height < destination->height &&
+      surface->width == destination->width) {
+    g_tileRenderTarget = surface;
+    g_tileFrameWidth = destination->width;
+    g_tileFrameHeight = destination->height;
+    const uint32_t nextTop = resolve.destY + surface->height;
+    const int32_t nextOffset =
+        nextTop >= destination->height ? 0 : -int32_t(nextTop);
+    if (nextOffset != g_tileViewportOffsetY) {
+      g_tileViewportOffsetY = nextOffset;
+      g_dirtyStates.viewport = true;
+      g_dirtyStates.scissorRect = true;
+    }
+  }
 
   const RenderSampleCounts sampleCount = GetSampleCount(surface);
   const bool fullSurface = IsFullSurfaceResolve(surface, destination, resolve);
@@ -4153,6 +4328,16 @@ void StretchRect(GuestDevice * /*device*/, uint32_t flags,
   ++destination->pendingResolveCount;
   surface->pendingResolves.emplace_back(resolve);
   g_pendingStretchRectSurfaces.emplace(surface);
+
+  // Predicated-tiling band resolves must snapshot the tile NOW: the next tile
+  // pass redraws the same physical surface, so a copy deferred to the next
+  // flush point would read the wrong pass's content (all bands end up showing
+  // the final pass -> the frame repeats vertically per band).
+  if (!isDepthStencil && destPoint != nullptr &&
+      surface->height < destination->height &&
+      surface->width == destination->width) {
+    FlushPendingStretchRects(nullptr, nullptr);
+  }
 
   for (uint32_t i = 0; i < std::size(g_textures); ++i) {
     if (static_cast<GuestBaseTexture *>(g_textures[i]) == destination) {

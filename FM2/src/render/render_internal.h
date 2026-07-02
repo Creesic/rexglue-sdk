@@ -54,6 +54,14 @@ plume::RenderShader *LoadShader(GuestShader *guestShader,
 void MirrorPassVsConstants(uint32_t startRegister, const void *src,
                            uint32_t vector4fCount);
 
+// 2026-07-02: live float-constant files on the game's PM4 render context.
+// UploadMatrixConstants (0x8236D958) writes register r to ctx+0x700+r*16 (VS);
+// the PS file sits at ctx+0x1700. The PM4 draw hooks point these host pointers
+// at the context around each draw so FlushRenderState uploads the game's real
+// register file (raw big-endian) instead of the GuestDevice struct fields the
+// PM4 path never writes. Pass nullptr/nullptr to restore struct sourcing.
+void SetLiveFloatConstantFiles(const void *vsFile, const void *psFile);
+
 struct GuestVertexDeclaration;
 GuestVertexDeclaration *LookupVertexDeclarationAlias(uint32_t guestAddress);
 // Snapshot of every D3DVERTEXELEMENT9 declaration FM2 has created. Used to match
