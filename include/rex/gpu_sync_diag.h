@@ -88,6 +88,7 @@ enum SyncOp : uint16_t {
 void Record(uint16_t op, uint32_t handle, uint32_t handle2, uint16_t result);
 void Dump(const char* reason);  // one-shot; dumps logs/synctrace_<reason>.txt
 void Arm(const char* tag);      // drop a locator MARK at the confirm window
+void CheckBlankFrame();         // call each swap; dumps trace if fiber activity was too sparse
 
 // --- Sync-op hooks (inline; call the exported Record) -------------------------
 // Signatures preserved from the prior count-only version so the threading / CP /
@@ -96,6 +97,7 @@ void Arm(const char* tag);      // drop a locator MARK at the confirm window
 inline void OnSwap(uint32_t frontbuffer_ptr) {
   const uint64_t s = g_swap_count.fetch_add(1, std::memory_order_relaxed) + 1;
   Record(OP_SWAP, frontbuffer_ptr, 0, 0);
+  CheckBlankFrame();
   // GOOD trigger: the render keeps swapping past the danger window. A black run
   // FREEZES the swap thread, so it never reaches kGoodSwaps. Driven here, NOT from
   // LogBootGate, because in a good run the boot scheduler parks (countdown freezes
@@ -193,6 +195,17 @@ static std::atomic<uint64_t> g_ring_head{0};
 static std::atomic<bool> g_trace_enabled{true};
 static std::atomic<bool> g_dumped{false};
 
+// Blank-frame detector: counts OP_FIBERSWAP records per swap window.
+// Lives in the DLL so both Record() and CheckBlankFrame() share the same instance
+// (avoids the cross-module inline-variable split described above).
+static std::atomic<uint32_t> g_frame_fiber_swaps{0};
+static std::atomic<bool> g_blank_frame_dumped{false};
+// Only check after kBlankCheckWarmupSwaps to skip the noisy boot/menu phase.
+constexpr uint64_t kBlankCheckWarmupSwaps = 500;
+// A real gameplay frame has hundreds of fiber switches; fewer than this strongly
+// indicates the render fiber didn't run.
+constexpr uint32_t kMinFiberSwapsPerFrame = 15;
+
 static uint64_t NowNs() {
   return static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -225,6 +238,9 @@ static const char* OpName(uint16_t op) {
 
 // Hot path: one atomic fetch_add + one struct store. No lock, no I/O.
 void Record(uint16_t op, uint32_t handle, uint32_t handle2, uint16_t result) {
+  if (op == OP_FIBERSWAP) {
+    g_frame_fiber_swaps.fetch_add(1, std::memory_order_relaxed);
+  }
   if (!g_trace_enabled.load(std::memory_order_relaxed)) {
     return;
   }
@@ -238,6 +254,56 @@ void Record(uint16_t op, uint32_t handle, uint32_t handle2, uint16_t result) {
   r.handle2 = handle2;
   r.op = op;
   r.result = result;
+}
+
+// Emits the last kDumpWindow ring entries unconditionally (no g_dumped guard).
+// Used by CheckBlankFrame so it can dump even after the boot/menu Dump() already fired.
+static void DumpRaw(const char* reason) {
+  const uint64_t head = g_ring_head.load(std::memory_order_seq_cst);
+  const uint64_t total = head;
+  const uint64_t count = total < kDumpWindow ? total : kDumpWindow;
+  const uint64_t start = head - count;
+  REXKRNL_WARN(
+      "SYNCTRACE BEGIN reason={} total_ops={} window={} cols=[seq dt_us tid op handle handle2 lr result]",
+      reason, static_cast<unsigned long long>(total), static_cast<unsigned long long>(count));
+  std::string buf;
+  buf.reserve(1u << 16);
+  char line[160];
+  uint64_t t0 = 0;
+  bool have_t0 = false;
+  int inbuf = 0;
+  for (uint64_t s = start; s < head; ++s) {
+    const SyncRec& r = g_ring[s & kRingMask];
+    if (r.seq != s) continue;
+    if (!have_t0) { t0 = r.ts; have_t0 = true; }
+    const int n = std::snprintf(line, sizeof(line),
+                                "ST %llu %.1f %u %s 0x%08X 0x%08X 0x%08X %u\n",
+                                static_cast<unsigned long long>(r.seq), (r.ts - t0) / 1000.0, r.tid,
+                                OpName(r.op), r.handle, r.handle2, r.lr, r.result);
+    if (n > 0) buf.append(line, static_cast<size_t>(n));
+    if (++inbuf >= 500) { REXKRNL_WARN("SYNCTRACE\n{}", buf); buf.clear(); inbuf = 0; }
+  }
+  if (!buf.empty()) REXKRNL_WARN("SYNCTRACE\n{}", buf);
+  REXKRNL_WARN("SYNCTRACE END reason={}", reason);
+}
+
+void CheckBlankFrame() {
+  const uint32_t fswaps = g_frame_fiber_swaps.exchange(0, std::memory_order_relaxed);
+  const uint64_t total_swaps = g_swap_count.load(std::memory_order_relaxed);
+  if (total_swaps < kBlankCheckWarmupSwaps) {
+    return;  // still in boot/menu phase
+  }
+  if (g_blank_frame_dumped.load(std::memory_order_relaxed)) {
+    return;  // already captured one blank-frame trace
+  }
+  if (fswaps < kMinFiberSwapsPerFrame) {
+    bool expected = false;
+    if (g_blank_frame_dumped.compare_exchange_strong(expected, true)) {
+      REXKRNL_WARN("BLANK-FRAME DETECTED: swap#{} fswaps={} (<{}); dumping synctrace",
+                   static_cast<unsigned long long>(total_swaps), fswaps, kMinFiberSwapsPerFrame);
+      DumpRaw("blank-frame");
+    }
+  }
 }
 
 void Arm(const char* tag) {
@@ -257,7 +323,8 @@ void Dump(const char* reason) {
   if (!g_dumped.compare_exchange_strong(expected, true)) {
     return;  // already dumped (one-shot)
   }
-  g_trace_enabled.store(false, std::memory_order_seq_cst);
+  // Do NOT disable g_trace_enabled: ring keeps recording so that the blank-frame
+  // detector (CheckBlankFrame) can capture gameplay state after the boot dump fires.
 
   const uint64_t head = g_ring_head.load(std::memory_order_seq_cst);
   const uint64_t total = head;

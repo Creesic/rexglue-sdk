@@ -48,10 +48,131 @@ REXCVAR_DEFINE_BOOL(d3d12_submit_on_primary_buffer_end, true, "GPU/D3D12",
                     "Submit command list when PM4 primary buffer ends")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(d3d12_doax_hold_low_draw_guest_output, true, "GPU/D3D12",
+                    "DOAX: hold the previous guest output across transient low-draw black frames")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(d3d12_doax_fake_occlusion_queries, false, "GPU/D3D12",
+                    "DOAX diagnostic: use fake occlusion query sample counts")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(d3d12_doax_swap_signature, true, "GPU/D3D12",
+                    "DOAX diagnostic: log a sparse frontbuffer signature at swap")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(d3d12_doax_final_draw_trace, false, "GPU/D3D12",
+                    "DOAX diagnostic: log late base-0 frontbuffer composite draws")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(d3d12_doax_hold_missing_final_composite, false, "GPU/D3D12",
+                    "DOAX diagnostic: hold previous output when the late full-screen composite pass is omitted")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DECLARE(uint32_t, gpu_mem_write_trace_addr);
 REXCVAR_DECLARE(uint32_t, gpu_mem_write_trace_size);
 
 namespace {
+
+constexpr uint32_t kDoaxTitleId = 0x544307D2u;
+constexpr uint32_t kDoaxFrontbufferWidth = 1280u;
+constexpr uint32_t kDoaxFrontbufferHeight = 720u;
+constexpr uint64_t kDoaxFullSceneDrawPackets = 1000u;
+constexpr uint64_t kDoaxFullSceneIndexedDrawPackets = 500u;
+constexpr uint64_t kDoaxMissingFinalCompositeSceneDrawPackets = 900u;
+constexpr uint64_t kDoaxLowDrawMaxDrawPackets = 128u;
+constexpr uint64_t kDoaxLowDrawMaxDrawIndices = 512u;
+constexpr uint64_t kDoaxLowDrawMaxCopyPackets = 32u;
+constexpr uint32_t kDoaxLowDrawHoldMaxFrames = 240u;
+constexpr uint32_t kDoaxMissingFinalCompositeHoldMaxFrames = 120u;
+constexpr uint32_t kDoaxSwapSignatureSamples = 256u;
+constexpr uint64_t kDoaxFinalCompositeVsHash = 0x5DA9246A2E51D5DFull;
+constexpr uint64_t kDoaxFinalCompositePsHash = 0x9567C79307ACC6F5ull;
+constexpr uint64_t kDoaxFinalCompositeAltPsHash = 0xE2CEF62EAE21A6ABull;
+constexpr uint32_t kDoaxFinalCompositeRestoreFetchDword1 = 0x18D9E006u;
+
+uint8_t LoadDoaxVirtualU8(const rex::memory::Memory* memory, uint32_t address) {
+  return memory ? *memory->TranslateVirtual<const uint8_t*>(address) : 0;
+}
+
+uint32_t LoadDoaxVirtualU32(const rex::memory::Memory* memory, uint32_t address) {
+  return memory ? rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual(address)) : 0;
+}
+
+struct DoaxFrontbufferSignature {
+  bool valid = false;
+  uint32_t samples = 0;
+  uint32_t nonzero_dwords = 0;
+  uint32_t zero_dwords = 0;
+  uint32_t first = 0;
+  uint32_t middle = 0;
+  uint32_t last = 0;
+  uint64_t byte_sum = 0;
+  uint64_t rgb3_min_sum = 0;
+  uint64_t hash = 1469598103934665603ull;
+};
+
+// Computes the DOAX frontbuffer signature from a raw byte pointer. `base` may be
+// the guest CPU mirror (SampleDoaxFrontbufferPhysical, never GPU-written -> ~0) or
+// a GPU readback of shared memory (the real resolved content).
+DoaxFrontbufferSignature ComputeDoaxFrontbufferSignature(const uint8_t* base,
+                                                         uint32_t byte_length) {
+  DoaxFrontbufferSignature signature;
+  if (!base || byte_length < sizeof(uint32_t)) {
+    return signature;
+  }
+
+  uint64_t channel_sums[4] = {};
+  signature.valid = true;
+  signature.samples = kDoaxSwapSignatureSamples;
+  const uint32_t max_offset = byte_length - sizeof(uint32_t);
+  for (uint32_t i = 0; i < kDoaxSwapSignatureSamples; ++i) {
+    uint32_t offset =
+        kDoaxSwapSignatureSamples > 1
+            ? uint32_t((uint64_t(i) * max_offset) / (kDoaxSwapSignatureSamples - 1))
+            : 0;
+    offset &= ~uint32_t(3);
+
+    uint32_t raw = 0;
+    std::memcpy(&raw, base + offset, sizeof(raw));
+    if (i == 0) {
+      signature.first = raw;
+    } else if (i == kDoaxSwapSignatureSamples / 2) {
+      signature.middle = raw;
+    } else if (i == kDoaxSwapSignatureSamples - 1) {
+      signature.last = raw;
+    }
+    if (raw) {
+      ++signature.nonzero_dwords;
+    } else {
+      ++signature.zero_dwords;
+    }
+
+    signature.hash ^= uint64_t(raw) + (uint64_t(offset) << 32);
+    signature.hash *= 1099511628211ull;
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&raw);
+    for (uint32_t c = 0; c < 4; ++c) {
+      signature.byte_sum += bytes[c];
+      channel_sums[c] += bytes[c];
+    }
+  }
+
+  signature.rgb3_min_sum = signature.byte_sum;
+  for (uint32_t alpha_candidate = 0; alpha_candidate < 4; ++alpha_candidate) {
+    signature.rgb3_min_sum =
+        std::min(signature.rgb3_min_sum, signature.byte_sum - channel_sums[alpha_candidate]);
+  }
+  return signature;
+}
+
+DoaxFrontbufferSignature SampleDoaxFrontbufferPhysical(const rex::memory::Memory* memory,
+                                                       uint32_t frontbuffer_ptr,
+                                                       uint32_t byte_length) {
+  if (!memory) {
+    return DoaxFrontbufferSignature();
+  }
+  return ComputeDoaxFrontbufferSignature(
+      memory->TranslatePhysical<const uint8_t*>(frontbuffer_ptr), byte_length);
+}
 
 void TraceD3D12MemexportReadback(const char* source, uint32_t address, uint32_t size,
                                  const uint8_t* data) {
@@ -210,6 +331,22 @@ void D3D12CommandProcessor::RestoreEdramSnapshot(const void* snapshot) {
 
 bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
                                                                uint32_t packet, uint32_t count) {
+  if (REXCVAR_GET(d3d12_doax_fake_occlusion_queries) && kernel_state_ &&
+      kernel_state_->title_id() == kDoaxTitleId) {
+    static bool s_logged_doax_fake_occlusion = false;
+    if (!s_logged_doax_fake_occlusion) {
+      s_logged_doax_fake_occlusion = true;
+      REXGPU_WARN(
+          "DOAX occlusion query workaround active: using fake sample count {} for "
+          "EVENT_WRITE_ZPD",
+          REXCVAR_GET(query_occlusion_fake_sample_count));
+    }
+    if (active_occlusion_query_.valid) {
+      DisableHostOcclusionQueries();
+    }
+    return CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(reader, packet, count);
+  }
+
   if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_) {
     return CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(reader, packet, count);
   }
@@ -1951,6 +2088,220 @@ void D3D12CommandProcessor::OnGammaRampPWLValueWritten() {
   gamma_ramp_pwl_up_to_date_ = false;
 }
 
+bool D3D12CommandProcessor::ShouldHoldDoaxLowDrawSwap(uint32_t frontbuffer_ptr,
+                                                      uint32_t frontbuffer_width,
+                                                      uint32_t frontbuffer_height) {
+  if (!REXCVAR_GET(d3d12_doax_hold_low_draw_guest_output)) {
+    return false;
+  }
+  if (!kernel_state_) {
+    return false;
+  }
+  if (kernel_state_->title_id() != kDoaxTitleId) {
+    return false;
+  }
+  if (frontbuffer_width != kDoaxFrontbufferWidth || frontbuffer_height != kDoaxFrontbufferHeight) {
+    doax_low_draw_hold_frames_ = 0;
+    return false;
+  }
+
+  const uint64_t draws = current_command_stats_draw_packets();
+  const uint64_t indexed = current_command_stats_indexed_draw_packets();
+  const uint64_t indices = current_command_stats_draw_indices();
+  const uint64_t copies = current_command_stats_copy_packets();
+
+  if (draws >= kDoaxFullSceneDrawPackets && indexed >= kDoaxFullSceneIndexedDrawPackets) {
+    doax_low_draw_hold_has_good_output_ = true;
+    doax_low_draw_hold_frames_ = 0;
+    return false;
+  }
+
+  const bool low_draw_black_signature = draws <= kDoaxLowDrawMaxDrawPackets && indexed == 0 &&
+                                        indices <= kDoaxLowDrawMaxDrawIndices &&
+                                        copies <= kDoaxLowDrawMaxCopyPackets;
+  if (!low_draw_black_signature) {
+    doax_low_draw_hold_frames_ = 0;
+    return false;
+  }
+  if (!doax_low_draw_hold_has_good_output_) {
+    return false;
+  }
+  if (doax_low_draw_hold_frames_ >= kDoaxLowDrawHoldMaxFrames) {
+    if (doax_low_draw_hold_logs_ < 16u) {
+      ++doax_low_draw_hold_logs_;
+      REXGPU_WARN(
+          "DOAX low-draw hold cap reached; allowing guest output publish draws={} indexed={} "
+          "indices={} copies={}",
+          draws, indexed, indices, copies);
+    }
+    return false;
+  }
+
+  ++doax_low_draw_hold_frames_;
+  if (doax_low_draw_hold_logs_ < 16u) {
+    ++doax_low_draw_hold_logs_;
+    const auto fetch0 = register_file_->GetTextureFetch(0);
+    REXGPU_WARN(
+        "DOAX low-draw hold: keeping previous guest output frame={} fb={:08X} draws={} indexed={} "
+        "indices={} copies={} present={} target={} overlay={} mcase={} mloop={} sphase={} "
+        "smode={} sctdown={} sff={} sprite_busy={} fetch0={:08X} {:08X} {:08X} {:08X} {:08X} "
+        "{:08X}",
+        doax_low_draw_hold_frames_, frontbuffer_ptr, draws, indexed, indices, copies,
+        LoadDoaxVirtualU8(memory_, 0x833BB763u), LoadDoaxVirtualU8(memory_, 0x8341F9F6u),
+        LoadDoaxVirtualU8(memory_, 0x833B8514u), LoadDoaxVirtualU8(memory_, 0x833B8DEAu),
+        LoadDoaxVirtualU8(memory_, 0x833B8DEBu), LoadDoaxVirtualU8(memory_, 0x833B8DF9u),
+        LoadDoaxVirtualU8(memory_, 0x833B8DFCu), LoadDoaxVirtualU8(memory_, 0x833B8DFEu),
+        LoadDoaxVirtualU8(memory_, 0x833B8DFFu), LoadDoaxVirtualU32(memory_, 0x83CAF8A4u),
+        fetch0.dword_0, fetch0.dword_1, fetch0.dword_2, fetch0.dword_3, fetch0.dword_4,
+        fetch0.dword_5);
+  }
+  return true;
+}
+
+bool D3D12CommandProcessor::ShouldHoldDoaxMissingFinalCompositeSwap(
+    uint32_t frontbuffer_ptr, uint32_t frontbuffer_width, uint32_t frontbuffer_height,
+    bool frontbuffer_signature_valid, uint32_t frontbuffer_signature_nonzero_dwords,
+    uint64_t frontbuffer_signature_rgb3_min_sum) {
+  const bool hold_enabled = REXCVAR_GET(d3d12_doax_hold_missing_final_composite);
+  if (!kernel_state_ || kernel_state_->title_id() != kDoaxTitleId) {
+    return false;
+  }
+  if (frontbuffer_width != kDoaxFrontbufferWidth || frontbuffer_height != kDoaxFrontbufferHeight) {
+    doax_missing_final_composite_hold_frames_ = 0;
+    return false;
+  }
+
+  const uint64_t draws = current_command_stats_draw_packets();
+  const uint64_t indexed = current_command_stats_indexed_draw_packets();
+  const uint64_t indices = current_command_stats_draw_indices();
+  const uint64_t copies = current_command_stats_copy_packets();
+  const bool full_scene =
+      draws >= kDoaxMissingFinalCompositeSceneDrawPackets &&
+      indexed >= kDoaxFullSceneIndexedDrawPackets;
+  const bool frontbuffer_signature_black =
+      frontbuffer_signature_valid && frontbuffer_signature_nonzero_dwords == 0 &&
+      frontbuffer_signature_rgb3_min_sum == 0;
+
+  const uint32_t check_tick = ++doax_missing_final_composite_check_tick_;
+  if (check_tick <= 8u || (check_tick % 120u) == 0u) {
+    REXGPU_WARN(
+        "DOAXMISSCHK fb={:08X} size={}x{} draws={} indexed={} indices={} copies={} full_scene={} "
+        "sig_valid={} sig_black={} sig_nz={} sig_rgb3min={} baseline={} hold_enabled={} "
+        "final_comp_seen={} final_comp_draws={} hold_frames={}",
+        frontbuffer_ptr, frontbuffer_width, frontbuffer_height, draws, indexed, indices, copies,
+        full_scene ? 1 : 0, frontbuffer_signature_valid ? 1 : 0,
+        frontbuffer_signature_black ? 1 : 0, frontbuffer_signature_nonzero_dwords,
+        frontbuffer_signature_rgb3_min_sum, doax_missing_final_composite_has_good_output_ ? 1 : 0,
+        hold_enabled ? 1 : 0, doax_final_composite_seen_ ? 1 : 0, doax_final_composite_draws_,
+        doax_missing_final_composite_hold_frames_);
+  }
+
+  if (!full_scene) {
+    doax_missing_final_composite_hold_frames_ = 0;
+    return false;
+  }
+
+  if (doax_final_composite_seen_) {
+    doax_missing_final_composite_has_good_output_ = true;
+    doax_missing_final_composite_hold_frames_ = 0;
+    if (doax_missing_final_composite_good_logs_ < 8u) {
+      ++doax_missing_final_composite_good_logs_;
+      REXGPU_WARN(
+          "DOAX final-composite baseline: fb={:08X} draws={} indexed={} indices={} copies={} "
+          "final_comp_draws={} hold_enabled={} sig_valid={} sig_nz={} sig_rgb3min={}",
+          frontbuffer_ptr, draws, indexed, indices, copies, doax_final_composite_draws_,
+          hold_enabled ? 1 : 0, frontbuffer_signature_valid ? 1 : 0,
+          frontbuffer_signature_nonzero_dwords, frontbuffer_signature_rgb3_min_sum);
+    }
+    return false;
+  }
+
+  if (!doax_missing_final_composite_has_good_output_) {
+    const uint32_t no_baseline_frame = ++doax_missing_final_composite_no_baseline_frames_;
+    const bool log_no_baseline = doax_missing_final_composite_no_baseline_logs_ < 32u ||
+                                 (no_baseline_frame % 120u) == 0u;
+    if (log_no_baseline) {
+      ++doax_missing_final_composite_no_baseline_logs_;
+      const auto fetch0 = register_file_->GetTextureFetch(0);
+      REXGPU_WARN(
+          "DOAX missing final composite with no baseline: frame={} fb={:08X} draws={} indexed={} "
+          "indices={} copies={} hold_enabled={} sig_valid={} sig_black={} sig_nz={} "
+          "sig_rgb3min={} present={} target={} overlay={} mcase={} mloop={} mflag={} sphase={} "
+          "smode={} sctdown={} sff={} scene={} sprite_busy={} fetch0={:08X} {:08X} {:08X} "
+          "{:08X} {:08X} {:08X}",
+          no_baseline_frame, frontbuffer_ptr, draws, indexed, indices, copies,
+          hold_enabled ? 1 : 0, frontbuffer_signature_valid ? 1 : 0,
+          frontbuffer_signature_black ? 1 : 0, frontbuffer_signature_nonzero_dwords,
+          frontbuffer_signature_rgb3_min_sum, LoadDoaxVirtualU8(memory_, 0x833BB763u),
+          LoadDoaxVirtualU8(memory_, 0x8341F9F6u), LoadDoaxVirtualU8(memory_, 0x833B8514u),
+          LoadDoaxVirtualU8(memory_, 0x833B8DEAu), LoadDoaxVirtualU8(memory_, 0x833B8DEBu),
+          LoadDoaxVirtualU8(memory_, 0x833B8DEFu), LoadDoaxVirtualU8(memory_, 0x833B8DF9u),
+          LoadDoaxVirtualU8(memory_, 0x833B8DFCu), LoadDoaxVirtualU8(memory_, 0x833B8DFEu),
+          LoadDoaxVirtualU8(memory_, 0x833B8DFFu), LoadDoaxVirtualU8(memory_, 0x833B745Fu),
+          LoadDoaxVirtualU32(memory_, 0x83CAF8A4u), fetch0.dword_0, fetch0.dword_1,
+          fetch0.dword_2, fetch0.dword_3, fetch0.dword_4, fetch0.dword_5);
+    }
+    return false;
+  }
+  if (!hold_enabled) {
+    doax_missing_final_composite_hold_frames_ = 0;
+    if (doax_missing_final_composite_disabled_logs_ < 16u) {
+      ++doax_missing_final_composite_disabled_logs_;
+      REXGPU_WARN(
+          "DOAX missing-final-composite suspicious output but hold disabled: fb={:08X} draws={} "
+          "indexed={} indices={} copies={} final_comp_seen={} final_comp_draws={} sig_valid={} "
+          "sig_nz={} sig_rgb3min={}",
+          frontbuffer_ptr, draws, indexed, indices, copies, doax_final_composite_seen_ ? 1 : 0,
+          doax_final_composite_draws_, frontbuffer_signature_valid ? 1 : 0,
+          frontbuffer_signature_nonzero_dwords, frontbuffer_signature_rgb3_min_sum);
+    }
+    return false;
+  }
+  if (doax_missing_final_composite_hold_frames_ >= kDoaxMissingFinalCompositeHoldMaxFrames) {
+    if (doax_missing_final_composite_hold_cap_logs_ < 16u) {
+      ++doax_missing_final_composite_hold_cap_logs_;
+      REXGPU_WARN(
+          "DOAX missing-final-composite hold cap reached; allowing guest output publish "
+          "draws={} indexed={} indices={} copies={} final_comp_seen={} final_comp_draws={} "
+          "sig_valid={} sig_nz={} sig_rgb3min={}",
+          draws, indexed, indices, copies, doax_final_composite_seen_ ? 1 : 0,
+          doax_final_composite_draws_,
+          frontbuffer_signature_valid ? 1 : 0, frontbuffer_signature_nonzero_dwords,
+          frontbuffer_signature_rgb3_min_sum);
+    }
+    return false;
+  }
+
+  ++doax_missing_final_composite_hold_frames_;
+  const bool log_hold = doax_missing_final_composite_hold_logs_ < 32u ||
+                        (doax_missing_final_composite_hold_frames_ % 30u) == 0u;
+  if (log_hold) {
+    if (doax_missing_final_composite_hold_logs_ < 32u) {
+      ++doax_missing_final_composite_hold_logs_;
+    }
+    const auto fetch0 = register_file_->GetTextureFetch(0);
+    REXGPU_WARN(
+        "DOAX missing-final-composite hold: keeping previous guest output frame={} fb={:08X} "
+        "draws={} indexed={} indices={} copies={} final_comp_seen={} final_comp_draws={} "
+        "sig_valid={} sig_nz={} sig_rgb3min={} present={} target={} overlay={} mcase={} mloop={} "
+        "mflag={} sphase={} smode={} sctdown={} sff={} scene={} sprite_busy={} fetch0={:08X} "
+        "{:08X} {:08X} {:08X} {:08X} {:08X}",
+        doax_missing_final_composite_hold_frames_, frontbuffer_ptr, draws, indexed, indices,
+        copies, doax_final_composite_seen_ ? 1 : 0, doax_final_composite_draws_,
+        frontbuffer_signature_valid ? 1 : 0, frontbuffer_signature_nonzero_dwords,
+        frontbuffer_signature_rgb3_min_sum,
+        LoadDoaxVirtualU8(memory_, 0x833BB763u), LoadDoaxVirtualU8(memory_, 0x8341F9F6u),
+        LoadDoaxVirtualU8(memory_, 0x833B8514u), LoadDoaxVirtualU8(memory_, 0x833B8DEAu),
+        LoadDoaxVirtualU8(memory_, 0x833B8DEBu), LoadDoaxVirtualU8(memory_, 0x833B8DEFu),
+        LoadDoaxVirtualU8(memory_, 0x833B8DF9u), LoadDoaxVirtualU8(memory_, 0x833B8DFCu),
+        LoadDoaxVirtualU8(memory_, 0x833B8DFEu), LoadDoaxVirtualU8(memory_, 0x833B8DFFu),
+        LoadDoaxVirtualU8(memory_, 0x833B745Fu), LoadDoaxVirtualU32(memory_, 0x83CAF8A4u),
+        fetch0.dword_0, fetch0.dword_1, fetch0.dword_2, fetch0.dword_3, fetch0.dword_4,
+        fetch0.dword_5);
+  }
+  return true;
+}
+
 void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                       uint32_t frontbuffer_height) {
   SCOPE_profile_cpu_f("gpu");
@@ -1964,10 +2315,152 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
     REXGPU_ERROR("IssueSwap: presenter is null");
     return;
   }
+  auto reset_doax_final_composite_tracking = [this]() {
+    doax_final_composite_seen_ = false;
+    doax_final_composite_draws_ = 0;
+  };
+  const bool doax_swap_signature_target =
+      kernel_state_ && kernel_state_->title_id() == kDoaxTitleId && memory_ &&
+      frontbuffer_width == kDoaxFrontbufferWidth && frontbuffer_height == kDoaxFrontbufferHeight;
+  DoaxFrontbufferSignature doax_frontbuffer_signature;
+  if (doax_swap_signature_target) {
+    constexpr uint32_t kDoaxFrontbufferBytesPerPixel = 4u;
+    uint32_t sample_byte_length = frontbuffer_width * frontbuffer_height *
+                                  kDoaxFrontbufferBytesPerPixel;
+    doax_frontbuffer_signature =
+        SampleDoaxFrontbufferPhysical(memory_, frontbuffer_ptr, sample_byte_length);
+
+    // TEMP_DIAG (DOAX pool "fall in water" black): the guest CPU mirror above is
+    // NEVER written by the GPU resolve, so DOAXSWAPSIG reads ~0 even in visible
+    // frames. Read the ACTUAL resolved frontbuffer bytes back from shared memory
+    // (same synchronous pattern as IssueDraw_MemexportReadbackFullPath) to tell a
+    // truly-black present from a false signature. frontbuffer_ptr is the physical
+    // byte offset into shared memory (matches the resolve destBase). Grep DOAXFBSYNC.
+    if (REXCVAR_GET(d3d12_doax_swap_signature)) {
+      // Also read a SIBLING full-screen resolve that shares the frontbuffer's base-0
+      // EDRAM source (observed stable at guest 0x05F80000: resolved every frame from
+      // srcEDRAM=0x0, 1280x720, but NOT presented). During the black: sibling bright +
+      // frontbuffer zero => base-0 EDRAM was bright and the FRONTBUFFER resolve
+      // specifically failed (case a); both zero => base-0 EDRAM was black when resolved
+      // (case b). Grep DOAXFBSYNC / DOAXSIBSYNC.
+      constexpr uint32_t kDoaxBase0SiblingPtr = 0x05F80000u;
+      ID3D12Resource* shared_buffer = shared_memory_->GetBuffer();
+      const uint64_t shared_size = shared_buffer ? shared_buffer->GetDesc().Width : 0;
+      ID3D12Resource* fb_readback = RequestReadbackBuffer(sample_byte_length * 2u);
+      const bool fb_ok = fb_readback && shared_buffer &&
+                         uint64_t(frontbuffer_ptr) + sample_byte_length <= shared_size;
+      const bool sib_ok = fb_readback && shared_buffer &&
+                          uint64_t(kDoaxBase0SiblingPtr) + sample_byte_length <= shared_size;
+      if (fb_ok || sib_ok) {
+        shared_memory_->UseAsCopySource();
+        SubmitBarriers();
+        if (fb_ok) {
+          deferred_command_list_.D3DCopyBufferRegion(fb_readback, 0, shared_buffer, frontbuffer_ptr,
+                                                     sample_byte_length);
+        }
+        if (sib_ok) {
+          deferred_command_list_.D3DCopyBufferRegion(fb_readback, sample_byte_length, shared_buffer,
+                                                     kDoaxBase0SiblingPtr, sample_byte_length);
+        }
+        if (AwaitAllQueueOperationsCompletion()) {
+          D3D12_RANGE fb_read_range = {0, sample_byte_length * 2u};
+          void* fb_mapping = nullptr;
+          if (SUCCEEDED(fb_readback->Map(0, &fb_read_range, &fb_mapping))) {
+            const uint8_t* fb_bytes = reinterpret_cast<const uint8_t*>(fb_mapping);
+            if (fb_ok) {
+              DoaxFrontbufferSignature s =
+                  ComputeDoaxFrontbufferSignature(fb_bytes, sample_byte_length);
+              REXGPU_WARN(
+                  "DOAXFBSYNC frame={} fb={:08X} bytes={} nz={} zero={} sum={} rgb3min={} "
+                  "first={:08X} mid={:08X} last={:08X}",
+                  frame_current_, frontbuffer_ptr, sample_byte_length, s.nonzero_dwords,
+                  s.zero_dwords, s.byte_sum, s.rgb3_min_sum, s.first, s.middle, s.last);
+            }
+            if (sib_ok) {
+              DoaxFrontbufferSignature s = ComputeDoaxFrontbufferSignature(
+                  fb_bytes + sample_byte_length, sample_byte_length);
+              REXGPU_WARN(
+                  "DOAXSIBSYNC frame={} sib={:08X} bytes={} nz={} zero={} sum={} rgb3min={} "
+                  "first={:08X} mid={:08X} last={:08X}",
+                  frame_current_, kDoaxBase0SiblingPtr, sample_byte_length, s.nonzero_dwords,
+                  s.zero_dwords, s.byte_sum, s.rgb3_min_sum, s.first, s.middle, s.last);
+            }
+            D3D12_RANGE fb_write_range = {0, 0};
+            fb_readback->Unmap(0, &fb_write_range);
+          }
+        }
+      }
+    }
+  }
+
+  // TEMP_DIAG (DOAX pool "fall in water" black): the title submits 0 indexed 3D
+  // draws underwater (flip/resolve proven healthy). Correlate the indexed-draw
+  // count with the title-side scene-render gate vars to find which one flips at
+  // indexed=0. IDA (ida37): DOAX_IslandSceneRender gate dword_8398497C,
+  // DOAX_CurrentSceneId byte_833B745F, SceneGraphReset gate byte_833B4C68.
+  // Deduped on change so it prints only at visible<->black transitions. Grep DOAXGATE.
+  if (kernel_state_ && kernel_state_->title_id() == kDoaxTitleId && memory_) {
+    const uint64_t indexed = current_command_stats_indexed_draw_packets();
+    const uint64_t draws = current_command_stats_draw_packets();
+    const uint32_t gate = LoadDoaxVirtualU32(memory_, 0x8398497Cu);
+    const uint8_t scene_id = LoadDoaxVirtualU8(memory_, 0x833B745Fu);
+    const uint8_t graph_gate = LoadDoaxVirtualU8(memory_, 0x833B4C68u);
+    // RELIABLE black signal: the final-composite pass (the fullscreen quad that fills
+    // the frontbuffer -- color_base=0, pitch=1280, kDoaxFinalComposite* shaders,
+    // detected via doax_final_composite_seen_) was NOT emitted this frame. The
+    // frontbuffer memory sample (nonzero_dwords) is UNRELIABLE: it reads guest CPU
+    // memory that isn't synced with the GPU resolve, so it reads zero even on VISIBLE
+    // frames (a 2-fall capture logged all nz=0). Use the command-stream detector.
+    const bool black = !doax_final_composite_seen_;
+    const uint8_t suppress = LoadDoaxVirtualU8(memory_, 0x833B74B1u);
+    const uint64_t key = (uint64_t(black) << 48) | (uint64_t(gate != 0) << 40) |
+                         (uint64_t(scene_id) << 8) | (uint64_t(graph_gate) << 2) |
+                         (uint64_t(suppress != 0) << 1);
+    static uint64_t s_doaxgate_key = ~0ull;
+    static uint32_t s_doaxgate_tick = 0u;
+    // Log on any transition AND periodically (every 120 swaps): a fall-in-water
+    // capture window can be entirely black (no visible<->black transition in view),
+    // and dedup-only then never fires. Periodic sampling records the gate state in
+    // both steady states so we can diff them.
+    if (key != s_doaxgate_key || (s_doaxgate_tick++ % 120u) == 0u) {
+      s_doaxgate_key = key;
+      // Render-mode selector from DOAX_FrontEndRenderTick: dword_82E54F1C = {1,2,4}
+      // [dword_82B85498] when dword_82E54F20==1 -- candidate MSAA/quality mode that may
+      // drop the 2xMSAA final pass underwater. Plus the scene-worker stage/active gates.
+      const uint32_t mode_sel = LoadDoaxVirtualU32(memory_, 0x82E54F1Cu);
+      const uint32_t mode_idx = LoadDoaxVirtualU32(memory_, 0x82B85498u);
+      const uint32_t mode_en = LoadDoaxVirtualU32(memory_, 0x82E54F20u);
+      const uint8_t worker_stage = LoadDoaxVirtualU8(memory_, 0x8342D1F7u);
+      const uint32_t scene_active = LoadDoaxVirtualU32(memory_, 0x834CD944u);
+      const uint8_t post_step = LoadDoaxVirtualU8(memory_, 0x8342D1FAu);
+      REXGPU_WARN(
+          "DOAXGATE black={} indexed={} draws={} gate_8398497C={:08X} sceneId_833B745F={:02X} "
+          "graphGate_833B4C68={:02X} suppress_833B74B1={:02X} mode_82E54F1C={:08X} "
+          "modeIdx_82B85498={:08X} modeEn_82E54F20={:08X} workerStage_8342D1F7={:02X} "
+          "sceneActive_834CD944={:08X} postStep_8342D1FA={:02X}",
+          black ? 1 : 0, indexed, draws, gate, scene_id, graph_gate, suppress, mode_sel, mode_idx,
+          mode_en, worker_stage, scene_active, post_step);
+    }
+  }
+
+  if (ShouldHoldDoaxMissingFinalCompositeSwap(frontbuffer_ptr, frontbuffer_width,
+                                              frontbuffer_height,
+                                              doax_frontbuffer_signature.valid,
+                                              doax_frontbuffer_signature.nonzero_dwords,
+                                              doax_frontbuffer_signature.rgb3_min_sum)) {
+    reset_doax_final_composite_tracking();
+    return;
+  }
+
+  if (ShouldHoldDoaxLowDrawSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height)) {
+    reset_doax_final_composite_tracking();
+    return;
+  }
 
   // In case the swap command is the only one in the frame.
   if (!BeginSubmission(true)) {
     REXGPU_ERROR("IssueSwap: BeginSubmission failed");
+    reset_doax_final_composite_tracking();
     return;
   }
 
@@ -1986,6 +2479,7 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
     REXGPU_ERROR(
         "IssueSwap: RequestSwapTexture failed - fetch0: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
         fetch.dword_0, fetch.dword_1, fetch.dword_2, fetch.dword_3, fetch.dword_4, fetch.dword_5);
+    reset_doax_final_composite_tracking();
     return;
   }
   D3D12_RESOURCE_DESC swap_texture_desc = swap_texture_resource->GetDesc();
@@ -2038,6 +2532,25 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
           "resolve path.",
           guest_output_width, guest_output_height);
     }
+  }
+
+  if (REXCVAR_GET(d3d12_doax_swap_signature) && doax_swap_signature_target) {
+    DoaxFrontbufferSignature signature = doax_frontbuffer_signature;
+    const auto fetch0 = register_file_->GetTextureFetch(0);
+    REXGPU_WARN(
+        "DOAXSWAPSIG frame={} fb={:08X} packet={}x{} guest={}x{} source={}x{} desc={} fmt={} "
+        "draws={} indexed={} indices={} copies={} sig_valid={} samples={} nz={} zero={} "
+        "sum={} rgb3min={} hash={:016X} first={:08X} mid={:08X} last={:08X} "
+        "fetch0={:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+        frame_current_, frontbuffer_ptr, frontbuffer_width, frontbuffer_height, guest_output_width,
+        guest_output_height, source_width_scaled, source_height_scaled,
+        uint32_t(swap_texture_desc.Format), uint32_t(frontbuffer_format),
+        current_command_stats_draw_packets(), current_command_stats_indexed_draw_packets(),
+        current_command_stats_draw_indices(), current_command_stats_copy_packets(),
+        signature.valid ? 1 : 0, signature.samples, signature.nonzero_dwords,
+        signature.zero_dwords, signature.byte_sum, signature.rgb3_min_sum, signature.hash,
+        signature.first, signature.middle, signature.last, fetch0.dword_0, fetch0.dword_1,
+        fetch0.dword_2, fetch0.dword_3, fetch0.dword_4, fetch0.dword_5);
   }
 
   system::X_VIDEO_MODE video_mode;
@@ -2314,6 +2827,7 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
   // End the frame even if did not present for any reason (the image refresher
   // was not called), to prevent leaking per-frame resources.
   EndSubmission(true);
+  reset_doax_final_composite_tracking();
 }
 
 void D3D12CommandProcessor::OnPrimaryBufferEnd() {
@@ -2676,6 +3190,84 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
   }
   SetPrimitiveTopology(primitive_topology);
   // Must not call anything that may change the primitive topology from now on!
+
+  if (kernel_state_ && kernel_state_->title_id() == kDoaxTitleId) {
+    const reg::RB_SURFACE_INFO rb_surface_info = regs.Get<reg::RB_SURFACE_INFO>();
+    const reg::RB_COLOR_INFO color0_info = regs.Get<reg::RB_COLOR_INFO>();
+    const uint32_t color0_mask = normalized_color_mask & 0xF;
+    const bool doax_final_target =
+        color0_info.color_base == 0 &&
+        (rb_surface_info.surface_pitch == 1280 || rb_surface_info.surface_pitch == 640);
+    uint32_t ps_fetch0_index = UINT32_MAX;
+    uint32_t ps_fetch1_index = UINT32_MAX;
+    xenos::xe_gpu_texture_fetch_t ps_fetch0 = {};
+    xenos::xe_gpu_texture_fetch_t ps_fetch1 = {};
+    size_t ps_texture_count = 0;
+    if (doax_final_target && pixel_shader) {
+      const auto& ps_textures = pixel_shader->texture_bindings();
+      ps_texture_count = ps_textures.size();
+      if (!ps_textures.empty()) {
+        ps_fetch0_index = ps_textures[0].fetch_constant;
+        ps_fetch0 = regs.GetTextureFetch(ps_fetch0_index);
+      }
+      if (ps_textures.size() >= 2) {
+        ps_fetch1_index = ps_textures[1].fetch_constant;
+        ps_fetch1 = regs.GetTextureFetch(ps_fetch1_index);
+      }
+    }
+
+    const uint64_t vertex_shader_hash = vertex_shader->ucode_data_hash();
+    const uint64_t pixel_shader_hash = pixel_shader ? pixel_shader->ucode_data_hash() : 0ull;
+    if (color0_info.color_base == 0 && rb_surface_info.surface_pitch == 1280 && color0_mask != 0 &&
+        pixel_shader) {
+      const bool normal_final_composite =
+          index_count == 64 && vertex_shader_hash == kDoaxFinalCompositeVsHash &&
+          (pixel_shader_hash == kDoaxFinalCompositePsHash ||
+           pixel_shader_hash == kDoaxFinalCompositeAltPsHash);
+      const bool restore_final_composite =
+          index_count == 4 && vertex_shader_hash == kDoaxFinalCompositeVsHash &&
+          pixel_shader_hash == kDoaxFinalCompositePsHash &&
+          ps_fetch0.dword_1 == kDoaxFinalCompositeRestoreFetchDword1;
+      if (normal_final_composite || restore_final_composite) {
+        doax_final_composite_seen_ = true;
+        ++doax_final_composite_draws_;
+      }
+    }
+
+    if (doax_final_target && (index_count <= 256 || rb_surface_info.surface_pitch == 1280)) {
+      const reg::VGT_DRAW_INITIATOR vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
+      const reg::RB_COLORCONTROL rb_colorcontrol = regs.Get<reg::RB_COLORCONTROL>();
+      const reg::RB_DEPTHCONTROL rb_depthcontrol = regs.Get<reg::RB_DEPTHCONTROL>();
+      const reg::RB_BLENDCONTROL rb_blend0 = regs.Get<reg::RB_BLENDCONTROL>();
+      const uint32_t raw_color_mask = regs.Get<reg::RB_COLOR_MASK>().value;
+      if (REXCVAR_GET(d3d12_doax_final_draw_trace)) {
+        REXGPU_WARN(
+            "DOAXFINALDRAW frame={} draw={} indexed_draws={} c0={:#x} pitch={} mask={:#x} "
+            "rawmask={:08X} count={} prim={} src={} ib={} host_vertices={} vs={:016X} "
+            "ps={:016X} pswrites={:#x} pstex={} tex0={} {:08X} {:08X} {:08X} {:08X} "
+            "{:08X} {:08X} tex1={} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} "
+            "colorctl={:08X} depthctl={:08X} blend0={:08X} rbci0={:08X} surf={:08X} "
+            "scissor={}x{}+{},{} vgt={:08X} dma={:08X}",
+            frame_current_, current_command_stats_draw_packets(),
+            current_command_stats_indexed_draw_packets(), color0_info.color_base,
+            rb_surface_info.surface_pitch, color0_mask, raw_color_mask, index_count,
+            uint32_t(primitive_type), uint32_t(vgt_draw_initiator.source_select),
+            primitive_processing_result.index_buffer_type !=
+                PrimitiveProcessor::ProcessedIndexBufferType::kNone
+                ? 1
+                : 0,
+            primitive_processing_result.host_draw_vertex_count, vertex_shader_hash,
+            pixel_shader_hash, pixel_shader ? pixel_shader->writes_color_targets() : 0u,
+            ps_texture_count, ps_fetch0_index, ps_fetch0.dword_0, ps_fetch0.dword_1,
+            ps_fetch0.dword_2, ps_fetch0.dword_3, ps_fetch0.dword_4, ps_fetch0.dword_5,
+            ps_fetch1_index, ps_fetch1.dword_0, ps_fetch1.dword_1, ps_fetch1.dword_2,
+            ps_fetch1.dword_3, ps_fetch1.dword_4, ps_fetch1.dword_5, rb_colorcontrol.value,
+            rb_depthcontrol.value, rb_blend0.value, color0_info.value, rb_surface_info.value,
+            scissor.extent[0], scissor.extent[1], scissor.offset[0], scissor.offset[1],
+            vgt_draw_initiator.value, regs[XE_GPU_REG_VGT_DMA_BASE]);
+      }
+    }
+  }
 
   // Draw.
   if (primitive_processing_result.index_buffer_type ==

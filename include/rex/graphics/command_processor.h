@@ -251,6 +251,12 @@ class CommandProcessor {
   void RecordCommandStatsCopy();
   void RecordCommandStatsD3D12Submission(bool is_swap);
   void RecordCommandStatsD3D12FenceWait(uint64_t wait_us);
+  uint64_t current_command_stats_draw_packets() const { return command_stats_.draw_packets; }
+  uint64_t current_command_stats_indexed_draw_packets() const {
+    return command_stats_.indexed_draw_packets;
+  }
+  uint64_t current_command_stats_draw_indices() const { return command_stats_.draw_indices; }
+  uint64_t current_command_stats_copy_packets() const { return command_stats_.copy_packets; }
 
   memory::Memory* memory_ = nullptr;
   system::KernelState* kernel_state_ = nullptr;

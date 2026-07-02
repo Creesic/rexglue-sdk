@@ -23,6 +23,7 @@
 
 #include <rex/assert.h>
 #include <rex/cvar.h>
+#include <rex/doax_swap_diag.h>  // TEMP_DIAG
 #include <rex/graphics/d3d12/command_processor.h>
 #include <rex/graphics/d3d12/deferred_command_list.h>
 #include <rex/graphics/d3d12/render_target_cache.h>
@@ -1205,6 +1206,16 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
     }
   }
 
+  // TEMP_DIAG (DOAX swap/resolve sync): emit DOAXRSV when this resolve targets a
+  // frontbuffer the title presents, tagged with the swap epoch -- correlate with
+  // DOAXSWAP to tell swap-races-resolve from flip-desync. See rex/doax_swap_diag.h.
+  doax_swap_diag::OnResolve(resolve_info.copy_dest_base, resolve_info.copy_dest_extent_length,
+                            resolve_info.IsCopyingDepth(),
+                            uint32_t(resolve_info.color_edram_info.format),
+                            resolve_info.color_edram_info.format_is_64bpp,
+                            uint32_t(resolve_info.color_edram_info.msaa_samples),
+                            uint32_t(resolve_info.copy_dest_info.copy_dest_format));
+
   DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
 
   // Copying.
@@ -1242,6 +1253,34 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
             REXGPU_ERROR("D3D12RenderTargetCache: Failed to dump host render targets for resolve");
             return false;
           }
+        }
+
+        // TEMP_DIAG (DOAX frontbuffer-black): log which SOURCE host RT(s) the
+        // ownership logic selected for full-width base-0 resolves. base-0 EDRAM is
+        // bright (the sibling 0x05F80000 resolve reads it bright every frame) yet the
+        // frontbuffer resolve comes out black with byte-identical logged params, so
+        // the divergence is WHICH host RT owns base-0. Compare DOAXRTSRC for
+        // dst=1F90F000/1F577000 (frontbuffer) vs dst=05F80000 (sibling). Grep DOAXRTSRC.
+        // Ungated (like the "DOAX resolve srcEDRAM" diag above); width filter keeps
+        // it to the full-screen frontbuffer/sibling resolves. The cvar that gates
+        // DOAXFBSYNC is defined in command_processor.cpp with no header declaration,
+        // so it is not referenceable from this TU.
+        if (resolve_info.coordinate_info.width_div_8 * 8 == 1280) {
+          uint32_t db, drl, dr, dp;
+          resolve_info.GetCopyEdramTileSpan(db, drl, dr, dp);
+          std::string srcs;
+          for (const ResolveCopyDumpRectangle& r : dump_rectangles_) {
+            const auto* rt = static_cast<const D3D12RenderTarget*>(r.render_target);
+            srcs += rt ? (" [" + rt->key().GetDebugName() + "]") : std::string(" [null]");
+          }
+          REXGPU_WARN(
+              "DOAXRTSRC dst={:08X} srcEDRAM={:#x} depth={} dumpBase={} rowlen={} rows={} pitch={} "
+              "direct={} nrects={}{}",
+              resolve_info.copy_dest_base,
+              resolve_info.IsCopyingDepth() ? resolve_info.depth_original_base
+                                            : resolve_info.color_original_base,
+              resolve_info.IsCopyingDepth() ? 1 : 0, db, drl, dr, dp, direct_resolved ? 1 : 0,
+              dump_rectangles_.size(), srcs);
         }
       }
 

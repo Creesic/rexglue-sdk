@@ -153,6 +153,117 @@ void RecF(uint8_t* base, uint32_t addr) {
                         static_cast<uint16_t>(REX_LOAD_U8(0x833B8DEAu)));
 }
 
+struct RenderTraceState {
+  uint32_t present;
+  uint32_t target;
+  uint32_t presidx;
+  uint32_t menu_mode;
+  uint32_t boot_screen;
+  uint32_t sched_active;
+  uint32_t sched_phase;
+  uint32_t sched_mode;
+  uint32_t sched_countdown;
+  uint32_t sched_fork;
+  uint32_t menu_active;
+  uint32_t menu_case;
+  uint32_t menu_loop;
+  uint32_t menu_flag;
+  uint32_t overlay;
+  uint32_t scene_id;
+  uint32_t island_gate;
+  uint32_t graph_gate;
+  uint32_t sprite_busy;
+  uint32_t work_mask;
+};
+
+RenderTraceState ReadRenderTraceState(uint8_t* base) {
+  RenderTraceState s{};
+  s.present = REX_LOAD_U8(0x833BB763u);
+  s.target = REX_LOAD_U8(0x8341F9F6u);
+  s.presidx = REX_LOAD_U32(0x833B84C8u);
+  s.menu_mode = REX_LOAD_U32(0x83985094u);
+  s.boot_screen = REX_LOAD_U8(0x833B7454u);
+  s.sched_active = REX_LOAD_U8(0x833B8DF8u);
+  s.sched_phase = REX_LOAD_U8(0x833B8DF9u);
+  s.sched_mode = REX_LOAD_U8(0x833B8DFCu);
+  s.sched_countdown = REX_LOAD_U8(0x833B8DFEu);
+  s.sched_fork = REX_LOAD_U8(0x833B8DFFu);
+  s.menu_active = REX_LOAD_U8(0x833B8DE8u);
+  s.menu_case = REX_LOAD_U8(0x833B8DEAu);
+  s.menu_loop = REX_LOAD_U8(0x833B8DEBu);
+  s.menu_flag = REX_LOAD_U8(0x833B8DEFu);
+  s.overlay = REX_LOAD_U8(0x833B8514u);
+  s.scene_id = REX_LOAD_U8(0x833B745Fu);
+  s.island_gate = REX_LOAD_U32(0x8398497Cu);
+  s.graph_gate = REX_LOAD_U8(0x833B4C68u);
+  s.sprite_busy = REX_LOAD_U32(0x83CAF8A4u);
+  uint32_t work_mask = 0;
+  for (uint32_t i = 0; i < 24; ++i) {
+    const uint32_t e = 0x834A3258u + 28u * i;
+    if (REX_LOAD_U32(e) & 1u) {
+      work_mask |= 1u << i;
+    }
+  }
+  s.work_mask = work_mask;
+  return s;
+}
+
+bool SameRenderTraceState(const RenderTraceState& a, const RenderTraceState& b) {
+  return a.present == b.present && a.target == b.target && a.presidx == b.presidx &&
+         a.menu_mode == b.menu_mode && a.boot_screen == b.boot_screen &&
+         a.sched_active == b.sched_active && a.sched_phase == b.sched_phase &&
+         a.sched_mode == b.sched_mode && a.sched_countdown == b.sched_countdown &&
+         a.sched_fork == b.sched_fork && a.menu_active == b.menu_active &&
+         a.menu_case == b.menu_case && a.menu_loop == b.menu_loop && a.menu_flag == b.menu_flag &&
+         a.overlay == b.overlay && a.scene_id == b.scene_id && a.island_gate == b.island_gate &&
+         a.graph_gate == b.graph_gate && a.sprite_busy == b.sprite_busy && a.work_mask == b.work_mask;
+}
+
+void LogRenderStateLine(const char* tag, const RenderTraceState& s, uint32_t lr) {
+  REXKRNL_WARN(
+      "DOAX rendertrace {} lr=0x{:08X} p/t/pidx={}/{}/{} menuMode={} boot={} "
+      "sched(act/ph/mode/cd/fork)={}/{}/{}/{}/{} menu(act/case/loop/flag/ov)={}/{}/{}/{}/{} "
+      "scene={} islandGate=0x{:08X} graphGate={} spriteBusy={} workMask=0x{:06X}",
+      tag, lr, s.present, s.target, s.presidx, s.menu_mode, s.boot_screen, s.sched_active,
+      s.sched_phase, s.sched_mode, s.sched_countdown, s.sched_fork, s.menu_active, s.menu_case,
+      s.menu_loop, s.menu_flag, s.overlay, s.scene_id, s.island_gate, s.graph_gate, s.sprite_busy,
+      s.work_mask);
+}
+
+void LogRenderStateOnChange(uint8_t* base, const char* tag, uint32_t slot, uint32_t lr) {
+  static RenderTraceState s_prev[12]{};
+  static uint8_t s_seen[12]{};
+  if (slot >= 12) {
+    slot = 11;
+  }
+  const RenderTraceState state = ReadRenderTraceState(base);
+  if (s_seen[slot] && SameRenderTraceState(state, s_prev[slot])) {
+    return;
+  }
+  s_seen[slot] = 1;
+  s_prev[slot] = state;
+  LogRenderStateLine(tag, state, lr);
+}
+
+void LogRenderStateTransition(const char* tag, const RenderTraceState& before,
+                              const RenderTraceState& after, uint32_t lr) {
+  if (SameRenderTraceState(before, after)) {
+    return;
+  }
+  REXKRNL_WARN(
+      "DOAX statechg {} lr=0x{:08X} p/t/pidx {}->{}/{}->{} / {}->{} "
+      "sched(ph/mode/cd/fork) {}->{}/{}->{}/{}->{}/{}->{} "
+      "menu(act/case/loop/flag/ov) {}->{}/{}->{}/{}->{}/{}->{}/{}->{} "
+      "scene {}->{} islandGate 0x{:08X}->0x{:08X} graph {}->{} sprite {}->{} work 0x{:06X}->0x{:06X}",
+      tag, lr, before.present, after.present, before.target, after.target, before.presidx,
+      after.presidx, before.sched_phase, after.sched_phase, before.sched_mode, after.sched_mode,
+      before.sched_countdown, after.sched_countdown, before.sched_fork, after.sched_fork,
+      before.menu_active, after.menu_active, before.menu_case, after.menu_case, before.menu_loop,
+      after.menu_loop, before.menu_flag, after.menu_flag, before.overlay, after.overlay,
+      before.scene_id, after.scene_id, before.island_gate, after.island_gate, before.graph_gate,
+      after.graph_gate, before.sprite_busy, after.sprite_busy, before.work_mask, after.work_mask);
+}
+
 // Menu state machine + transition state, logged on change (DOAX_MenuWorkFiberLoop case =
 // byte_833B8DEA drives the in-menu transition; the press-start->menu fork lives here).
 void MenuStateDiag(uint8_t* base) {
@@ -517,11 +628,24 @@ extern "C" REX_FUNC(DOAX_SchedulerDrainWake) {
   __imp__DOAX_SchedulerDrainWake(ctx, base);
 }
 
+extern "C" REX_FUNC(DOAX_BootMovieStateAdvance) {
+  RecF(base, 0x824C0770u);
+  const uint32_t lr_in = static_cast<uint32_t>(ctx.lr);
+  const RenderTraceState before = ReadRenderTraceState(base);
+  __imp__DOAX_BootMovieStateAdvance(ctx, base);
+  const RenderTraceState after = ReadRenderTraceState(base);
+  LogRenderStateTransition("BootMovieStateAdvance", before, after, lr_in);
+}
+
 extern "C" REX_FUNC(DOAX_SchedulerDrainDispatch) {
   // TARGETED REGISTER GUARD: restore the dispatch loop's callee-saved r28-r31 across __imp__
   // (the deactivation branch clobbers them -> AV @ doax_recomp.7.cpp:48682). RunFiberSwap is clean.
   const uint64_t r28_in = ctx.r28.u64, r29_in = ctx.r29.u64, r30_in = ctx.r30.u64, r31_in = ctx.r31.u64;
+  const uint32_t lr_in = static_cast<uint32_t>(ctx.lr);
+  const RenderTraceState before = ReadRenderTraceState(base);
   __imp__DOAX_SchedulerDrainDispatch(ctx, base);
+  const RenderTraceState after = ReadRenderTraceState(base);
+  LogRenderStateTransition("SchedulerDrainDispatch", before, after, lr_in);
   if ((r30_in & 0xFFFFFFFFu) == 0x834A0000u) {
     ctx.r28.u64 = r28_in;
     ctx.r29.u64 = r29_in;
@@ -541,10 +665,32 @@ extern "C" REX_FUNC(DOAX_WorkQueueDispatchLoop) {
 // Each records its entry (op=Func, present, menu-case) then runs the original via __imp__.
 extern "C" REX_FUNC(DOAX_BootWorkFiberBody) {
   RecF(base, 0x8250A568u);
+  const uint32_t lr_in = static_cast<uint32_t>(ctx.lr);
+  const RenderTraceState before = ReadRenderTraceState(base);
   __imp__DOAX_BootWorkFiberBody(ctx, base);
+  const RenderTraceState after = ReadRenderTraceState(base);
+  LogRenderStateTransition("BootWorkFiberBody", before, after, lr_in);
+}
+extern "C" REX_FUNC(DOAX_MenuPresentSync) {
+  RecF(base, 0x8250AEB8u);
+  const uint32_t lr_in = static_cast<uint32_t>(ctx.lr);
+  const RenderTraceState before = ReadRenderTraceState(base);
+  __imp__DOAX_MenuPresentSync(ctx, base);
+  const RenderTraceState after = ReadRenderTraceState(base);
+  LogRenderStateTransition("MenuPresentSync", before, after, lr_in);
+}
+extern "C" REX_FUNC(DOAX_BootPresentTargetSelect) {
+  RecF(base, 0x8250AFF8u);
+  const uint32_t lr_in = static_cast<uint32_t>(ctx.lr);
+  const RenderTraceState before = ReadRenderTraceState(base);
+  __imp__DOAX_BootPresentTargetSelect(ctx, base);
+  const RenderTraceState after = ReadRenderTraceState(base);
+  LogRenderStateTransition("BootPresentTargetSelect", before, after, lr_in);
 }
 extern "C" REX_FUNC(DOAX_BootPresentStateUpdate) {
   RecF(base, 0x8250BEB0u);
+  const uint32_t lr_in = static_cast<uint32_t>(ctx.lr);
+  const RenderTraceState before = ReadRenderTraceState(base);
   // Block the island teardown while the menu fiber is active and present is still at the good state (1):
   // pre-set this function's own re-entry guard (dword_83984924) so __imp__ returns BEFORE its teardown
   // branch (DOAX_BootMovieReplayTeardown + target=2). Present holds at 1 = the good cycling state.
@@ -558,9 +704,13 @@ extern "C" REX_FUNC(DOAX_BootPresentStateUpdate) {
     }
   }
   __imp__DOAX_BootPresentStateUpdate(ctx, base);
+  const RenderTraceState after = ReadRenderTraceState(base);
+  LogRenderStateTransition("BootPresentStateUpdate", before, after, lr_in);
 }
 extern "C" REX_FUNC(DOAX_BootWarningDismiss) {
   RecF(base, 0x8250AC50u);
+  const uint32_t lr_in = static_cast<uint32_t>(ctx.lr);
+  const RenderTraceState before = ReadRenderTraceState(base);
   const uint32_t tgt_before = REX_LOAD_U8(0x8341F9F6u);
   __imp__DOAX_BootWarningDismiss(ctx, base);
   // If it just committed target=2 (black) but the menu transition is active, undo it so the
@@ -575,6 +725,8 @@ extern "C" REX_FUNC(DOAX_BootWarningDismiss) {
                    tgt_before);
     }
   }
+  const RenderTraceState after = ReadRenderTraceState(base);
+  LogRenderStateTransition("BootWarningDismiss", before, after, lr_in);
 }
 extern "C" REX_FUNC(DOAX_WarningScreenUpdate) {
   RecF(base, 0x8250BB60u);
@@ -586,7 +738,12 @@ extern "C" REX_FUNC(DOAX_BootWarningFrame) {
 }
 extern "C" REX_FUNC(DOAX_BootMovieReplayTeardown) {
   RecF(base, 0x8250A728u);
+  const uint32_t lr_in = static_cast<uint32_t>(ctx.lr);
+  LogRenderStateOnChange(base, "BootMovieReplayTeardown:enter", 4, lr_in);
+  const RenderTraceState before = ReadRenderTraceState(base);
   __imp__DOAX_BootMovieReplayTeardown(ctx, base);
+  const RenderTraceState after = ReadRenderTraceState(base);
+  LogRenderStateTransition("BootMovieReplayTeardown", before, after, lr_in);
 }
 extern "C" REX_FUNC(DOAX_MenuWorkFiberLoop) {
   RecF(base, 0x824C1548u);
@@ -621,6 +778,24 @@ extern "C" REX_FUNC(DOAX_MenuTransitionSetup) {
     }
   }
   __imp__DOAX_MenuTransitionSetup(ctx, base);
+}
+
+// --- Pool black-screen render branch probe -------------------------------------
+// RenderDoc shows bad frames skip the good capture's 2xMSAA depth-only branch and
+// later indexed scene work. These wrappers mark the front-end render boundary and
+// the island renderer state without changing title behavior.
+extern "C" REX_FUNC(DOAX_FrontEndRenderTick) {
+  const uint32_t lr_in = static_cast<uint32_t>(ctx.lr);
+  LogRenderStateOnChange(base, "FrontEndRenderTick:enter", 0, lr_in);
+  __imp__DOAX_FrontEndRenderTick(ctx, base);
+  LogRenderStateOnChange(base, "FrontEndRenderTick:exit", 1, lr_in);
+}
+
+extern "C" REX_FUNC(DOAX_IslandSceneRender) {
+  const uint32_t lr_in = static_cast<uint32_t>(ctx.lr);
+  LogRenderStateOnChange(base, "IslandSceneRender:enter", 2, lr_in);
+  __imp__DOAX_IslandSceneRender(ctx, base);
+  LogRenderStateOnChange(base, "IslandSceneRender:exit", 3, lr_in);
 }
 
 // --- EXPERIMENT: content-ready gamma gate + render-layer diagnostic --------------------

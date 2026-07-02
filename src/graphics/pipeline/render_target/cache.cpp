@@ -656,6 +656,18 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
                                         ? edram_bases_sorted[i + 1].first
                                         : (xenos::kEdramTileCount + edram_bases_sorted[0].first)) -
                                        rt_base);
+    // A single bound render target must not wrap around the end of EDRAM and
+    // claim tiles owned by other (previously bound) render targets at lower
+    // bases. With only one RT, the "distance to the first RT's base" clamp above
+    // degenerates to the whole EDRAM (kEdramTileCount), so e.g. an underwater
+    // 4xMSAA depth RT @720t with an (over-)estimated height gets len=2048, wraps
+    // the full ring back through [0..720) and steals the color scene's ownership
+    // at base 0 -> the frontbuffer color resolve then dumps depth -> black
+    // (DOAX pool "fall in water"). The min-distance clamp that prevents this for
+    // >=2 RTs doesn't apply to a lone RT; clamp it here to not wrap past the end.
+    if (edram_bases_sorted_count == 1) {
+      rt_lengths_tiles[i] = std::min(rt_lengths_tiles[i], xenos::kEdramTileCount - rt_base);
+    }
   }
 
   if (interlock_barrier_only) {
@@ -688,6 +700,23 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
     uint32_t rt_bit_index = rt_base_index.second;
     ChangeOwnership(rt_keys[rt_bit_index], 0, rt_lengths_tiles[i],
                     interlock_barrier_only ? nullptr : &last_update_transfers_[rt_bit_index]);
+  }
+
+  // TEMP_DIAG (DOAX underwater frontbuffer-black): the black = a 4xMSAA depth RT
+  // taking EDRAM ownership of the color scene's tiles [0..720). Log each 4xMSAA
+  // bind's per-RT computed footprint (base/len/end/wrap) + height_used to pin the
+  // exact overlap that a root fix must correct. Grep DOAXOWN.
+  if (!interlock_barrier_only && msaa_samples >= xenos::MsaaSamples::k4X) {
+    for (uint32_t i = 0; i < edram_bases_sorted_count; ++i) {
+      uint32_t bit = edram_bases_sorted[i].second;
+      RenderTargetKey k = rt_keys[bit];
+      uint32_t start = k.base_tiles;
+      uint32_t len = rt_lengths_tiles[i];
+      REXGPU_WARN("DOAXOWN bind [{}] base={} len={} end={} wrap={} heightUsed={} msaa={} cnt={}",
+                  k.GetDebugName(), start, len, start + len,
+                  (start + len > xenos::kEdramTileCount) ? 1 : 0, height_used,
+                  uint32_t(msaa_samples), edram_bases_sorted_count);
+    }
   }
 
   if (interlock_barrier_only) {

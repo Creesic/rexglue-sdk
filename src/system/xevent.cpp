@@ -9,6 +9,7 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <rex/doax_pulse_diag.h>  // TEMP_DIAG: lossy-PulseEvent worker-wake race
 #include <rex/logging.h>
 #include <rex/stream.h>
 #include <rex/system/xevent.h>
@@ -81,6 +82,8 @@ int32_t XEvent::Set(uint32_t priority_increment, bool wait) {
 
 int32_t XEvent::Pulse(uint32_t priority_increment, bool wait) {
   set_priority_increment(priority_increment);
+  // TEMP_DIAG: flag a lost wake -- pulse with no thread parked in the wait.
+  doax_pulse_diag::OnPulse(guest_object());
   event_->Pulse();
   return 1;
 }

@@ -60,7 +60,7 @@ setjmp_address = 0x829F12D0
     0x82A5F3B0 = {}
     0x824C05B8 = { name = "DOAX_WorkQueueDispatchLoop" }  # Group 3
     0x824C06D8 = {}
-    0x824C0770 = {}
+    0x824C0770 = { name = "DOAX_BootMovieStateAdvance" }
     0x824C08B8 = { name = "DOAX_SchedulerDrainWake" }  # Group 2
     0x824C0928 = { name = "DOAX_SchedulerDrainDispatch" }  # Group 2
     0x824C0FB0 = { name = "DOAX_MenuTransitionSetup" }
@@ -85,6 +85,8 @@ setjmp_address = 0x829F12D0
     0x8250AC08 = {}
     0x8250AC50 = { name = "DOAX_BootWarningDismiss" }
     0x8250AC98 = { name = "DOAX_BootWarningFrame" }
+    0x8250AEB8 = { name = "DOAX_MenuPresentSync" }
+    0x8250AFF8 = { name = "DOAX_BootPresentTargetSelect" }
     0x8250BB60 = { name = "DOAX_WarningScreenUpdate" }
     0x8250BEB0 = { name = "DOAX_BootPresentStateUpdate" }
     0x8250C468 = {}
@@ -94,6 +96,8 @@ setjmp_address = 0x829F12D0
     0x8258CE60 = { name = "DOAX_WorkQueueSlotWake" }  # Group 3
     0x8258CEF0 = {}
     0x8258E000 = {}
+    0x8258E500 = { name = "DOAX_FrontEndRenderTick" }
+    0x8258E778 = { name = "DOAX_IslandSceneRender" }
     0x8266E618 = {}
     0x82670880 = {}
     0x82670E10 = {}
@@ -106,6 +110,7 @@ setjmp_address = 0x829F12D0
     0x82688438 = {}
     0x8244EF10 = {}
     0x82563320 = {}
+    0x825D36F8 = {}
 
 # Group 4 (partial): boot intro skips. Each jumps past the intro's display/wait.
 [[entrypoint.midasm_hook]]
