@@ -731,6 +731,8 @@ void Fm2Present(uint32_t presentChain) {
 // VdSwap fetch in Fm2GpuCommandBufferBuildAndSubmit. The RenderWorker present (which
 // has no access to the VdSwap fetch) prefers this over GetLastDrawnColorRenderTarget.
 static std::atomic<rr::GuestBaseTexture *> g_frontbufferPresentSource{nullptr};
+// Defined later in this file (surface-aperture registry).
+rr::GuestBaseTexture *LookupSurfaceAperture(uint32_t guestAddr);
 // session 6P-2: with the draw pipeline healthy (PSO failures fixed), the guest
 // frontbuffer RAM is the WRONG present source -- the disabled CP never resolves the
 // scene into it, so it is black. Present the last-drawn color RT (actual rendered
@@ -770,23 +772,32 @@ void Fm2GpuCommandBufferBuildAndSubmit(uint32_t commandBuffer, uint32_t arg4,
     // else upload the frontbuffer from guest RAM, else fall back to last-drawn.
     Video::ClaimPresentOwner();
     const uint32_t fetchAddr = arg4 + 28u;
-    const uint32_t fbBase = ReadGuestU32At(fetchAddr + 4u) & 0xFFFFF000u;
-    // Default to the last-drawn color RT (the actual rendered content). The guest
-    // frontbuffer fetch is black in plume_native (no CP resolve), so only use it
-    // when explicitly restoring the old behavior.
-    const char *kind = "lastdrawn";
-    rr::GuestBaseTexture *presentSource = rr::GetLastDrawnColorRenderTarget();
-    if (kPreferFrontbufferPresent) {
-      rr::GuestBaseTexture *fb =
-          rr::TranslateGuestTextureFetch(ghp::ToHost<void>(fetchAddr), true);
-      if (fb != nullptr && fb->texture != nullptr) {
-        presentSource = fb;
-        kind = "fbfetch";
-      }
+    // 2026-07-02: the fetch word carries a 360 physical-alias address (e.g.
+    // 0xE930F000, the 0xE0000000 cached-physical window); mask to the raw
+    // physical page (0x0930F000) so it matches the aperture registry keys.
+    const uint32_t fbBase =
+        ReadGuestU32At(fetchAddr + 4u) & 0x1FFFFFFFu & ~0xFFFu;
+    // 2026-07-02 (present-source fix): prefer the surface-aperture entry at
+    // the frontbuffer fetch base. The D3DDevice_Resolve hook now registers
+    // every resolve DESTINATION there, so an aperture hit here IS the game's
+    // real composited display image (assembled from the EDRAM tile resolves).
+    // Fall back to the last-drawn-RT heuristic only when no resolve has
+    // targeted the frontbuffer base yet (early boot).
+    const char *kind = "aperture";
+    rr::GuestBaseTexture *presentSource = LookupSurfaceAperture(fbBase);
+    if (presentSource == nullptr || presentSource->texture == nullptr) {
+      presentSource = rr::GetLastDrawnColorRenderTarget();
+      kind = "lastdrawn";
     }
     if (presentSource != nullptr && presentSource->texture != nullptr) {
       rr::SetPresentSource(presentSource);
-      g_frontbufferPresentSource.store(presentSource, std::memory_order_relaxed);
+      // Only remember APERTURE (real composite) sources for the RenderWorker
+      // present path; storing the lastdrawn fallback would defeat its own
+      // fallback ordering.
+      if (kind[0] == 'a') {
+        g_frontbufferPresentSource.store(presentSource,
+                                         std::memory_order_relaxed);
+      }
     }
     {
       const uint32_t sceneDraws =
@@ -2159,6 +2170,15 @@ void Resolve(GuestDevice *device, uint32_t flags, const rr::GuestRect *source,
                    rt ? static_cast<void *>(rt->texture) : nullptr, flags);
     }
   }
+  // 2026-07-02 (present-source fix): register the resolve DESTINATION in the
+  // surface-aperture registry keyed by its guest data address (scanned from
+  // the destination texture's header words). The D3DDevice_Swap frontbuffer
+  // fetch lookup (LookupSurfaceAperture(fbBase)) then presents the real
+  // composited frame instead of the last-drawn tile RT. This is the correct,
+  // resolve-driven replacement for the aliasing that was stripped from the
+  // misidentified SetPending_Predicated hook.
+  if (reo != nullptr && reo->texture != nullptr && destination != nullptr)
+    RegisterSurfaceApertures(ghp::ToGuest(destination), reo);
   rr::StretchRect(device, flags, source, reo, destPoint);
 }
 
@@ -2456,8 +2476,13 @@ std::mutex g_surfaceApertureMutex;
 std::unordered_map<uint32_t, rr::GuestBaseTexture *> g_surfaceAperture;
 
 void RegisterSurfaceAperture(uint32_t guestAddr, rr::GuestBaseTexture *host) {
+  // 2026-07-02: upper bound widened 0x1A000000 -> 0x20000000; the swap
+  // framebuffer resolve destination lives high (e.g. ~0x1F90F000) and was
+  // rejected by the old guard. Also strip 360 physical-alias windows
+  // (0xA/0xC/0xE0000000) so header words in fetch form match raw physical.
+  guestAddr &= 0x1FFFFFFFu;
   if (host == nullptr || host->texture == nullptr || guestAddr < 0x08000000u ||
-      guestAddr >= 0x1A000000u)
+      guestAddr >= 0x20000000u)
     return;
   std::lock_guard<std::mutex> lk(g_surfaceApertureMutex);
   g_surfaceAperture[guestAddr & ~0xFFFu] = host;
@@ -2478,8 +2503,10 @@ void RegisterSurfaceApertures(uint32_t descriptorAddr,
   if (host == nullptr || host->texture == nullptr || descriptorAddr == 0)
     return;
   for (uint32_t off = 0; off < 512u; off += 4u) {
-    const uint32_t v = ReadGuestU32At(descriptorAddr + off);
-    if (v >= 0x08000000u && v < 0x1A000000u)
+    // 2026-07-02: accept physical-alias forms too (0xA/0xC/0xE0000000 windows)
+    // and the widened high range; RegisterSurfaceAperture masks + bounds them.
+    const uint32_t v = ReadGuestU32At(descriptorAddr + off) & 0x1FFFFFFFu;
+    if (v >= 0x08000000u && v < 0x20000000u)
       RegisterSurfaceAperture(v, host); // raw page-aligned == fetch-form base
   }
 }
@@ -3370,10 +3397,12 @@ REX_HOOK_RAW(sub_82288948) {
     return;
   }
   rr::GuestBaseTexture *presentSource = rr::GetLastDrawnColorRenderTarget();
-  // Old behavior: prefer the guest frontbuffer decoded from the VdSwap fetch. In
-  // plume_native the CP never resolves the scene into that guest RAM, so it is
-  // black -- only correct when the game's own GPU does the resolve. Gated off now.
-  if (kPreferFrontbufferPresent) {
+  // 2026-07-02: prefer the aperture-sourced composite. g_frontbufferPresentSource
+  // is now only stored when the Swap hook's frontbuffer-fetch lookup hit a
+  // resolve-registered aperture entry (a REAL composited frame assembled by the
+  // D3DDevice_Resolve hook), so preferring it unconditionally is correct; the
+  // last-drawn RT remains the early-boot fallback only.
+  {
     rr::GuestBaseTexture *fb =
         g_frontbufferPresentSource.load(std::memory_order_relaxed);
     if (fb != nullptr && fb->texture != nullptr) {
