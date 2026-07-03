@@ -225,3 +225,138 @@ stream now executing, instrument the IMMEDIATE fixed-function renderer's
 SetWorldTransform execution (CRenderAdapterLink CParams → CFixedFunctionRendererX360)
 to see where the matrix lands. ENQ_DROP=64 lines are all from early boot
 (pre-lift); recent samples show none.
+
+## Part 3 (same session): spike-mesh ROOT CAUSE captured + fixed (needs eyes)
+
+User-verified: thresh-8 did NOT change the spikes (payload-lifetime theory for
+the SPIKES was wrong — it fixed the crash but not the geometry; some verts
+"lock to a couple of fixed screen spots"). RenderDoc captures (renderdoccmd
+inject + F12, `scratchpad/fm2cap_*.rdc`, best = `fm2cap_capture_5.rdc`,
+161 draws) nailed it:
+
+- The 2D element draws (idx 48/222/306/642/702/714/1014/1164 family, RT 313
+  1280x720, single 8-byte stream: TEXCOORD0=half2 position-in-local-space,
+  TEXCOORD1=half2 uv, NO position semantic) have SANE vertex data (±0.15..0.8
+  local coords) — the vertices were never the problem.
+- Their VS cbuffer at draw time: **c0 = flat COLOR (0.502...), c1 = ones,
+  c2-c3 = ZEROS** (exactly the Xenia-A/B "colors+zeros in regs 0-3" ground
+  truth), c5-c8 = a 640/-360 screen matrix. The missing c0-c3 = the
+  per-element placement matrix.
+- **The placement matrices ARE in the PM4 stream**: `FM2_PM4SETC type=0 idx=0
+  (c0.0) regs=16` (starts 0x3D4CCCCD = 0.05 scale) + Type-0 ALU bursts at
+  reg 0 (448-1008 dwords) — emitted as PM4 SET_CONSTANT/Type-0/LOAD_ALU into
+  the FM2 command buffer, which plume_native's disabled CP NEVER APPLIED
+  (`ProcessPm4VsConstantsDiag` was log-only; its own comment says so).
+
+**FIX LANDED (built, NOT yet visually verified):**
+- `render_internal.h` / `render_state.cpp`: `ApplyPm4VsConstants()` +
+  `g_pm4VsConstants[0x400]` shadow + per-vec4 coverage (mirrors the
+  g_passVsConstants pattern; raw BE dwords).
+- `d3d_hooks.cpp` `ProcessPm4VsConstantsDiag`: now APPLIES all three ALU
+  float packet forms (SET_CONSTANT op 0x2D ctype 0, Type-0 base
+  0x4000-0x43FF, LOAD_ALU_CONSTANT op 0x2F) into the shadow, in stream
+  order, before each PM4 draw.
+- `render_state.cpp` FlushRenderState PM4 branch: overlays covered registers
+  over the live ctx file **for no-POSITION (2D) shaders only** (3D stays on
+  the pure live file, proven correct). The old disabled
+  kUseUiGlyphModelViewOverlay block is superseded but left in place.
+
+Also this part: `Fm2BindVertexStream`/`Fm2BindIndexBuffer` got a
+commit-probe guard (`IsReadableHostPtr`, VirtualQuery) — the 17:41 WER crash
+(`IsFm2Resource` on a wild handle from a recycled payload) now degrades to a
+skipped bind. Drop threshold settled at **8** (thresh 31 = stale payloads =
+that crash; 8 keeps p145 mostly open post-leak-fix with only boot-burst
+drops).
+
+## NEW TOP BLOCKER: silent unattended death ~25-60 s after boot
+
+Every unattended plume run now dies 25-60 s in (game exits/vanishes
+mid-frame): NO WER record, NO log shutdown banner (log ends mid-diagnostics),
+exit looked like code 0 under the debugger once. It survives INDEFINITELY
+when the user presses through screens — hypothesis: the press-A screen's
+timeout into the ATTRACT MOVIE (RUNFRAME_GATE movie=0x2E010C80) hits a dead
+WMV-playback path that terminates the title. This kills every hands-off
+verification run. NEXT: launch under x64dbg (`init` with the bat's args,
+workdir FM2), do NOT touch the controls, wait 60 s, and see what unwinds —
+check for TerminateProcess/XamLoaderTerminateTitle/fastfail paths.
+
+## Verification still owed
+
+Visual check of the PM4-constants build: launch, look at press-A/menu 2D
+within the first ~25 s (or press a key to hold off the attract timeout).
+Expected: 2D elements assume real sizes/positions instead of wedges/spikes.
+The capture files in the scratchpad can be re-inspected any time
+(`mcp__renderdoc__open_capture`).
+
+## Part 4: corrections + fresh-delta 3D overlay
+
+- **"Silent unattended death" DEBUNKED** — those were the user closing the
+  game windows (and a second Claude session shares this x64dbg; do not grab
+  it without asking). No attract-movie crash exists as far as we know.
+- **PM4 fix user-verified for 2D**: "much better off than before".
+- **3D accumulated-coverage overlay REGRESSED** (user: less visible + bright
+  flashing) — stale shadow registers stomp live-file materials/colors for 3D
+  shaders. Reverted to: 2D (no-POSITION) = accumulated coverage; 3D = NEW
+  fresh-per-delta overlay (`BeginPm4ConstantDelta` clears a fresh bitmap
+  before each command-buffer delta walk; 3D draws overlay only registers
+  written immediately before them — the car's per-object WVP pattern,
+  current by construction). `kApplyPm4FreshTo3D=true` — A/B by flipping it.
+- Remaining after this: texture visibility (TEXBIND shows ~7 slots/draw
+  translate OK, so binding works — flatness is downstream: PS constants
+  (PM4 idx 0x400-0x7FF not yet applied), sampled content, or PS selects;
+  needs a capture on the current build), and the reported flicker
+  (candidate: present cadence vs drain bursts; RenderWorker ~1-6/s vs
+  130 drains/s).
+
+## Part 5: the flashing car = PS constants; PS half of the PM4 stream now applied
+
+User screenshots: the showroom COMPOSITION is now correct (three angled
+backdrop panels + wall + floor placed like ground truth) and the car IS
+rendering center-frame — as a solid blob flashing primary colors per frame.
+Flat + flashing = pixel-shader constants (material/paint colors), which ride
+the PS half of the PM4 ALU space (packet idx 0x400-0x7FF, Type-0 base
+0x4400-0x47FF) — previously ignored, so pixel shaders read transient
+live-file values each frame. Landed: `ApplyPm4PsConstants` +
+`g_pm4PsConstants` shadow (accumulated + fresh coverage, same as VS), scanner
+routes all three packet forms' PS half, FlushRenderState overlays with the
+same policy (2D=accumulated, 3D=fresh-per-delta). `noPos` hoisted for both
+merges. Awaiting user A/B: car color stability + panel flashing, plus
+whether the car gains shape (its VS may also want more than the fresh set).
+
+## Part 6: red/yellow flash root-caused via user A/B captures — CP reconstruction is the endgame
+
+User captures (`C:\Users\Tera\Documents\GitHub\renderdoccaps\fm2redartifact.rdc`
+/ `fm2yellowartifact.rdc`, same frame structure, 267 events, 204 draws):
+
+- The flashing blob = the 3D showroom/car draw family (e.g. event 1841,
+  3780 indices, 32-byte stride POSITION/NORMAL/TEXCOORD0, RT 320).
+  Pixel history at (480,400): **PS outputs [93.7, -10.7, -70.9, 15.7]** —
+  garbage HDR values that CLAMP to a primary color; the garbage's sign
+  pattern picks red vs yellow per frame. It also writes depth 0.75 (very
+  near, reverse-Z) occluding the whole center — why the car region is one
+  solid mass.
+- Vertex data is IDENTICAL across both captures and SANE (real geometry,
+  unit normals, proper UVs). SharedConstants identical (textures ARE bound:
+  descriptor indices 44/52/82/42...). The ONLY variable = the float constant
+  files. The PS's lighting/material math runs on garbage constants.
+- These are exactly the FF-pipeline per-frame light/material constants
+  (CRenderAdapterLink::RecordAddLight 104-byte payloads → immediate
+  CFixedFunctionRendererX360 → constant emission). The PS PM4 shadow didn't
+  help because 3D draws only overlay the FRESH per-delta set, and these
+  constants are emitted outside the immediate pre-draw delta (and the
+  scanner still skips whole deltas on command-buffer WRAP).
+
+**Architecture conclusion:** piecemeal overlays (live file + partial PM4
+shadows + fresh/accumulated policies) cannot reconstruct the true Xenos
+register file — the ordering information only exists in the PM4 stream
+itself. The endgame is CP reconstruction: scan the command buffer
+CONTINUOUSLY (fix the wrap-skip: on curPhys <= lastPhys, locate the new
+segment base instead of returning), apply ALL constant packet forms (ALU
+float VS+PS, and eventually fetch type-2) into ONE register file in stream
+order, and have PM4 draws consume THAT file exclusively (the Type-0 bursts
+at reg 0 of 448-1008 dwords show the XDK flushes CPU-side dirty constants
+through the same stream, so it should be complete). Current state of the
+incremental fixes is a strict subset of this.
+
+Current toggles: kApplyPm4FreshTo3D (VS+PS fresh for 3D), 2D accumulated
+overlays, per-context write-ptr tracking (kCtxSlots=4).

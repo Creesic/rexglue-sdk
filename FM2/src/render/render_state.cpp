@@ -2378,6 +2378,12 @@ static const uint32_t *g_livePsFloatConstants = nullptr;
 // UI-submit hook (see SetUiGlyphModelView in render_internal.h).
 alignas(16) static uint32_t g_uiGlyphModelView[16] = {};
 static std::atomic<bool> g_uiGlyphModelViewValid{false};
+// 2026-07-02 session 5: last SET_CONSTANT idx=0 regs=16 payload (the 4x4 2D
+// placement matrix; see SetGlyphPlacementMatrix in render_internal.h). Fed
+// ONLY by that distinctive packet -- never by regs=3 writes or Type-0 bursts,
+// the two writers that stomp c0-c3 in the accumulated shadow.
+alignas(16) static uint32_t g_glyphPlacementMatrix[16] = {};
+static std::atomic<bool> g_glyphPlacementMatrixValid{false};
 
 void FlushRenderState(GuestDevice *device) {
   // Forza programs per-draw color-write through its PM4 draw-list node, which the
@@ -2761,6 +2767,13 @@ void FlushRenderState(GuestDevice *device) {
   // exactly the registers a pass upload has written.
   alignas(16) static uint32_t s_mergedVsConstants[0x400];
   const uint32_t *vsConstSrc = device->vertexShaderFloatConstants;
+  // Session 4 outcome: BOTH takes regressed and are off. Take 1
+  // (ring-wrap-following + accumulated 3D) applied stale ring bytes; take 2
+  // (write-time SetF-hook transport + accumulated 3D) applied constants at
+  // RECORD time while deferred draws execute later, smearing per-element
+  // values. Session-3 behavior restored: scanner-fed shadow, 2D=accumulated,
+  // 3D=fresh-per-delta (this flag false).
+  static constexpr bool kCpAccumulate3D = false;
   // Hoisted for both the VS and PS PM4-overlay policies below: 2D UI shaders
   // have no POSITION element (position rides in TEXCOORD halves).
   bool noPos = false;
@@ -2821,19 +2834,19 @@ void FlushRenderState(GuestDevice *device) {
       // the car renderer never calls the CPU SetF path the scene-object pass
       // uses. But overlaying the ACCUMULATED coverage for 3D regressed hard
       // (user-verified: bright flashing + missing meshes -- stale shadow regs
-      // stomp live-file materials/colors). 3D therefore overlays only the
-      // FRESH set: registers written in the command-buffer delta immediately
-      // before THIS draw, which are current by construction. 2D keeps the
-      // accumulated set (user-verified improvement).
-      static constexpr bool kApplyPm4FreshTo3D = true;
+      // stomp live-file materials/colors). That staleness was the scanner's
+      // wrap-skip dropping whole deltas; with the ring now followed across
+      // wraps (kCpAccumulate3D, session 4) the accumulated shadow is
+      // stream-exact and 3D consumes it too. 2D keeps the accumulated set
+      // (user-verified improvement).
       const bool use2dOverlay =
           noPos && g_pm4VsConstantsValid.load(std::memory_order_relaxed);
-      const bool use3dFreshOverlay =
-          !noPos && kApplyPm4FreshTo3D &&
-          g_pm4VsConstantsValid.load(std::memory_order_relaxed);
-      if (use2dOverlay || use3dFreshOverlay) {
-        const uint64_t *cover = use2dOverlay ? g_pm4VsConstantsCoverage
-                                             : g_pm4VsConstantsFreshCoverage;
+      const bool use3dOverlay =
+          !noPos && g_pm4VsConstantsValid.load(std::memory_order_relaxed);
+      if (use2dOverlay || use3dOverlay) {
+        const uint64_t *cover = (use2dOverlay || kCpAccumulate3D)
+                                    ? g_pm4VsConstantsCoverage
+                                    : g_pm4VsConstantsFreshCoverage;
         std::memcpy(s_mergedVsConstants, g_liveVsFloatConstants,
                     sizeof(s_mergedVsConstants));
         bool any = false;
@@ -2849,6 +2862,67 @@ void FlushRenderState(GuestDevice *device) {
         }
         if (any || use2dOverlay)
           vsConstSrc = s_mergedVsConstants;
+      }
+      // 2026-07-02 session 5 (press-A fix): the accumulated shadow's c0-c3 is
+      // whichever of THREE writers came last -- the per-draw regs=16 placement
+      // matrix (correct, c0.x~0.05), an unrelated regs=3 write (c0.x=-0.0,
+      // what draws were seeing), or a Type-0 dirty-flush burst. Overlay c0-c3
+      // for 2D shaders from the dedicated "last regs=16 idx=0" shadow, which
+      // only ever holds the matrix. 3D untouched.
+      static constexpr bool kUseGlyphPlacementMatrixShadow = true;
+      const bool glyphShadowValid =
+          g_glyphPlacementMatrixValid.load(std::memory_order_relaxed);
+      if (kUseGlyphPlacementMatrixShadow && noPos && glyphShadowValid) {
+        if (vsConstSrc != s_mergedVsConstants) {
+          std::memcpy(s_mergedVsConstants, vsConstSrc,
+                      sizeof(s_mergedVsConstants));
+          vsConstSrc = s_mergedVsConstants;
+        }
+        std::memcpy(s_mergedVsConstants, g_glyphPlacementMatrix,
+                    sizeof(g_glyphPlacementMatrix));
+      }
+      // DIAG (session 5, temporary): per-draw proof of the final uploaded
+      // c0 for 2D shaders -- first 16 noPos draws + a periodic sample.
+      if (noPos) {
+        static std::atomic<uint32_t> s_n2d{0};
+        const uint32_t n2d = s_n2d.fetch_add(1, std::memory_order_relaxed);
+        if (n2d < 16 || (n2d & 0x7FF) == 0) {
+          auto bef = [&](uint32_t dw) -> float {
+            uint32_t v = vsConstSrc[dw];
+            v = ((v >> 24) & 0xFFu) | ((v >> 8) & 0xFF00u) |
+                ((v << 8) & 0xFF0000u) | (v << 24);
+            float f;
+            std::memcpy(&f, &v, 4);
+            return f;
+          };
+          const GuestShader *dvs = g_pipelineState.vertexShader;
+          const uint64_t dh = (dvs && dvs->shaderCacheEntry)
+                                  ? dvs->shaderCacheEntry->hash
+                                  : 0ull;
+          auto liveF = [&](uint32_t dw) -> float {
+            if (g_liveVsFloatConstants == nullptr) return -999.0f;
+            uint32_t v = g_liveVsFloatConstants[dw];
+            v = ((v >> 24) & 0xFFu) | ((v >> 8) & 0xFF00u) |
+                ((v << 8) & 0xFF0000u) | (v << 24);
+            float f;
+            std::memcpy(&f, &v, 4);
+            return f;
+          };
+          if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+            std::fprintf(f,
+                         "FM2_GLYPHMTX_DRAW n=%u vh=0x%016llX shadow=%d "
+                         "c0=(%g,%g,%g,%g) c3=(%g,%g,%g,%g) up_c9=(%g,%g,%g,%g)"
+                         " up_c10=(%g,%g,%g,%g) live_c9.x=%g live_c10.x=%g"
+                         " pm4cov0=%016llX\n",
+                         n2d, (unsigned long long)dh, glyphShadowValid ? 1 : 0,
+                         bef(0), bef(1), bef(2), bef(3), bef(12), bef(13),
+                         bef(14), bef(15), bef(36), bef(37), bef(38), bef(39),
+                         bef(40), bef(41), bef(42), bef(43), liveF(36),
+                         liveF(40),
+                         (unsigned long long)g_pm4VsConstantsCoverage[0]);
+            std::fclose(f);
+          }
+        }
       }
     }
   } else if (g_passVsConstantsValid.load(std::memory_order_relaxed)) {
@@ -2875,13 +2949,13 @@ void FlushRenderState(GuestDevice *device) {
   // PS PM4 overlay (2026-07-02): material/paint colors travel as PM4 ALU
   // writes in the PS half (idx 0x400+); unapplied, PS reads transient
   // live-file values -> per-frame FLASHING primary colors (user-verified on
-  // the car + showroom panels). Same policy as VS: 2D = accumulated
-  // coverage, 3D = fresh-per-delta only.
+  // the car + showroom panels). Same policy as VS (kCpAccumulate3D).
   alignas(16) static uint32_t s_mergedPsConstants[0x400];
   if (g_livePsFloatConstants != nullptr &&
       g_pm4PsConstantsValid.load(std::memory_order_relaxed)) {
-    const uint64_t *cover =
-        noPos ? g_pm4PsConstantsCoverage : g_pm4PsConstantsFreshCoverage;
+    const uint64_t *cover = (noPos || kCpAccumulate3D)
+                                ? g_pm4PsConstantsCoverage
+                                : g_pm4PsConstantsFreshCoverage;
     std::memcpy(s_mergedPsConstants, g_livePsFloatConstants,
                 sizeof(s_mergedPsConstants));
     bool any = false;
@@ -3775,6 +3849,38 @@ void BeginPm4ConstantDelta() {
 void SetUiGlyphModelView(const void *rows4) {
   std::memcpy(g_uiGlyphModelView, rows4, sizeof(g_uiGlyphModelView));
   g_uiGlyphModelViewValid.store(true, std::memory_order_relaxed);
+}
+
+// 2026-07-02 session 5: dedicated glyph-placement-matrix shadow (see
+// render_internal.h). Called by the scanner ONLY for SET_CONSTANT idx=0
+// regs=16 packets.
+void SetGlyphPlacementMatrix(const void *beDwords16) {
+  if (beDwords16 == nullptr) return;
+  std::memcpy(g_glyphPlacementMatrix, beDwords16,
+              sizeof(g_glyphPlacementMatrix));
+  g_glyphPlacementMatrixValid.store(true, std::memory_order_relaxed);
+  // DIAG (session 5, temporary): prove what the dedicated shadow holds --
+  // wraps are constant (FM2_PM4WRAP) and stale ring bytes can parse as a
+  // fake idx=0 regs=16, so log the c0 row of the first captures + a periodic
+  // sample. Floats are big-endian in the payload.
+  static std::atomic<uint32_t> s_n{0};
+  const uint32_t n = s_n.fetch_add(1, std::memory_order_relaxed);
+  if (n < 8 || (n & 0x3FF) == 0) {
+    auto bef = [&](uint32_t dw) -> float {
+      uint32_t v = g_glyphPlacementMatrix[dw];
+      v = ((v >> 24) & 0xFFu) | ((v >> 8) & 0xFF00u) | ((v << 8) & 0xFF0000u) |
+          (v << 24);
+      float f;
+      std::memcpy(&f, &v, 4);
+      return f;
+    };
+    if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+      std::fprintf(f, "FM2_GLYPHMTX_CAP n=%u c0=(%g,%g,%g,%g) c3=(%g,%g,%g,%g)\n",
+                   n, bef(0), bef(1), bef(2), bef(3), bef(12), bef(13), bef(14),
+                   bef(15));
+      std::fclose(f);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

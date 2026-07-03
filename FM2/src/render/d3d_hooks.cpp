@@ -143,6 +143,40 @@ REX_IMPORT(__imp__sub_8245D448, g_cbQueueSwapNext, uint32_t(uint32_t));
 // collapses in plume_native). Mirror the upload into the unified VS const buffer.
 REX_IMPORT(__imp__sub_8236D958, g_origUploadMatrixConstants,
            void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+// D3DDevice_SetPixelShaderConstantFN (sub_8236DA60): PS twin of the above.
+// The FF pipeline's per-frame material/light colors ride this chokepoint
+// (callers: FM2_Render_ObjectPassDrawSetupCore, FM2_Render_DispatchPm4DrawOpcode,
+// FM2_Render_CompilePassIfStale*...) -- the constants whose absence makes the
+// showroom car flash primary colors (handoff 2026-07-02 session 4).
+REX_IMPORT(__imp__sub_8236DA60, g_origSetPixelShaderConstantFN,
+           void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+// Session-4 write-time transport toggle: feed the PM4 constant shadows from
+// the SetF hooks instead of the ring scanner. DISABLED after user A/B --
+// record-time application vs deferred draw execution smears per-element
+// constants (every draw sees the newest upload). See handoff session4 pt2.
+static constexpr bool kSetFHooksFeedPm4Shadow = false;
+// D3DDevice_GpuBeginShaderConstantF4 (sub_82803358) -- session 5,
+// UnleashedRecomp-guided transport. The XDK "GpuBegin" API allocates ring
+// space, writes the SET_CONSTANT op-0x2D header itself (0xC0002D00 |
+// (4*count)<<16; PS regs land at ot idx 0x400+4n via the (Start-(PS<<8))
+// wrap), then RETURNS the payload pointer for the CALLER to fill in. This is
+// how the per-draw constants that never touch the device file travel (the 2D
+// glyph placement matrices, per-object data) -- and why ring scanning kept
+// missing them: the payload is written after the pointer we sample. Hook the
+// EMITTER instead of parsing its bytes: record (payload,reg,count,ps) here in
+// call order, apply at the next draw (payload complete by then).
+REX_IMPORT(__imp__sub_82803358, g_origGpuBeginShaderConstantF4,
+           uint32_t(uint32_t, uint32_t, uint32_t, uint32_t));
+static constexpr bool kGpuBeginHookFeedsShadow = true;
+struct GpuBeginConstRec {
+  uint32_t payloadGuest;
+  uint32_t startReg;
+  uint32_t count4;
+  uint32_t isPs;
+};
+static std::mutex g_gpuBeginConstMutex;
+static std::vector<GpuBeginConstRec> g_pendingGpuBeginConsts;
+static std::atomic<uint32_t> g_gpuBeginConstDropped{0};
 // FM2_RenderContext_SetActivePassId (sub_8236E228): stores the active vertex
 // declaration handle at renderContext+11540, read by FM2_D3D_EmitDrawListStatePackets
 // at draw time. Forza binds the per-draw vertex declaration here (a D3DVERTEXELEMENT9
@@ -2707,12 +2741,44 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
 // constant shadow (rr::ApplyPm4VsConstants; overlaid for no-POSITION 2D
 // shaders in FlushRenderState), plus keeps the original one-shot histogram
 // logging (FM2_PM4SETC / FM2_PM4T0ALU / FM2_PM4LOADALU).
+static void ScanPm4AluConstantRange(uint32_t rangePhys, uint32_t len);
+
+// Session 5 (UnleashedRecomp-guided transport): apply the constants recorded
+// by the GpuBeginShaderConstantF4 hook, in call order, right before this
+// draw. The payloads were filled by the game immediately after each GpuBegin
+// returned, so they are complete by now. This is the emitter-hook replacement
+// for parsing the same packets back out of the ring.
+static void DrainGpuBeginConstants() {
+  if (!kGpuBeginHookFeedsShadow) return;
+  std::vector<GpuBeginConstRec> recs;
+  {
+    std::lock_guard<std::mutex> lk(g_gpuBeginConstMutex);
+    if (g_pendingGpuBeginConsts.empty()) return;
+    recs.swap(g_pendingGpuBeginConsts);
+  }
+  auto *mem = ghp::GuestMemory();
+  if (mem == nullptr) return;
+  for (const auto &r : recs) {
+    const auto *host =
+        mem->TranslatePhysical<const uint8_t *>(r.payloadGuest & 0x1FFFFFFFu);
+    if (host == nullptr) continue;
+    if (r.isPs) {
+      rr::ApplyPm4PsConstants(r.startReg * 4u, host, r.count4 * 4u);
+    } else {
+      rr::ApplyPm4VsConstants(r.startReg * 4u, host, r.count4 * 4u);
+      // The regs=16 idx=0 write (the 2D glyph placement matrix) now arrives
+      // through the hook too -- keep the dedicated shadow fed from here.
+      if (r.startReg == 0u && r.count4 == 4u)
+        rr::SetGlyphPlacementMatrix(host);
+    }
+  }
+}
+
 void ProcessPm4VsConstantsDiag(uint32_t context) {
   // Fresh-set reset FIRST (even on the early-out paths): a draw with no new
   // command-buffer bytes gets an EMPTY fresh set, never the previous draw's.
   rr::BeginPm4ConstantDelta();
-  auto *mem = ghp::GuestMemory();
-  if (mem == nullptr) return;
+  DrainGpuBeginConstants();
   auto rd = [&](uint32_t ga) -> uint32_t {
     auto *p = ghp::ToHost<rex::be<uint32_t>>(ga);
     return p ? p->get() : 0u;
@@ -2734,10 +2800,71 @@ void ProcessPm4VsConstantsDiag(uint32_t context) {
   s_ctx[slot] = context;
   const uint32_t lastPhys = s_last[slot];
   s_last[slot] = curPhys;
-  if (lastPhys == 0 || curPhys <= lastPhys) return; // first call / wrap / drain
-  const uint32_t len = curPhys - lastPhys;
-  if (len > 0x40000u) return;
-  const auto *buf = mem->TranslatePhysical<const uint8_t *>(lastPhys);
+  if (lastPhys == 0 || curPhys == lastPhys) return; // first call / no new data
+  if (curPhys > lastPhys) { // normal forward delta within the ring
+    ScanPm4AluConstantRange(lastPhys, curPhys - lastPhys);
+    return;
+  }
+  // curPhys < lastPhys: the ring write position WRAPPED back to the ring base
+  // (D3D::RingBufferDeviceAllocate @0x823721D8 restarts at *(ctx+14528) when
+  // an allocation no longer fits before the ring end *(ctx+14532)). The old
+  // scanner skipped the WHOLE delta here, losing every constant packet since
+  // the previous draw -- the garbage FF light/material constants in the 3D PS
+  // (handoff 2026-07-02 part 6). Scan the ring tail, then base..cur, in
+  // stream order.
+  // DISABLED after user A/B (2026-07-02 session 4): scanning the wrap
+  // (tail + head) regressed hard -- boot went white-artifact -> BLACK and
+  // the menu UI disappeared, while the car flash stayed. The ring tail is
+  // evidently NOT NOP-padded (stale previous-lap packets got applied), and
+  // the extra coverage poisons the 2D accumulated overlay. Keep the wrap
+  // DIAGNOSTIC only until the constant-transport question is settled.
+  static constexpr bool kFollowRingWrap = false;
+  const uint32_t ringBase = rd(context + 14528u) & 0x1FFFFFFFu;
+  const uint32_t ringEnd = rd(context + 14532u) & 0x1FFFFFFFu;
+  const bool sane = ringBase != 0u && ringBase < ringEnd &&
+                    (ringEnd - ringBase) <= 0x1000000u &&
+                    lastPhys >= ringBase && lastPhys <= ringEnd &&
+                    curPhys >= ringBase && curPhys < ringEnd;
+  static std::atomic<uint32_t> s_wrapN{0};
+  if (s_wrapN.fetch_add(1, std::memory_order_relaxed) < 8)
+    LogReplayDbg("FM2_PM4WRAP ctx=0x%08X ring=[%08X,%08X) last=%08X cur=%08X "
+                 "sane=%d",
+                 context, ringBase, ringEnd, lastPhys, curPhys, sane ? 1 : 0);
+  if (!kFollowRingWrap || !sane) return;
+  ScanPm4AluConstantRange(lastPhys, ringEnd - lastPhys);
+  ScanPm4AluConstantRange(ringBase, curPhys - ringBase);
+}
+
+// Walk one contiguous physical range of the FM2 command stream, applying the
+// three ALU float packet forms (SET_CONSTANT op 0x2D, Type-0 burst at
+// 0x4000-0x47FF, LOAD_ALU_CONSTANT op 0x2F) into the PM4 constant shadow in
+// stream order; keeps the original one-shot histogram logging.
+static void ScanPm4AluConstantRange(uint32_t rangePhys, uint32_t len) {
+  // Session 4 outcome: scanner applies stay ON (session-3 behavior). The
+  // write-time SetF-hook transport was tried and REGRESSED (user: "two days
+  // back"): for deferred/recorded paths the hook applies constants at
+  // RECORD time while draws execute later, so every draw saw the newest
+  // values instead of its own -- the scanner's per-draw pre-draw-delta
+  // application is the correct ordering even though its parsing can read
+  // stale ring bytes across undetected wraps (garbage histogram entries).
+  // Known flaw to fix separately, one variable at a time.
+  static constexpr bool kScannerApplies = true;
+  // Session 5: the sampled write pointer consistently trails the final
+  // pre-draw packet by ONE dword (log-proven FM2_C0WRITE inb=0 off=12 len=80
+  // on every glyph draw; FM2_C0DUMP shows the payload complete in memory just
+  // past the window). Strict bounds therefore rejected THE LAST CONSTANT
+  // PACKET BEFORE EVERY DRAW -- usually that draw's own constants -- for 2D
+  // and 3D alike (the glyph placement matrix was the proven instance; the
+  // car's per-object WVP/materials ride the same path). Allow the payload of
+  // a packet whose header+ot are in-window to overrun the window by this
+  // slack. Keep it small so garbage headers (stale-ring cnt~2500 misparses)
+  // stay rejected.
+  static constexpr bool kApplyTailSlack = true;
+  static constexpr uint32_t kTailSlackBytes = 64u;
+  const uint32_t applyLimit = len + (kApplyTailSlack ? kTailSlackBytes : 0u);
+  auto *mem = ghp::GuestMemory();
+  if (mem == nullptr || len == 0u || len > 0x40000u) return;
+  const auto *buf = mem->TranslatePhysical<const uint8_t *>(rangePhys);
   if (buf == nullptr) return;
   auto be = [&](uint32_t o) -> uint32_t {
     const uint8_t *p = buf + o;
@@ -2761,11 +2888,55 @@ void ProcessPm4VsConstantsDiag(uint32_t context) {
         // ceiling carry the per-element 2D placement matrices -- feed them
         // into the PM4 constant shadow in stream order (payload is already
         // big-endian dwords in guest memory, pass verbatim).
-        if (ctype == 0u && cnt >= 2u && off + 8u + 4u * (cnt - 1u) <= len) {
+        if (kScannerApplies && ctype == 0u && cnt >= 2u &&
+            off + 8u + 4u * (cnt - 1u) <= applyLimit) {
           if (idx < 0x400u)
             rr::ApplyPm4VsConstants(idx, buf + off + 8u, cnt - 1u);
           else if (idx < 0x800u)
             rr::ApplyPm4PsConstants(idx - 0x400u, buf + off + 8u, cnt - 1u);
+        }
+        // Session 5 press-A fix: the idx=0 regs=16 write is SPECIFICALLY
+        // the per-draw 2D glyph placement matrix (c0.x~0.05); capture it
+        // into its dedicated shadow so the flush can overlay c0-c3 for 2D
+        // shaders without the regs=3 / Type-0 stomps the accumulated
+        // shadow suffers. OUTSIDE the strict-bounds apply block, with a
+        // 64-byte payload-overrun allowance: the sampled write pointer
+        // consistently trails this packet's end by ONE dword (log-proven,
+        // FM2_C0WRITE inb=0 off=12 len=80 every glyph + FM2_C0DUMP shows
+        // c3.w present just past the window), so strict bounds rejected the
+        // matrix on every draw -- which is also why the accumulated shadow
+        // only ever held the regs=3/Type-0 writers.
+        if (ctype == 0u && idx == 0u && cnt == 17u && off + 8u <= len &&
+            off + 8u + 4u * 16u <= len + 64u)
+          rr::SetGlyphPlacementMatrix(buf + off + 8u);
+        // DIAG (session 5, temporary): the dedicated glyph shadow never
+        // captured (CAP=0 across ~50k 2D draws) while the one-shot histogram
+        // DID see an idx=0 regs=16 at boot. Log every idx=0 c-file write with
+        // its regs count and whether the apply-gate bounds passed, to tell
+        // "regs=16 straddles the window" from "regs=16 never in the window".
+        if (idx == 0u && ctype == 0u) {
+          static std::atomic<uint32_t> s_c0n{0};
+          const uint32_t k = s_c0n.fetch_add(1, std::memory_order_relaxed);
+          if (k < 64 || (k & 0xFFu) == 0)
+            LogReplayDbg("FM2_C0WRITE n=%u regs=%u inb=%d off=%u len=%u "
+                         "v=%08X %08X",
+                         k, cnt - 1u,
+                         (off + 8u + 4u * (cnt - 1u) <= len) ? 1 : 0, off, len,
+                         off + 8u <= len ? be(off + 8u) : 0u,
+                         off + 12u <= len ? be(off + 12u) : 0u);
+          // One-shot raw dump of the whole 80-byte window + 16 bytes beyond:
+          // every glyph delta shows the packet at off=12 ending 4 bytes past
+          // len -- see whether the layout differs or the write ptr trails.
+          static std::atomic<bool> s_dumped{false};
+          bool exp = false;
+          if (len == 80u && off == 12u &&
+              s_dumped.compare_exchange_strong(exp, true)) {
+            char line[1024];
+            int p = 0;
+            for (uint32_t d = 0; d < 24u; ++d)
+              p += std::snprintf(line + p, sizeof(line) - p, "%08X ", be(d * 4u));
+            LogReplayDbg("FM2_C0DUMP phys=%08X %s", rangePhys, line);
+          }
         }
         // Log each DISTINCT (type,idx) once -> full histogram of which ALU regs
         // the game SET_CONSTANTs. WVP for the VS is regs ~28..75 (c7..c18).
@@ -2788,7 +2959,8 @@ void ProcessPm4VsConstantsDiag(uint32_t context) {
         const uint32_t ctype = (ot >> 16) & 0xFFu;
         const uint32_t sz = be(off + 12u) & 0xFFFu;
         // APPLY: indirect ALU load -- copy the source block into the shadow.
-        if (ctype == 0u && idx < 0x800u && sz != 0u && sz <= 0x400u) {
+        if (kScannerApplies && ctype == 0u && idx < 0x800u && sz != 0u &&
+            sz <= 0x400u) {
           if (const auto *lsrc =
                   mem->TranslatePhysical<const uint8_t *>(addr & 0x1FFFFFFFu)) {
             if (idx < 0x400u)
@@ -2821,7 +2993,7 @@ void ProcessPm4VsConstantsDiag(uint32_t context) {
         // base-0x4000; PS half starts at 0x4400). Clamp to the file and the
         // scanned window.
         const uint32_t rAll = base - 0x4000u;
-        if (off + 4u + 4u * cnt0 <= len) {
+        if (kScannerApplies && off + 4u + 4u * cnt0 <= applyLimit) {
           if (rAll < 0x400u)
             rr::ApplyPm4VsConstants(rAll, buf + off + 4u,
                                     std::min(cnt0, 0x400u - rAll));
@@ -3860,8 +4032,11 @@ REX_HOOK_RAW(sub_8236D958) {
   g_origUploadMatrixConstants.fn(ctx, base);
   if (ShouldMirrorPlumeRenderState()) {
     const void *src = ghp::ToHost<void>(srcAddr);
-    if (src != nullptr)
+    if (src != nullptr) {
       rr::MirrorPassVsConstants(destReg, src, count);
+      if (kSetFHooksFeedPm4Shadow)
+        rr::ApplyPm4VsConstants(destReg * 4u, src, count * 4u);
+    }
     static std::atomic<uint32_t> s_n{0};
     if (s_n.fetch_add(1, std::memory_order_relaxed) < 16) {
       LogReplayDbg("FM2_UPLOADMTX destReg=%u count=%u src=0x%08X srcHost=%p",
@@ -3886,6 +4061,54 @@ REX_HOOK_RAW(sub_8236D958) {
       }
     }
   }
+}
+
+// PS twin of the hook above: D3DDevice_SetPixelShaderConstantFN
+// (sub_8236DA60; r3=device, r4=StartRegister, r5=pConstantData,
+// r6=Vector4fCount). Feeds the PS half of the write-time constant transport
+// -- the FF material/light colors the flashing showroom car never received.
+REX_HOOK_RAW(sub_8236DA60) {
+  const uint32_t destReg = ctx.r4.u32;
+  const uint32_t srcAddr = ctx.r5.u32;
+  const uint32_t count = ctx.r6.u32;
+  g_origSetPixelShaderConstantFN.fn(ctx, base);
+  if (ShouldMirrorPlumeRenderState()) {
+    const void *src = ghp::ToHost<void>(srcAddr);
+    if (kSetFHooksFeedPm4Shadow && src != nullptr)
+      rr::ApplyPm4PsConstants(destReg * 4u, src, count * 4u);
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 16)
+      LogReplayDbg("FM2_SETPSCONST destReg=%u count=%u src=0x%08X lr=0x%08X",
+                   destReg, count, srcAddr, (uint32_t)ctx.lr);
+  }
+}
+
+// D3DDevice_GpuBeginShaderConstantF4 (sub_82803358; r3=device, r4=PixelShader,
+// r5=StartRegister, r6=Vector4fCount; returns r3 = guest payload ptr the
+// caller fills). Record the emission in call order; DrainGpuBeginConstants
+// applies it before the next draw. See the import-site comment.
+REX_HOOK_RAW(sub_82803358) {
+  const uint32_t isPs = ctx.r4.u32;
+  const uint32_t startReg = ctx.r5.u32;
+  const uint32_t count4 = ctx.r6.u32;
+  g_origGpuBeginShaderConstantF4.fn(ctx, base);
+  const uint32_t payload = ctx.r3.u32;
+  if (!kGpuBeginHookFeedsShadow || payload == 0u || count4 == 0u ||
+      count4 > 0x100u || !ShouldMirrorPlumeRenderState())
+    return;
+  {
+    std::lock_guard<std::mutex> lk(g_gpuBeginConstMutex);
+    if (g_pendingGpuBeginConsts.size() < 2048)
+      g_pendingGpuBeginConsts.push_back({payload, startReg, count4, isPs});
+    else
+      g_gpuBeginConstDropped.fetch_add(1, std::memory_order_relaxed);
+  }
+  static std::atomic<uint32_t> s_n{0};
+  const uint32_t n = s_n.fetch_add(1, std::memory_order_relaxed);
+  if (n < 24 || (n & 0xFFFu) == 0)
+    LogReplayDbg("FM2_GPUBEGINCONST n=%u ps=%u reg=%u count4=%u payload=0x%08X "
+                 "lr=0x%08X",
+                 n, isPs, startReg, count4, payload, (uint32_t)ctx.lr);
 }
 
 REX_HOOK(FM2_FmodIrqSubmit_8236C688, Fm2FmodIrqSubmitSafe);

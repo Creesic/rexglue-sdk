@@ -87,6 +87,16 @@ void ApplyPm4PsConstants(uint32_t dwordIndex, const void *beDwords,
 // scanner calls this before walking each command-buffer delta so 3D draws
 // only overlay constants written immediately before them.
 void BeginPm4ConstantDelta();
+// 2026-07-02 session 5 (press-A glyph fix): the 2D glyph placement matrix is
+// SPECIFICALLY the SET_CONSTANT idx=0 regs=16 write (the 4x4 matrix emitted
+// right before each glyph draw). Three writers hit c0-c3 per frame (regs=16
+// matrix, an unrelated regs=3 write, Type-0 dirty-flush bursts) and the
+// accumulated shadow keeps whichever came last -- usually the wrong one, so
+// glyphs collapse to center and their Loop-Blinn coverage goes uniform (solid
+// polygons instead of letters). The scanner calls this ONLY for regs=16 idx=0
+// packets; FlushRenderState overlays c0-c3 from it for no-POSITION shaders
+// (toggle kUseGlyphPlacementMatrixShadow). 16 big-endian dwords.
+void SetGlyphPlacementMatrix(const void *beDwords16);
 
 struct GuestVertexDeclaration;
 GuestVertexDeclaration *LookupVertexDeclarationAlias(uint32_t guestAddress);

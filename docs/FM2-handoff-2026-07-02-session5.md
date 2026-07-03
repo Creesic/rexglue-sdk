@@ -1,0 +1,219 @@
+# FM2 plume_native handoff — START HERE (session 5 entry)
+
+Clean, self-contained handoff at the end of session 4. Detailed running notes
+for session 4 are in `FM2-handoff-2026-07-02-session4.md` (ring-scan disproof,
+write-hook disproof, full press-A investigation); session 3 is in
+`FM2-handoff-2026-07-02-session3.md`. This doc is the authoritative summary —
+you should not need to read the chain to resume.
+
+## TL;DR
+
+- **Build state = session-3 "good" baseline, verified restored by the user.**
+  Two constant-transport experiments this session (ring-wrap-following, and
+  write-time SetF hooks) both regressed and are **gated OFF**. Nothing in the
+  working tree changes runtime behavior vs. the session-3 baseline.
+- **Press-A screen is fully root-caused** (this session's main result). It is
+  NOT a new bug, NOT textures, NOT memexport, NOT geometry — it is the SAME
+  VS-constant transport problem, pinned to a specific mechanism (below).
+- **A targeted, non-blind fix is designed and ready to implement** behind a
+  toggle. It is materially different from the two reverts.
+
+## Build / run
+
+- Current `fm2.exe`: `FM2/out/build/win-amd64-relwithdebinfo/fm2.exe`
+  (rebuilt this session, session-3 behavior).
+- Build FM2 from a plain Claude shell needs the VS18 lib dir prepended to
+  `$env:LIB` in the SAME call (else lld-link `__std_find_*` undefined):
+  `$env:LIB = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\lib\x64;" + $env:LIB`
+  then `cmake --build --preset win-amd64-relwithdebinfo --target fm2` from `FM2/`.
+- Launch: `scripts/fm2/launch-fm2-plume-native.bat` (do NOT bare-launch fm2).
+- Common log: `C:\temp\fm2-clean.log` (append-mode; tail from a recorded byte
+  offset, never whole-file grep).
+
+## Current toggles (all at session-3-good values)
+
+`FM2/src/render/d3d_hooks.cpp`:
+- `kFollowRingWrap = false` — ring scanner does NOT follow wraps (following
+  them applied stale tail bytes → boot black + menu UI gone). Wrap DIAGNOSTIC
+  (`FM2_PM4WRAP`) still logs.
+- `kScannerApplies = true` — the ring scanner still feeds the PM4 constant
+  shadow (session-3 behavior; per-draw pre-draw-delta application = the
+  correct ORDERING, even though its parsing can read stale bytes on undetected
+  wraps).
+- `kSetFHooksFeedPm4Shadow = false` — the new SetF write-hooks
+  (`sub_8236D958` VS / `sub_8236DA60` PS) do NOT feed the shadow. Enabling it
+  regressed ("two days back"): the hooks apply at RECORD time but deferred
+  draws execute later, so every draw saw the newest upload (smearing). The
+  `FM2_SETPSCONST` logging + the PS chokepoint hook remain in place, dormant.
+
+`FM2/src/render/render_state.cpp`:
+- `kCpAccumulate3D = false` — 3D draws use fresh-per-delta PM4 overlay (2D
+  uses accumulated). Accumulated-3D regressed under both experiments.
+
+## PRESS-A ROOT CAUSE (the session's main result)
+
+Captures: ours `renderdoccaps/fm2pressstart2.rdc` (user-provided); Xenia GT
+`renderdoccaps/xeniafm2pressstart.rdc`.
+
+1. **The "messed-up mesh" is a RenderDoc artifact, not a defect.** The 2D UI
+   draws carry position in `TEXCOORD0` (half2), no `POSITION` semantic, so
+   RenderDoc's VS-Input plot is meaningless (spiky). `decode_mesh_inputs`
+   shows clean glyph geometry. Judge by VS-Output / rendered pixels only.
+2. **Press-A composition:** the background / logo / A-button are plain
+   `CopyTextureRegion` blits (they render fine — no shader/constants). The
+   "empty white/black polygons" the user sees are the DRAWN UI text.
+3. **The UI text samples NO texture.** PS `cd714e30` is a procedural
+   **Loop-Blinn** vector-curve shader (`tc0.x*tc0.x - tc0.y` curve test):
+   outputs a flat color `c0.xyz` with analytic coverage as alpha, discards
+   low coverage. There is no font atlas — glyphs are math. "Which texture
+   goes where" does not apply to the text.
+4. **Placement + coverage both come from VS constants c0-c9.** VS `99bda386`
+   builds position = `c0*(|tc0.x|+c4.x) + c1*tc0.y + c3`, projected by c5-c9
+   (reads cbuffer0 at offsets 0/16/48/64/80/96/112/128/144).
+5. **Log trace of writes to register c0** (THE mechanism): three writers per
+   frame, and our shadow keeps the wrong one:
+   - `SET_CONSTANT idx=0 regs=16` = the 4x4 placement matrix, `c0.x = 0.05 /
+     0.040` — **correct** (matches Xenia ~0.033-0.059), and it IS in the
+     stream immediately before each glyph draw.
+   - `SET_CONSTANT idx=0 regs=3` = a different write, `c0.x = -0.0` — **this
+     is what we wrongly apply** (our draw-time `c0 = (-0.0, -2.25, 0, 0)`).
+   - `Type-0 ALU reg=0` bursts (XDK dirty-flush) — also stomp c0-c3.
+   Our ACCUMULATED shadow keeps a later `regs=3`/Type-0 write instead of the
+   per-draw `regs=16` matrix. Wrong c0 → glyphs mis-place (collapse to center)
+   AND the coverage goes uniform → solid polygons.
+6. **Xenia's press-A capture has zero indexed glyph draws** (`DrawIndexed`
+   count 0 — it composes text via memexport, a different method/moment), so
+   there is no comparable Xenia draw to read c0 from. Ground truth comes from
+   OUR emitted stream (same game code → same PM4): the game emits `0.05`.
+
+## NEXT STEP: the proposed targeted fix
+
+**STATUS 2026-07-02 (session 5): IMPLEMENTED as designed, built into
+`FM2/out/build/win-amd64-relwithdebinfo/fm2.exe` (22:28). Awaiting user
+on-screen A/B against the success criterion below.** Pieces:
+- Scanner capture: `d3d_hooks.cpp` `ScanPm4AluConstantRange`, SET_CONSTANT
+  branch — `idx==0 && cnt==17` (= regs=16) calls
+  `rr::SetGlyphPlacementMatrix(payload)`. regs=3 / Type-0 never touch it.
+- Shadow + overlay: `render_state.cpp` — `g_glyphPlacementMatrix[16]` next to
+  `g_uiGlyphModelView`; in `FlushRenderState`, after the accumulated 2D
+  overlay, `kUseGlyphPlacementMatrixShadow = true` copies the shadow over
+  c0-c3 for no-POSITION shaders only (so it WINS over the regs=3/Type-0
+  stomps already merged). 3D path untouched.
+- Declared in `render_internal.h` (`SetGlyphPlacementMatrix`).
+- Revert = flip `kUseGlyphPlacementMatrixShadow` to false (render_state.cpp).
+
+Track the glyph placement matrix SPECIFICALLY, keyed on the distinctive
+packet — different from the two blind rewrites that regressed:
+
+- Add a small dedicated shadow: "last `SET_CONSTANT idx=0 regs=16` payload"
+  (the 4x4 matrix), updated ONLY by regs=16 idx=0 writes in the scanner
+  (ignore `regs=3` and Type-0 for c0-c3).
+- In `FlushRenderState`, for no-POSITION (2D) shaders only, overlay c0-c3
+  from that shadow. 3D untouched.
+- Toggle `kUseGlyphPlacementMatrixShadow`; fully reversible.
+- This dodges BOTH failure modes: the smearing (regs=3/Type-0) and the
+  fresh-delta wrap-skip that made session 3 fall back to accumulated.
+- **Success criterion (verify on screen, before/after):** "PRESS A" carves
+  real letters instead of solid polygons; glyphs sized/placed correctly.
+
+If it works for 2D, then reconsider whether the same regs=16-keyed approach
+helps the 3D car (its per-object WVP has the same multi-writer register
+contention).
+
+## Other durable findings this session
+
+- **Memexport is a real plume_native gap but a red herring for the press-A
+  UI.** Xenia's press-A DOES run ~24 memexport passes (VS+GS+PS UAV-writes to
+  a 32KB buffer, viewport 8192², reading shared mem). The SDK Xenos CP
+  implements memexport (`spirv/dxbc_translator_memexport`, `command_processor`
+  readback) but plume_native bypasses the CP, so those passes don't stream
+  back. The press-A TEXT, however, is CPU-generated glyph geometry (Buffer
+  342), not memexport output. Memexport remains a gap for whatever those
+  passes feed (skinning/particles/3D) — a separate, larger future item.
+- **RT 313 is a shared EDRAM scratch surface.** Its usage repeats in ~7
+  blocks (clear → draws → 3 CopySrc); block 2's first draw is 3D, block 1 is
+  2D — so the "repeats" the user noticed are separate render→resolve cycles
+  (bg, logo, button, glyphs, 3D...), NOT 7 frames and NOT 7 tiles. There is
+  no single "final composite" RT — the screen = the copied pieces + the drawn
+  polygons.
+
+## Debugging workflow / gotchas learned
+
+- **fm2 silent-death under RenderDoc**: dies ~10-15s in, no WER, no log
+  shutdown banner, process just vanishes. Repeatedly killed hands-off capture
+  attempts. Not a crash we can catch via WER. **User will provide captures to
+  `renderdoccaps/` rather than have Claude launch-and-capture.**
+- **RenderDoc MCP device reset**: opening several captures triggers
+  `DXGI_ERROR_DEVICE_RESET` (aggravated by the qrenderdoc GUI holding the
+  GPU). Recover by `close_capture` on all but one; keep ≤1-2 open at a time.
+- **Texture images from the MCP exceed the token cap**: `get_texture_image`
+  with `include_image=true` saves to a file; decode the base64 to PNG in
+  PowerShell (`[IO.File]::WriteAllBytes(out,[Convert]::FromBase64String(...))`)
+  and `Read` the PNG (Read renders images).
+- **WER offset → symbol**: `llvm-symbolizer --obj=fm2.exe --relative-address
+  <off>` (x64 build under VS18 `VC\Tools\Llvm\x64\bin`; the ARM64 one won't
+  run). One crash this session: `sub_825E0678` (mesh-section dispatcher,
+  a1[20] recycled mid-vcall) — the known deferred-pool payload-recycle race.
+- **`FM2_DRAWSEQ` c0=gray/zero is EXPECTED** — it samples the raw issuing-ctx
+  file (`ctx+0x700`), which lacks the placement matrix by design; the overlay
+  supplies it at upload time. Do not read it as the final constant.
+- `FM2_CRASH code=0x40010006` log lines are benign `DBG_PRINTEXCEPTION_C`.
+
+## SESSION 5 CONTINUATION (2026-07-03): UnleashedRecomp-guided transport pivot
+
+User directive: use `C:\Users\Tera\Documents\GitHub\UnleashedRecomp` as the guide
+(instead of ReOdyssey-style PM4 interception). Findings + state:
+
+1. **Ring-scan window root cause (proven)**: the sampled write pointer trails
+   the final pre-draw packet (FM2_C0WRITE inb=0 off=12 len=80 every glyph;
+   FM2_C0DUMP shows the payload complete just past the window). Strict bounds
+   rejected THE LAST CONSTANT PACKET BEFORE EVERY DRAW. Fixes landed:
+   glyph-capture slack, then general `kApplyTailSlack=true` (+64B) in
+   `ScanPm4AluConstantRange`.
+2. **Why the pointer trails — the real emitter found**:
+   `D3DDevice_GpuBeginShaderConstantF4` (0x82803358, decompiled) allocates ring
+   space, writes the SET_CONSTANT op-0x2D header + leading 0x80000000 NOPs,
+   bumps m_pRing, and returns the payload ptr for the CALLER to fill after
+   return. Per-draw constants (glyph matrices; likely per-object data) travel
+   through it, bypassing the device constant file entirely.
+3. **UnleashedRecomp model verified** (gpu/video.cpp): guest D3D wrappers write
+   GuestDevice file + dirty flags; each draw snapshots dirty constants into an
+   intermediary allocator and enqueues ordered commands; host replays. FM2's
+   XDK equivalents are all named in IDA: `D3DDevice_SetVertexShaderConstantFN`
+   (0x8236D958, device file + m_Pending.m_Mask — decompiled, same model),
+   `D3D::SetPending_AluConstants` (0x82382cc8, dirty flush),
+   `D3DCommandBuffer_SetShaderConstantF`/`CreateShaderConstantFFixup`
+   (0x823767b8/0x823766e0, precompiled-CB fixups),
+   `FM2_D3D_EmitShaderConstantsBatch` (0x82730dc0).
+4. **Implemented: emitter hook transport** (`kGpuBeginHookFeedsShadow=true`,
+   d3d_hooks.cpp): REX_HOOK_RAW(sub_82803358) records (payload,reg,count,ps)
+   in call order; `DrainGpuBeginConstants()` applies them via
+   rr::ApplyPm4{Vs,Ps}Constants + the glyph shadow at the top of
+   `ProcessPm4VsConstantsDiag`, before the ring scan. VERIFIED live:
+   FM2_GPUBEGINCONST fires (all ps=0 reg=0 count4=4, lr=0x827BB01C = text
+   renderer), and per-draw glyph c3 translations now VARY per draw (ring scan
+   had been smearing one stale matrix). PS alpha path: PS c0=white; fade
+   constant c9.w=1e5 at steady state (capture-time c9=0 was early-boot).
+5. **Press-A text carve chain fully understood**: PS cd714e30 alpha =
+   smoothstep(sat(|dot(pos,c9)|*0.02/w)) * coverage * c0.w — c9 zero ⇒
+   invisible glyphs even though they rasterize (4668 samples passed).
+6. **Next steps (Unleashed-guided, in order)**: (a) user A/B of the emitter
+   hook build; (b) turn OFF ring-scanner applies (kScannerApplies=false) once
+   (a) holds — the scanner's stale-ring misparses still poison other regs;
+   (c) hook `D3DCommandBuffer_SetShaderConstantF` + `CreateShaderConstantFFixup`
+   for the precompiled-CB constant path (car per-object WVP/materials
+   candidates); (d) hook `SetPending_AluConstants` to mirror the dirty-mask
+   flush instead of parsing its output. Car MODEL absence also gated by the
+   separate unpopulated-vertex-pool finding (2026-07-01) — constants alone
+   won't make the car appear.
+7. Temp diagnostics still in tree: FM2_GLYPHMTX_CAP/_DRAW (with c9/c10/cov),
+   FM2_C0WRITE/_C0DUMP, FM2_GPUBEGINCONST. Strip once transport settles.
+
+## Parked / open
+
+- Implement + verify the glyph-placement-matrix-shadow fix (next step above).
+- 3D car flash (same multi-writer register contention on the per-object WVP).
+- Memexport emulation in plume_native (large; gates whatever the 24 passes
+  feed — likely skinning/particles/3D geometry generation).
+- Memory leak (RT/depth churn), `FM2_Audio*` misname cluster.
+- Clean up temp diagnostics once the constant path is settled.
