@@ -229,11 +229,17 @@ User directive: use `C:\Users\Tera\Documents\GitHub\UnleashedRecomp` as the guid
   draw with startIndex=0/baseVertex=0. Verified engaging (FM2_RANGESNAP,
   windows 576B-8KB). Whole-pool per-draw re-upload was tried first and
   OOM-killed the process; the per-frame caches stay for the fallback path.
-- **PARKED OFF for now**: an INTERMITTENT silent mid-boot death (no WER, no
-  shutdown banner) appeared during this work and fires with the ranged path
-  ON and OFF -- not attributable to it; needs an x64dbg catch (shared
-  instance -- coordinate with user). Once understood, flip
-  `kPerDrawIndexedRangeSnapshot=true` and A/B press-A letter legibility.
+- **"Intermittent silent death" RESOLVED as user-closes**: the game windows
+  my headless verification runs popped on the user's desktop were being
+  closed BY THE USER -- the survival A/B statistics were meaningless.
+  `src/ui/window_win.cpp` WM_CLOSE/WM_DESTROY now logs
+  `REXUI_WINDOW_CLOSED_BY_USER ... NOT a crash` to the debug log (verified by
+  simulated X-press); always check for it before calling a vanished process
+  a crash. Also learned: after an SDK install, fm2.exe MUST be rebuilt or it
+  exits instantly at boot (fresh-DLL/old-exe mismatch).
+- **`kPerDrawIndexedRangeSnapshot` RE-ENABLED (true)** with the small-window
+  caps and the DrainGpuBeginConstants QueryRangeAccess guard (a real hazard
+  fix regardless). Awaiting user press-A letter-legibility verdict.
 
 ## Parked / open
 

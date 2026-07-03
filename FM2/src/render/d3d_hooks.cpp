@@ -3078,13 +3078,15 @@ void BindPm4GeometryFromContext(GuestDevice *device, uint32_t context,
   // whole-pool re-upload OOMs. Instead: scan this draw's index slice, upload
   // ONLY the referenced vertex window (a few KB), rebase the indices to it,
   // and have the caller draw with startIndex=0/baseVertex=0.
-  // State (2026-07-03): the day's "intermittent silent deaths" that muddied
-  // this path's A/B were (per the user) THE USER CLOSING THE GAME WINDOW
-  // during headless verification runs -- the survival statistics were
-  // meaningless. WM_CLOSE now logs REXUI_WINDOW_CLOSED_BY_USER (window_win
-  // .cpp) so user-closes can never be mistaken for crashes again. Whole-pool
-  // per-draw re-upload DID deterministically OOM; the small-window caps stay.
-  static constexpr bool kPerDrawIndexedRangeSnapshot = true;
+  // SUPERSEDED (2026-07-03): the press-A glyph draws arrive via the
+  // API-level SetStreamSourceNative path, NOT this PM4 bind hook (capture
+  // fm2pressstartbadglyphs.rdc: glyph draws still whole-pool while this was
+  // ON). The ranged snapshot now lives at DRAW time in
+  // render_state.cpp::TryDrawTimeRangedSnapshot, which covers BOTH paths
+  // (this hook's binds go through SetStreamSourceGuestData/SetIndicesGuest-
+  // Data, which feed the guest refs the draw-time ranging uses). Keep this
+  // bind-side variant OFF so only one mechanism runs.
+  static constexpr bool kPerDrawIndexedRangeSnapshot = false;
   static constexpr uint32_t kRangeSnapshotMaxIndices = 16384u;
   static constexpr uint32_t kRangeSnapshotMaxWindowBytes = 128u * 1024u;
   bool rangedDone = false;

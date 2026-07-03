@@ -4285,8 +4285,24 @@ void SetVertexDeclaration(GuestDevice * /*device*/,
                 declaration);
 }
 
+// Session 5 (2026-07-03): guest-data references behind the current
+// index/stream bindings, so DrawIndexedPrimitive can re-slice the LIVE guest
+// bytes per draw (see TryDrawTimeRangedSnapshot). Set by the *GuestData
+// binders, cleared by the object binders. Deliberately NOT touched by the
+// host-window/prepared helpers: consecutive draws against one binding each
+// re-range from these stable refs.
+struct GuestDataRef {
+  const uint8_t *data = nullptr;
+  uint32_t size = 0;
+  uint32_t stride = 0;
+};
+static GuestDataRef g_guestIndexRef;
+static GuestDataRef g_guestStreamRef[16];
+
 void SetStreamSource(GuestDevice *device, uint32_t index, GuestBuffer *buffer,
                      uint32_t offset, uint32_t stride) {
+  if (index < 16u)
+    g_guestStreamRef[index] = {};
   SyncVertexDeclarationFromDevice(device);
 
   // DIAG: for no-POSITION HUD shaders (position derived from TEXCOORD0), dump
@@ -4360,6 +4376,7 @@ void SetStreamSource(GuestDevice *device, uint32_t index, GuestBuffer *buffer,
 }
 
 void SetIndices(GuestDevice * /*device*/, GuestBuffer *buffer) {
+  g_guestIndexRef = {};
   SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.buffer,
                 buffer ? buffer->buffer->at(0) : RenderBufferReference{});
   SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.format,
@@ -4371,6 +4388,9 @@ void SetIndices(GuestDevice * /*device*/, GuestBuffer *buffer) {
 void SetStreamSourceGuestData(GuestDevice *device, uint32_t index,
                               const void *data, uint32_t size,
                               uint32_t stride) {
+  if (index < 16u)
+    g_guestStreamRef[index] = {static_cast<const uint8_t *>(data), size,
+                               stride};
   SyncVertexDeclarationFromDevice(device);
 
   SetDirtyValue(g_dirtyStates.pipelineState,
@@ -4453,6 +4473,7 @@ void SetIndicesPreparedHost(const void *data, uint32_t size,
 
 void SetIndicesGuestData(GuestDevice * /*device*/, const void *data,
                          uint32_t size, uint32_t indexStride) {
+  g_guestIndexRef = {static_cast<const uint8_t *>(data), size, indexStride};
   // See SetStreamSourceGuestData: per-draw policy lives in the ranged
   // snapshot path now; this cache is the non-ranged fallback.
   static constexpr bool kUploadGuestIndexDataPerDraw = false;
@@ -4928,6 +4949,104 @@ void DrawPrimitive(GuestDevice *device, uint32_t primitiveType,
     SetVertexDeclaration(device, previousDeclaration);
 }
 
+// Session 5 (2026-07-03) DRAW-TIME ranged snapshot: every indexed draw whose
+// bindings came from raw guest data re-slices the LIVE guest bytes here --
+// scan the draw's index slice, upload only the referenced vertex window and
+// rebased indices, draw with startIndex=0/baseVertex=0. This replaces the
+// per-frame-cached whole-pool snapshot for such draws (the game writes the
+// shared pools incrementally; cached snapshots serve stale bytes -- press-A
+// glyph meshes jumbled). Lives HERE (not in the PM4 bind hook) because the
+// press-A glyph draws arrive via the API-level SetStreamSourceNative path
+// and both paths funnel through this function. Single-stream draws only;
+// small caps keep upload volume bounded (whole-pool per-draw OOMed).
+static bool TryDrawTimeRangedSnapshot(GuestDevice *device,
+                                      uint32_t *ioStartIndex,
+                                      int32_t *ioBaseVertex,
+                                      uint32_t indexCount) {
+  static constexpr bool kEnabled = true;
+  static constexpr uint32_t kMaxIndices = 16384u;
+  static constexpr uint32_t kMaxWindowBytes = 128u * 1024u;
+  if (!kEnabled || g_guestIndexRef.data == nullptr || indexCount == 0u ||
+      indexCount > kMaxIndices)
+    return false;
+  const GuestDataRef &ir = g_guestIndexRef;
+  const uint64_t sliceOff = uint64_t(*ioStartIndex) * ir.stride;
+  if (sliceOff + uint64_t(indexCount) * ir.stride > ir.size)
+    return false;
+  // Only the single-stream case (slot 0 guest-backed, nothing else bound):
+  // rebasing indices against a slot we can't window would corrupt it.
+  const GuestDataRef &vr = g_guestStreamRef[0];
+  if (vr.data == nullptr || vr.stride == 0u)
+    return false;
+  for (uint32_t s = 1; s < 16u; ++s)
+    if (g_vertexBufferViews[s].size != 0u)
+      return false;
+  const uint8_t *slice = ir.data + sliceOff;
+  uint32_t minV = 0xFFFFFFFFu, maxV = 0u;
+  if (ir.stride == 2u) {
+    for (uint32_t i = 0; i < indexCount; ++i) {
+      const uint32_t v = (uint32_t(slice[2 * i]) << 8) | slice[2 * i + 1];
+      minV = std::min(minV, v);
+      maxV = std::max(maxV, v);
+    }
+  } else {
+    for (uint32_t i = 0; i < indexCount; ++i) {
+      const uint8_t *p = slice + 4u * i;
+      const uint32_t v = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+                         (uint32_t(p[2]) << 8) | p[3];
+      minV = std::min(minV, v);
+      maxV = std::max(maxV, v);
+    }
+  }
+  const int64_t lo = int64_t(minV) + *ioBaseVertex;
+  const uint32_t width = maxV - minV + 1u;
+  if (lo < 0 || (ir.stride == 2u && width > 0x10000u))
+    return false;
+  const uint64_t off = uint64_t(lo) * vr.stride;
+  if (off >= vr.size)
+    return false;
+  const uint32_t bytes =
+      uint32_t(std::min<uint64_t>(uint64_t(width) * vr.stride, vr.size - off));
+  if (bytes > kMaxWindowBytes)
+    return false;
+  if (ir.stride == 2u) {
+    static thread_local std::vector<uint16_t> s_idx16;
+    s_idx16.resize(indexCount);
+    for (uint32_t i = 0; i < indexCount; ++i) {
+      const uint32_t v = (uint32_t(slice[2 * i]) << 8) | slice[2 * i + 1];
+      s_idx16[i] = uint16_t(v - minV);
+    }
+    SetIndicesPreparedHost(s_idx16.data(), indexCount * 2u, 2u);
+  } else {
+    static thread_local std::vector<uint32_t> s_idx32;
+    s_idx32.resize(indexCount);
+    for (uint32_t i = 0; i < indexCount; ++i) {
+      const uint8_t *p = slice + 4u * i;
+      s_idx32[i] = ((uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+                    (uint32_t(p[2]) << 8) | p[3]) -
+                   minV;
+    }
+    SetIndicesPreparedHost(s_idx32.data(), indexCount * 4u, 4u);
+  }
+  SetStreamSourceHostWindow(device, 0, vr.data + off, bytes, vr.stride);
+  *ioStartIndex = 0u;
+  *ioBaseVertex = 0;
+  static std::atomic<uint32_t> s_n{0};
+  const uint32_t n = s_n.fetch_add(1, std::memory_order_relaxed);
+  if (n < 12 || (n & 0x3FFFu) == 0) {
+    const uint8_t *w = vr.data + off;
+    if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+      std::fprintf(f,
+                   "FM2_RANGESNAP2 n=%u idxN=%u minV=%u width=%u bytes=%u "
+                   "w0=%02X%02X%02X%02X %02X%02X%02X%02X\n",
+                   n, indexCount, minV, width, bytes, w[0], w[1], w[2], w[3],
+                   w[4], w[5], w[6], w[7]);
+      std::fclose(f);
+    }
+  }
+  return true;
+}
+
 void DrawIndexedPrimitive(GuestDevice *device, uint32_t primitiveType,
                           int32_t baseVertexIndex, uint32_t startIndex,
                           uint32_t primitiveCount) {
@@ -4970,6 +5089,10 @@ void DrawIndexedPrimitive(GuestDevice *device, uint32_t primitiveType,
   LogSuspiciousIndexedDraw("DrawIndexedPrimitive", primitiveType,
                            baseVertexIndex, startIndex, primitiveCount,
                            guestDeclaration, g_pipelineState.vertexDeclaration);
+  uint32_t drawStartIndex = startIndex;
+  int32_t drawBaseVertex = baseVertexIndex;
+  TryDrawTimeRangedSnapshot(device, &drawStartIndex, &drawBaseVertex,
+                            primitiveCount);
   FlushRenderState(device);
   if (!g_pipelineBound) {
     LogDrawSkip("DrawIndexedPrimitive", primitiveType, primitiveCount);
@@ -4979,8 +5102,8 @@ void DrawIndexedPrimitive(GuestDevice *device, uint32_t primitiveType,
   }
   DrawOutcomeTally(/*skipped=*/false);
 
-  CommandList()->drawIndexedInstanced(primitiveCount, 1, startIndex,
-                                      baseVertexIndex, 0);
+  CommandList()->drawIndexedInstanced(primitiveCount, 1, drawStartIndex,
+                                      drawBaseVertex, 0);
   if (restoreDeclaration)
     SetVertexDeclaration(device, previousDeclaration);
 }
