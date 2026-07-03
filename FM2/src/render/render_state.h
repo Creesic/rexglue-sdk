@@ -48,6 +48,14 @@ void SetStreamSourceGuestData(GuestDevice *device, uint32_t index,
                               const void *data, uint32_t size, uint32_t stride);
 void SetIndicesGuestData(GuestDevice *device, const void *data, uint32_t size,
                          uint32_t indexStride);
+// Session 5 ranged per-draw geometry snapshot (see render_state.cpp): upload
+// one draw's referenced vertex window / host-prepared rebased indices, fresh
+// per draw, bypassing the per-frame guest-data caches.
+void SetStreamSourceHostWindow(GuestDevice *device, uint32_t index,
+                               const void *data, uint32_t size,
+                               uint32_t stride);
+void SetIndicesPreparedHost(const void *data, uint32_t size,
+                            uint32_t indexStride);
 void SetViewport(GuestDevice *device, GuestViewport *viewport);
 void SetScissorRect(GuestDevice *device, GuestRect *rect);
 void SetRenderTarget(GuestDevice *device, uint32_t index,

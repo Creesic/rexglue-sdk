@@ -207,7 +207,33 @@ User directive: use `C:\Users\Tera\Documents\GitHub\UnleashedRecomp` as the guid
    separate unpopulated-vertex-pool finding (2026-07-01) — constants alone
    won't make the car appear.
 7. Temp diagnostics still in tree: FM2_GLYPHMTX_CAP/_DRAW (with c9/c10/cov),
-   FM2_C0WRITE/_C0DUMP, FM2_GPUBEGINCONST. Strip once transport settles.
+   FM2_C0WRITE/_C0DUMP, FM2_GPUBEGINCONST, FM2_RANGESNAP. Strip once
+   transport settles.
+
+### 2026-07-03 later: glyph-mesh jumble root-caused + ranged snapshot (parked)
+
+- **User-verified: GpuBegin hook fixed glyph placement** (letters sit where
+  they belong). Remaining: each letter's own mesh jumbled/not legible.
+- **Root cause of the jumble (proven from fm2pressstart3.rdc)**: geometry
+  reconstruction of glyph draw 146 from the captured buffer produces garbage
+  under EVERY half-swap/alignment hypothesis => the captured bytes don't
+  match their own indices. The pool is written INCREMENTALLY through the
+  frame while `SetStreamSourceGuestData`/`SetIndicesGuestData` cache the
+  upload ONCE PER FRAME keyed by pool pointer -- every draw after the first
+  renders from a stale snapshot. Same mechanism very likely = the car pool
+  "wholesale unpopulated at draw time" finding (2026-07-01).
+- **Fix implemented: ranged per-draw snapshot** in
+  `BindPm4GeometryFromContext` (`kPerDrawIndexedRangeSnapshot`): scan the
+  draw's index slice, upload only the referenced vertex window
+  (SetStreamSourceHostWindow) + rebased indices (SetIndicesPreparedHost),
+  draw with startIndex=0/baseVertex=0. Verified engaging (FM2_RANGESNAP,
+  windows 576B-8KB). Whole-pool per-draw re-upload was tried first and
+  OOM-killed the process; the per-frame caches stay for the fallback path.
+- **PARKED OFF for now**: an INTERMITTENT silent mid-boot death (no WER, no
+  shutdown banner) appeared during this work and fires with the ranged path
+  ON and OFF -- not attributable to it; needs an x64dbg catch (shared
+  instance -- coordinate with user). Once understood, flip
+  `kPerDrawIndexedRangeSnapshot=true` and A/B press-A letter legibility.
 
 ## Parked / open
 

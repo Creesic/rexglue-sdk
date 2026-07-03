@@ -4376,8 +4376,17 @@ void SetStreamSourceGuestData(GuestDevice *device, uint32_t index,
   SetDirtyValue(g_dirtyStates.pipelineState,
                 g_pipelineState.vertexStrides[index], uint8_t(stride));
 
+  // Session 5 (2026-07-03): per-draw WHOLE-POOL re-upload was tried here
+  // (kUploadGuestVertexDataPerDraw) to fix the stale-snapshot bug -- the game
+  // writes pool bytes incrementally through the frame, so the per-frame cache
+  // serves stale bytes to every draw after the first. It OOM-killed the
+  // process (hundreds of draws x 869KB windows). The real fix is the RANGED
+  // per-draw snapshot in BindPm4GeometryFromContext (SetStreamSourceHostWindow
+  // + SetIndicesPreparedHost); this cache stays for the non-ranged fallback.
+  static constexpr bool kUploadGuestVertexDataPerDraw = false;
   GuestDataUpload &entry = g_guestVertexUploads[data];
-  if (entry.frame != g_frameIndex || entry.size != size) {
+  if (kUploadGuestVertexDataPerDraw || entry.frame != g_frameIndex ||
+      entry.size != size) {
     UploadResult result = UploadGuestVertexData(data, size, 0x10);
     entry.frame = g_frameIndex;
     entry.size = size;
@@ -4396,10 +4405,60 @@ void SetStreamSourceGuestData(GuestDevice *device, uint32_t index,
   }
 }
 
+// Session 5 (2026-07-03) ranged per-draw snapshot: upload exactly the vertex
+// window one draw references (a few KB), fresh every draw, no per-frame
+// cache -- the pool is written incrementally through the frame and cached
+// snapshots serve stale bytes (press-A letters placed right but internally
+// jumbled; the car pool "unpopulated at draw time" finding is the same
+// mechanism). Data is raw guest big-endian, same as SetStreamSourceGuestData.
+void SetStreamSourceHostWindow(GuestDevice *device, uint32_t index,
+                               const void *data, uint32_t size,
+                               uint32_t stride) {
+  SyncVertexDeclarationFromDevice(device);
+  SetDirtyValue(g_dirtyStates.pipelineState,
+                g_pipelineState.vertexStrides[index], uint8_t(stride));
+  UploadResult result = UploadGuestVertexData(data, size, 0x10);
+  bool dirty = false;
+  SetDirtyValue(dirty, g_vertexBufferViews[index].buffer,
+                result.buffer->at(result.offset));
+  SetDirtyValue(dirty, g_vertexBufferViews[index].size, size);
+  SetDirtyValue(dirty, g_inputSlots[index].stride, stride);
+  if (dirty) {
+    g_dirtyStates.vertexStreamFirst =
+        std::min<uint8_t>(g_dirtyStates.vertexStreamFirst, index);
+    g_dirtyStates.vertexStreamLast =
+        std::max<uint8_t>(g_dirtyStates.vertexStreamLast, index);
+  }
+}
+
+// Index twin of SetStreamSourceHostWindow: `data` is HOST-prepared (already
+// little-endian, already rebased) -- copied verbatim, no byteswap.
+void SetIndicesPreparedHost(const void *data, uint32_t size,
+                            uint32_t indexStride) {
+  UploadResult result;
+  if (indexStride == 4) {
+    result = g_uploadAllocator.allocateCopy<false>(
+        reinterpret_cast<const uint32_t *>(data), size & ~3u, 4);
+  } else {
+    result = g_uploadAllocator.allocateCopy<false>(
+        reinterpret_cast<const uint16_t *>(data), size & ~1u, 2);
+  }
+  SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.buffer,
+                result.buffer->at(result.offset));
+  SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.format,
+                indexStride == 4 ? RenderFormat::R32_UINT
+                                 : RenderFormat::R16_UINT);
+  SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.size, size);
+}
+
 void SetIndicesGuestData(GuestDevice * /*device*/, const void *data,
                          uint32_t size, uint32_t indexStride) {
+  // See SetStreamSourceGuestData: per-draw policy lives in the ranged
+  // snapshot path now; this cache is the non-ranged fallback.
+  static constexpr bool kUploadGuestIndexDataPerDraw = false;
   GuestDataUpload &entry = g_guestIndexUploads[data];
-  if (entry.frame != g_frameIndex || entry.size != size) {
+  if (kUploadGuestIndexDataPerDraw || entry.frame != g_frameIndex ||
+      entry.size != size) {
     UploadResult result;
     if (indexStride == 4) {
       result = g_uploadAllocator.allocateCopy<true>(

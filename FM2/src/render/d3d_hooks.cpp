@@ -2759,8 +2759,16 @@ static void DrainGpuBeginConstants() {
   auto *mem = ghp::GuestMemory();
   if (mem == nullptr) return;
   for (const auto &r : recs) {
-    const auto *host =
-        mem->TranslatePhysical<const uint8_t *>(r.payloadGuest & 0x1FFFFFFFu);
+    // Guard the payload range like the geometry binds do (QueryRangeAccess):
+    // an unchecked read near a guard page host-faults, and the runtime turns
+    // unexpected host faults into a silent process exit (no WER, no banner).
+    const uint32_t phys = r.payloadGuest & 0x1FFFFFFFu;
+    const uint32_t bytes = r.count4 * 16u;
+    if (bytes == 0u || phys + bytes > 0x20000000u ||
+        mem->GetPhysicalHeap()->QueryRangeAccess(phys, phys + bytes - 1) ==
+            rex::memory::PageAccess::kNoAccess)
+      continue;
+    const auto *host = mem->TranslatePhysical<const uint8_t *>(phys);
     if (host == nullptr) continue;
     if (r.isPs) {
       rr::ApplyPm4PsConstants(r.startReg * 4u, host, r.count4 * 4u);
@@ -3022,7 +3030,9 @@ static void ScanPm4AluConstantRange(uint32_t rangePhys, uint32_t len) {
 }
 
 void BindPm4GeometryFromContext(GuestDevice *device, uint32_t context,
-                                uint32_t startIndex, uint32_t indexCount) {
+                                uint32_t startIndex, uint32_t indexCount,
+                                uint32_t *ioStartIndex = nullptr,
+                                int32_t *ioBaseVertex = nullptr) {
   if (context == 0) return;
   ProcessPm4VsConstantsDiag(context);
   auto *mem = ghp::GuestMemory();
@@ -3046,36 +3056,153 @@ void BindPm4GeometryFromContext(GuestDevice *device, uint32_t context,
   };
   // Index buffer.
   const uint32_t idxRes = rd(context + 0x2F7Cu);
-  bool idxBound = false;
+  uint32_t idxPhysBase = 0, idxSize = 0, idxStride = 2;
+  const uint8_t *idxHost = nullptr;
   if (idxRes != 0) {
     const uint32_t common = rd(idxRes);
     // Index base keeps its low 2 bits: the emitter forms the read address as
     // (2*startIndex + base) & 0x1FFFFFFF without clearing them.
-    const uint32_t physBase = rd(idxRes + 0x18u) & 0x1FFFFFFFu;
-    const uint32_t size = decodeFetchSize(rd(idxRes + 0x1Cu));
+    idxPhysBase = rd(idxRes + 0x18u) & 0x1FFFFFFFu;
+    idxSize = decodeFetchSize(rd(idxRes + 0x1Cu));
     // 32-bit indices iff the common dword's sign bit is set (IDA: `*v13 < 0`).
-    const uint32_t stride = (common & 0x80000000u) ? 4u : 2u;
-    if (physReadable(physBase, size)) {
-      const void *host = mem->TranslatePhysical<const void *>(physBase);
-      if (host) {
-        rr::SetIndicesGuestData(device, host, size, stride);
-        idxBound = true;
+    idxStride = (common & 0x80000000u) ? 4u : 2u;
+    if (physReadable(idxPhysBase, idxSize))
+      idxHost = mem->TranslatePhysical<const uint8_t *>(idxPhysBase);
+  }
+  // Session 5 (2026-07-03) RANGED PER-DRAW SNAPSHOT (UnleashedRecomp-guided):
+  // the game writes the shared geometry pool INCREMENTALLY through the frame
+  // (write element -> draw -> write next), so the per-frame upload cache in
+  // SetStreamSourceGuestData serves stale bytes to every draw after the
+  // first (press-A letters placed right but internally jumbled; the car pool
+  // "unpopulated at draw time" finding is the same mechanism). Per-draw
+  // whole-pool re-upload OOMs. Instead: scan this draw's index slice, upload
+  // ONLY the referenced vertex window (a few KB), rebase the indices to it,
+  // and have the caller draw with startIndex=0/baseVertex=0.
+  // State (2026-07-03): the day's "intermittent silent deaths" that muddied
+  // this path's A/B were (per the user) THE USER CLOSING THE GAME WINDOW
+  // during headless verification runs -- the survival statistics were
+  // meaningless. WM_CLOSE now logs REXUI_WINDOW_CLOSED_BY_USER (window_win
+  // .cpp) so user-closes can never be mistaken for crashes again. Whole-pool
+  // per-draw re-upload DID deterministically OOM; the small-window caps stay.
+  static constexpr bool kPerDrawIndexedRangeSnapshot = true;
+  static constexpr uint32_t kRangeSnapshotMaxIndices = 16384u;
+  static constexpr uint32_t kRangeSnapshotMaxWindowBytes = 128u * 1024u;
+  bool rangedDone = false;
+  if (kPerDrawIndexedRangeSnapshot && ioStartIndex != nullptr &&
+      ioBaseVertex != nullptr && idxHost != nullptr && indexCount != 0 &&
+      indexCount <= kRangeSnapshotMaxIndices &&
+      uint64_t(startIndex) * idxStride + uint64_t(indexCount) * idxStride <=
+          idxSize) {
+    const uint8_t *slice = idxHost + size_t(startIndex) * idxStride;
+    uint32_t minV = 0xFFFFFFFFu, maxV = 0;
+    if (idxStride == 2u) {
+      for (uint32_t i = 0; i < indexCount; ++i) {
+        const uint32_t v = (uint32_t(slice[2 * i]) << 8) | slice[2 * i + 1];
+        minV = std::min(minV, v);
+        maxV = std::max(maxV, v);
       }
+    } else {
+      for (uint32_t i = 0; i < indexCount; ++i) {
+        const uint8_t *p = slice + 4u * i;
+        const uint32_t v = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+                           (uint32_t(p[2]) << 8) | p[3];
+        minV = std::min(minV, v);
+        maxV = std::max(maxV, v);
+      }
+    }
+    const int64_t lo = int64_t(minV) + *ioBaseVertex;
+    const uint32_t width = maxV - minV + 1u;
+    struct StreamWin {
+      uint32_t slot, bytes, stride;
+      const uint8_t *host;
+    };
+    StreamWin wins[8];
+    uint32_t nWins = 0;
+    bool ok = lo >= 0 && (idxStride == 4u || width <= 0x10000u);
+    for (uint32_t s = 0; s < 8u && ok; ++s) {
+      const uint32_t vbRes = rd(context + 0x2F94u + 4u * s);
+      if (vbRes == 0) continue;
+      const uint32_t vPhys = rd(vbRes + 0x18u) & 0x1FFFFFFCu;
+      const uint32_t vSize = decodeFetchSize(rd(vbRes + 0x1Cu));
+      auto *sb = ghp::ToHost<uint8_t>(context + 0x2FD8u + s);
+      const uint32_t vStride = (sb ? *sb : 0u) * 4u;
+      if (vStride == 0 || !physReadable(vPhys, vSize)) {
+        ok = false;
+        break;
+      }
+      const uint64_t off = uint64_t(lo) * vStride;
+      if (off >= vSize) {
+        ok = false;
+        break;
+      }
+      const uint32_t bytes =
+          uint32_t(std::min<uint64_t>(uint64_t(width) * vStride, vSize - off));
+      if (bytes > kRangeSnapshotMaxWindowBytes) {
+        ok = false;
+        break;
+      }
+      const auto *host = mem->TranslatePhysical<const uint8_t *>(vPhys);
+      if (host == nullptr) {
+        ok = false;
+        break;
+      }
+      wins[nWins++] = {s, bytes, vStride, host + off};
+    }
+    if (ok && nWins != 0) {
+      if (idxStride == 2u) {
+        static thread_local std::vector<uint16_t> s_idx16;
+        s_idx16.resize(indexCount);
+        for (uint32_t i = 0; i < indexCount; ++i) {
+          const uint32_t v = (uint32_t(slice[2 * i]) << 8) | slice[2 * i + 1];
+          s_idx16[i] = uint16_t(v - minV);
+        }
+        rr::SetIndicesPreparedHost(s_idx16.data(), indexCount * 2u, 2u);
+      } else {
+        static thread_local std::vector<uint32_t> s_idx32;
+        s_idx32.resize(indexCount);
+        for (uint32_t i = 0; i < indexCount; ++i) {
+          const uint8_t *p = slice + 4u * i;
+          s_idx32[i] = ((uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+                        (uint32_t(p[2]) << 8) | p[3]) -
+                       minV;
+        }
+        rr::SetIndicesPreparedHost(s_idx32.data(), indexCount * 4u, 4u);
+      }
+      for (uint32_t w = 0; w < nWins; ++w)
+        rr::SetStreamSourceHostWindow(device, wins[w].slot, wins[w].host,
+                                      wins[w].bytes, wins[w].stride);
+      *ioStartIndex = 0;
+      *ioBaseVertex = 0;
+      rangedDone = true;
+      static std::atomic<uint32_t> s_rn{0};
+      const uint32_t rn = s_rn.fetch_add(1, std::memory_order_relaxed);
+      if (rn < 12 || (rn & 0x3FFFu) == 0)
+        LogReplayDbg("FM2_RANGESNAP n=%u ctx=0x%08X idxN=%u minV=%u width=%u "
+                     "streams=%u bytes0=%u",
+                     rn, context, indexCount, minV, width, nWins,
+                     wins[0].bytes);
+    }
+  }
+  bool idxBound = rangedDone;
+  if (!rangedDone && idxRes != 0) {
+    if (idxHost != nullptr) {
+      rr::SetIndicesGuestData(device, idxHost, idxSize, idxStride);
+      idxBound = true;
     }
     static std::atomic<uint32_t> s_n{0};
     if (s_n.fetch_add(1, std::memory_order_relaxed) < 16)
-      LogReplayDbg("FM2_PM4GEO_IDX ctx=0x%08X idxRes=0x%08X common=0x%08X "
-                   "physBase=0x%08X size=%u stride=%u readable=%d bound=%d",
-                   context, idxRes, common, physBase, size, stride,
-                   physReadable(physBase, size) ? 1 : 0, idxBound ? 1 : 0);
-  } else {
+      LogReplayDbg("FM2_PM4GEO_IDX ctx=0x%08X idxRes=0x%08X "
+                   "physBase=0x%08X size=%u stride=%u bound=%d",
+                   context, idxRes, idxPhysBase, idxSize, idxStride,
+                   idxBound ? 1 : 0);
+  } else if (idxRes == 0) {
     static std::atomic<uint32_t> s_n0{0};
     if (s_n0.fetch_add(1, std::memory_order_relaxed) < 8)
       LogReplayDbg("FM2_PM4GEO_IDX ctx=0x%08X idxRes=0 (no index resource)",
                    context);
   }
-  // Vertex streams.
-  for (uint32_t s = 0; s < 8u; ++s) {
+  // Vertex streams (whole-pool fallback; the ranged path already bound them).
+  for (uint32_t s = 0; rangedDone == false && s < 8u; ++s) {
     const uint32_t vbRes = rd(context + 0x2F94u + 4u * s);
     if (vbRes == 0) continue;
     // Vertex base clears the 2 endian bits (BindVertexStream uses addr & ~3;
@@ -3294,7 +3421,10 @@ void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
                    "indexCount=%u",
                    context, primType, baseVertexIndex, startIndex, indexCount);
   }
-  BindPm4GeometryFromContext(device, context, startIndex, indexCount);
+  uint32_t drawStartIndex = startIndex;
+  int32_t drawBaseVertex = int32_t(baseVertexIndex);
+  BindPm4GeometryFromContext(device, context, startIndex, indexCount,
+                             &drawStartIndex, &drawBaseVertex);
   // TEMP DIAGNOSTIC 2026-07-02: verify the context register file holds live
   // data at both low (transform) and high (material/global) registers.
   {
@@ -3318,7 +3448,7 @@ void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
   // at +0x700/+0x1700 (see the DrawVertices hook comment for why NOT 0x710).
   rr::SetLiveFloatConstantFiles(ghp::ToHost<const void>(context + 0x700u),
                                 ghp::ToHost<const void>(context + 0x1700u));
-  DrawIndexedVertices(device, primType, int32_t(baseVertexIndex), startIndex,
+  DrawIndexedVertices(device, primType, drawBaseVertex, drawStartIndex,
                       indexCount);
   rr::SetLiveFloatConstantFiles(nullptr, nullptr);
   // B: present the SCENE RT (the RT these PM4 3D draws render to), not the

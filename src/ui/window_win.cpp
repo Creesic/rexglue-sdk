@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -1050,6 +1051,20 @@ LRESULT Win32Window::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
     // In case the Windows window was somehow forcibly destroyed without
     // WM_CLOSE.
     case WM_DESTROY: {
+      // Debugging aid (2026-07-03): record that the window was closed BY THE
+      // USER (title-bar X / Alt+F4 arrives as WM_CLOSE) so a vanished game
+      // process is never misread as a crash during log-driven debugging.
+      // Written to the shared FM2 debug log directly because the process is
+      // about to tear down and buffered sinks may not flush.
+      REXLOG_INFO("REXUI_WINDOW_CLOSED_BY_USER msg={}",
+                  message == WM_CLOSE ? "WM_CLOSE" : "WM_DESTROY");
+      if (FILE* close_log = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(close_log,
+                     "REXUI_WINDOW_CLOSED_BY_USER msg=%s (user closed the "
+                     "window; NOT a crash)\n",
+                     message == WM_CLOSE ? "WM_CLOSE" : "WM_DESTROY");
+        std::fclose(close_log);
+      }
       if (cursor_auto_hide_timer_) {
         DeleteTimerQueueTimer(nullptr, cursor_auto_hide_timer_, nullptr);
         cursor_auto_hide_timer_ = nullptr;
