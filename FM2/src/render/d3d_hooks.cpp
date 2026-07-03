@@ -712,12 +712,26 @@ struct PendingImmediateDraw {
 };
 PendingImmediateDraw g_pendingImmediateDraw;
 
+void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context);
+void ApplyLivePixelShaderFromContext(GuestDevice *device, uint32_t context);
+
 void FlushImmediateVertices() {
   PendingImmediateDraw &p = g_pendingImmediateDraw;
   if (p.device == nullptr)
     return;
   GuestDevice *device = p.device;
-  p.device = nullptr; 
+  p.device = nullptr;
+  // 2026-07-03 pt6: the press-A UI quads (background/A-button/logo/shadows)
+  // are IMMEDIATE (BeginVertices -> UP) triangle fans -- they bypass the PM4
+  // emit hooks, so the per-draw live-ctx applies (textures, pixel shader)
+  // never ran for them: they drew with whatever PS/texture state the last
+  // indexed draw left behind (a constant-less stub PS => solid black).
+  // Apply the live device state here, right before the deferred UP draw
+  // executes. Re-entrancy is safe: p.device is nulled above, so the
+  // FlushImmediateVertices calls inside the appliers no-op.
+  const uint32_t ctx = ghp::ToGuest(device);
+  ApplyLiveTexturesFromContext(device, ctx);
+  ApplyLivePixelShaderFromContext(device, ctx);
   rr::DrawPrimitiveUP(device, p.primType, p.vertexCount,
                       ghp::ToHost<void>(p.stagingAddr), p.stride);
 }
@@ -1077,7 +1091,8 @@ void Fm2RememberGuestDevice(GuestDevice *device) {
 // target like the depth path mirrors SetBoundSurface.
 void RegisterSurfaceApertures(uint32_t descriptorAddr,
                               rr::GuestBaseTexture *host);
-void RegisterSurfaceAperture(uint32_t guestAddr, rr::GuestBaseTexture *host);
+void RegisterSurfaceAperture(uint32_t guestAddr, rr::GuestBaseTexture *host,
+                             bool isResolveDest = false);
 
 void Fm2BindSurface(uint32_t renderContext, uint32_t slot, uint32_t surface) {
   g_origBindSurfaceInternal(renderContext, slot, surface);
@@ -2272,6 +2287,24 @@ void Resolve(GuestDevice *device, uint32_t flags, const rr::GuestRect *source,
   // composited frame instead of the last-drawn tile RT. This is the correct,
   // resolve-driven replacement for the aliasing that was stripped from the
   // misidentified SetPending_Predicated hook.
+  // 2026-07-03: a resolve can NEVER target a block-compressed texture. When
+  // `destination` translates to a BC-format texture, the dest identification
+  // is wrong (bogus/overloaded Resolve params) -- registering it poisons the
+  // aperture map (press-A background art page -> RT surface => quads sample
+  // black) and the StretchRect below OVERWRITES the uploaded art (capture
+  // fm2pressstartbadglyphs.rdc EID 4: CopyDst into the BC1 background 903).
+  const bool destIsBlockCompressed =
+      reo != nullptr && reo->format >= plume::RenderFormat::BC1_TYPELESS &&
+      reo->format <= plume::RenderFormat::BC7_UNORM_SRGB;
+  if (destIsBlockCompressed) {
+    static std::atomic<uint32_t> s_nbc{0};
+    if (s_nbc.fetch_add(1, std::memory_order_relaxed) < 24)
+      LogReplayDbg("FM2_RESOLVE_BC_DEST_SKIP dest=%p reo=%p fmt=%d -- resolve "
+                   "dest misidentified (BC texture), copy+aperture skipped",
+                   static_cast<void *>(destination), static_cast<void *>(reo),
+                   int(reo->format));
+    return;
+  }
   if (reo != nullptr && reo->texture != nullptr && destination != nullptr) {
     // Register ONLY the destination texture's data base: D3DBaseTexture header
     // word at +32 (fetch form; confirmed in the D3DDevice_Resolve decompile as
@@ -2281,7 +2314,7 @@ void Resolve(GuestDevice *device, uint32_t flags, const rr::GuestRect *source,
     const uint32_t destAddr = ghp::ToGuest(destination);
     const uint32_t dataBase =
         ReadGuestU32At(destAddr + 32u) & 0x1FFFFFFFu & ~0xFFFu;
-    RegisterSurfaceAperture(dataBase, reo);
+    RegisterSurfaceAperture(dataBase, reo, /*isResolveDest=*/true);
     static std::atomic<uint32_t> s_n{0};
     if (s_n.fetch_add(1, std::memory_order_relaxed) < 24) {
       LogReplayDbg("FM2_RESOLVE_APERTURE dest=0x%08X dataBase=0x%08X reo=%p "
@@ -2584,9 +2617,20 @@ void ApplyLiveColorWriteFromContext(GuestDevice *device, uint32_t context) {
 // host-resource map, keyed by address instead of object pointer.)
 // ---------------------------------------------------------------------------
 std::mutex g_surfaceApertureMutex;
-std::unordered_map<uint32_t, rr::GuestBaseTexture *> g_surfaceAperture;
+struct SurfaceApertureEntry {
+  rr::GuestBaseTexture *tex = nullptr;
+  // True only for entries registered by the D3DDevice_Resolve hook with the
+  // EXACT resolve copy-dest base. Entries from the broad Fm2BindSurface
+  // descriptor scan are false: that scan registers every address-looking
+  // dword in a 512B descriptor, which poisoned the map with CPU-texture data
+  // addresses (2026-07-03: press-A background/A-button/logo sampled an
+  // aperture surface instead of their real uploaded textures -> black quads).
+  bool resolveDest = false;
+};
+std::unordered_map<uint32_t, SurfaceApertureEntry> g_surfaceAperture;
 
-void RegisterSurfaceAperture(uint32_t guestAddr, rr::GuestBaseTexture *host) {
+void RegisterSurfaceAperture(uint32_t guestAddr, rr::GuestBaseTexture *host,
+                             bool isResolveDest) {
   // 2026-07-02: upper bound widened 0x1A000000 -> 0x20000000; the swap
   // framebuffer resolve destination lives high (e.g. ~0x1F90F000) and was
   // rejected by the old guard. Also strip 360 physical-alias windows
@@ -2596,7 +2640,12 @@ void RegisterSurfaceAperture(uint32_t guestAddr, rr::GuestBaseTexture *host) {
       guestAddr >= 0x20000000u)
     return;
   std::lock_guard<std::mutex> lk(g_surfaceApertureMutex);
-  g_surfaceAperture[guestAddr & ~0xFFFu] = host;
+  SurfaceApertureEntry &e = g_surfaceAperture[guestAddr & ~0xFFFu];
+  // A broad-scan registration must never downgrade a precise resolve entry.
+  if (e.resolveDest && !isResolveDest)
+    return;
+  e.tex = host;
+  e.resolveDest = e.resolveDest || isResolveDest;
 }
 
 rr::GuestBaseTexture *LookupSurfaceAperture(uint32_t guestAddr) {
@@ -2605,7 +2654,17 @@ rr::GuestBaseTexture *LookupSurfaceAperture(uint32_t guestAddr) {
   // registration); strip them on lookup too so 0xA/0xC/0xE0000000-form fetch
   // bases match. Covers all callers (present + texture sampling).
   auto it = g_surfaceAperture.find(guestAddr & 0x1FFFFFFFu & ~0xFFFu);
-  return it != g_surfaceAperture.end() ? it->second : nullptr;
+  return it != g_surfaceAperture.end() ? it->second.tex : nullptr;
+}
+
+// Texture-sampling variant: only resolve destinations may shadow a real
+// guest-memory texture; broad-scan entries are for the present path only.
+rr::GuestBaseTexture *LookupResolveSurfaceAperture(uint32_t guestAddr) {
+  std::lock_guard<std::mutex> lk(g_surfaceApertureMutex);
+  auto it = g_surfaceAperture.find(guestAddr & 0x1FFFFFFFu & ~0xFFFu);
+  return it != g_surfaceAperture.end() && it->second.resolveDest
+             ? it->second.tex
+             : nullptr;
 }
 
 // Scan a guest surface descriptor for texture-range backing addresses and map
@@ -2628,7 +2687,11 @@ void RegisterSurfaceApertures(uint32_t descriptorAddr,
 // the live table into the native sampler bindings so textures actually show.
 void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
   static std::atomic<uint32_t> s_n{0};
-  const bool trace = s_n.fetch_add(1, std::memory_order_relaxed) < 24;
+  // 2026-07-03: periodic re-arm (was first-24-only, all consumed at boot --
+  // press-A steady state had zero slot/base visibility when chasing the
+  // missing background/A-button/logo textures).
+  const uint32_t nCall = s_n.fetch_add(1, std::memory_order_relaxed);
+  const bool trace = nCall < 24 || (nCall & 0x3FFFu) < 4u;
 
   // Forza binds textures via FM2_D3D_ApplyGpuMemoryPatches, which writes the
   // canonical 6-dword GPU texture fetch constant into the engine GPU block at
@@ -2682,9 +2745,23 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
       continue;
     }
     const uint32_t base = ((fc1 >> 12) & 0xFFFFFu) << 12;
-    // Prefer a registered host surface (the rendered/resolved plume texture)
-    // over uploading from black guest memory.
-    rr::GuestBaseTexture *surf = LookupSurfaceAperture(base);
+    // Translate the fetch constant first (alias-cached, cheap after the
+    // first call). A resolve can NEVER produce block-compressed data, so a
+    // fetch that decodes to a BC texture is always CPU/disk art -- aperture
+    // (resolve-surface) entries must not shadow it. 2026-07-03: the press-A
+    // background/A-button/logo are BC1/BC3 art sampled DIRECTLY (proof:
+    // fm2pressstartxenosgoodglyphs.rdc EID 161 samples the BC1 art), but a
+    // misregistered resolve destination (FM2_RESOLVE_APERTURE dest=0x2E023900
+    // dataBase=0x0AAE0000 = the art's page) hijacked sampler slot 0 to a
+    // black RT surface every frame => black screen with only the glyphs.
+    rr::GuestTexture *preTex =
+        rr::TranslateGuestTextureFetch(ghp::ToHost<void>(fcAddr), true);
+    const bool texIsBC =
+        preTex != nullptr &&
+        preTex->format >= plume::RenderFormat::BC1_TYPELESS &&
+        preTex->format <= plume::RenderFormat::BC7_UNORM_SRGB;
+    rr::GuestBaseTexture *surf =
+        texIsBC ? nullptr : LookupResolveSurfaceAperture(base);
     if (surf != nullptr) {
       s_texApt.fetch_add(1, std::memory_order_relaxed);
       rr::SetTextureBase(device, slot, surf);
@@ -2698,11 +2775,12 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
                      slot, base, static_cast<void *>(surf));
       continue;
     }
-    rr::GuestTexture *tex =
-        rr::TranslateGuestTextureFetch(ghp::ToHost<void>(fcAddr), true);
+    rr::GuestTexture *tex = preTex;
     if (trace) {
-      LogReplayDbg("FM2_LIVE_TEX slot=%u fc0=%08X fc1=%08X base=0x%08X tex=%p",
-                   slot, fc0, fc1, base, static_cast<void *>(tex));
+      LogReplayDbg("FM2_LIVE_TEX slot=%u fc0=%08X fc1=%08X base=0x%08X tex=%p"
+                   " bc=%d",
+                   slot, fc0, fc1, base, static_cast<void *>(tex),
+                   texIsBC ? 1 : 0);
     }
     if (tex != nullptr) {
       s_texOk.fetch_add(1, std::memory_order_relaxed);
@@ -2713,6 +2791,55 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
       s_texNull.fetch_add(1, std::memory_order_relaxed);
     }
   }
+}
+
+// 2026-07-03 pt5: LIVE per-draw pixel shader. D3DDevice_SetPixelShader
+// (0x8236DD10, IDA) installs the current PS object at ctx+0x307C. The
+// API-level SetPixelShaderState hook misses per-draw PS switches on the UI
+// pass: at press-A the good xenos backend alternates PS d88fa0db (textured
+// tint-chain: background + shadow quads) and 2e856b2a (glyph family:
+// A-button) across the quad draws, but plume drew EVERY quad with ONE
+// constant-block-less PS (ResourceId 894 in fm2pressstart4/5.rdc) => the
+// background/A-button/logo output solid black while the shadow quads were
+// accidentally correct. Same live-ctx-state family as the vertex fetch
+// words (+0x670..0x6FC) and the texture fetches (+0x400).
+void ApplyLivePixelShaderFromContext(GuestDevice *device, uint32_t context) {
+  static constexpr bool kApplyLivePixelShader = true;
+  if (!kApplyLivePixelShader || device == nullptr || context == 0)
+    return;
+  const uint32_t ps = ReadGuestU32At(context + 0x307Cu);
+  if (ps == 0)
+    return;
+  // Resolution ladder: direct alias -> resolved-object indirection (the ctx
+  // slot may hold the outer DirectDraw state handle whose +0x48 points at
+  // the real shader object) -> LAZY translate+register from the object's
+  // payload container at +0x18 (same container form AllocGpuPassMemoryBlock
+  // receives; ReadShaderContainerByteCount validates the header before we
+  // trust it). Never set null: an unresolved pointer must not clobber a
+  // working pipeline PS.
+  GuestShader *resolved = rr::LookupShaderAlias(ps);
+  uint32_t inner = 0;
+  if (resolved == nullptr) {
+    inner =
+        ReadGuestU32At(ps + nr::kDirectDrawStateHandleResolvedObjectOffset);
+    if (inner != 0)
+      resolved = rr::LookupShaderAlias(inner);
+  }
+  if (resolved == nullptr) {
+    const uint32_t obj = inner != 0 ? inner : ps;
+    const uint32_t container =
+        ReadGuestU32At(obj + nr::kDirectDrawPixelShaderPayloadGpuBaseOffset);
+    if (container != 0 && ReadShaderContainerByteCount(container) != 0)
+      resolved = RegisterShaderAliasFromContainer("LivePixelShader", ps,
+                                                  container, false);
+  }
+  static std::atomic<uint32_t> s_n{0};
+  const uint32_t n = s_n.fetch_add(1, std::memory_order_relaxed);
+  if (n < 16 || (n & 0x3FFFu) < 2u)
+    LogReplayDbg("FM2_LIVE_PS n=%u ctx=0x%08X ps=0x%08X inner=0x%08X res=%p",
+                 n, context, ps, inner, static_cast<void *>(resolved));
+  if (resolved != nullptr)
+    rr::SetPixelShader(device, resolved);
 }
 
 // PM4 indexed draw emitters → replaced with native Plume draw calls.
@@ -3209,8 +3336,26 @@ void BindPm4GeometryFromContext(GuestDevice *device, uint32_t context,
     if (vbRes == 0) continue;
     // Vertex base clears the 2 endian bits (BindVertexStream uses addr & ~3;
     // the low bits select the GPU fetch endian swap, not part of the address).
-    const uint32_t physBase = rd(vbRes + 0x18u) & 0x1FFFFFFCu;
-    const uint32_t size = decodeFetchSize(rd(vbRes + 0x1Cu));
+    // Session 5 (2026-07-03 pt3): prefer the LIVE per-draw vertex-fetch words
+    // D3DDevice_SetStreamSource writes at ctx word 412+2*(17-s) (stream 0 =
+    // +0x6F8 base / +0x6FC size). They carry base = header + OffsetInBytes;
+    // the resource header at +0x18 is offset-LESS, which dropped the per-draw
+    // offset (press-A glyph jumble root cause; the car pool "unpopulated at
+    // draw time" reads are the same bug family -- we were reading the pool
+    // base, not the section the draw actually fetches from).
+    static constexpr bool kUseCtxLiveVertexFetch = true;
+    uint32_t physBase = rd(vbRes + 0x18u) & 0x1FFFFFFCu;
+    uint32_t size = decodeFetchSize(rd(vbRes + 0x1Cu));
+    if (kUseCtxLiveVertexFetch) {
+      const uint32_t fcAddr = context + 1648u + 8u * (17u - s);
+      const uint32_t fc0 = rd(fcAddr);
+      const uint32_t fc1 = rd(fcAddr + 4u);
+      if ((fc0 & 3u) != 0u && (fc0 & 0x1FFFFFFCu) != 0u &&
+          decodeFetchSize(fc1) != 0u) {
+        physBase = fc0 & 0x1FFFFFFCu;
+        size = decodeFetchSize(fc1);
+      }
+    }
     auto *sb = ghp::ToHost<uint8_t>(context + 0x2FD8u + s);
     const uint32_t stride = (sb ? *sb : 0u) * 4u;
     bool vbBound = false;
@@ -3321,6 +3466,7 @@ void Fm2EmitIndexedDrawPm4Base(uint32_t context, uint32_t primType,
   if (device == nullptr) return;
   ApplyLiveColorWriteFromContext(device, context);
   ApplyLiveTexturesFromContext(device, context);
+  ApplyLivePixelShaderFromContext(device, context);
   BindPm4GeometryFromContext(device, context, 0, vertexCount);
   // Source VS/PS float constants from the ISSUING context's live ALU blocks
   // at ctx+0x700/+0x1700. IMPORTANT (2026-07-02, hard-won): our XenosRecomp-
@@ -3415,6 +3561,7 @@ void SubmitNativeIndexedDrawPm4(uint32_t context, uint32_t primType,
   if (device == nullptr) return;
   ApplyLiveColorWriteFromContext(device, context);
   ApplyLiveTexturesFromContext(device, context);
+  ApplyLivePixelShaderFromContext(device, context);
   // STAGE 1: what the game asked to draw (the intent), before we bind/submit.
   {
     static std::atomic<uint32_t> s_n{0};

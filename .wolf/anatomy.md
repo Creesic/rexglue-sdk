@@ -1,7 +1,12 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-03T18:16:58.966Z
-> Files: 517 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-03T19:52:15.908Z
+> Files: 522 tracked | Anatomy hits: 0 | Misses: 0
+
+## ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/22054c61-d9f8-4566-991c-6f9759f41605/scratchpad/
+
+- `burst_fm2.ps1` — Declares WB (~351 tok)
+- `shot_fm2.ps1` — Declares WShot (~316 tok)
 
 ## ./
 
@@ -537,3 +542,12 @@
 - `rename_infra_pass61.json` (~710 tok)
 - `rename_infra_pass7.json` (~680 tok)
 - `rename_infra_pass71.json` (~376 tok)
+
+## FM2/src/render/
+
+- `d3d_hooks.cpp` — include <algorithm> (~63206 tok)
+- `render_state.cpp` — include <algorithm> (~62524 tok)
+
+## docs/
+
+- `FM2-handoff-2026-07-02-session5.md` — FM2 plume_native handoff — START HERE (session 5 entry) (~6757 tok)

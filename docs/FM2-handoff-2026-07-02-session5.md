@@ -301,6 +301,111 @@ User directive: use `C:\Users\Tera\Documents\GitHub\UnleashedRecomp` as the guid
   time).
 - Textures-not-visible on the quads: still open, untouched by this fix;
   needs a fresh capture to chase the bindless descriptor indices.
+
+### 2026-07-03 part 4: car-pool live-fetch + texture aperture-hijack fixes
+
+- **Car pool**: BindPm4GeometryFromContext's whole-pool fallback now prefers
+  the live ctx fetch words (ctx + 1648 + 8*(17-s), toggle
+  kUseCtxLiveVertexFetch) over the offset-less vbRes+0x18;
+  TryDrawTimeRangedSnapshot extended to MULTI-STREAM (windows every
+  guest-backed stream from its own live fetch constant; bails if any bound
+  stream is object-backed). Log-verified per-draw varying fetchBase0
+  including float32 geometry.
+- **Texture root cause (press-A background/A-button/logo black)**: sampler
+  slot 0's fetch (the BC1 art at 0x10578000-style bases, IDENTICAL fetch
+  words to the good capture's tfetch0) was hijacked by a MISREGISTERED
+  resolve destination: FM2_RESOLVE_APERTURE dest=0x2E023900
+  dataBase=0x0AAE0000 registered the art's page -> ApplyLiveTexturesFromContext
+  bound a black RT surface instead of the art, every frame. The good capture
+  proves no resolve ever writes the art page (the sampled bg is BC1; resolves
+  cannot produce BC). Fixes: (1) aperture registry entries now carry
+  resolveDest (only Resolve-hook exact bases; broad Fm2BindSurface scan
+  entries serve the present path only via LookupSurfaceAperture;
+  LookupResolveSurfaceAperture for sampling); (2) **BC gate**: the texture
+  binder translates the fetch first and NEVER lets an aperture entry shadow
+  a block-compressed texture; (3) Resolve hook refuses BC-format
+  destinations (FM2_RESOLVE_BC_DEST_SKIP). Note: the early-frame
+  CopyTextureRegion events into BC textures in captures are OUR OWN texture
+  uploads (benign), not resolve corruption -- earlier theory retracted.
+- **Verified via FM2_LIVE_TEX (now periodically re-armed, logs bc= flag)**:
+  slot 0 = bc=1 tex bound at 0x10578000 (art) at press-A steady state.
+  Glyphs legible on screen. **Background STILL black** => remaining break is
+  downstream of binding: SharedConstants descriptor index at draw time,
+  BC1 alpha/blend (punch-through alpha=0 * blend?), or per-draw state
+  timing. Next: fresh capture on this build -- check bg draw's
+  SharedConstants tex index, pixel-history shader output (art color vs
+  black), and blend state.
+- ALSO: the misidentified Resolve dests (0x2E023900 etc. giving art pages,
+  and 0x4001Dxxxx = render-context fields) mean the Resolve hook's
+  destination decode (+32 word) is unreliable for some call shapes --
+  worth RE'ing D3DDevice_Resolve's parameter forms in IDA.
+
+### 2026-07-03 part 5: quad PIXEL SHADER is wrong/smeared (textures still
+### black with correct binding)
+
+- fm2pressstart5.rdc (BC-gate build): bg draw 132 binds the art correctly
+  (SharedConstants [34,29,30]) but the PS STILL outputs (0,0,0,1).
+- **The good capture proves the quads use DIFFERENT pixel shaders per
+  draw**: bg + shadow quads = {d88fa0db} (textured tint-chain multiplying
+  by PS float constants CB4[0..26]); A-button = {2e856b2a} (glyph family).
+  Plume binds ONE PS (ResourceId 894, declares NO float-constant block) for
+  ALL quad draws => background/A-button/logo compute black; shadow quads
+  only look right because black is their correct output.
+- **Live-PS sync implemented** (d3d_hooks.cpp ApplyLivePixelShaderFromContext,
+  kApplyLivePixelShader=true): D3DDevice_SetPixelShader (0x8236DD10)
+  installs the current PS object at ctx+0x307C (IDA-confirmed); the sync
+  reads it per draw in both SubmitNativeIndexedDrawPm4 and
+  Fm2EmitIndexedDrawPm4Base and calls SetPixelShaderNative. VERIFIED
+  firing with per-draw VARYING pointers (0x2E0034E0 / 0x2E017500 /
+  0x4005D1B0) -- but screen unchanged (text fine, textures still black).
+- ~~Next hypothesis: ResolveShader returns NULL~~ WRONG — the aliases
+  resolve fine (FM2_LIVE_PS res= non-null, guest objs 0x2E017500/0x4005D1B0
+  -> shaders hash 0x4A548329074CC3CA / 0x9E93B37448CA0172).
+- **TRUE CAUSE OF THE STUB PS: SHADER CACHE MISS.** The resolved
+  GuestShaders had shaderCacheEntry==nullptr -- their translations were in
+  `missed_shaders/` (156 dumps incl. 4A548329074CC3CA = the background
+  tint-chain PS), so LoadShader fell back to the stub (PS 894).
+  **FIX APPLIED**: copied build-dir `missed_shaders/*.bin` into
+  `FM2/assets/missed_shaders/`, reran
+  `scripts/fm2/Update-FM2ShaderCache.ps1 -SkipBuild` (XenosRecomp over
+  FM2\assets; 3 dumps skipped w/ recompiler exceptions; cache = 213
+  entries incl. the quad shaders -- most missed hashes were already IN the
+  regenerated cpp, the RUNNING EXE had an older embedded table), rebuilt
+  fm2. VERIFIED: **zero "Shader cache MISS" lines** in the new run;
+  FM2_DRAW_OUTCOME ok=okPS, skip=0, create_fail=0.
+- **Remaining (final layer): PS float constants are ZERO.** The real
+  tint-chain PS now runs and still outputs black => its CB4[0..26]
+  multipliers never arrive. This is the long-planned precompiled-CB
+  constant transport: hook D3DCommandBuffer_SetShaderConstantF 0x823767b8 +
+  CreateShaderConstantFFixup 0x823766e0 + SetPending_AluConstants
+  0x82382cc8. A fresh capture (with the real PS bound, RenderDoc can now
+  decode its float CB slot) will show exactly which registers are zero.
+- WORKFLOW: when adding new title-side shaders, remember BOTH steps:
+  regenerate shader_cache.cpp AND rebuild fm2 (the cache is embedded in
+  the exe; a stale exe keeps missing even when the cpp has the entries).
+
+### 2026-07-03 part 6: UI quads are IMMEDIATE (UP) draws; live state now
+### applied there too. Final remaining gap = PS float constants.
+
+- fm2pressstart7.rdc still showed the stub-reflection PS on the bg draw:
+  because the UI quads are NOT indexed PM4 draws at all -- they are
+  BeginVertices/EndVertices IMMEDIATE triangle fans (18 verts, 48
+  generated fan indices, VB = uploaded UP staging) flowing through
+  FlushImmediateVertices -> rr::DrawPrimitiveUP, which bypassed ALL the
+  per-draw live-ctx appliers.
+- FIX: FlushImmediateVertices now runs ApplyLiveTexturesFromContext +
+  ApplyLivePixelShaderFromContext on the pending draw's device before
+  DrawPrimitiveUP (re-entrancy safe: p.device nulled first).
+- Current state after the fix build: text pulses with fade (constant
+  modulation live), background/A-button/logo still black. All PSOs load
+  (FM2_PS_LOAD ps_ok, zero failures; zero shader-cache misses).
+- **NEXT SESSION START HERE: PS float constants for the UI tint-chain PS**
+  (CB4[0..26] in the good capture's d88fa0db). Wire the precompiled-CB
+  constant path: decompile + hook D3DCommandBuffer_SetShaderConstantF
+  0x823767b8, CreateShaderConstantFFixup 0x823766e0,
+  SetPending_AluConstants 0x82382cc8. Verify with a capture: the bg draw's
+  pixel float CB (slot decodable now that the real PS binds) should show
+  nonzero tint rows; compare against good-161 CB4.
 - **Fix implemented: ranged per-draw snapshot** in
   `BindPm4GeometryFromContext` (`kPerDrawIndexedRangeSnapshot`): scan the
   draw's index slice, upload only the referenced vertex window
