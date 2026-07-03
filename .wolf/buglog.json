@@ -192,6 +192,177 @@
       ],
       "occurrences": 1,
       "last_seen": "2026-07-03T18:40:00"
+    },
+    {
+      "id": "bug-012",
+      "timestamp": "2026-07-03T20:02:09.838Z",
+      "error_message": "Missing guard clause",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "No early return/throw for edge case: s_n.fetch_add(1, std::memory_order_relaxed",
+      "fix": "Added guard clause: if (s_n.fetch_add(1, std::memory_order_relax)",
+      "tags": [
+        "auto-detected",
+        "guard-clause",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-03T20:02:09.838Z"
+    },
+    {
+      "id": "bug-013",
+      "timestamp": "2026-07-03T20:04:59.938Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-03T20:04:59.938Z"
+    },
+    {
+      "id": "bug-014",
+      "timestamp": "2026-07-03T20:07:28.166Z",
+      "error_message": "Missing guard clause",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "No early return/throw for edge case: depth > 3 || bytes == 0u || bytes > 0x40000u",
+      "fix": "Added guard clause: if (depth > 3 || bytes == 0u || bytes > 0x40)",
+      "tags": [
+        "auto-detected",
+        "guard-clause",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-03T20:07:28.166Z"
+    },
+    {
+      "id": "bug-015",
+      "timestamp": "2026-07-03T20:10:39.968Z",
+      "error_message": "Significant refactor of ",
+      "file": "docs/FM2-handoff-2026-07-02-session5.md",
+      "root_cause": "7 lines replaced/restructured",
+      "fix": "Rewrote 7\u219243 lines (7 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-03T20:10:39.968Z"
+    },
+    {
+      "id": "bug-016",
+      "timestamp": "2026-07-03T19:45:00",
+      "error_message": "UI material state (PS program + tint float constants) invisible to plume transport: travels inside PLAYED precompiled command buffers executed as PM4 INDIRECT_BUFFER calls",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "D3D_SubmitCommandBuffer (sub_82372920) links played blobs into the ring as INDIRECT_BUFFER (0xC0013F00) packets; the pre-draw ring scanner never followed IBs, and segments contain further NESTED IBs. Shader programs ride as IM_LOAD_IMMEDIATE (op 0x2B, inline ucode) inside the inner buffers, so ctx+0x307C never sees the material PS either.",
+      "fix": "PARTIAL: hooked sub_82372920 with ScanSubmittedSegment (packet-structured walk, recurses nested IBs depth<=3) feeding ScanPm4AluConstantRange -> constants now reach the shadow in record order. OPEN: map IM_LOAD/IM_LOAD_IMMEDIATE ucode to translated GuestShaders (ucode-hash + address-interval index built at CreateShaderFromFunction) and apply rr::SetPixelShader from the scan.",
+      "tags": [
+        "plume_native",
+        "command-buffer",
+        "INDIRECT_BUFFER",
+        "IM_LOAD",
+        "PS-constants",
+        "press-A"
+      ],
+      "related_bugs": [
+        "bug-008",
+        "bug-011"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-07-03T19:45:00"
+    },
+    {
+      "id": "bug-017",
+      "timestamp": "2026-07-03T20:19:57.037Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_resource_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-03T20:19:57.037Z"
+    },
+    {
+      "id": "bug-018",
+      "timestamp": "2026-07-03T20:20:53.925Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-03T20:20:53.925Z"
+    },
+    {
+      "id": "bug-019",
+      "timestamp": "2026-07-03T20:23:39.828Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 11\u219226 lines (3 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-03T20:23:39.828Z"
+    },
+    {
+      "id": "bug-020",
+      "timestamp": "2026-07-03T20:26:26.375Z",
+      "error_message": "Significant refactor of ",
+      "file": "docs/FM2-handoff-2026-07-02-session5.md",
+      "root_cause": "12 lines replaced/restructured",
+      "fix": "Rewrote 12\u219230 lines (12 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-03T20:26:26.375Z"
+    },
+    {
+      "id": "bug-021",
+      "timestamp": "2026-07-03T21:00:00",
+      "error_message": "press-A background quad outputs constant black even with correct art texture bound (post BC-gate)",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "OPEN. Played command buffers proved NOT to carry the UI material shader programs (only the XDK's tiny runtime resolve-helper IM_LOAD_IMMEDIATE pair). The quad PS from ctx+0x307C translates to a shader with no float constants that acts as a solid fill; xenia's same-position draw runs the CB4 tint chain d88fa0db. Either plume's frame maps draws differently (127 = black underlay, art draw elsewhere among the 8 quad draws) or the plume path runs FM2's simplified direct-draw shaders by design.",
+      "fix": "Infrastructure landed this session: submit-chokepoint scanner (sub_82372920) with nested-IB recursion feeding the constant shadow, ucode-container registry + IM_LOAD/IM_LOAD_IMMEDIATE recognition with newest-writer PS gating. Next: per-quad SharedConstants-vs-LIVE_TEX correlation to find the art-sampling draw, and/or RenderDoc shader debug of the bg pixel.",
+      "tags": [
+        "plume_native",
+        "press-A",
+        "textures",
+        "pixel-shader",
+        "command-buffer",
+        "open"
+      ],
+      "related_bugs": [
+        "bug-016"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-07-03T21:00:00"
     }
   ]
 }

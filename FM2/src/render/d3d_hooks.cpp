@@ -90,6 +90,9 @@ GuestShader *CreateVertexShader(const uint32_t *function);
 GuestShader *CreatePixelShader(const uint32_t *function);
 void RegisterShaderAlias(uint32_t guestAddress, GuestShader *shader);
 GuestShader *LookupShaderAlias(uint32_t guestAddress);
+GuestShader *FindShaderByInlineUcode(const void *ucode, uint32_t bytes,
+                                     bool pixel);
+GuestShader *FindShaderByUcodeAddress(uint32_t guestAddr, bool pixel);
 GuestTexture *LoadTextureFromMemory(const uint8_t *data, uint32_t size);
 GuestTexture *TranslateGuestTextureFetch(const void *guestFetch,
                                          bool uploadGuestData);
@@ -360,6 +363,16 @@ REX_IMPORT(__imp__sub_82278F80, g_origOvlRecSetGlobalOffset,
            uint32_t(uint32_t, uint32_t));
 REX_IMPORT(__imp__sub_82279210, g_origOvlRecPlayCommandBuffer,
            uint32_t(uint32_t, uint32_t));
+// pt7 (2026-07-03): sub_82372920 = D3D_SubmitCommandBuffer -- the chokepoint
+// every PLAYED precompiled command buffer passes through before
+// FM2_D3D_SubmitCommandBufferChain writes it into the primary ring as a PM4
+// INDIRECT_BUFFER (0xC0013F00) packet. The pre-draw ring scanner never
+// followed indirect buffers, so all state inside played buffers (the UI
+// tint-chain PS float constants patched in via the
+// D3DCommandBuffer_SetShaderConstantF fixups) was invisible to the constant
+// shadow => press-A background/A-button/logo drew black. r5 = segment guest
+// address (alias-windowed), r6 = size in dwords (IB size field).
+REX_IMPORT(__imp__sub_82372920, g_origSubmitCommandBuffer, void(uint32_t));
 // sub_8245CED8 = the ENQUEUE API (queue=r3, fn=r4, this=r5, arg2=r6, flag=r7):
 // allocates an 0x18 node, node[0]=fn, node[4]=this, links it. The scene render is
 // enqueued via fn=sub_825E8BF8. Hook + filter fn==0x825E8BF8 to capture the
@@ -2803,6 +2816,14 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
 // background/A-button/logo output solid black while the shadow quads were
 // accidentally correct. Same live-ctx-state family as the vertex fetch
 // words (+0x670..0x6FC) and the texture fetches (+0x400).
+// pt8: newest-writer-wins between the two PS channels. The played-command-
+// buffer scan (ScanSubmittedSegment) sets the material PS via IM_LOAD*
+// recognition; the ctx+0x307C apply must not stomp it unless the game
+// actually called D3DDevice_SetPixelShader again (i.e. the ctx VALUE
+// changed since we last read it).
+static std::atomic<uint32_t> g_lastCtxPsValue{0};
+static std::atomic<bool> g_cbPsFresh{false};
+
 void ApplyLivePixelShaderFromContext(GuestDevice *device, uint32_t context) {
   static constexpr bool kApplyLivePixelShader = true;
   if (!kApplyLivePixelShader || device == nullptr || context == 0)
@@ -2810,6 +2831,11 @@ void ApplyLivePixelShaderFromContext(GuestDevice *device, uint32_t context) {
   const uint32_t ps = ReadGuestU32At(context + 0x307Cu);
   if (ps == 0)
     return;
+  if (ps == g_lastCtxPsValue.load(std::memory_order_relaxed) &&
+      g_cbPsFresh.load(std::memory_order_relaxed))
+    return; // a played buffer set a newer PS; ctx slot is stale
+  g_lastCtxPsValue.store(ps, std::memory_order_relaxed);
+  g_cbPsFresh.store(false, std::memory_order_relaxed);
   // Resolution ladder: direct alias -> resolved-object indirection (the ctx
   // slot may hold the outer DirectDraw state handle whose +0x48 points at
   // the real shader object) -> LAZY translate+register from the object's
@@ -4983,6 +5009,169 @@ REX_HOOK_RAW(sub_82279210) { // COverlayRendererDeferred::RecordPlayCommandBuffe
                  ctx.r3.u32, ctx.r4.u32, (uint32_t)ctx.lr,
                  (unsigned)::GetCurrentThreadId());
   g_origOvlRecPlayCommandBuffer.fn(ctx, base);
+}
+// pt7: scan every submitted (played) command-buffer segment with the same
+// ALU scanner the pre-draw ring delta uses. The segment is a DISCRETE
+// bounded buffer -- none of the ring-wrap unsoundness -- and it carries the
+// SET_CONSTANT packets (incl. PS 0x4400+ = the UI tint-chain constants) the
+// ring scanner could never see behind the INDIRECT_BUFFER call.
+// pt7b: the submitted segment itself contains FURTHER nested
+// INDIRECT_BUFFER calls (FM2_CBDUMP n=16397: three C0013F00 packets = the
+// precompiled material buffers). Walk packet-structured and recurse into
+// them (depth-capped) so the inner SET_CONSTANT floats reach the shadow.
+static void ScanSubmittedSegment(uint32_t phys, uint32_t bytes, int depth) {
+  if (depth > 3 || bytes == 0u || bytes > 0x40000u)
+    return;
+  ScanPm4AluConstantRange(phys, bytes);
+  auto *mem = ghp::GuestMemory();
+  if (mem == nullptr || phys + bytes > 0x20000000u ||
+      mem->GetPhysicalHeap()->QueryRangeAccess(phys, phys + bytes - 1u) ==
+          rex::memory::PageAccess::kNoAccess)
+    return;
+  const auto *p = mem->TranslatePhysical<const uint8_t *>(phys);
+  if (p == nullptr)
+    return;
+  auto be = [&](uint32_t off) {
+    uint32_t w;
+    std::memcpy(&w, p + off, 4u);
+    return std::byteswap(w);
+  };
+  // TEMP DIAG: dump the first few INNER (depth 1) buffers -- looking for how
+  // the PS PROGRAM travels (IM_LOAD op 0x27 / SQ program type-0 writes).
+  if (depth == 1) {
+    static std::atomic<uint32_t> s_inner{0};
+    const uint32_t k = s_inner.fetch_add(1, std::memory_order_relaxed);
+    if ((k >= 4096u && k < 4104u) || k < 4u) {
+      char buf[1024];
+      int off2 = std::snprintf(buf, sizeof(buf), "FM2_CBDUMP_IN k=%u a=%08X d=%u:",
+                               k, phys, bytes / 4u);
+      const uint32_t dumpN = std::min<uint32_t>(bytes / 4u, 44u);
+      for (uint32_t i = 0; i < dumpN && off2 < (int)sizeof(buf) - 12; ++i)
+        off2 += std::snprintf(buf + off2, sizeof(buf) - off2, " %08X",
+                              (unsigned)be(4u * i));
+      LogReplayDbg("%s", buf);
+    }
+  }
+  uint32_t off = 0;
+  while (off + 4u <= bytes) {
+    const uint32_t hdr = be(off);
+    const uint32_t type = hdr >> 30;
+    uint32_t adv = 1u;
+    if (type == 3u) {
+      const uint32_t op = (hdr >> 8) & 0x7Fu;
+      const uint32_t cnt = ((hdr >> 16) & 0x3FFFu) + 1u;
+      if (op == 0x3Fu && cnt >= 2u && off + 12u <= bytes) {
+        ScanSubmittedSegment(be(off + 4u) & 0x1FFFFFFFu,
+                             (be(off + 8u) & 0xFFFFFu) * 4u, depth + 1);
+      } else if (op == 0x2Bu && cnt >= 3u && off + 4u * (1u + cnt) <= bytes) {
+        // IM_LOAD_IMMEDIATE: [shaderType (0=VS 1=PS), (start<<16)|sizeDwords,
+        // inline BE ucode...]. Recognize the program bytes against the
+        // registered shader containers and bind the matching translation --
+        // this is how the UI material PS travels (FM2_CBDUMP_IN k=4098).
+        const uint32_t shType = be(off + 4u);
+        const uint32_t sizeDw = be(off + 8u) & 0xFFFFu;
+        const bool isPs = shType == 1u;
+        if (sizeDw >= 4u && sizeDw + 2u <= cnt) {
+          GuestShader *sh = rr::FindShaderByInlineUcode(p + off + 12u,
+                                                        sizeDw * 4u, isPs);
+          // Log every UNIQUE (ps,size) signature once -- hunting where the
+          // big material programs load.
+          static std::atomic<uint32_t> s_sigCount{0};
+          static uint32_t s_sigs[64];
+          const uint32_t sig = (isPs ? 0x80000000u : 0u) | sizeDw;
+          bool newSig = true;
+          const uint32_t nSigs =
+              std::min<uint32_t>(s_sigCount.load(std::memory_order_relaxed), 64u);
+          for (uint32_t si = 0; si < nSigs; ++si)
+            if (s_sigs[si] == sig) { newSig = false; break; }
+          if (newSig && nSigs < 64u) {
+            s_sigs[nSigs] = sig;
+            s_sigCount.store(nSigs + 1u, std::memory_order_relaxed);
+          }
+          static std::atomic<uint32_t> s_im{0};
+          const uint32_t m = s_im.fetch_add(1, std::memory_order_relaxed);
+          if (newSig || m < 8)
+            LogReplayDbg("FM2_CB_IMLOADIMM n=%u ps=%d dw=%u match=%p depth=%d",
+                         m, isPs ? 1 : 0, sizeDw, static_cast<void *>(sh),
+                         depth);
+          if (sh != nullptr && isPs) {
+            GuestDevice *dev = rr::GetActiveGuestDevice();
+            if (dev != nullptr) {
+              rr::SetPixelShader(dev, sh);
+              g_cbPsFresh.store(true, std::memory_order_relaxed);
+            }
+          }
+        }
+      } else if (op == 0x27u && cnt >= 2u && off + 12u <= bytes) {
+        // IM_LOAD: [ucode guest address | type bits, (start<<16)|size].
+        const uint32_t w0 = be(off + 4u);
+        const bool isPs = (w0 & 3u) == 1u;
+        GuestShader *sh =
+            rr::FindShaderByUcodeAddress(w0 & 0x1FFFFFFCu, isPs);
+        static std::atomic<uint32_t> s_il{0};
+        const uint32_t m = s_il.fetch_add(1, std::memory_order_relaxed);
+        if (m < 24 || (m & 0x3FFFu) < 2u)
+          LogReplayDbg("FM2_CB_IMLOAD n=%u w0=0x%08X ps=%d match=%p", m, w0,
+                       isPs ? 1 : 0, static_cast<void *>(sh));
+        if (sh != nullptr && isPs) {
+          GuestDevice *dev = rr::GetActiveGuestDevice();
+          if (dev != nullptr) {
+            rr::SetPixelShader(dev, sh);
+            g_cbPsFresh.store(true, std::memory_order_relaxed);
+          }
+        }
+      }
+      adv = 1u + cnt;
+    } else if (type == 0u) {
+      adv = 1u + ((hdr >> 16) & 0x3FFFu) + 1u;
+    } else if (type == 1u) {
+      adv = 3u;
+    }
+    off += 4u * adv;
+  }
+}
+
+REX_HOOK_RAW(sub_82372920) { // D3D_SubmitCommandBuffer
+  const uint32_t segAddr = ctx.r5.u32;
+  const uint32_t segDwords = ctx.r6.u32 & 0xFFFFFu;
+  g_origSubmitCommandBuffer.fn(ctx, base);
+  if (!ShouldMirrorPlumeRenderState())
+    return;
+  static constexpr bool kScanSubmittedCommandBuffers = true;
+  if (!kScanSubmittedCommandBuffers)
+    return;
+  const uint32_t phys = segAddr & 0x1FFFFFFFu;
+  const uint32_t bytes = segDwords * 4u;
+  if (bytes == 0u)
+    return;
+  static std::atomic<uint32_t> s_cbn{0};
+  const uint32_t n = s_cbn.fetch_add(1, std::memory_order_relaxed);
+  if (n < 16 || (n & 0x3FFFu) < 2u)
+    LogReplayDbg("FM2_CBSUBMIT n=%u addr=0x%08X dwords=%u tid=%u", n, segAddr,
+                 segDwords, (unsigned)::GetCurrentThreadId());
+  // TEMP DIAG: raw dwords of a few segments (late sample too, so press-A UI
+  // buffers show) to learn the packet vocabulary -- looking for how the PS
+  // PROGRAM travels (SET_SHADER/Type-0 SQ regs/IM_LOAD) alongside the
+  // SET_CONSTANT floats.
+  if ((n >= 16384u && n < 16400u) || n < 4u) {
+    auto *mem2 = ghp::GuestMemory();
+    const auto *hp =
+        mem2 ? mem2->TranslatePhysical<const uint8_t *>(phys) : nullptr;
+    if (hp != nullptr) {
+      char buf[1024];
+      int off = std::snprintf(buf, sizeof(buf), "FM2_CBDUMP n=%u a=%08X d=%u:",
+                              n, segAddr, segDwords);
+      const uint32_t dumpN = std::min<uint32_t>(segDwords, 40u);
+      for (uint32_t i = 0; i < dumpN && off < (int)sizeof(buf) - 12; ++i) {
+        uint32_t w;
+        std::memcpy(&w, hp + 4u * i, 4u);
+        off += std::snprintf(buf + off, sizeof(buf) - off, " %08X",
+                             (unsigned)std::byteswap(w));
+      }
+      LogReplayDbg("%s", buf);
+    }
+  }
+  ScanSubmittedSegment(phys, bytes, 0);
 }
 // Render-pass trigger probe: which owners have a non-empty entry list, per mode.
 static thread_local uint32_t g_curTrigA1 = 0;

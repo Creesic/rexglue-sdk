@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-03T19:52:15.908Z
-> Files: 522 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-03T20:26:26.364Z
+> Files: 523 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/22054c61-d9f8-4566-991c-6f9759f41605/scratchpad/
 
@@ -545,9 +545,10 @@
 
 ## FM2/src/render/
 
-- `d3d_hooks.cpp` — include <algorithm> (~63206 tok)
+- `d3d_hooks.cpp` — include <algorithm> (~65609 tok)
+- `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~17124 tok)
 - `render_state.cpp` — include <algorithm> (~62524 tok)
 
 ## docs/
 
-- `FM2-handoff-2026-07-02-session5.md` — FM2 plume_native handoff — START HERE (session 5 entry) (~6757 tok)
+- `FM2-handoff-2026-07-02-session5.md` — FM2 plume_native handoff — START HERE (session 5 entry) (~7641 tok)

@@ -527,6 +527,86 @@ static ShaderCacheEntry *FindShaderCacheEntry(uint64_t hash) {
   return (it != end && it->hash == hash) ? it : nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// pt8 (2026-07-03): shader-container registry for identifying the programs
+// that PLAYED command buffers load via PM4 IM_LOAD_IMMEDIATE (inline ucode
+// copy) / IM_LOAD (by ucode address). The UI material PS never passes
+// through D3DDevice_SetPixelShader, so recognizing the program bytes (or
+// their address inside a known container) is the only way to bind the right
+// translation at draw time.
+// ---------------------------------------------------------------------------
+namespace {
+struct UcodeContainerRec {
+  const uint8_t *host = nullptr;
+  uint32_t guest = 0;
+  uint32_t size = 0;
+  GuestShader *shader = nullptr;
+  bool pixel = false;
+};
+std::mutex g_ucodeIndexMutex;
+std::vector<UcodeContainerRec> g_ucodeContainers;
+std::unordered_map<uint64_t, GuestShader *> g_inlineUcodeCache;
+} // namespace
+
+static void RegisterShaderContainerForUcodeLookup(const uint32_t *function,
+                                                  uint32_t size,
+                                                  GuestShader *shader,
+                                                  ResourceType type) {
+  if (function == nullptr || shader == nullptr || size == 0u ||
+      size > 0x40000u)
+    return;
+  std::lock_guard lock(g_ucodeIndexMutex);
+  for (const auto &r : g_ucodeContainers)
+    if (r.host == reinterpret_cast<const uint8_t *>(function))
+      return;
+  g_ucodeContainers.push_back({reinterpret_cast<const uint8_t *>(function),
+                               ToGuest(function), size, shader,
+                               type == ResourceType::PixelShader});
+}
+
+GuestShader *FindShaderByInlineUcode(const void *ucode, uint32_t bytes,
+                                     bool pixel) {
+  if (ucode == nullptr || bytes < 16u || bytes > 0x20000u)
+    return nullptr;
+  const uint64_t h = XXH3_64bits(ucode, bytes) ^ (pixel ? 1ull : 0ull);
+  std::lock_guard lock(g_ucodeIndexMutex);
+  auto it = g_inlineUcodeCache.find(h);
+  if (it != g_inlineUcodeCache.end())
+    return it->second;
+  GuestShader *found = nullptr;
+  const uint8_t first = *static_cast<const uint8_t *>(ucode);
+  for (const auto &r : g_ucodeContainers) {
+    if (r.pixel != pixel || r.size < bytes)
+      continue;
+    const uint8_t *end = r.host + (r.size - bytes);
+    for (const uint8_t *p = r.host; p <= end; ++p) {
+      p = static_cast<const uint8_t *>(
+          std::memchr(p, first, size_t(end - p) + 1u));
+      if (p == nullptr)
+        break;
+      if (std::memcmp(p, ucode, bytes) == 0) {
+        found = r.shader;
+        break;
+      }
+    }
+    if (found != nullptr)
+      break;
+  }
+  g_inlineUcodeCache.emplace(h, found); // cache negatives too
+  return found;
+}
+
+GuestShader *FindShaderByUcodeAddress(uint32_t guestAddr, bool pixel) {
+  guestAddr &= 0x1FFFFFFFu;
+  std::lock_guard lock(g_ucodeIndexMutex);
+  for (const auto &r : g_ucodeContainers) {
+    const uint32_t base = r.guest & 0x1FFFFFFFu;
+    if (r.pixel == pixel && guestAddr >= base && guestAddr < base + r.size)
+      return r.shader;
+  }
+  return nullptr;
+}
+
 static GuestShader *CreateShaderFromFunction(const uint32_t *function,
                                              ResourceType type) {
   // Guest microcode is big-endian; size = header words [1] + [2].
@@ -616,8 +696,12 @@ static GuestShader *CreateShaderFromFunction(const uint32_t *function,
       entry->guest_shader = reinterpret_cast<GuestShader *>(shader);
       REXGPU_INFO("CreateShader: hash=0x{:016X} type={} -> guestAddr=0x{:08X}",
                   hash, int(type), ToGuest(shader));
+      RegisterShaderContainerForUcodeLookup(function, size, shader, type);
       return finish(shader);
     }
+    RegisterShaderContainerForUcodeLookup(
+        function, size, reinterpret_cast<GuestShader *>(entry->guest_shader),
+        type);
     return finish(reinterpret_cast<GuestShader *>(entry->guest_shader));
   }
   // Dump the raw ShaderContainer so XenosRecomp can translate it offline.

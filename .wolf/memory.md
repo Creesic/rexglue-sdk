@@ -39,3 +39,18 @@
 | 15:49 | Edited FM2/src/render/d3d_hooks.cpp | modified FlushImmediateVertices() | ~326 |
 | 15:52 | Edited docs/FM2-handoff-2026-07-02-session5.md | expanded (+23 lines) | ~428 |
 | 15:52 | Session end: 26 writes across 5 files (d3d_hooks.cpp, render_state.cpp, shot_fm2.ps1, FM2-handoff-2026-07-02-session5.md, burst_fm2.ps1) | 14 reads | ~134174 tok |
+| 16:01 | Edited FM2/src/render/d3d_hooks.cpp | modified pt7() | ~246 |
+| 16:02 | Edited FM2/src/render/d3d_hooks.cpp | added 4 condition(s) | ~443 |
+| 16:04 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~351 |
+| 16:07 | Edited FM2/src/render/d3d_hooks.cpp | added 9 condition(s) | ~735 |
+| 16:07 | Edited FM2/src/render/d3d_hooks.cpp | ScanPm4AluConstantRange() → ScanSubmittedSegment() | ~22 |
+| 16:10 | Edited docs/FM2-handoff-2026-07-02-session5.md | modified ScanSubmittedSegment() | ~734 |
+| 16:11 | Session end: 32 writes across 5 files (d3d_hooks.cpp, render_state.cpp, shot_fm2.ps1, FM2-handoff-2026-07-02-session5.md, burst_fm2.ps1) | 15 reads | ~137116 tok |
+| 16:19 | Edited FM2/src/render/d3d_hooks.cpp | 2→5 lines | ~85 |
+| 16:19 | Edited FM2/src/render/d3d_resource_hooks.cpp | added 9 condition(s) | ~861 |
+| 16:20 | Edited FM2/src/render/d3d_resource_hooks.cpp | modified if() | ~192 |
+| 16:20 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~269 |
+| 16:20 | Edited FM2/src/render/d3d_hooks.cpp | added 9 condition(s) | ~754 |
+| 16:23 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~365 |
+| 16:26 | Edited docs/FM2-handoff-2026-07-02-session5.md | expanded (+18 lines) | ~557 |
+| 16:27 | Session end: 39 writes across 6 files (d3d_hooks.cpp, render_state.cpp, shot_fm2.ps1, FM2-handoff-2026-07-02-session5.md, burst_fm2.ps1) | 15 reads | ~141805 tok |

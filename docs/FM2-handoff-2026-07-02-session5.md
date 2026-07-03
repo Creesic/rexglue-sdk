@@ -399,13 +399,67 @@ User directive: use `C:\Users\Tera\Documents\GitHub\UnleashedRecomp` as the guid
 - Current state after the fix build: text pulses with fade (constant
   modulation live), background/A-button/logo still black. All PSOs load
   (FM2_PS_LOAD ps_ok, zero failures; zero shader-cache misses).
-- **NEXT SESSION START HERE: PS float constants for the UI tint-chain PS**
-  (CB4[0..26] in the good capture's d88fa0db). Wire the precompiled-CB
-  constant path: decompile + hook D3DCommandBuffer_SetShaderConstantF
-  0x823767b8, CreateShaderConstantFFixup 0x823766e0,
-  SetPending_AluConstants 0x82382cc8. Verify with a capture: the bg draw's
-  pixel float CB (slot decodable now that the real PS binds) should show
-  nonzero tint rows; compare against good-161 CB4.
+- ~~NEXT: wire the three constant hooks~~ SUPERSEDED by pt7 below (the
+  transport is the PLAYED-COMMAND-BUFFER channel, hooked at the submit
+  chokepoint instead).
+
+### 2026-07-03 part 7: played-command-buffer transport decoded + constants
+### scanner wired through nested INDIRECT_BUFFERs. PS program = IM_LOAD.
+
+- **Mechanism fully decoded (IDA + live packet dumps)**:
+  - D3DCommandBuffer_SetShaderConstantF (0x823767b8) PATCHES float values
+    into a precompiled PM4 blob via FixupRecords (dst = blob payload base +
+    fixup offset). The blob later executes via
+    D3D_SubmitCommandBuffer (sub_82372920: r5=segment guest addr, r6=size
+    dwords) -> FM2_D3D_SubmitCommandBufferChain, which writes a PM4
+    **INDIRECT_BUFFER (0xC0013F00)** into the primary ring. The pre-draw
+    ring scanner NEVER followed IBs => everything inside played buffers
+    was invisible to the constant shadow. Capture-8-era conclusion that
+    ctx+0x307C holds the wrong PS for UI quads: correct -- the real
+    material PS never goes through D3DDevice_SetPixelShader at all.
+  - Submitted segments contain FURTHER nested IB calls (FM2_CBDUMP
+    n=16397: three 0xC0013F00 packets = the material buffers).
+  - Inner material buffers carry the SHADER PROGRAMS as
+    **IM_LOAD_IMMEDIATE (op 0x2B, INLINE Xenos ucode; dword0 0=VS 1=PS)**
+    (+ SQ_PROGRAM_CNTL type-0 writes at 0x2180) -- FM2_CBDUMP_IN k=4098.
+    Presumably IM_LOAD (op 0x27, by address) for larger shaders.
+- **Landed (fm2.exe ~16:3X)**: REX_HOOK_RAW(sub_82372920) +
+  ScanSubmittedSegment (d3d_hooks.cpp): packet-structured walk of every
+  submitted segment, recursing into nested IBs (depth<=3, <=256KB), calling
+  ScanPm4AluConstantRange per level so SET_CONSTANT floats (VS+PS) land in
+  the shadow in record order. Verified firing (FM2_CBSUBMIT n>81k, real
+  segments 11-31 dwords; nested dumps FM2_CBDUMP_IN). Screen: text crisp,
+  background still black.
+- ~~REMAINING: map played buffers' programs~~ Route (a) IMPLEMENTED and
+  the result DISPROVES the theory: the ucode-container registry +
+  FindShaderByInlineUcode/FindShaderByUcodeAddress + IM_LOAD(0x27)/
+  IM_LOAD_IMMEDIATE(0x2B) handling in ScanSubmittedSegment all landed
+  (with a g_cbPsFresh newest-writer gate vs the ctx+0x307C apply), and a
+  full boot->press-A run shows the ONLY program loads in played buffers
+  are ONE tiny 24-dw VS + 9-dw PS pair (the XDK's runtime-generated EDRAM
+  resolve helpers, correctly matching no container; zero op-0x27 at all).
+  **Played command buffers do NOT carry the UI material shader programs.**
+- **pt8 conclusion / next session:** the quads' PS in the plume path is
+  whatever ctx+0x307C holds (guest objs 0x2E017500/0x4005D1B0 -> cached
+  translations incl. hash 0x4A548329074CC3CA) -- and its translation shows
+  NO float-constant block, while xenia's same-position draw runs the
+  CB4-heavy tint chain d88fa0db. Capture-8 pixel history: the plume "bg"
+  draw (127) outputs constant (0,0,0,1) even over the art's brightest
+  pixels => it behaves as a SOLID FILL, not a sampler. Hypotheses to
+  discriminate NEXT: (1) plume's 21-draw frame vs the good pass's 19 draws
+  -- plume's 127 may correspond to the good backend's black UNDERLAY quad
+  and the true art-sampling draw is a different 48-idx quad (compare
+  SharedConstants texture indices per quad draw against the FM2_LIVE_TEX
+  slot->texture log; find which plume draw has the art's descriptor and
+  what IT outputs); (2) plume forces FM2 down a SIMPLIFIED direct-draw
+  path whose shaders differ from the xenos material path by design --
+  check whether 0x4A54.../0x9E93... containers correspond to
+  'fallback pass' shaders (FM2_Render_BuildFallbackPassCommandBuffers).
+  (3) If the simple PS modulates by an interpolated vertex color, black
+  may come from the VS constants/vertex color -- shader-debug the bg
+  pixel in RenderDoc (qrenderdoc GUI, user-driven) for ground truth.
+  TEMP diags to strip later: FM2_CBDUMP, FM2_CBDUMP_IN, FM2_CB_IMLOADIMM
+  signature histogram.
 - **Fix implemented: ranged per-draw snapshot** in
   `BindPm4GeometryFromContext` (`kPerDrawIndexedRangeSnapshot`): scan the
   draw's index slice, upload only the referenced vertex window
