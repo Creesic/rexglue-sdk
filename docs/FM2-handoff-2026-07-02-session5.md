@@ -259,6 +259,48 @@ User directive: use `C:\Users\Tera\Documents\GitHub\UnleashedRecomp` as the guid
   UnleashedRecomp-style bindless layout, so "no SRV bound" is NORMAL here;
   whether index 33 resolves to the expected texture (user expects 1094 for
   the A button, 903 bg, 898 logo) needs its own check in a fresh capture.
+
+### 2026-07-03 part 3: GLYPH JUMBLE TRUE ROOT CAUSE — dropped per-draw
+### vertex-fetch base (OffsetInBytes). FIX BUILT 14:11, log-verified.
+
+- User reported the draw-time snapshot changed nothing and provided the
+  GOOD reference `fm2pressstartxenosgoodglyphs.rdc` (same build, xenos CP
+  backend). Its translated VS pulls vertices via fetch constant CB1[47]
+  (= vfetch 95): addr = idx*8 + (CB1[47].z & ~3). Dumping every draw's
+  fetch table shows **each glyph has its own persistent vertex base**
+  (T=0xA939028, O=0xA933648, S=0xA937788, A=0xA92A7F0, R=0xA9361B0,
+  P=0xA9345E8, E=0xA92E260; repeated letters SHARE their base across draws
+  and frames) — a persistent per-glyph cache, index blocks byte-identical
+  to plume's.
+- **The plume pool snapshot was never stale**: the good capture's T vertex
+  block was found BYTE-IDENTICAL inside the bad capture's own uploaded
+  pool at +164,488 bytes past the bound base (arena 532872 vs bound
+  368384), and plotting it with the T's indices yields a perfect letter T
+  (box-minus-counterform carving). Only the BASE was wrong.
+- **Mechanism** (IDA, 0x82370E48 D3DDevice_SetStreamSource): the glyph
+  renderer FM2_RenderContext_ComputeVertexLighting (0x827BAC98, the
+  lr=0x827BB01C GpuBegin caller) calls SetStreamSource PER GLYPH with a
+  per-glyph OffsetInBytes into the shared pool VB. The XDK writes the live
+  fetch constant base = vb->format0 + OffsetInBytes to **device word
+  +0x6F8** (stream 0; +0x6FC = shrunken size; stream s at word
+  412+2*(17-s), i.e. 0x670..0x6FC), but the resource pointer at +0x2F94
+  keeps only the OFFSET-LESS header. Both plume transports read the
+  offset-less base (SetStreamSourceNative: header format0; PM4 hook:
+  vbRes+0x18) => every glyph bound the pool base. The xenos CP consumes
+  the real fetch constant => correct.
+- **FIX** (render_state.cpp TryDrawTimeRangedSnapshot,
+  `kUseLiveVertexFetchBase=true`): read the LIVE stream-0 fetch constant
+  from device+0x6F8/+0x6FC at draw time, TranslatePhysical it, window from
+  THAT base. FM2_RANGESNAP2 now logs fetchBase; smoke run (fm2.exe 14:11)
+  shows glyph-sized draws with VARYING per-draw bases (0x0A56CC58,
+  0x0A529348, ...) vs the single frozen base before. **Awaiting user
+  press-A legibility check.**
+- Likely same fix family applies to the car pool: BindPm2GeometryFromContext
+  reads vbRes+0x18 (offset-less) — switching it to the ctx+0x670..0x6FC
+  fetch words is the analogous follow-up (not done yet; one variable at a
+  time).
+- Textures-not-visible on the quads: still open, untouched by this fix;
+  needs a fresh capture to chase the bindless descriptor indices.
 - **Fix implemented: ranged per-draw snapshot** in
   `BindPm4GeometryFromContext` (`kPerDrawIndexedRangeSnapshot`): scan the
   draw's index slice, upload only the referenced vertex window
