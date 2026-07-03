@@ -65648,7 +65648,7 @@ loc_825DF55C:
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 524);
 	// bl 0x82603be0
 	ctx.lr = 0x825DF56C;
-	FM2_ReleaseOwnedChildObjects(ctx, base);
+	FM2_UIScreenPassList_PreRenderRenderers(ctx, base);
 	// addi r1,r1,192
 	ctx.r1.s64 = ctx.r1.s64 + 192;
 	// b 0x824131dc

@@ -75154,7 +75154,7 @@ DEFINE_REX_FUNC(sub_82603BC8) {
 
 extern bool FM2SkipBadChildSlot(PPCRegister& r11, PPCRegister& r31);
 
-DEFINE_REX_FUNC(FM2_ReleaseOwnedChildObjects) {
+DEFINE_REX_FUNC(FM2_UIScreenPassList_PreRenderRenderers) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12

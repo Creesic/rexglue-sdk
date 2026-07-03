@@ -28196,7 +28196,7 @@ loc_82279274:
 	return;
 }
 
-DEFINE_REX_FUNC(FM2_StartQueuedTask_VTable8200ECF4) {
+DEFINE_REX_FUNC(FM2_COverlayRendererDeferred_RecordPreRender) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
@@ -34736,7 +34736,7 @@ DEFINE_REX_FUNC(sub_8227BD00) {
 	return;
 }
 
-DEFINE_REX_FUNC(FM2_StartQueuedTask_VTable8200F160) {
+DEFINE_REX_FUNC(FM2_CSimpleModelRendererDeferred_RecordPreRender) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12

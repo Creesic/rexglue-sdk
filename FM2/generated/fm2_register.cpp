@@ -2934,7 +2934,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82279180, sub_82279180);
   registrar->SetFunction(0x822791F0, sub_822791F0);
   registrar->SetFunction(0x82279210, sub_82279210);
-  registrar->SetFunction(0x822792A0, FM2_StartQueuedTask_VTable8200ECF4);
+  registrar->SetFunction(0x822792A0, FM2_COverlayRendererDeferred_RecordPreRender);
   registrar->SetFunction(0x82279320, sub_82279320);
   registrar->SetFunction(0x822793A0, sub_822793A0);
   registrar->SetFunction(0x82279420, sub_82279420);
@@ -3050,7 +3050,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8227BC78, sub_8227BC78);
   registrar->SetFunction(0x8227BC90, sub_8227BC90);
   registrar->SetFunction(0x8227BD00, sub_8227BD00);
-  registrar->SetFunction(0x8227BD08, FM2_StartQueuedTask_VTable8200F160);
+  registrar->SetFunction(0x8227BD08, FM2_CSimpleModelRendererDeferred_RecordPreRender);
   registrar->SetFunction(0x8227BD88, sub_8227BD88);
   registrar->SetFunction(0x8227BE08, sub_8227BE08);
   registrar->SetFunction(0x8227BE58, sub_8227BE58);
@@ -20688,7 +20688,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82603BA8, sub_82603BA8);
   registrar->SetFunction(0x82603BB8, sub_82603BB8);
   registrar->SetFunction(0x82603BC8, sub_82603BC8);
-  registrar->SetFunction(0x82603BE0, FM2_ReleaseOwnedChildObjects);
+  registrar->SetFunction(0x82603BE0, FM2_UIScreenPassList_PreRenderRenderers);
   registrar->SetFunction(0x82603C70, sub_82603C70);
   registrar->SetFunction(0x82603CC0, sub_82603CC0);
   registrar->SetFunction(0x82603D10, sub_82603D10);

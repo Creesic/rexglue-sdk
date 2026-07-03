@@ -4981,6 +4981,39 @@ static bool TryDrawTimeRangedSnapshot(GuestDevice *device,
   for (uint32_t s = 1; s < 16u; ++s)
     if (g_vertexBufferViews[s].size != 0u)
       return false;
+  // Session 5 (2026-07-03, part 3): the guest's LIVE per-draw vertex-fetch
+  // constant, not the bind-time pointer. D3DDevice_SetStreamSource
+  // (0x82370E48) writes base = vb->format0 + OffsetInBytes to device word
+  // +0x6F8 (stream 0; packed | low fetch-type bits) and the shrunken size
+  // word to +0x6FC -- but BOTH transports (this file's *GuestData binder and
+  // the PM4 hook's vbRes+0x18 read) only ever saw the offset-LESS header
+  // base, so the per-glyph OffsetInBytes was dropped and every press-A
+  // letter drew from the pool base. Proof: fm2pressstartxenosgoodglyphs.rdc
+  // fetch constants advance per glyph (T=0xA939028, O=0xA933648, ...) while
+  // fm2pressstartbadglyphs.rdc binds one base for all 13 draws; the T's true
+  // block sits +164488 bytes past that base in OUR OWN captured pool,
+  // byte-identical to the good backend's (plots to a perfect letter T).
+  const uint8_t *vrData = vr.data;
+  uint32_t vrSize = vr.size;
+  static constexpr bool kUseLiveVertexFetchBase = true;
+  uint32_t liveFetchBase = 0;
+  if (kUseLiveVertexFetchBase && device != nullptr) {
+    const auto *dw = reinterpret_cast<const rex::be<uint32_t> *>(device);
+    const uint32_t fetch0 = dw[0x6F8u / 4u].get();
+    const uint32_t fetch1 = dw[0x6FCu / 4u].get();
+    const uint32_t base = fetch0 & 0x1FFFFFFCu;
+    const uint32_t sizeBytes = ((fetch1 >> 2) & 0xFFFFFFu) * 4u;
+    if (base != 0u && sizeBytes != 0u && (fetch0 & 3u) != 0u) {
+      auto *mem = ghp::GuestMemory();
+      const uint8_t *host =
+          mem ? mem->TranslatePhysical<const uint8_t *>(base) : nullptr;
+      if (host != nullptr) {
+        vrData = host;
+        vrSize = sizeBytes;
+        liveFetchBase = base;
+      }
+    }
+  }
   const uint8_t *slice = ir.data + sliceOff;
   uint32_t minV = 0xFFFFFFFFu, maxV = 0u;
   if (ir.stride == 2u) {
@@ -5003,10 +5036,10 @@ static bool TryDrawTimeRangedSnapshot(GuestDevice *device,
   if (lo < 0 || (ir.stride == 2u && width > 0x10000u))
     return false;
   const uint64_t off = uint64_t(lo) * vr.stride;
-  if (off >= vr.size)
+  if (off >= vrSize)
     return false;
   const uint32_t bytes =
-      uint32_t(std::min<uint64_t>(uint64_t(width) * vr.stride, vr.size - off));
+      uint32_t(std::min<uint64_t>(uint64_t(width) * vr.stride, vrSize - off));
   if (bytes > kMaxWindowBytes)
     return false;
   if (ir.stride == 2u) {
@@ -5028,19 +5061,19 @@ static bool TryDrawTimeRangedSnapshot(GuestDevice *device,
     }
     SetIndicesPreparedHost(s_idx32.data(), indexCount * 4u, 4u);
   }
-  SetStreamSourceHostWindow(device, 0, vr.data + off, bytes, vr.stride);
+  SetStreamSourceHostWindow(device, 0, vrData + off, bytes, vr.stride);
   *ioStartIndex = 0u;
   *ioBaseVertex = 0;
   static std::atomic<uint32_t> s_n{0};
   const uint32_t n = s_n.fetch_add(1, std::memory_order_relaxed);
-  if (n < 12 || (n & 0x3FFFu) == 0) {
-    const uint8_t *w = vr.data + off;
+  if (n < 24 || (n & 0x3FFFu) == 0) {
+    const uint8_t *w = vrData + off;
     if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
       std::fprintf(f,
                    "FM2_RANGESNAP2 n=%u idxN=%u minV=%u width=%u bytes=%u "
-                   "w0=%02X%02X%02X%02X %02X%02X%02X%02X\n",
-                   n, indexCount, minV, width, bytes, w[0], w[1], w[2], w[3],
-                   w[4], w[5], w[6], w[7]);
+                   "fetchBase=0x%08X w0=%02X%02X%02X%02X %02X%02X%02X%02X\n",
+                   n, indexCount, minV, width, bytes, liveFetchBase, w[0],
+                   w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
       std::fclose(f);
     }
   }

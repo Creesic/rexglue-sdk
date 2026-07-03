@@ -222,6 +222,43 @@ User directive: use `C:\Users\Tera\Documents\GitHub\UnleashedRecomp` as the guid
   upload ONCE PER FRAME keyed by pool pointer -- every draw after the first
   renders from a stale snapshot. Same mechanism very likely = the car pool
   "wholesale unpopulated at draw time" finding (2026-07-01).
+
+### 2026-07-03 latest: draw-time ranged snapshot (built 12:10, awaiting A/B)
+
+- **fm2pressstartbadglyphs.rdc (10:47) analyzed in depth** — it is the
+  PRE-fix state and confirms the mechanism quantitatively: all 13 glyph
+  draws (EID 135..202) bind the SAME whole-pool VB window (arena offset
+  368384, 869040 B, stride 8) with 0-based per-glyph index blocks
+  (startIndex per draw, NOT monotonic in draw order => the game caches
+  per-glyph index topology persistently while rewriting VERTEX data per
+  frame). Plotting each draw's indices against the captured window is
+  scrambled for EVERY draw (even the last-drawn S), and a coherence search
+  over the first 64KB of the pool finds NO shift that reproduces any
+  letter => the snapshot content is a mid-frame mixture that matches no
+  glyph. The quad draws (127/210-245) in the same capture DO show small
+  576-B per-draw windows = the bind-side FM2_RANGESNAP covered quads but
+  the glyphs bypass it (API-level SetStreamSource*Data path, not the PM4
+  bind hook).
+- **Fix moved to draw time**: `TryDrawTimeRangedSnapshot`
+  (render_state.cpp, kEnabled=true) re-slices LIVE guest bytes per
+  indexed draw (single-stream slot 0, guest-data-backed), uploads only the
+  referenced window + rebased indices, draws startIndex=0/baseVertex=0.
+  Bind-side variant in BindPm4GeometryFromContext gated OFF
+  (kPerDrawIndexedRangeSnapshot=false) so only one mechanism runs.
+  Built into the 12:10 exe; log-verified firing (FM2_RANGESNAP2, incl.
+  glyph-shaped windows whose first record = the T-block first vertex
+  AC12 3A83 = BE halves (-0.0635, 0.8139)). **Verification pending: user
+  press-A legibility check on the >=12:10 build; a fresh capture should
+  show glyph draws with ~1-6KB VB windows and startIndex=0 instead of the
+  869KB whole-pool bind.** Known scope gap: draws bound via the
+  SetStreamSource OBJECT path (g_guestStreamRef cleared) and multi-stream
+  draws still use the per-frame cache and can still be stale (car pool).
+- **Quad texture note (bindless)**: the A-button/background/logo quads'
+  PS (ResourceId 894) has no SRVs in reflection — textures ride as
+  descriptor indices in SharedConstants (238: [33,25,26]) per the
+  UnleashedRecomp-style bindless layout, so "no SRV bound" is NORMAL here;
+  whether index 33 resolves to the expected texture (user expects 1094 for
+  the A button, 903 bg, 898 logo) needs its own check in a fresh capture.
 - **Fix implemented: ranged per-draw snapshot** in
   `BindPm4GeometryFromContext` (`kPerDrawIndexedRangeSnapshot`): scan the
   draw's index slice, upload only the referenced vertex window
