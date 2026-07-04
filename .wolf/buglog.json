@@ -588,6 +588,315 @@
       "related_bugs": [],
       "occurrences": 4,
       "last_seen": "2026-07-04T01:37:05.949Z"
+    },
+    {
+      "id": "bug-035",
+      "timestamp": "2026-07-04T02:14:35.943Z",
+      "error_message": "Missing guard clause",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "No early return/throw for edge case: i < 0 || i >= int(g_shaderCacheEntryCount",
+      "fix": "Added guard clause: if (i < 0 || i >= int(g_shaderCacheEntryCoun)",
+      "tags": [
+        "auto-detected",
+        "guard-clause",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T02:14:35.943Z"
+    },
+    {
+      "id": "bug-036",
+      "timestamp": "2026-07-04T02:22:44.397Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 21→30 lines (3 removed) | Also: // Clamp every frame (the frame's draw count can c; // status window (created lazily on first call). L",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 3,
+      "last_seen": "2026-07-04T02:25:27.123Z"
+    },
+    {
+      "id": "bug-037",
+      "timestamp": "2026-07-04T02:25:34.542Z",
+      "error_message": "Wrong reference: g_probeLastFrameDrawCount should be g_probeMaxDrawCount",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Used \"g_probeLastFrameDrawCount\" instead of \"g_probeMaxDrawCount\"",
+      "fix": "Changed g_probeLastFrameDrawCount → g_probeMaxDrawCount",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-04T02:25:34.546Z"
+    },
+    {
+      "id": "bug-038",
+      "timestamp": "2026-07-04T02:49:35.306Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_resource_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T02:49:35.306Z"
+    },
+    {
+      "id": "bug-039",
+      "timestamp": "2026-07-04T02:53:42.629Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T02:53:42.629Z"
+    },
+    {
+      "id": "bug-040",
+      "timestamp": "2026-07-04T02:56:27.662Z",
+      "error_message": "Missing error handling in unknown",
+      "file": "FM2/src/render/d3d_resource_hooks.cpp",
+      "root_cause": "Code path had no error handling — exceptions would propagate uncaught",
+      "fix": "Added try/catch block",
+      "tags": [
+        "auto-detected",
+        "error-handling",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T02:56:27.662Z"
+    },
+    {
+      "id": "bug-041",
+      "timestamp": "2026-07-04T03:20:32.181Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 12→19 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T03:20:32.181Z"
+    },
+    {
+      "id": "bug-042",
+      "timestamp": "2026-07-04T03:20:46.372Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T03:20:46.372Z"
+    },
+    {
+      "id": "bug-043",
+      "timestamp": "2026-07-04T03:47:53.988Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 7→16 lines (3 removed) | Also: if (n < 16 || (n & 0x3FFFu) < 2u); LogReplayDbg(\"FM2_LIVE_PS n=%u ctx=0x%08X ps=0x%08",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-04T03:47:53.999Z"
+    },
+    {
+      "id": "bug-044",
+      "timestamp": "2026-07-04T04:16:10.987Z",
+      "error_message": "Incorrect value in code",
+      "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "root_cause": "Had \"present/drop-latch\"",
+      "fix": "Changed to `SharedConstants`",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-04T04:16:11.000Z"
+    },
+    {
+      "id": "bug-045",
+      "timestamp": "2026-07-04T14:29:14.564Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check) | Also: const uint32_t w1 = be(off + 8u);; LogReplayDbg(\"FM2_CB_IMLOAD n=%u w0=0x%08X w1=0x%08X ps=%d m",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-04T14:29:14.576Z"
+    },
+    {
+      "id": "bug-046",
+      "timestamp": "2026-07-04T00:00:00Z",
+      "error_message": "FM2 plume_native press-start background renders with a color-only pixel shader (black/untextured); should sample its texture",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Per-draw pixel-shader binding is broken by the deferred replay timeline: plume reads the PS from the single mutable context slot ctx+0x307C at draw-replay time, which collapses to color-only 9E93B374 for the bg while its textures/geometry are correct. The channel meant to bind the per-draw PS from the recorded command stream (ScanSubmittedSegment IM_LOAD/IM_LOAD_IMMEDIATE) is 100% dead: it compares raw GPU microcode from the command stream against XDK shader-container bytes (FindShaderByInlineUcode/FindShaderByUcodeAddress) = different representations, so every match returns null and g_cbPsFresh never becomes true, letting the stale ctx PS always win. Translation (XenosRecomp) and the shader alias map are both correct (proven via RDAT + REGALIAS).",
+      "fix": "NOT YET FIXED. Direction: (1) make the CB-scan matcher resolve GPU-ucode->shader (hash/locate the GPU ucode within the XDK container, or key ucode containers by physical base) so the correct per-draw PS binds; (2) bind PS in packet order with draws on the replay/drain timeline. Diagnostic edits added to ScanSubmittedSegment (FM2_CB_IMLOAD_UCODE dump + IMLOADIMM start field).",
+      "tags": [
+        "fm2",
+        "plume_native",
+        "pixel-shader",
+        "deferred-timeline",
+        "cb-scan",
+        "black-textures",
+        "IM_LOAD",
+        "shader-binding"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T00:00:00Z"
+    },
+    {
+      "id": "bug-047",
+      "timestamp": "2026-07-04T15:18:22.274Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "12 lines replaced/restructured",
+      "fix": "Rewrote 19→21 lines (12 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T15:18:22.274Z"
+    },
+    {
+      "id": "bug-048",
+      "timestamp": "2026-07-04T15:30:32.293Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "9 lines replaced/restructured",
+      "fix": "Rewrote 38→48 lines (9 removed) | Also: void Fm2SetPixelShaderState(uint32_t renderContext; g_origFm2SetPixelShaderState(renderContext, shader",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-04T15:30:32.308Z"
+    },
+    {
+      "id": "bug-049",
+      "timestamp": "2026-07-04T16:24:42.307Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check) | Also: // DIAG 2026-07-04: CONFIRM the \"missing\"-shader hypothesis.; // prepare_draw_if_visible (0x825666F8) resolves the PS BY N | Also: // DIAG 2026-07-04: render_object_pass_prepare_draw_if_visib; // press-start (FM2_SHNAME=0), so the bg uses a DIFFERENT ca",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 3,
+      "last_seen": "2026-07-04T16:28:28.837Z"
+    },
+    {
+      "id": "bug-050",
+      "timestamp": "2026-07-04T16:33:16.745Z",
+      "error_message": "Missing guard clause",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "No early return/throw for edge case: n < 400u",
+      "fix": "Added guard clause: if (n < 400u)",
+      "tags": [
+        "auto-detected",
+        "guard-clause",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-04T16:33:16.757Z"
+    },
+    {
+      "id": "bug-051",
+      "timestamp": "2026-07-04T17:21:23.701Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 18→28 lines (3 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T17:21:23.701Z"
+    },
+    {
+      "id": "bug-052",
+      "timestamp": "2026-07-04T18:26:34.091Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 8→11 lines (2 removed) | Also: LogReplayDbg(\"FM2_UPCALLER n=%u caller=0x%08X ps=0; \"a1=0x%08X a2=0x%08X v6=0x%08X\",",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-04T18:26:42.249Z"
+    },
+    {
+      "id": "bug-053",
+      "timestamp": "2026-07-04T18:56:35.422Z",
+      "error_message": "Significant refactor of ",
+      "file": "../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 6→20 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T18:56:35.422Z"
     }
   ]
 }

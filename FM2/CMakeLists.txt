@@ -22,6 +22,7 @@ set(FM2_SOURCES
     src/render/d3d_resource_hooks.cpp
     src/render/pipeline.cpp
     src/render/render_state.cpp
+    src/render/shader_probe_window.cpp
     src/native_renderer/fm2_native_renderer.cpp
     src/native_renderer/fm2_native_state.cpp
     generated/shader_cache.cpp

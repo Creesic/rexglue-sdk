@@ -1,12 +1,12 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-04T02:06:10.480Z
-> Files: 533 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-04T19:11:03.387Z
+> Files: 541 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/
 
-- `MEMORY.md` — Memory Index (~2855 tok)
-- `project_fm2_black_textures_no_tfetch.md` — ⚠️ 2026-07-03 — RETRACTED a wrong pivot; ORIGINAL finding STANDS (read first) (~2476 tok)
+- `MEMORY.md` — Memory Index (~3188 tok)
+- `project_fm2_black_textures_no_tfetch.md` — ⚠️ 2026-07-04 — IN-GAME STILL BLACK: shader now CORRECT, but runtime never sets the stage-enable boo (~9857 tok)
 - `project_fm2_pool_pacing_root_cause.md` (~1004 tok)
 
 ## ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/22054c61-d9f8-4566-991c-6f9759f41605/scratchpad/
@@ -14,10 +14,18 @@
 - `burst_fm2.ps1` — Declares WB (~351 tok)
 - `shot_fm2.ps1` — Declares WShot (~316 tok)
 
+## ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/
+
+- `check_bg.py` — parse_container, hashpart_digest, psv_resource_count (~1259 tok)
+- `dxil_sem.py` — parse_parts, strings (~400 tok)
+- `rdat.py` — parse_parts, parse_rdat, get_table, cstr (~866 tok)
+- `rdat2.py` — parse_parts, parse_rdat, cstr (~416 tok)
+- `xdisasm.py` — be32, analyze (~895 tok)
+
 ## ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/
 
 - `main.cpp` — include <deque> (~4694 tok)
-- `shader_recompiler.cpp` — include "shader_recompiler.h" (~24379 tok)
+- `shader_recompiler.cpp` — include "shader_recompiler.h" (~24477 tok)
 - `shader_recompiler.h` — pragma once (~610 tok)
 
 ## ./
@@ -557,13 +565,16 @@
 
 ## FM2/
 
+- `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~1764 tok)
 - `fm2_manifest.toml` (~9278 tok)
 
 ## FM2/src/render/
 
-- `d3d_hooks.cpp` — include <algorithm> (~66107 tok)
-- `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~17124 tok)
-- `render_state.cpp` — include <algorithm> (~62524 tok)
+- `d3d_hooks.cpp` — include <algorithm> (~70368 tok)
+- `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~17619 tok)
+- `render_internal.h` — render/render_internal.h (~1529 tok)
+- `render_state.cpp` — include <algorithm> (~64350 tok)
+- `shader_probe_window.cpp` — Small always-on-top status window for the interactive shader probe (~984 tok)
 
 ## docs/
 

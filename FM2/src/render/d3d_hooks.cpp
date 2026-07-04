@@ -136,6 +136,15 @@ REX_IMPORT(__imp__sub_82288948, g_origRenderWorkerFrame, void(uint32_t));
 // backlog pressure. sub_8245D3E0(queue) returns the head deferred node's flag byte
 // (under the queue+64 lock). v33 = (backlog>1 && cd38>1) || d3e0.
 REX_IMPORT(__imp__sub_8245CD38, g_cbQueueCd38, uint32_t(uint32_t));
+// DIAG 2026-07-04: orig thunk for the shader-name-lookup confirmation hook.
+REX_IMPORT(__imp__sub_825666F8, g_origPrepareDrawIfVisible,
+           void(uint32_t, uint32_t, uint32_t, uint32_t));
+// DIAG 2026-07-04: orig thunk for render_pass_upload_vmx_constant_blocks caller probe.
+REX_IMPORT(__imp__sub_82559718, g_origUploadVmx,
+           void(uint32_t, uint32_t, uint32_t));
+// DIAG 2026-07-04: orig thunk for render_pass_lookup_shader_name_slot probe.
+REX_IMPORT(__imp__sub_82559C38, g_origLookupNameSlot,
+           uint32_t(uint32_t, uint32_t));
 REX_IMPORT(__imp__sub_8245D3E0, g_cbQueueD3e0, uint32_t(uint32_t));
 // sub_8245D448: pop the next submitted command buffer into queue+56 (returns
 // nonzero if one was available). Used by the drain catch-up loop.
@@ -938,8 +947,25 @@ uint32_t Fm2ProducerProgressGuard(uint32_t state) {
   return 0;
 }
 
-void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shader) {
-  g_origFm2SetPixelShaderState(renderContext, shader);
+// DIAG 2026-07-04: shared PS-trace sequence so SET (Fm2SetPixelShaderState) and
+// DRAW (ApplyLivePixelShaderFromContext) events interleave in a single global
+// order with thread ids. Answers timeline-collapse vs genuine: if a texture PS
+// is SET on the bg context then OVERWRITTEN by a later SET (esp. on another
+// thread) before the DRAW reads ctx+0x307C, the correct PS is lost.
+static std::atomic<uint32_t> g_psTraceSeq{0};
+
+// DIAG 2026-07-04: converted to REX_HOOK_RAW to capture ctx.lr = the GUEST
+// caller (the shader-SELECTION call site). renderContext=r3, shader=r4 (matches
+// the typed void(u32,u32) sig the auto-isolating hook used). Purpose: diff the
+// caller that sets the bg color shader (9E93B374) vs the callers that set the
+// texture shaders (A4AF88D4) -- same caller => data-driven branch upstream;
+// different callers => structural. Read args+lr BEFORE calling orig (it may
+// clobber registers).
+REX_HOOK_RAW(FM2_RenderContext_SetPixelShaderState) {
+  const uint32_t renderContext = ctx.r3.u32;
+  const uint32_t shader = ctx.r4.u32;
+  const uint32_t caller = (uint32_t)ctx.lr;
+  g_origFm2SetPixelShaderState.fn(ctx, base);
   if (!ShouldMirrorPlumeRenderState()) {
     return;
   }
@@ -951,6 +977,26 @@ void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shader) {
                 ghp::ToGuest(rr::LookupShaderAlias(shader)));
   }
   GuestDevice *device = DeviceForRenderContext(renderContext);
+  // DIAG 2026-07-04: PS writer trace + caller. Reads the ACTUAL ctx+0x307C slot
+  // AFTER the original setter wrote it, tagged with a shared seq, thread id, and
+  // the guest caller so SET/DRAW events interleave and callers are diffable.
+  {
+    const uint32_t seq = g_psTraceSeq.fetch_add(1, std::memory_order_relaxed);
+    if (seq < 1200u) {
+      auto hashOf = [](uint32_t obj) -> uint64_t {
+        GuestShader *gs = rr::LookupShaderAlias(obj);
+        return (gs != nullptr && gs->shaderCacheEntry != nullptr)
+                   ? gs->shaderCacheEntry->hash
+                   : 0ull;
+      };
+      const uint32_t slot = ReadGuestU32At(renderContext + 0x307Cu);
+      LogReplayDbg("FM2_PSTRACE SET seq=%u tid=%u caller=0x%08X ctx=0x%08X "
+                   "arg=0x%08X slot=0x%08X argHash=0x%016llX slotHash=0x%016llX",
+                   seq, (unsigned)::GetCurrentThreadId(), caller, renderContext,
+                   shader, slot, (unsigned long long)hashOf(shader),
+                   (unsigned long long)hashOf(slot));
+    }
+  }
   if (device == nullptr || shader == 0) {
     return;
   }
@@ -1948,7 +1994,27 @@ void SetVertexShaderNative(GuestDevice *device, GuestShader *shader) {
 
 void SetPixelShaderNative(GuestDevice *device, GuestShader *shader) {
   FlushImmediateVertices();
-  rr::SetPixelShader(device, ResolveShader(shader));
+  GuestShader *resolved = ResolveShader(shader);
+  // DIAG 2026-07-03: log the shader the game sets (guest ptr) -> what it
+  // resolves to, to find why correct shaders (created but never bound) get
+  // replaced by the wrong ones. Capped.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 800) {
+      const uint64_t rhash =
+          (resolved != nullptr && resolved->shaderCacheEntry != nullptr)
+              ? resolved->shaderCacheEntry->hash
+              : 0ull;
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f, "RESOLVEPS in=0x%08X isFm2=%d -> hash=0x%016llX\n",
+                     shader ? ghp::ToGuest(shader) : 0u,
+                     rr::IsFm2Resource(shader) ? 1 : 0,
+                     (unsigned long long)rhash);
+        std::fclose(f);
+      }
+    }
+  }
+  rr::SetPixelShader(device, resolved);
 }
 
 void Fm2LoadPixelShaderResourceById(uint32_t outRef, uint32_t shaderId) {
@@ -2717,6 +2783,51 @@ void ApplyLiveTexturesFromContext(GuestDevice *device, uint32_t context) {
   if (block == 0)
     return;
 
+  // DIAG 2026-07-03: scan the context block for the known shader handles to see
+  // which shader the block itself designates (bg's correct C16BA78D vs the
+  // mirrored-but-wrong 9E93B374). Handles from REGALIAS + plume GuestShaders.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 4) {
+      struct T { uint32_t v; const char *name; };
+      const T targets[] = {
+          {0x4005D1B0u, "9E93B374.obj"}, {0x2E017600u, "C16BA78D.obj"},
+          {0x2E017800u, "192D1332.obj"}, {0x30C78000u, "9E93B374.gs"},
+          {0x30C64000u, "C16BA78D.gs"},  {0x30C70000u, "192D1332.gs"}};
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f, "BLKSCAN block=0x%08X:", block);
+        for (uint32_t off = 0; off < 0x8000u; off += 4u) {
+          const uint32_t val = ReadGuestU32At(block + off);
+          for (const T &t : targets)
+            if (val == t.v)
+              std::fprintf(f, " +0x%X=%s", off, t.name);
+        }
+        std::fprintf(f, "\n");
+        std::fclose(f);
+      }
+    }
+  }
+
+  // DIAG 2026-07-03: dump all 16 slots' raw texture fetch-constants (fc0:fc1)
+  // for the first draws, to see whether slots >2 are genuinely empty (00:00) or
+  // populated in a block we aren't reading. 9E93B374 needs 8 textures but only
+  // ~3 slots ever bind -- this shows if the fetch constants exist.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 24) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f, "TEXFC block=0x%08X ctx=0x%08X:", block, context);
+        for (uint32_t slot = 0; slot < 16u; ++slot) {
+          const uint32_t a = block + 1024u + slot * 24u;
+          std::fprintf(f, " s%u=%08X:%08X", slot, ReadGuestU32At(a),
+                       ReadGuestU32At(a + 4u));
+        }
+        std::fprintf(f, "\n");
+        std::fclose(f);
+      }
+    }
+  }
+
   // TEMP DIAGNOSTIC 2026-07-02 (textures front): per-second outcome
   // histogram -- how many slots are empty vs aperture-bound vs
   // translated-ok vs translate-failed. Tells whether the fetch constants at
@@ -2861,9 +2972,29 @@ void ApplyLivePixelShaderFromContext(GuestDevice *device, uint32_t context) {
   }
   static std::atomic<uint32_t> s_n{0};
   const uint32_t n = s_n.fetch_add(1, std::memory_order_relaxed);
-  if (n < 16 || (n & 0x3FFFu) < 2u)
-    LogReplayDbg("FM2_LIVE_PS n=%u ctx=0x%08X ps=0x%08X inner=0x%08X res=%p",
-                 n, context, ps, inner, static_cast<void *>(resolved));
+  // DIAG 2026-07-03: log what the context block's PS slot (ctx+0x307C) resolves
+  // to. If hash != C16BA78D on the bg, the block's shader field is itself wrong
+  // (upstream); if the ladder mangles a correct ps into 9E93B374, it's here.
+  const uint64_t rhash =
+      (resolved != nullptr && resolved->shaderCacheEntry != nullptr)
+          ? resolved->shaderCacheEntry->hash
+          : 0ull;
+  if (n < 200 || (n & 0x3FFFu) < 2u)
+    LogReplayDbg("FM2_LIVE_PS n=%u ctx=0x%08X ps=0x%08X inner=0x%08X res=%p "
+                 "hash=0x%016llX",
+                 n, context, ps, inner, static_cast<void *>(resolved),
+                 (unsigned long long)rhash);
+  // DIAG 2026-07-04: DRAW half of the PS trace, shared seq + thread id, so the
+  // SET/DRAW interleaving reveals whether the slot was overwritten between the
+  // game's SetPixelShader and this draw's read (collapse) or not (genuine).
+  {
+    const uint32_t seq = g_psTraceSeq.fetch_add(1, std::memory_order_relaxed);
+    if (seq < 1200u)
+      LogReplayDbg("FM2_PSTRACE DRAW seq=%u tid=%u ctx=0x%08X slot=0x%08X "
+                   "hash=0x%016llX",
+                   seq, (unsigned)::GetCurrentThreadId(), context, ps,
+                   (unsigned long long)rhash);
+  }
   if (resolved != nullptr)
     rr::SetPixelShader(device, resolved);
 }
@@ -4161,7 +4292,8 @@ void FM2PlumeTraceVdSwap(PPCRegister &r3, PPCRegister &r4, PPCRegister &r8,
 // ===========================================================================
 // FM2 native renderer hooks: call generated FM2 bodies, then mirror state.
 // ===========================================================================
-REX_HOOK(FM2_RenderContext_SetPixelShaderState, Fm2SetPixelShaderState);
+// FM2_RenderContext_SetPixelShaderState is now REX_HOOK_RAW (self-registered
+// above) to capture ctx.lr = the guest selection caller.
 REX_HOOK(FM2_RenderContext_SetVertexShaderState, Fm2SetVertexShaderState);
 // REX_HOOK_RAW: forward full PPCContext to original in passthrough mode.
 // uint64_t dirty_mask (arg 5) spans r8:r9 in 32-bit PPC ABI; the standard
@@ -5080,6 +5212,13 @@ static void ScanSubmittedSegment(uint32_t phys, uint32_t bytes, int depth) {
       LogReplayDbg("%s", buf);
     }
   }
+  // DIAG 2026-07-04: track the record-time bound PS (from IM_LOAD packets) so
+  // each DRAW packet can be tagged with the PS the game recorded for it. Answers
+  // timeline-collapse vs genuine: if the bg draw's record PS is texture-sized
+  // (dw>9) but plume binds color-only 9E93B374 at execute -> collapse; if the
+  // record PS is also dw=9 (color) -> the game genuinely records a color bg.
+  static thread_local uint32_t g_recCurPsDw = 0u;
+  static thread_local uint32_t g_recCurPsSig = 0u;
   uint32_t off = 0;
   while (off + 4u <= bytes) {
     const uint32_t hdr = be(off);
@@ -5098,8 +5237,10 @@ static void ScanSubmittedSegment(uint32_t phys, uint32_t bytes, int depth) {
         // this is how the UI material PS travels (FM2_CBDUMP_IN k=4098).
         const uint32_t shType = be(off + 4u);
         const uint32_t sizeDw = be(off + 8u) & 0xFFFFu;
+        const uint32_t startDw = be(off + 8u) >> 16; // DIAG 2026-07-04
         const bool isPs = shType == 1u;
         if (sizeDw >= 4u && sizeDw + 2u <= cnt) {
+          if (isPs) { g_recCurPsDw = sizeDw; g_recCurPsSig = be(off + 12u); }
           GuestShader *sh = rr::FindShaderByInlineUcode(p + off + 12u,
                                                         sizeDw * 4u, isPs);
           // Log every UNIQUE (ps,size) signature once -- hunting where the
@@ -5119,9 +5260,10 @@ static void ScanSubmittedSegment(uint32_t phys, uint32_t bytes, int depth) {
           static std::atomic<uint32_t> s_im{0};
           const uint32_t m = s_im.fetch_add(1, std::memory_order_relaxed);
           if (newSig || m < 8)
-            LogReplayDbg("FM2_CB_IMLOADIMM n=%u ps=%d dw=%u match=%p depth=%d",
-                         m, isPs ? 1 : 0, sizeDw, static_cast<void *>(sh),
-                         depth);
+            LogReplayDbg("FM2_CB_IMLOADIMM n=%u ps=%d start=%u dw=%u match=%p "
+                         "depth=%d",
+                         m, isPs ? 1 : 0, startDw, sizeDw,
+                         static_cast<void *>(sh), depth);
           if (sh != nullptr && isPs) {
             GuestDevice *dev = rr::GetActiveGuestDevice();
             if (dev != nullptr) {
@@ -5133,14 +5275,58 @@ static void ScanSubmittedSegment(uint32_t phys, uint32_t bytes, int depth) {
       } else if (op == 0x27u && cnt >= 2u && off + 12u <= bytes) {
         // IM_LOAD: [ucode guest address | type bits, (start<<16)|size].
         const uint32_t w0 = be(off + 4u);
+        const uint32_t w1 = be(off + 8u);
         const bool isPs = (w0 & 3u) == 1u;
+        if (isPs) { g_recCurPsDw = 0xFFFFu; g_recCurPsSig = w0; } // by-addr
         GuestShader *sh =
             rr::FindShaderByUcodeAddress(w0 & 0x1FFFFFFCu, isPs);
         static std::atomic<uint32_t> s_il{0};
         const uint32_t m = s_il.fetch_add(1, std::memory_order_relaxed);
         if (m < 24 || (m & 0x3FFFu) < 2u)
-          LogReplayDbg("FM2_CB_IMLOAD n=%u w0=0x%08X ps=%d match=%p", m, w0,
-                       isPs ? 1 : 0, static_cast<void *>(sh));
+          LogReplayDbg("FM2_CB_IMLOAD n=%u w0=0x%08X w1=0x%08X ps=%d match=%p", m,
+                       w0, w1, isPs ? 1 : 0, static_cast<void *>(sh));
+        // DIAG 2026-07-04: the by-address match fails (fixed scratch/phys addr
+        // 0x0A0050A0, not a registered container). Read the ACTUAL ucode at the
+        // referenced addr and dump raw dwords so the shader can be identified
+        // offline against shaders/*.bin -- is the bg's texture PS in the stream
+        // (fixable resolve bug) or is the stream itself color-only?
+        if (isPs && sh == nullptr) {
+          static std::atomic<uint32_t> s_ild{0};
+          const uint32_t md = s_ild.fetch_add(1, std::memory_order_relaxed);
+          if (md < 8u) {
+            const uint32_t uphys = w0 & 0x1FFFFFFCu;
+            const auto *up =
+                (uphys + 192u <= 0x20000000u)
+                    ? mem->TranslatePhysical<const uint8_t *>(uphys)
+                    : nullptr;
+            if (up != nullptr) {
+              char b[1024];
+              int o = std::snprintf(b, sizeof(b),
+                                    "FM2_CB_IMLOAD_UCODE md=%u phys=0x%08X:", md,
+                                    uphys);
+              for (uint32_t i = 0; i < 40u && o < (int)sizeof(b) - 12; ++i) {
+                uint32_t w;
+                std::memcpy(&w, up + 4u * i, 4u);
+                o += std::snprintf(b + o, sizeof(b) - o, " %08X",
+                                   (unsigned)std::byteswap(w));
+              }
+              LogReplayDbg("%s", b);
+              // content-match attempt at a few plausible ucode sizes.
+              for (uint32_t tb : {36u, 96u, 192u, 288u, 384u, 576u}) {
+                GuestShader *cm = rr::FindShaderByInlineUcode(up, tb, true);
+                if (cm != nullptr) {
+                  const uint64_t ch = cm->shaderCacheEntry
+                                          ? cm->shaderCacheEntry->hash
+                                          : 0ull;
+                  LogReplayDbg(
+                      "FM2_CB_IMLOAD_CONTENT md=%u tb=%u hash=0x%016llX", md, tb,
+                      (unsigned long long)ch);
+                  break;
+                }
+              }
+            }
+          }
+        }
         if (sh != nullptr && isPs) {
           GuestDevice *dev = rr::GetActiveGuestDevice();
           if (dev != nullptr) {
@@ -5148,6 +5334,18 @@ static void ScanSubmittedSegment(uint32_t phys, uint32_t bytes, int depth) {
             g_cbPsFresh.store(true, std::memory_order_relaxed);
           }
         }
+      } else if (op == 0x22u || op == 0x36u) {
+        // DRAW_INDX(0x22)/DRAW_INDX_2(0x36): tag with the record-time PS bound
+        // just before it (walked in packet order). psDw=9 -> color-only record;
+        // psDw>9 (or 0xFFFF by-addr) -> a bigger/texture PS was recorded.
+        const uint32_t init = (off + 8u <= bytes) ? be(off + 4u) : 0u;
+        static std::atomic<uint32_t> s_rd{0};
+        const uint32_t r = s_rd.fetch_add(1, std::memory_order_relaxed);
+        if (r < 240u)
+          LogReplayDbg("FM2_REC_DRAW r=%u op=0x%02X init=0x%08X nidxHi=%u "
+                       "nidxLo=%u psDw=%u psSig=0x%08X depth=%d",
+                       r, op, init, init >> 16, init & 0xFFFFu, g_recCurPsDw,
+                       g_recCurPsSig, depth);
       }
       adv = 1u + cnt;
     } else if (type == 0u) {
@@ -5200,6 +5398,125 @@ REX_HOOK_RAW(sub_82372920) { // D3D_SubmitCommandBuffer
     }
   }
   ScanSubmittedSegment(phys, bytes, 0);
+}
+// DIAG 2026-07-04: CONFIRM the "missing"-shader hypothesis. render_object_pass_
+// prepare_draw_if_visible (0x825666F8) resolves the PS BY NAME; a miss falls back
+// to the "missing"/"missing_packed" placeholder. Log the shader NAME (a4=r6), the
+// per-context shader-name-table COUNT (*(a1[3]+524)), a replicated hit/miss, and
+// (after orig) the resolved PS hash. count==0 or bg-name miss => the flat-color bg
+// is the missing placeholder; the name also tells us what SHOULD have rendered.
+REX_HOOK_RAW(sub_825666F8) {
+  const uint32_t a1 = ctx.r3.u32;
+  const uint32_t a4 = ctx.r6.u32;
+  const bool mirror = ShouldMirrorPlumeRenderState();
+  uint32_t table = 0u, count = 0u, hitSlot = 0u;
+  char name[48];
+  name[0] = 0;
+  const char *hn = nullptr;
+  if (mirror) {
+    table = ReadGuestU32At(a1 + 12u); // a1[3]
+    count = ReadGuestU32At(table + 524u);
+    if (a4 && IsReadableGuestRange(a4, 1u)) {
+      hn = ghp::ToHost<const char>(a4);
+      std::snprintf(name, sizeof(name), "%.47s", hn);
+    }
+    if (count != 0u && hn) {
+      const uint32_t arr = ReadGuestU32At(table + 512u);
+      for (uint32_t k = 0; k < count; ++k) {
+        const uint32_t entry = ReadGuestU32At(arr + 4u * k);
+        const uint32_t np = ReadGuestU32At(entry); // *(entry) = name string
+        if (np && IsReadableGuestRange(np, 1u) &&
+            std::strcmp(ghp::ToHost<const char>(np), hn) == 0) {
+          hitSlot = (k << 18) | 0x3FFFCu;
+          break;
+        }
+      }
+    }
+  }
+  g_origPrepareDrawIfVisible.fn(ctx, base);
+  if (!mirror)
+    return;
+  // resolved PS after orig: v18=*(table+516); node=*(v18+16); v6=*(node+8);
+  // ps = *(*(v6+0x4C))  (matches render_pass_upload_vmx_constant_blocks).
+  const uint32_t v18 = ReadGuestU32At(table + 516u);
+  const uint32_t node = ReadGuestU32At(v18 + 16u);
+  const uint32_t v6 = ReadGuestU32At(node + 8u);
+  const uint32_t psObj = ReadGuestU32At(ReadGuestU32At(v6 + 0x4Cu));
+  GuestShader *gs = rr::LookupShaderAlias(psObj);
+  const uint64_t psHash =
+      (gs != nullptr && gs->shaderCacheEntry != nullptr) ? gs->shaderCacheEntry->hash
+                                                         : 0ull;
+  static std::atomic<uint32_t> s_n{0};
+  const uint32_t n = s_n.fetch_add(1, std::memory_order_relaxed);
+  if (n < 400u)
+    LogReplayDbg("FM2_SHNAME n=%u table=0x%08X count=%u hit=%d ps=0x%016llX "
+                 "name=\"%s\"",
+                 n, table, count, hitSlot != 0 ? 1 : 0,
+                 (unsigned long long)psHash, name);
+}
+// DIAG 2026-07-04: render_object_pass_prepare_draw_if_visible does NOT fire on
+// press-start (FM2_SHNAME=0), so the bg uses a DIFFERENT caller of render_pass_
+// upload_vmx_constant_blocks (0x82559718). Log ITS guest caller (ctx.lr) + the
+// PS it binds (v6=a2[2]; ps=*(*(v6+0x4C))) to identify the bg's real render loop
+// for IDA analysis of the shader-set source.
+REX_HOOK_RAW(sub_82559718) {
+  const uint32_t a1 = ctx.r3.u32; // render context
+  const uint32_t a2 = ctx.r4.u32; // render node
+  const uint32_t caller = (uint32_t)ctx.lr;
+  g_origUploadVmx.fn(ctx, base);
+  // DIAG 2026-07-04: UNGATED so this logs under BOTH fm2_plume_mode=xenos and
+  // =plume_native (xenos = WantsReXGraphics). Compares the bg's effect NAME +
+  // guest PS object across backends: same name => same guest technique (backend
+  // translation/binding diverges); different name => guest selection diverges.
+  const bool xenos = nr::WantsReXGraphics();
+  const uint32_t v6 = ReadGuestU32At(a2 + 8u);
+  const uint32_t psObj = ReadGuestU32At(ReadGuestU32At(v6 + 0x4Cu));
+  GuestShader *gs = rr::LookupShaderAlias(psObj);
+  const uint64_t psHash =
+      (gs != nullptr && gs->shaderCacheEntry != nullptr) ? gs->shaderCacheEntry->hash
+                                                         : 0ull;
+  // DIAG 2026-07-04: the EFFECT NAME. entry = *(a1+516); name = *(entry). Proves
+  // bg-effect-name -> PS directly (is "RenderScene" -> 9E93B374?).
+  char name[48];
+  name[0] = 0;
+  const uint32_t entry = ReadGuestU32At(a1 + 516u);
+  const uint32_t namePtr = ReadGuestU32At(entry);
+  if (namePtr && IsReadableGuestRange(namePtr, 1u))
+    std::snprintf(name, sizeof(name), "%.47s", ghp::ToHost<const char>(namePtr));
+  static std::atomic<uint32_t> s_n{0};
+  const uint32_t n = s_n.fetch_add(1, std::memory_order_relaxed);
+  if (n < 400u)
+    LogReplayDbg("FM2_UPCALLER n=%u xenos=%d caller=0x%08X ps=0x%016llX "
+                 "name=\"%s\" a1=0x%08X a2=0x%08X v6=0x%08X psObj=0x%08X",
+                 n, xenos ? 1 : 0, caller, (unsigned long long)psHash, name, a1,
+                 a2, v6, ReadGuestU32At(ReadGuestU32At(v6 + 0x4Cu)));
+}
+// DIAG 2026-07-04: THE confirmation. render_pass_lookup_shader_name_slot
+// (0x82559C38) resolves a shader NAME -> slot; returns 0 on MISS (caller then
+// uses "missing"/"missing_packed"). Log the name (a2=r4), the table COUNT
+// (*(a1+524)), and the result (miss = result==0). If UI shader names miss (or
+// count==0) the whole menu falls to the flat-color placeholder = the bug.
+REX_HOOK_RAW(sub_82559C38) {
+  const uint32_t table = ctx.r3.u32;
+  const uint32_t namePtr = ctx.r4.u32;
+  const bool mirror = ShouldMirrorPlumeRenderState();
+  uint32_t count = 0u;
+  char name[48];
+  name[0] = 0;
+  if (mirror) {
+    count = ReadGuestU32At(table + 524u);
+    if (namePtr && IsReadableGuestRange(namePtr, 1u))
+      std::snprintf(name, sizeof(name), "%.47s", ghp::ToHost<const char>(namePtr));
+  }
+  g_origLookupNameSlot.fn(ctx, base);
+  if (!mirror)
+    return;
+  const uint32_t result = ctx.r3.u32;
+  static std::atomic<uint32_t> s_n{0};
+  const uint32_t n = s_n.fetch_add(1, std::memory_order_relaxed);
+  if (n < 600u)
+    LogReplayDbg("FM2_NAMELK n=%u count=%u result=0x%08X miss=%d name=\"%s\"", n,
+                 count, result, result == 0u ? 1 : 0, name);
 }
 // Render-pass trigger probe: which owners have a non-empty entry list, per mode.
 static thread_local uint32_t g_curTrigA1 = 0;

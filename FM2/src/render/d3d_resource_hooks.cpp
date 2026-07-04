@@ -613,6 +613,21 @@ static GuestShader *CreateShaderFromFunction(const uint32_t *function,
   uint32_t size = std::byteswap(function[1]) + std::byteswap(function[2]);
   uint64_t hash = XXH3_64bits(function, size);
 
+  // DIAG 2026-07-03: log every shader the game creates (hash + cache hit) to
+  // see whether the correct bg/UI shaders (C16BA78D / 192D1332) are ever
+  // created but lost in binding, vs never created at all. Capped.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 600) {
+      const bool hit = FindShaderCacheEntry(hash) != nullptr;
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f, "CREATESH type=%d hash=0x%016llX hit=%d size=%u\n",
+                     int(type), (unsigned long long)hash, hit ? 1 : 0, size);
+        std::fclose(f);
+      }
+    }
+  }
+
   // Parse the vertex shader's embedded input declaration (usage/usageIndex) from
   // its container header. FM2's vfetch instructions carry no format/offset and
   // FM2 never binds the D3DVERTEXELEMENT9 declaration via the device field, so we
@@ -686,6 +701,19 @@ static GuestShader *CreateShaderFromFunction(const uint32_t *function,
     if (s != nullptr && type == ResourceType::VertexShader &&
         s->headerElements.empty())
       s->headerElements = headerEls;
+    // DIAG 2026-07-03: map created GuestShader addr -> hash (correlate with
+    // RESOLVEPS to find where a correct shader's handle gets bound wrong).
+    {
+      static std::atomic<uint32_t> s_n{0};
+      if (s_n.fetch_add(1, std::memory_order_relaxed) < 600) {
+        if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          std::fprintf(f, "CRADDR type=%d hash=0x%016llX addr=0x%08X\n",
+                       int(type), (unsigned long long)hash,
+                       s != nullptr ? ToGuest(s) : 0u);
+          std::fclose(f);
+        }
+      }
+    }
     return s;
   };
 
@@ -1395,6 +1423,20 @@ static std::unordered_map<uint32_t, GuestShader *> g_shaderAliases;
 void RegisterShaderAlias(uint32_t guestAddress, GuestShader *shader) {
   if (!guestAddress || shader == nullptr)
     return;
+  // DIAG 2026-07-03: log every alias registration to catch address reuse where
+  // a correct shader's alias gets overwritten by a later (wrong) shader.
+  {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 600) {
+      const uint64_t h =
+          shader->shaderCacheEntry ? shader->shaderCacheEntry->hash : 0ull;
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f, "REGALIAS addr=0x%08X hash=0x%016llX\n", guestAddress,
+                     (unsigned long long)h);
+        std::fclose(f);
+      }
+    }
+  }
   std::lock_guard lock(g_shaderAliasMutex);
   g_shaderAliases[guestAddress] = shader;
 }

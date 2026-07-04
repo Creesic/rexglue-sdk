@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <plume_render_interface.h>
+#include <rex/cvar.h>
 #include <rex/hash.h> // XXH3_64bits
 #include <rex/logging.h>
 
@@ -39,6 +40,99 @@ void BindTextureDescriptor(uint32_t index, GuestBaseTexture *texture,
                            RenderTextureViewDimension viewDimension);
 void TrackRecentRenderTarget(GuestBaseTexture *rt);
 void EnsureShaderResourceDescriptor(GuestBaseTexture *texture);
+
+// === Interactive pixel-shader probe (debug tool) ==========================
+// Enable with --fm2_shader_probe 1. Keys polled once per frame:
+//   F5 toggle solo, F6/F7 prev/next selected draw, F8/F9 prev/next cache shader.
+// Solos the selected draw and overrides its pixel shader with cache entry
+// [psIndex], cycling all g_shaderCacheEntryCount entries to find the one that
+// renders the draw correctly; each change logs one PROBE line. Only the pixel
+// shader is swapped, so the draw keeps its real bindless textures/constants.
+// GetAsyncKeyState is forward-declared to avoid pulling <windows.h> into this
+// large TU. NOTE: keys are polled globally (no foreground gate) -- fine for a
+// deliberately-enabled debug tool.
+REXCVAR_DEFINE_BOOL(fm2_shader_probe, false, "FM2",
+                    "Interactive pixel-shader probe (F5 solo, F6/F7 draw, "
+                    "F8/F9 cache shader). Off by default.");
+
+extern "C" __declspec(dllimport) short __stdcall GetAsyncKeyState(int vKey);
+
+static int g_probeSelectedDraw = 0;
+static int g_probePsIndex = 0;
+static bool g_probeSolo = true;
+static int g_probeFrameDrawCount = 0;
+static int g_probeLastFrameDrawCount = 0;
+static int g_probeMaxDrawCount = 0; // largest per-frame draw count seen (stable)
+static bool g_probeLastPsoOk = true;
+static uint64_t g_probeSelectedOrigHash = 0; // cache hash bound by the renderer
+                                             // to the selected draw (0 = the
+                                             // bound PS has no cache entry)
+
+// Lazily-created GuestShader per cache index, pointing at g_shaderCacheEntries[i]
+// so LoadShader pulls that entry's DXIL. Called on the single render thread.
+static GuestShader *ProbeShaderForIndex(int i) {
+  if (i < 0 || i >= int(g_shaderCacheEntryCount))
+    return nullptr;
+  static std::vector<GuestShader *> probeShaders;
+  if (probeShaders.empty())
+    probeShaders.resize(g_shaderCacheEntryCount, nullptr);
+  if (probeShaders[i] == nullptr) {
+    GuestShader *s = ghp::GuestNew<GuestShader>(ResourceType::PixelShader);
+    s->shaderCacheEntry = &g_shaderCacheEntries[i];
+    probeShaders[i] = s;
+  }
+  return probeShaders[i];
+}
+
+static void PollProbeKeys() {
+  static bool prev[5] = {};
+  const int vks[5] = {0x74, 0x75, 0x76, 0x77, 0x78}; // VK_F5..VK_F9
+  bool cur[5];
+  for (int k = 0; k < 5; ++k)
+    cur[k] = (GetAsyncKeyState(vks[k]) & 0x8000) != 0;
+  bool changed = false;
+  auto edge = [&](int k) { return cur[k] && !prev[k]; };
+  if (edge(0)) { g_probeSolo = !g_probeSolo; changed = true; }
+  if (edge(1)) { --g_probeSelectedDraw; changed = true; }
+  if (edge(2)) { ++g_probeSelectedDraw; changed = true; }
+  if (edge(3)) { --g_probePsIndex; changed = true; }
+  if (edge(4)) { ++g_probePsIndex; changed = true; }
+  for (int k = 0; k < 5; ++k)
+    prev[k] = cur[k];
+
+  // The per-frame draw count fluctuates (variable draws/frame), so clamp the
+  // selection against the largest count SEEN (stable) and ONLY when the user
+  // actually moves the selection -- otherwise a lean frame would keep snapping
+  // the selection back to 0.
+  if (g_probeLastFrameDrawCount > g_probeMaxDrawCount)
+    g_probeMaxDrawCount = g_probeLastFrameDrawCount;
+  if (changed) {
+    const int maxDraw = g_probeMaxDrawCount > 0 ? g_probeMaxDrawCount - 1 : 0;
+    g_probeSelectedDraw = std::clamp(g_probeSelectedDraw, 0, maxDraw);
+  }
+  const int n = int(g_shaderCacheEntryCount);
+  if (n > 0)
+    g_probePsIndex = ((g_probePsIndex % n) + n) % n;
+  const ShaderCacheEntry &e = g_shaderCacheEntries[g_probePsIndex];
+
+  UpdateShaderProbeWindow(g_probeSelectedDraw, g_probeMaxDrawCount, g_probeSolo,
+                          g_probePsIndex, n, e.hash, e.filename,
+                          g_probeLastPsoOk, g_probeSelectedOrigHash);
+
+  if (changed) {
+    if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+      std::fprintf(
+          f,
+          "PROBE draw=%d/%d solo=%d psIndex=%d test=0x%016llX bound=0x%016llX "
+          "file=%s psoOk=%d\n",
+          g_probeSelectedDraw, g_probeMaxDrawCount, g_probeSolo ? 1 : 0,
+          g_probePsIndex, (unsigned long long)e.hash,
+          (unsigned long long)g_probeSelectedOrigHash,
+          e.filename ? e.filename : "", g_probeLastPsoOk ? 1 : 0);
+      std::fclose(f);
+    }
+  }
+}
 
 namespace {
 
@@ -2500,6 +2594,42 @@ void FlushRenderState(GuestDevice *device) {
   }
 
   PipelineState pipelineState = g_pipelineState;
+
+  // Shader probe (fm2_shader_probe): number this draw within the frame; solo the
+  // selected draw and override its pixel shader with the current cache index.
+  bool probeSelected = false;
+  bool probeSkip = false;
+  if (REXCVAR_GET(fm2_shader_probe)) {
+    const int drawIdx = g_probeFrameDrawCount++;
+    {
+      static std::atomic<uint32_t> s_n{0};
+      if (s_n.fetch_add(1, std::memory_order_relaxed) < 800) {
+        uint32_t texN = 0;
+        for (uint32_t i = 0;
+             i < std::size(g_sharedConstants.texture2DIndices); ++i)
+          if (g_sharedConstants.texture2DIndices[i] != kNullTexture2DDescriptor)
+            ++texN;
+        if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          std::fprintf(
+              f, "DRAW idx=%d dev=0x%08X boundPS=0x%016llX vs=0x%016llX texN=%u\n",
+              drawIdx, device ? ghp::ToGuest(device) : 0u,
+              (unsigned long long)ShaderHash(g_pipelineState.pixelShader),
+              (unsigned long long)ShaderHash(g_pipelineState.vertexShader),
+              texN);
+          std::fclose(f);
+        }
+      }
+    }
+    if (drawIdx == g_probeSelectedDraw) {
+      probeSelected = true;
+      g_probeSelectedOrigHash = ShaderHash(g_pipelineState.pixelShader);
+      if (GuestShader *ps = ProbeShaderForIndex(g_probePsIndex))
+        pipelineState.pixelShader = ps;
+    } else if (g_probeSolo) {
+      probeSkip = true;
+    }
+  }
+
   // DEBUG (session 6P-3): force cull off to test whether backface culling (cull=1
   // in FM2_DRAWSTATE) is rejecting every triangle (wrong winding) -> solid blue.
   static constexpr bool kDebugForceCullNone = true;
@@ -2522,6 +2652,13 @@ void FlushRenderState(GuestDevice *device) {
   if (pipeline != nullptr)
     commandList->setPipeline(pipeline);
   g_pipelineBound = (pipeline != nullptr);
+
+  // Shader probe: record whether the overridden PSO built, and solo-skip
+  // non-selected draws by suppressing the pipeline (the draw guard skips them).
+  if (probeSelected)
+    g_probeLastPsoOk = (pipeline != nullptr);
+  if (probeSkip)
+    g_pipelineBound = false;
 
   // DEBUG (session 6P-3): one-shot full draw-state + constant dump for the first
   // 3D draws (POS VS + PS), to find why nothing rasterizes. Logs cull/depth/blend/
@@ -3910,6 +4047,13 @@ uint64_t CurrentFrameIndex() { return g_frameIndex; }
 void BeginRenderStateFrame() {
   g_uploadAllocator.reset();
   ++g_frameIndex; // invalidates the per-frame guest vertex/index upload caches
+
+  // Shader probe: capture last frame's draw count (for clamping), reset the
+  // per-frame counter, and poll the probe hotkeys once per frame.
+  g_probeLastFrameDrawCount = g_probeFrameDrawCount;
+  g_probeFrameDrawCount = 0;
+  if (REXCVAR_GET(fm2_shader_probe))
+    PollProbeKeys();
   g_framebuffer = nullptr;
   g_dirtyStates = DirtyStates(true);
   if (!g_sharedConstantsInitialized) {
@@ -4259,6 +4403,17 @@ void SetVertexShader(GuestDevice *device, GuestShader *shader) {
 
 void SetPixelShader(GuestDevice *device, GuestShader *shader) {
   SyncVertexDeclarationFromDevice(device);
+  if (REXCVAR_GET(fm2_shader_probe)) {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 800) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f, "SETPS hash=0x%016llX guest=0x%08X\n",
+                     (unsigned long long)ShaderHash(shader),
+                     shader ? ghp::ToGuest(shader) : 0u);
+        std::fclose(f);
+      }
+    }
+  }
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.pixelShader,
                 shader);
 }

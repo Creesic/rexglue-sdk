@@ -199,3 +199,238 @@
 | 22:06 | Edited docs/superpowers/specs/2026-07-03-fm2-shader-probe-design.md | modified that() | ~235 |
 | 22:06 | Session end: 38 writes across 8 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 13 reads | ~161231 tok |
 | 22:06 | Session end: 38 writes across 8 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 13 reads | ~161231 tok |
+| 22:14 | Edited FM2/src/render/render_state.cpp | 3→4 lines | ~32 |
+| 22:14 | Edited FM2/src/render/render_state.cpp | 3→4 lines | ~32 |
+| 22:14 | Edited FM2/src/render/render_state.cpp | added 11 condition(s) | ~938 |
+| 22:14 | Edited FM2/src/render/render_state.cpp | added 11 condition(s) | ~938 |
+| 22:14 | Edited FM2/src/render/render_state.cpp | added 4 condition(s) | ~181 |
+| 22:14 | Edited FM2/src/render/render_state.cpp | added 4 condition(s) | ~181 |
+| 22:14 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~106 |
+| 22:14 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~106 |
+| 22:14 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~98 |
+| 22:14 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~98 |
+| 22:15 | Edited FM2/src/render/render_state.cpp | inline fix | ~20 |
+| 22:15 | Edited FM2/src/render/render_state.cpp | inline fix | ~20 |
+| 22:16 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified CLUE() | ~476 |
+| 22:16 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified CLUE() | ~476 |
+| 22:16 | Session end: 48 writes across 8 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 13 reads | ~163008 tok |
+| 22:16 | Session end: 48 writes across 8 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 13 reads | ~163008 tok |
+| 22:22 | Created FM2/src/render/shader_probe_window.cpp | — | ~950 |
+| 22:22 | Created FM2/src/render/shader_probe_window.cpp | — | ~950 |
+| 22:22 | Edited FM2/src/render/render_internal.h | expanded (+6 lines) | ~129 |
+| 22:22 | Edited FM2/src/render/render_internal.h | expanded (+6 lines) | ~129 |
+| 22:22 | Edited FM2/src/render/render_state.cpp | modified if() | ~320 |
+| 22:22 | Edited FM2/src/render/render_state.cpp | modified if() | ~320 |
+| 22:22 | Edited FM2/CMakeLists.txt | 2→3 lines | ~27 |
+| 22:22 | Edited FM2/CMakeLists.txt | 2→3 lines | ~27 |
+| 22:25 | Edited FM2/src/render/render_state.cpp | 6→7 lines | ~80 |
+| 22:25 | Edited FM2/src/render/render_state.cpp | 6→7 lines | ~80 |
+| 22:25 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~245 |
+| 22:25 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~245 |
+| 22:25 | Edited FM2/src/render/render_state.cpp | 3→3 lines | ~45 |
+| 22:25 | Edited FM2/src/render/render_state.cpp | 3→3 lines | ~45 |
+| 22:26 | Session end: 60 writes across 11 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 15 reads | ~168061 tok |
+| 22:26 | Session end: 60 writes across 11 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 15 reads | ~168061 tok |
+| 22:37 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | expanded (+6 lines) | ~270 |
+| 22:37 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | expanded (+6 lines) | ~270 |
+| 22:39 | Edited FM2/src/render/render_state.cpp | 2→5 lines | ~95 |
+| 22:39 | Edited FM2/src/render/render_state.cpp | 2→5 lines | ~95 |
+| 22:39 | Edited FM2/src/render/render_state.cpp | modified if() | ~82 |
+| 22:39 | Edited FM2/src/render/render_state.cpp | modified if() | ~82 |
+| 22:39 | Edited FM2/src/render/render_state.cpp | modified if() | ~193 |
+| 22:39 | Edited FM2/src/render/render_state.cpp | modified if() | ~193 |
+| 22:39 | Edited FM2/src/render/render_internal.h | 3→3 lines | ~57 |
+| 22:39 | Edited FM2/src/render/render_internal.h | 3→3 lines | ~57 |
+| 22:40 | Edited FM2/src/render/shader_probe_window.cpp | modified UpdateShaderProbeWindow() | ~191 |
+| 22:40 | Edited FM2/src/render/shader_probe_window.cpp | modified UpdateShaderProbeWindow() | ~191 |
+| 22:40 | Session end: 69 writes across 11 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 15 reads | ~170893 tok |
+| 22:40 | Session end: 69 writes across 11 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 15 reads | ~170893 tok |
+| 22:44 | Edited FM2/src/render/render_state.cpp | added 3 condition(s) | ~171 |
+| 22:44 | Edited FM2/src/render/render_state.cpp | added 3 condition(s) | ~171 |
+| 22:44 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~190 |
+| 22:44 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~190 |
+| 22:45 | Session end: 71 writes across 11 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 15 reads | ~171279 tok |
+| 22:45 | Session end: 71 writes across 11 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 15 reads | ~171279 tok |
+| 22:49 | Edited FM2/src/render/d3d_resource_hooks.cpp | added 2 condition(s) | ~224 |
+| 22:49 | Edited FM2/src/render/d3d_resource_hooks.cpp | added 2 condition(s) | ~224 |
+| 22:50 | Session end: 72 writes across 12 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 16 reads | ~171519 tok |
+| 22:50 | Session end: 72 writes across 12 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 16 reads | ~171519 tok |
+| 22:51 | Edited FM2/src/render/render_internal.h | 3→4 lines | ~48 |
+| 22:51 | Edited FM2/src/render/render_internal.h | 3→4 lines | ~48 |
+| 22:52 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~226 |
+| 22:52 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~226 |
+| 22:53 | Edited FM2/src/render/d3d_resource_hooks.cpp | added 2 condition(s) | ~208 |
+| 22:53 | Edited FM2/src/render/d3d_resource_hooks.cpp | added 2 condition(s) | ~208 |
+| 22:53 | Edited FM2/src/render/render_internal.h | 4→3 lines | ~37 |
+| 22:53 | Edited FM2/src/render/render_internal.h | 4→3 lines | ~37 |
+| 22:53 | Edited FM2/src/render/d3d_hooks.cpp | modified fprintf() | ~136 |
+| 22:53 | Edited FM2/src/render/d3d_hooks.cpp | modified fprintf() | ~136 |
+| 22:54 | Session end: 79 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 17 reads | ~172674 tok |
+| 22:54 | Session end: 79 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 17 reads | ~172674 tok |
+| 22:56 | Edited FM2/src/render/d3d_resource_hooks.cpp | added error handling | ~215 |
+| 22:56 | Edited FM2/src/render/d3d_resource_hooks.cpp | added error handling | ~215 |
+| 22:57 | Session end: 80 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 18 reads | ~173287 tok |
+| 22:57 | Session end: 80 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 18 reads | ~173287 tok |
+| 23:09 | Session end: 80 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 19 reads | ~173287 tok |
+| 23:09 | Session end: 80 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 19 reads | ~173287 tok |
+| 23:12 | Session end: 80 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 19 reads | ~173287 tok |
+| 23:12 | Session end: 80 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 19 reads | ~173287 tok |
+| 23:17 | Session end: 80 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 19 reads | ~173287 tok |
+| 23:17 | Session end: 80 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 19 reads | ~173287 tok |
+| 23:20 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~212 |
+| 23:20 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~212 |
+| 23:20 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~257 |
+| 23:20 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~257 |
+| 23:21 | Session end: 82 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 19 reads | ~173789 tok |
+| 23:21 | Session end: 82 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 19 reads | ~173789 tok |
+| 23:23 | Session end: 82 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 20 reads | ~173789 tok |
+| 23:23 | Session end: 82 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 20 reads | ~173789 tok |
+| 23:26 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~260 |
+| 23:26 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~260 |
+| 23:26 | Session end: 83 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 20 reads | ~174274 tok |
+| 23:26 | Session end: 83 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 20 reads | ~174274 tok |
+| 23:28 | Session end: 83 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 21 reads | ~174274 tok |
+| 23:28 | Session end: 83 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 21 reads | ~174274 tok |
+| 23:30 | Edited FM2/src/render/d3d_hooks.cpp | added 3 condition(s) | ~399 |
+| 23:30 | Edited FM2/src/render/d3d_hooks.cpp | added 3 condition(s) | ~399 |
+| 23:31 | Session end: 84 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 21 reads | ~174701 tok |
+| 23:31 | Session end: 84 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 21 reads | ~174701 tok |
+| 23:33 | Session end: 84 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 22 reads | ~174701 tok |
+| 23:33 | Session end: 84 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 22 reads | ~174701 tok |
+| 23:38 | Session end: 84 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 22 reads | ~174701 tok |
+| 23:38 | Session end: 84 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 22 reads | ~174701 tok |
+| 23:45 | Session end: 84 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 22 reads | ~175220 tok |
+| 23:45 | Session end: 84 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 22 reads | ~175220 tok |
+| 23:47 | Edited FM2/src/render/d3d_hooks.cpp | expanded (+9 lines) | ~223 |
+| 23:47 | Edited FM2/src/render/d3d_hooks.cpp | expanded (+9 lines) | ~223 |
+| 23:48 | Session end: 86 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 22 reads | ~175698 tok |
+| 23:48 | Session end: 86 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 22 reads | ~175698 tok |
+| 23:50 | Session end: 86 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 23 reads | ~175698 tok |
+| 23:50 | Session end: 86 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 23 reads | ~175698 tok |
+| 00:03 | Session end: 86 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 25 reads | ~175826 tok |
+| 00:03 | Session end: 86 writes across 13 files (project_fm2_black_textures_no_tfetch.md, MEMORY.md, shader_recompiler.h, shader_recompiler.cpp, main.cpp) | 25 reads | ~175826 tok |
+
+## Session: 2026-07-04 00:06
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-04 00:06
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 00:10 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/check_bg.py | — | ~1259 |
+| 00:10 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/check_bg.py | — | ~1259 |
+| 00:12 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/dxil_sem.py | — | ~400 |
+| 00:12 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/dxil_sem.py | — | ~400 |
+| 00:13 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/rdat.py | — | ~866 |
+| 00:13 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/rdat.py | — | ~866 |
+| 00:15 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified PROOF() | ~679 |
+| 00:15 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified PROOF() | ~679 |
+| 00:16 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "present/drop-latch" → "SharedConstants" | ~210 |
+| 00:16 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "present/drop-latch" → "SharedConstants" | ~210 |
+| 00:16 | Settled black-texture root cause: parsed shader_cache RDAT — bg PS 9E93B374 genuinely color-only (CBV-only), C16BA78D/192D1332 have Sampler+SRV; cache stores linkable DXIL libraries; translation exonerated, bug=wrong-PS-selection | scratchpad check_bg.py, rdat.py; memory files | verified offline, no rebuild | ~9k |
+| 00:17 | Session end: 9 writes across 5 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 4 reads | ~5695 tok |
+| 00:17 | Session end: 9 writes across 5 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 4 reads | ~5695 tok |
+| 10:19 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/rdat2.py | — | ~416 |
+| 10:19 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/rdat2.py | — | ~416 |
+| 10:29 | Edited FM2/src/render/d3d_hooks.cpp | added 4 condition(s) | ~733 |
+| 10:29 | Edited FM2/src/render/d3d_hooks.cpp | added 4 condition(s) | ~733 |
+| 10:29 | Edited FM2/src/render/d3d_hooks.cpp | 3→4 lines | ~57 |
+| 10:29 | Edited FM2/src/render/d3d_hooks.cpp | 3→4 lines | ~57 |
+| 10:29 | Edited FM2/src/render/d3d_hooks.cpp | 4→5 lines | ~71 |
+| 10:29 | Edited FM2/src/render/d3d_hooks.cpp | 4→5 lines | ~71 |
+| 10:42 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified PROOF() | ~721 |
+| 10:42 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified PROOF() | ~721 |
+| 10:43 | Session end: 17 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~94496 tok |
+| 10:43 | Session end: 17 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~94496 tok |
+| 11:05 | Edited FM2/src/render/d3d_hooks.cpp | modified while() | ~205 |
+| 11:05 | Edited FM2/src/render/d3d_hooks.cpp | modified while() | ~205 |
+| 11:06 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~74 |
+| 11:06 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~74 |
+| 11:06 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~79 |
+| 11:06 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~79 |
+| 11:06 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~279 |
+| 11:06 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~279 |
+| 11:11 | Session end: 24 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~96238 tok |
+| 11:11 | Session end: 24 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~96238 tok |
+| 11:18 | Edited FM2/src/render/d3d_hooks.cpp | modified Fm2SetPixelShaderState() | ~149 |
+| 11:18 | Edited FM2/src/render/d3d_hooks.cpp | modified Fm2SetPixelShaderState() | ~149 |
+| 11:18 | Edited FM2/src/render/d3d_hooks.cpp | modified if() | ~290 |
+| 11:18 | Edited FM2/src/render/d3d_hooks.cpp | modified if() | ~290 |
+| 11:18 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~243 |
+| 11:18 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~243 |
+| 11:22 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified trace() | ~661 |
+| 11:22 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified trace() | ~661 |
+| 11:22 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified SETTLED() | ~239 |
+| 11:22 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified SETTLED() | ~239 |
+| 11:23 | Session end: 31 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~99274 tok |
+| 11:23 | Session end: 31 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~99274 tok |
+| 11:30 | Edited FM2/src/render/d3d_hooks.cpp | modified REX_HOOK_RAW() | ~631 |
+| 11:30 | Edited FM2/src/render/d3d_hooks.cpp | modified REX_HOOK_RAW() | ~631 |
+| 11:30 | Edited FM2/src/render/d3d_hooks.cpp | 2→3 lines | ~56 |
+| 11:30 | Edited FM2/src/render/d3d_hooks.cpp | 2→3 lines | ~56 |
+| 11:34 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | expanded (+8 lines) | ~561 |
+| 11:34 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | expanded (+8 lines) | ~561 |
+| 11:34 | Session end: 37 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~102448 tok |
+| 11:34 | Session end: 37 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~102448 tok |
+| 12:17 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | added 1 condition(s) | ~598 |
+| 12:17 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | added 1 condition(s) | ~598 |
+| 12:17 | Session end: 38 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~103089 tok |
+| 12:17 | Session end: 38 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~103089 tok |
+| 12:24 | Edited FM2/src/render/d3d_hooks.cpp | 1→4 lines | ~70 |
+| 12:24 | Edited FM2/src/render/d3d_hooks.cpp | 1→4 lines | ~70 |
+| 12:24 | Edited FM2/src/render/d3d_hooks.cpp | added 6 condition(s) | ~697 |
+| 12:24 | Edited FM2/src/render/d3d_hooks.cpp | added 6 condition(s) | ~697 |
+| 12:28 | Edited FM2/src/render/d3d_hooks.cpp | 3→6 lines | ~102 |
+| 12:28 | Edited FM2/src/render/d3d_hooks.cpp | 3→6 lines | ~102 |
+| 12:28 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~399 |
+| 12:28 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~399 |
+| 12:33 | Edited FM2/src/render/d3d_hooks.cpp | 3→6 lines | ~96 |
+| 12:33 | Edited FM2/src/render/d3d_hooks.cpp | 3→6 lines | ~96 |
+| 12:33 | Edited FM2/src/render/d3d_hooks.cpp | added 4 condition(s) | ~378 |
+| 12:33 | Edited FM2/src/render/d3d_hooks.cpp | added 4 condition(s) | ~378 |
+| 12:38 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified FM2_UPCALLER() | ~555 |
+| 12:38 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified FM2_UPCALLER() | ~555 |
+| 12:38 | Session end: 48 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~106825 tok |
+| 12:38 | Session end: 48 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~106825 tok |
+| 13:21 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~359 |
+| 13:21 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~359 |
+| 13:27 | Session end: 49 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~108644 tok |
+| 13:27 | Session end: 49 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~108644 tok |
+| 13:27 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified OUT() | ~484 |
+| 13:27 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified OUT() | ~484 |
+| 13:27 | Session end: 51 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~109680 tok |
+| 13:27 | Session end: 51 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~109680 tok |
+| 14:12 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | expanded (+8 lines) | ~588 |
+| 14:12 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | expanded (+8 lines) | ~588 |
+| 14:15 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified HUNT() | ~409 |
+| 14:15 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified HUNT() | ~409 |
+| 14:15 | Session end: 55 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~111816 tok |
+| 14:15 | Session end: 55 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 9 reads | ~111816 tok |
+| 14:26 | Edited FM2/src/render/d3d_hooks.cpp | modified REX_HOOK_RAW() | ~165 |
+| 14:26 | Edited FM2/src/render/d3d_hooks.cpp | modified REX_HOOK_RAW() | ~165 |
+| 14:26 | Edited FM2/src/render/d3d_hooks.cpp | 5→6 lines | ~85 |
+| 14:26 | Edited FM2/src/render/d3d_hooks.cpp | 5→6 lines | ~85 |
+| 14:32 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified CAUSE() | ~627 |
+| 14:32 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified CAUSE() | ~627 |
+| 14:32 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified CAUSE() | ~373 |
+| 14:32 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified CAUSE() | ~373 |
+| 14:33 | Session end: 60 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 10 reads | ~113698 tok |
+| 14:33 | Session end: 60 writes across 7 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 10 reads | ~113698 tok |
+| 14:41 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/xdisasm.py | — | ~895 |
+| 14:41 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/xdisasm.py | — | ~895 |
+| 14:50 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | added 6 condition(s) | ~702 |
+| 14:50 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | added 6 condition(s) | ~702 |
+| 14:50 | Session end: 63 writes across 8 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 15 reads | ~116240 tok |
+| 14:50 | Session end: 63 writes across 8 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 15 reads | ~116240 tok |
+| 14:56 | Edited ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | added 1 condition(s) | ~439 |
+| 14:56 | Edited ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | added 1 condition(s) | ~439 |
+| 15:00 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | added 3 condition(s) | ~434 |
+| 15:00 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | added 3 condition(s) | ~434 |
+| 15:06 | Session end: 66 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 16 reads | ~117640 tok |
+| 15:06 | Session end: 66 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 16 reads | ~117640 tok |
+| 15:11 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | added 2 condition(s) | ~530 |
+| 15:11 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | added 2 condition(s) | ~530 |
+| 15:11 | Session end: 67 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 16 reads | ~118316 tok |
+| 15:11 | Session end: 67 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 16 reads | ~118316 tok |

@@ -1,316 +1,506 @@
 {
-  "session_id": "session-2026-07-04-2010",
-  "started": "2026-07-04T00:10:18.755Z",
+  "session_id": "session-2026-07-04-0006",
+  "started": "2026-07-04T04:06:16.032Z",
   "files_read": {
-    "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-04T00:38:00.793Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp": {
-      "count": 10,
-      "tokens": 62967,
-      "first_read": "2026-07-04T00:47:21.108Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_resource_hooks.cpp": {
-      "count": 1,
-      "tokens": 17124,
-      "first_read": "2026-07-04T00:48:43.704Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/pipeline.cpp": {
-      "count": 2,
-      "tokens": 0,
-      "first_read": "2026-07-04T00:49:44.833Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/scripts/fm2/Update-FM2ShaderCache.ps1": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-04T00:50:16.628Z"
-    },
     "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/generated/shader_cache.h": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-07-04T00:58:09.672Z"
+      "first_read": "2026-07-04T04:09:09.795Z"
     },
-    "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/main.cpp": {
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/generated/shader_cache.cpp": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-07-04T00:59:04.678Z"
+      "first_read": "2026-07-04T04:09:10.774Z"
     },
-    "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp": {
-      "count": 5,
-      "tokens": 0,
-      "first_read": "2026-07-04T01:03:25.019Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.h": {
+    "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/map_ps862.py": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-07-04T01:15:38.866Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp": {
-      "count": 2,
-      "tokens": 66107,
-      "first_read": "2026-07-04T01:23:14.937Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/scripts/fm2/launch-fm2-plume-native.bat": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-04T01:26:51.695Z"
-    },
-    "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/22054c61-d9f8-4566-991c-6f9759f41605/tasks/bqtveut46.output": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-04T01:27:46.609Z"
+      "first_read": "2026-07-04T04:09:11.817Z"
     },
     "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-07-04T01:31:51.828Z"
+      "first_read": "2026-07-04T04:15:13.788Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp": {
+      "count": 21,
+      "tokens": 70368,
+      "first_read": "2026-07-04T14:18:17.729Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_resource_hooks.cpp": {
+      "count": 3,
+      "tokens": 17619,
+      "first_read": "2026-07-04T14:21:17.212Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/scripts/fm2/rebuild-fm2-plume-native.bat": {
+      "count": 2,
+      "tokens": 0,
+      "first_read": "2026-07-04T14:30:09.435Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/scripts/fm2/launch-fm2-plume-native-clean.bat": {
+      "count": 1,
+      "tokens": 622,
+      "first_read": "2026-07-04T14:30:09.745Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/CMakeUserPresets.json": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-04T14:30:39.317Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/scripts/fm2/launch-fm2-plume-native.bat": {
+      "count": 2,
+      "tokens": 0,
+      "first_read": "2026-07-04T18:24:34.583Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/main.cpp": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-04T18:37:24.299Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-04T18:38:09.921Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp": {
+      "count": 8,
+      "tokens": 0,
+      "first_read": "2026-07-04T18:39:01.871Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_code.h": {
+      "count": 2,
+      "tokens": 0,
+      "first_read": "2026-07-04T18:39:36.467Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/constant_table.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-04T18:43:54.937Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/scripts/fm2/Update-FM2ShaderCache.ps1": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-04T18:54:27.540Z"
     }
   },
   "files_written": [
     {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/check_bg.py",
       "action": "create",
+      "tokens": 1259,
+      "at": "2026-07-04T04:10:20.595Z"
+    },
+    {
+      "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/dxil_sem.py",
+      "action": "create",
+      "tokens": 400,
+      "at": "2026-07-04T04:12:28.318Z"
+    },
+    {
+      "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/dxil_sem.py",
+      "action": "create",
+      "tokens": 400,
+      "at": "2026-07-04T04:12:28.333Z"
+    },
+    {
+      "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/rdat.py",
+      "action": "create",
+      "tokens": 866,
+      "at": "2026-07-04T04:13:14.513Z"
+    },
+    {
+      "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/rdat.py",
+      "action": "create",
+      "tokens": 866,
+      "at": "2026-07-04T04:13:14.515Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 727,
+      "at": "2026-07-04T04:15:57.277Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 727,
+      "at": "2026-07-04T04:15:57.287Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "action": "edit",
+      "tokens": 225,
+      "at": "2026-07-04T04:16:10.985Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "action": "edit",
+      "tokens": 225,
+      "at": "2026-07-04T04:16:10.998Z"
+    },
+    {
+      "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/rdat2.py",
+      "action": "create",
+      "tokens": 416,
+      "at": "2026-07-04T14:19:28.642Z"
+    },
+    {
+      "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/rdat2.py",
+      "action": "create",
+      "tokens": 416,
+      "at": "2026-07-04T14:19:28.645Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 785,
+      "at": "2026-07-04T14:29:14.563Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 785,
+      "at": "2026-07-04T14:29:14.574Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 61,
+      "at": "2026-07-04T14:29:26.176Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 61,
+      "at": "2026-07-04T14:29:26.186Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 76,
+      "at": "2026-07-04T14:29:31.261Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 773,
+      "at": "2026-07-04T14:42:45.564Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 219,
+      "at": "2026-07-04T15:05:58.085Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 79,
+      "at": "2026-07-04T15:06:03.314Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 79,
+      "at": "2026-07-04T15:06:03.325Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 85,
+      "at": "2026-07-04T15:06:08.936Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 85,
+      "at": "2026-07-04T15:06:08.948Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 298,
+      "at": "2026-07-04T15:06:20.400Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 298,
+      "at": "2026-07-04T15:06:20.402Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 160,
+      "at": "2026-07-04T15:18:10.184Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 311,
+      "at": "2026-07-04T15:18:22.272Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 260,
+      "at": "2026-07-04T15:18:42.181Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 708,
+      "at": "2026-07-04T15:22:19.764Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 708,
+      "at": "2026-07-04T15:22:19.766Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "action": "edit",
+      "tokens": 256,
+      "at": "2026-07-04T15:22:31.329Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "action": "edit",
+      "tokens": 256,
+      "at": "2026-07-04T15:22:31.338Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 676,
+      "at": "2026-07-04T15:30:32.290Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 676,
+      "at": "2026-07-04T15:30:32.305Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 60,
+      "at": "2026-07-04T15:30:41.518Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 60,
+      "at": "2026-07-04T15:30:41.527Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 601,
+      "at": "2026-07-04T15:34:23.621Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 601,
+      "at": "2026-07-04T15:34:23.622Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
       "tokens": 641,
-      "at": "2026-07-04T00:38:00.388Z"
+      "at": "2026-07-04T16:17:44.758Z"
     },
     {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 203,
-      "at": "2026-07-04T00:38:12.232Z"
+      "tokens": 75,
+      "at": "2026-07-04T16:24:23.724Z"
     },
     {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 203,
-      "at": "2026-07-04T00:38:12.234Z"
+      "tokens": 747,
+      "at": "2026-07-04T16:24:42.305Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 747,
+      "at": "2026-07-04T16:24:42.312Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 109,
+      "at": "2026-07-04T16:28:15.290Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 109,
+      "at": "2026-07-04T16:28:15.303Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 427,
+      "at": "2026-07-04T16:28:28.835Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 103,
+      "at": "2026-07-04T16:33:02.364Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 404,
+      "at": "2026-07-04T16:33:16.743Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 404,
+      "at": "2026-07-04T16:33:16.755Z"
     },
     {
       "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
       "action": "edit",
-      "tokens": 280,
-      "at": "2026-07-04T00:40:28.582Z"
+      "tokens": 594,
+      "at": "2026-07-04T16:38:04.723Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 384,
+      "at": "2026-07-04T17:21:23.698Z"
     },
     {
       "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 518,
+      "at": "2026-07-04T17:27:27.141Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 518,
+      "at": "2026-07-04T17:27:27.154Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 630,
+      "at": "2026-07-04T18:12:37.377Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 630,
+      "at": "2026-07-04T18:12:37.395Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 438,
+      "at": "2026-07-04T18:15:41.216Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 438,
+      "at": "2026-07-04T18:15:41.218Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 177,
+      "at": "2026-07-04T18:26:34.088Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 91,
+      "at": "2026-07-04T18:26:42.247Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
+      "action": "edit",
+      "tokens": 672,
+      "at": "2026-07-04T18:32:40.908Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "action": "edit",
+      "tokens": 399,
+      "at": "2026-07-04T18:32:57.759Z"
+    },
+    {
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "action": "edit",
+      "tokens": 399,
+      "at": "2026-07-04T18:32:57.773Z"
+    },
+    {
+      "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/xdisasm.py",
       "action": "create",
-      "tokens": 960,
-      "at": "2026-07-04T00:44:09.372Z"
+      "tokens": 895,
+      "at": "2026-07-04T18:41:08.233Z"
     },
     {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
-      "action": "edit",
-      "tokens": 176,
-      "at": "2026-07-04T00:44:19.288Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
-      "action": "edit",
-      "tokens": 462,
-      "at": "2026-07-04T00:51:14.980Z"
+      "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/xdisasm.py",
+      "action": "create",
+      "tokens": 895,
+      "at": "2026-07-04T18:41:08.248Z"
     },
     {
       "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
       "action": "edit",
-      "tokens": 462,
-      "at": "2026-07-04T00:51:14.982Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
-      "action": "edit",
-      "tokens": 718,
-      "at": "2026-07-04T01:09:27.546Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
-      "action": "edit",
-      "tokens": 718,
-      "at": "2026-07-04T01:09:27.547Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.h",
-      "action": "edit",
-      "tokens": 146,
-      "at": "2026-07-04T01:15:47.290Z"
+      "tokens": 752,
+      "at": "2026-07-04T18:50:03.042Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
       "action": "edit",
-      "tokens": 102,
-      "at": "2026-07-04T01:15:56.268Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
-      "action": "edit",
-      "tokens": 102,
-      "at": "2026-07-04T01:15:56.271Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
-      "action": "edit",
-      "tokens": 67,
-      "at": "2026-07-04T01:16:02.465Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
-      "action": "edit",
-      "tokens": 67,
-      "at": "2026-07-04T01:16:02.479Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/main.cpp",
-      "action": "edit",
-      "tokens": 161,
-      "at": "2026-07-04T01:16:10.219Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/main.cpp",
-      "action": "edit",
-      "tokens": 145,
-      "at": "2026-07-04T01:16:26.117Z"
+      "tokens": 470,
+      "at": "2026-07-04T18:56:35.419Z"
     },
     {
       "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
       "action": "edit",
-      "tokens": 650,
-      "at": "2026-07-04T01:21:02.120Z"
+      "tokens": 465,
+      "at": "2026-07-04T19:00:20.706Z"
     },
     {
       "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
       "action": "edit",
-      "tokens": 650,
-      "at": "2026-07-04T01:21:02.122Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
-      "action": "edit",
-      "tokens": 251,
-      "at": "2026-07-04T01:21:16.636Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 512,
-      "at": "2026-07-04T01:25:08.524Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 242,
-      "at": "2026-07-04T01:25:43.069Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 12,
-      "at": "2026-07-04T01:31:12.834Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 12,
-      "at": "2026-07-04T01:31:12.845Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 27,
-      "at": "2026-07-04T01:31:20.577Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 27,
-      "at": "2026-07-04T01:31:20.591Z"
+      "tokens": 465,
+      "at": "2026-07-04T19:00:20.718Z"
     },
     {
       "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
       "action": "edit",
-      "tokens": 564,
-      "at": "2026-07-04T01:32:07.814Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
-      "action": "edit",
-      "tokens": 564,
-      "at": "2026-07-04T01:32:07.817Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
-      "action": "edit",
-      "tokens": 254,
-      "at": "2026-07-04T01:32:21.894Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
-      "action": "edit",
-      "tokens": 254,
-      "at": "2026-07-04T01:32:21.906Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
-      "action": "edit",
-      "tokens": 487,
-      "at": "2026-07-04T01:36:53.106Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
-      "action": "edit",
-      "tokens": 487,
-      "at": "2026-07-04T01:36:53.119Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
-      "action": "edit",
-      "tokens": 220,
-      "at": "2026-07-04T01:37:05.943Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
-      "action": "edit",
-      "tokens": 220,
-      "at": "2026-07-04T01:37:05.947Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/scripts/fm2/launch-fm2-plume-native-clean.bat",
-      "action": "create",
-      "tokens": 667,
-      "at": "2026-07-04T01:55:20.478Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/superpowers/specs/2026-07-03-fm2-shader-probe-design.md",
-      "action": "create",
-      "tokens": 1534,
-      "at": "2026-07-04T02:05:47.368Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/superpowers/specs/2026-07-03-fm2-shader-probe-design.md",
-      "action": "create",
-      "tokens": 1534,
-      "at": "2026-07-04T02:05:47.378Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/superpowers/specs/2026-07-03-fm2-shader-probe-design.md",
-      "action": "edit",
-      "tokens": 252,
-      "at": "2026-07-04T02:06:10.488Z"
+      "tokens": 567,
+      "at": "2026-07-04T19:11:03.395Z"
     }
   ],
   "edit_counts": {
-    "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md": 13,
-    "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md": 8,
-    "../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.h": 1,
-    "../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp": 4,
-    "../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/main.cpp": 2,
-    "FM2/src/render/render_state.cpp": 6,
-    "scripts/fm2/launch-fm2-plume-native-clean.bat": 1,
-    "docs/superpowers/specs/2026-07-03-fm2-shader-probe-design.md": 3
+    "../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/check_bg.py": 1,
+    "../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/dxil_sem.py": 2,
+    "../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/rdat.py": 2,
+    "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md": 20,
+    "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md": 6,
+    "../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/rdat2.py": 2,
+    "FM2/src/render/d3d_hooks.cpp": 31,
+    "../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/xdisasm.py": 2,
+    "../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp": 1
   },
   "anatomy_hits": 3,
-  "anatomy_misses": 10,
-  "repeated_reads_warned": 15,
+  "anatomy_misses": 13,
+  "repeated_reads_warned": 32,
   "cerebrum_warnings": 0,
-  "stop_count": 16
+  "stop_count": 17
 }

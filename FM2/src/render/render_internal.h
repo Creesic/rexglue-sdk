@@ -46,6 +46,12 @@ struct GuestShader;
 plume::RenderShader *LoadShader(GuestShader *guestShader,
                                 uint32_t specConstants = 0);
 
+// Interactive shader-probe status window (shader_probe_window.cpp). Lazily
+// creates an always-on-top window on first call and updates its readout.
+void UpdateShaderProbeWindow(int selDraw, int total, bool solo, int psIndex,
+                             int psCount, uint64_t hash, const char *file,
+                             bool psoOk, uint64_t boundHash);
+
 // session 6P-3: the game uploads per-draw VS transform constants via
 // FM2_RenderContext_UploadMatrixConstants, which writes to a render-context object
 // that FlushRenderState's GuestDevice never sees (so device constants are zero for
