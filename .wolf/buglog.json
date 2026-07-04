@@ -897,6 +897,129 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-07-04T18:56:35.422Z"
+    },
+    {
+      "id": "bug-054",
+      "timestamp": "2026-07-04T19:21:04.661Z",
+      "error_message": "Missing guard clause",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "No early return/throw for edge case: !ShouldMirrorPlumeRenderState(",
+      "fix": "Added guard clause: if (!ShouldMirrorPlumeRenderState()",
+      "tags": [
+        "auto-detected",
+        "guard-clause",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-04T19:21:04.672Z"
+    },
+    {
+      "id": "bug-055",
+      "timestamp": "2026-07-04T19:24:08.664Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 4→6 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T19:24:08.664Z"
+    },
+    {
+      "id": "bug-056",
+      "timestamp": "2026-07-04T16:10:00.000Z",
+      "error_message": "FM2 plume_native press-start logo and A-button render black (bg now textured/correct)",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "NOT XenosRecomp and NOT texture-binding -- both ruled out. (A) NOT translation: B60DDF84 (the shader we 'fixed' for the logo) is NEVER bound at any real draw (0/3830 FM2_LIVE_PS; only CreateShader + PROBE). Its fork translation is byte-identical to clean upstream hedge-dev XenosRecomp (diff exit 0). (B) NOT binding: the logo is actually drawn by 9E93B374 (guest PS obj 0x4005D1B0) -- the SAME 8-stage material shader that already renders the textured background -- and its real art is correctly bound: the logo-banner art at guest base 0x10540000 (877x188, cls=VARIED real content, bc=1, fetch-constant-translated NOT aperture) sits in sampler slot 0 for those draws (FM2_LIVE_PS n=9/12/15 ps=0x4005D1B0 + FM2_LIVE_TEX slot=0 base=0x10540000 tex=..44230 bc=1). So shader+texture are both correct. 9E93B374 is FM2's shared material shader drawing bg+logo+A-button, each its own draw with its own texture and PER-DRAW constants; the bg draws show textured while the logo draw is black WITH THE SAME SHADER AND CORRECT ART => the blackness is per-draw STATE: the 8-stage blend leans on PS float constants (g_ColorTextureStages / c254 / c255 / g_Material) and g_Booleans stage gating. Aperture red herring: the fmt=24 1280x720 uniform-black surfaces (0x0A018000 etc.) sampled by A4AF88D4/composite passes ARE genuinely-empty resolve RTs (guest memory itself is uniform 000000FF, so translating the fetch gives black too) -- that is the separate scene/resolve-RT-black problem, not this logo.",
+      "fix": "DIAGNOSED via two runtime instrumentation passes (FM2_MATCONST in d3d_hooks ApplyLivePixelShaderFromContext; FM2_PSUPLOAD at the render_state.cpp constant-upload site). AUTHORITATIVE RESULT for the logo draw (tex0 ptr correlated to FM2_LIVE_TEX base=0x10540000): post-PM4-merge g_ColorTextureStages(0)=PS[6]=[1.000,1.000,0.000,0.000] (texture weight .x=1 => TEXTURE ENABLED), merged=0 (PM4 overlay did NOT drop/replace it), colorWrite=0xF (all channels on), RT=0x130C41000 1280x720 (valid), blend=alpha-over (src=5 SRC_ALPHA, dst=6 INV_SRC_ALPHA). EVERY measurable pipeline input is correct => RULES OUT six subsystems: XenosRecomp translation, texture binding, color constants, colorWrite, render target, blend state. NOTE on the earlier 'constants zero' scare: the first FM2_MATCONST read the game register file at ctx+0x1710 but the shader's PS constants upload from ctx+0x1700 (psConstSrc, register N at byte N*16) -- a one-register shift; corrected, constants are FINE. REMAINING SUSPECTS (narrowed): vertex/geometry stage (collapsed positions, UVs sampling an empty texel, or vertex color iColor0=black), the shader's computed output ALPHA (alpha-over hides a src.a=0 result), or draw-order/coverage (an opaque 9E93B374 draw over the same RT). NEXT: RenderDoc pixel-history/pixel-debug on the logo screen region, or compare the logo draw's mesh (POSITION/TEXCOORD/COLOR) vs the known-good xenos capture. Diagnostic hooks FM2_MATCONST/FM2_PSUPLOAD left in (remove in cleanup). XenosRecomp NORMAL/CondJmp fork fixes remain legit but neither was the logo.",
+      "fix2_renderdoc": "2026-07-04 RenderDoc good-vs-bad diff (fm2blacklogo.rdc vs fm2xenospressstart.rdc) FOUND THE MECHANISM. Pixel-history at the logo pixel (478,360) on the black capture: the final black is written by a BACK-face fragment (SV_IsFrontFace=0, COLOR0=[0,0,0,1]) that overwrites the correct textured FRONT-face fragments (IsFrontFace=1) of the SAME lit-3D mesh (VS 66c7cbfb / PS 867f7e8a, POSITION+NORMAL+TEXCOORD, BC3 tex). backface_culled=false for all -> nothing culled. Cull is NONE for EVERY plume draw (log: 0 draws with cull=2/3; guest D3DRS_CULLMODE path yields NONE), so restoring guest cull (kDebugForceCullNone=false, applied) did nothing. STRUCTURAL DIFF: good capture renders ALL 37 main draws into ONE shared color RT (7201) + ONE shared depth RT (7203); plume SPLITS them -- 2D bg draws (VS978/979) get NO depth target, the lit-3D logo draws (VS859/860) get depth 322 -- so the logo is an isolated depth pass. The mesh is double-sided; its far back-faces are only hidden by DEPTH REJECTION against the shared depth buffer in the good path. In plume's isolated logo pass (fresh depth, zWrite=0, nothing prior to test against) the back-faces pass and overwrite. ROOT = pass/depth structure: plume drops the depth surface for a chunk of press-start draws (render_state.cpp depthStencil==nullptr branch), breaking the shared depth buffer. NEXT: find why depthStencil is null for the 2D bg draws; bind depth consistently so all these draws share one buffer like xenos. Debug flag kDebugForceCullNone flipped to false (kept). Diagnostic hooks FM2_MATCONST/FM2_PSUPLOAD still in.",
+      "tags": [
+        "plume_native",
+        "black-textures",
+        "backface-culling",
+        "depth-buffer",
+        "render-pass",
+        "shared-depth",
+        "press-A",
+        "logo",
+        "renderdoc",
+        "not-xenosrecomp"
+      ],
+      "related_bugs": [
+        "bug-090",
+        "bug-092"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T16:10:00.000Z"
+    },
+    {
+      "id": "bug-057",
+      "timestamp": "2026-07-04T20:21:48.057Z",
+      "error_message": "Incorrect value in code",
+      "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "root_cause": "Had \"fixed\"",
+      "fix": "Changed to \"plume MISTRANSLATES the shader\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T20:21:48.057Z"
+    },
+    {
+      "id": "bug-058",
+      "timestamp": "2026-07-04T20:41:05.155Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-04T20:41:05.155Z"
+    },
+    {
+      "id": "bug-059",
+      "timestamp": "2026-07-04T20:45:53.573Z",
+      "error_message": "Incorrect value in code",
+      "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "root_cause": "Had \"plume MISTRANSLATES the shader\"",
+      "fix": "Changed to 'constants zero'",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-04T20:45:53.590Z"
+    },
+    {
+      "id": "bug-060",
+      "timestamp": "2026-07-04T21:26:27.541Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check) | Also: // 2026-07-04: plume never receives FM2's real cull mode -- ; // D3DRS_CULLMODE path mirrors NONE for EVERY draw (log: 0 d",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-04T21:26:27.545Z"
     }
   ]
 }

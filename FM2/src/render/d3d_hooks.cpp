@@ -250,6 +250,17 @@ REX_IMPORT(__imp__D3DDevice_SetRenderState_ZFunc,
            g_origRsZFunc, void(uint32_t, uint32_t));
 REX_IMPORT(__imp__D3DDevice_SetRenderState_ColorWriteEnable,
            g_origRsColorWriteEnable, void(uint32_t, uint32_t));
+// FIX 2026-07-04: the guest boolean-constant setters were never hooked, so
+// device->pixel/vertexShaderBoolConstants stayed 0, g_Booleans never got the
+// texture-stage-enable bits, and the (now correctly translated) conditional
+// tfetch shaders skipped every fetch -> black. Wire them through the previously
+// dead SetPixel/VertexShaderConstantB helpers.
+// Recompiler names these XDK setters sub_8236DBC8 (SetPixelShaderConstantB) /
+// sub_8236DB68 (SetVertexShaderConstantB) since they are unnamed in the manifest.
+REX_IMPORT(__imp__sub_8236DBC8, g_origSetPsBoolConst,
+           void(uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236DB68, g_origSetVsBoolConst,
+           void(uint32_t, uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__D3DDevice_SetRenderState_BlendOp,
            g_origRsBlendOp, void(uint32_t, uint32_t));
 REX_IMPORT(__imp__D3DDevice_SetRenderState_SrcBlend,
@@ -2111,6 +2122,37 @@ void SetPixelShaderConstantB(GuestDevice *device, uint32_t startRegister,
                      startRegister, data, boolCount);
 }
 
+// FIX 2026-07-04: hooks for the guest bool-constant setters. Run the original
+// (guest m_Pending bookkeeping), then mirror into the plume device's
+// pixel/vertexShaderBoolConstants that FlushRenderState reads into g_Booleans.
+void Fm2SetPixelShaderConstantB(uint32_t device, uint32_t startRegister,
+                                uint32_t constantData, uint32_t boolCount) {
+  g_origSetPsBoolConst(device, startRegister, constantData, boolCount);
+  if (!ShouldMirrorPlumeRenderState())
+    return;
+  GuestDevice *dev = ghp::ToHost<GuestDevice>(device);
+  if (dev == nullptr || constantData == 0 || boolCount == 0)
+    return;
+  SetPixelShaderConstantB(dev, startRegister,
+                          ghp::ToHost<const uint32_t>(constantData), boolCount);
+  static std::atomic<uint32_t> s_n{0};
+  if (s_n.fetch_add(1, std::memory_order_relaxed) < 64)
+    LogReplayDbg("FM2_PSBOOL start=%u count=%u ps0=0x%08X", startRegister,
+                 boolCount, (unsigned)dev->pixelShaderBoolConstants[0].get());
+}
+
+void Fm2SetVertexShaderConstantB(uint32_t device, uint32_t startRegister,
+                                 uint32_t constantData, uint32_t boolCount) {
+  g_origSetVsBoolConst(device, startRegister, constantData, boolCount);
+  if (!ShouldMirrorPlumeRenderState())
+    return;
+  GuestDevice *dev = ghp::ToHost<GuestDevice>(device);
+  if (dev == nullptr || constantData == 0 || boolCount == 0)
+    return;
+  SetVertexShaderConstantB(dev, startRegister,
+                           ghp::ToHost<const uint32_t>(constantData), boolCount);
+}
+
 void SetShaderConstantI(rex::be<uint32_t> *constants, uint32_t constantCount,
                         uint32_t startRegister, const uint32_t *data,
                         uint32_t intCount) {
@@ -2984,6 +3026,35 @@ void ApplyLivePixelShaderFromContext(GuestDevice *device, uint32_t context) {
                  "hash=0x%016llX",
                  n, context, ps, inner, static_cast<void *>(resolved),
                  (unsigned long long)rhash);
+  // DIAG 2026-07-04: the black press-start logo is drawn by 9E93B374 -- the SAME
+  // 8-stage material shader as the textured background -- with its real art
+  // (logo banner base 0x10540000) correctly bound in slot 0. Shader+texture are
+  // both correct, so the black must be per-draw STATE. Dump the material
+  // constants the shader actually reads (live PS ALU file at context+0x1710:
+  // g_Material(5)=PS[5], g_ColorTextureStages(k)=PS[6+k]) plus the slot-0 base
+  // (to tell a logo draw from a bg draw) and the PS bool stage gates. Compare a
+  // textured bg draw vs the black logo draw (s0base=0x10540000): zero/stale
+  // color-stage constants => constants-delivery bug, not binding/translation.
+  if (rhash == 0x9E93B37448CA0172ull) {
+    static std::atomic<uint32_t> s_mc{0};
+    const uint32_t mcn = s_mc.fetch_add(1, std::memory_order_relaxed);
+    if (mcn < 120u) {
+      const uint32_t s0fc1 = ReadGuestU32At(context + 1024u + 4u);
+      const uint32_t s0base = ((s0fc1 >> 12) & 0xFFFFFu) << 12;
+      const uint32_t psbool = ReadGuestU32At(ghp::ToGuest(device) + 0x2790u);
+      auto PSF = [&](uint32_t r, uint32_t c) -> double {
+        return double(std::bit_cast<float>(
+            ReadGuestU32At(context + 0x1710u + r * 16u + c * 4u)));
+      };
+      LogReplayDbg("FM2_MATCONST mc=%u s0base=0x%08X psbool=0x%08X "
+                   "mat5=[%.3f %.3f %.3f %.3f] cts0=[%.3f %.3f %.3f %.3f] "
+                   "cts1=[%.3f %.3f %.3f %.3f] cts7=[%.3f %.3f %.3f %.3f]",
+                   mcn, s0base, psbool, PSF(5, 0), PSF(5, 1), PSF(5, 2),
+                   PSF(5, 3), PSF(6, 0), PSF(6, 1), PSF(6, 2), PSF(6, 3),
+                   PSF(7, 0), PSF(7, 1), PSF(7, 2), PSF(7, 3), PSF(13, 0),
+                   PSF(13, 1), PSF(13, 2), PSF(13, 3));
+    }
+  }
   // DIAG 2026-07-04: DRAW half of the PS trace, shared seq + thread id, so the
   // SET/DRAW interleaving reveals whether the slot was overwritten between the
   // game's SetPixelShader and this draw's read (collapse) or not (genuine).
@@ -4325,6 +4396,8 @@ REX_HOOK(D3DDevice_SetRenderState_ZEnable, Fm2RsZEnable);
 REX_HOOK(D3DDevice_SetRenderState_ZWriteEnable, Fm2RsZWriteEnable);
 REX_HOOK(D3DDevice_SetRenderState_ZFunc, Fm2RsZFunc);
 REX_HOOK(D3DDevice_SetRenderState_ColorWriteEnable, Fm2RsColorWriteEnable);
+REX_HOOK(sub_8236DBC8, Fm2SetPixelShaderConstantB);
+REX_HOOK(sub_8236DB68, Fm2SetVertexShaderConstantB);
 REX_HOOK(D3DDevice_SetRenderState_BlendOp, Fm2RsBlendOp);
 REX_HOOK(D3DDevice_SetRenderState_SrcBlend, Fm2RsSrcBlend);
 REX_HOOK(D3DDevice_SetRenderState_DestBlend, Fm2RsDestBlend);

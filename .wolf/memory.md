@@ -434,3 +434,67 @@
 | 15:11 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | added 2 condition(s) | ~530 |
 | 15:11 | Session end: 67 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 16 reads | ~118316 tok |
 | 15:11 | Session end: 67 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 16 reads | ~118316 tok |
+| 15:20 | Edited FM2/src/render/d3d_hooks.cpp | expanded (+9 lines) | ~201 |
+| 15:20 | Edited FM2/src/render/d3d_hooks.cpp | expanded (+9 lines) | ~201 |
+| 15:21 | Edited FM2/src/render/d3d_hooks.cpp | added 5 condition(s) | ~462 |
+| 15:21 | Edited FM2/src/render/d3d_hooks.cpp | added 5 condition(s) | ~462 |
+| 15:21 | Edited FM2/src/render/d3d_hooks.cpp | 1→3 lines | ~60 |
+| 15:21 | Edited FM2/src/render/d3d_hooks.cpp | 1→3 lines | ~60 |
+| 15:21 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified FIX() | ~408 |
+| 15:21 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | modified FIX() | ~408 |
+| 15:24 | Edited FM2/src/render/d3d_hooks.cpp | 4→6 lines | ~103 |
+| 15:24 | Edited FM2/src/render/d3d_hooks.cpp | 4→6 lines | ~103 |
+| 15:24 | Edited FM2/src/render/d3d_hooks.cpp | 2→2 lines | ~28 |
+| 15:24 | Edited FM2/src/render/d3d_hooks.cpp | 2→2 lines | ~28 |
+| 15:32 | Session end: 75 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 17 reads | ~184542 tok |
+| 15:32 | Session end: 75 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 17 reads | ~184542 tok |
+| 15:34 | Session end: 75 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 17 reads | ~184542 tok |
+| 15:34 | Session end: 75 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 17 reads | ~184542 tok |
+| 15:47 | Edited ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | expanded (+9 lines) | ~158 |
+| 15:47 | Edited ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | expanded (+9 lines) | ~158 |
+| 15:48 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | added 1 condition(s) | ~526 |
+| 15:48 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md | added 1 condition(s) | ~526 |
+| 15:49 | Session end: 77 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 18 reads | ~185274 tok |
+| 15:49 | Session end: 77 writes across 9 files (check_bg.py, dxil_sem.py, rdat.py, project_fm2_black_textures_no_tfetch.md, MEMORY.md) | 18 reads | ~185274 tok |
+
+## Session: 2026-07-04 15:54
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-04 15:54
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 16:08 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified CAUSE() | ~439 |
+| 16:08 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified CAUSE() | ~439 |
+| 16:08 | Session end: 2 writes across 1 files (MEMORY.md) | 4 reads | ~940 tok |
+| 16:08 | Session end: 2 writes across 1 files (MEMORY.md) | 4 reads | ~940 tok |
+| 16:21 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "fixed" → "plume MISTRANSLATES the s" | ~519 |
+| 16:21 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "fixed" → "plume MISTRANSLATES the s" | ~519 |
+| 16:22 | Session end: 3 writes across 1 files (MEMORY.md) | 5 reads | ~72503 tok |
+| 16:22 | Session end: 3 writes across 1 files (MEMORY.md) | 5 reads | ~72503 tok |
+| 16:26 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~527 |
+| 16:26 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~527 |
+| 16:41 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~610 |
+| 16:41 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~610 |
+| 16:41 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~225 |
+| 16:41 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~225 |
+| 16:45 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "plume MISTRANSLATES the s" → "constants zero" | ~654 |
+| 16:45 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "plume MISTRANSLATES the s" → "constants zero" | ~654 |
+| 16:46 | Session end: 10 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 8 reads | ~140995 tok |
+| 16:46 | Session end: 10 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 8 reads | ~140995 tok |
+| 17:03 | Edited FM2/src/render/render_state.cpp | modified DEBUG() | ~206 |
+| 17:03 | Edited FM2/src/render/render_state.cpp | modified DEBUG() | ~206 |
+| 17:04 | Session end: 11 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 8 reads | ~141785 tok |
+| 17:04 | Session end: 11 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 8 reads | ~141785 tok |
+| 17:13 | Session end: 11 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 8 reads | ~141785 tok |
+| 17:13 | Session end: 11 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 8 reads | ~141785 tok |
+| 17:26 | Edited FM2/src/render/render_state.cpp | added 5 condition(s) | ~411 |
+| 17:26 | Edited FM2/src/render/render_state.cpp | added 5 condition(s) | ~411 |
+| 17:27 | Session end: 13 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 8 reads | ~142665 tok |
+| 17:27 | Session end: 13 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 8 reads | ~142665 tok |
+| 17:32 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified CAUSE() | ~511 |
+| 17:32 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified CAUSE() | ~511 |
+| 17:32 | Session end: 14 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 9 reads | ~143213 tok |
+| 17:32 | Session end: 14 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 9 reads | ~143213 tok |

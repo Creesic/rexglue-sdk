@@ -2632,9 +2632,42 @@ void FlushRenderState(GuestDevice *device) {
 
   // DEBUG (session 6P-3): force cull off to test whether backface culling (cull=1
   // in FM2_DRAWSTATE) is rejecting every triangle (wrong winding) -> solid blue.
-  static constexpr bool kDebugForceCullNone = true;
+  // 2026-07-04: DISABLED. RenderDoc pixel-history on the black press-start logo
+  // (fm2blacklogo.rdc @478,360, RT 320) proved the winding is now CORRECT --
+  // the textured fragments are the front-faces (SV_IsFrontFace=1) while the
+  // black fragments are unculled BACK-faces (IsFrontFace=0, COLOR0=[0,0,0,1])
+  // that overwrite the good texture. Forcing cull=NONE is what let those black
+  // back-faces win; restore the guest's cull mode so lit 3D meshes cull them.
+  static constexpr bool kDebugForceCullNone = false;
   if (kDebugForceCullNone)
     pipelineState.cullMode = RenderCullMode::NONE;
+  // 2026-07-04: plume never receives FM2's real cull mode -- the D3D9
+  // D3DRS_CULLMODE path mirrors NONE for EVERY draw (log: 0 draws cull=2/3), so
+  // lit 3D meshes render double-sided. RenderDoc pixel-history on the black
+  // press-start logo (fm2blacklogo.rdc @478,360) proved the black is the mesh's
+  // own unculled BACK-faces (SV_IsFrontFace=0, COLOR0=[0,0,0,1]) overwriting its
+  // textured FRONT-faces; the winding is correct (front=textured). Depth can't
+  // reject them (zWrite off), and the good xenos capture renders it fine -- so
+  // the guest culls back-faces (set via the Xenos PA_SU_SC_MODE_CNTL reg the
+  // native path doesn't mirror). Restore BACK-face culling for lit meshes
+  // (POSITION+NORMAL) when the mirrored cull is NONE; leaves 2D UI (no POSITION)
+  // double-sided. Toggle to compare.
+  static constexpr bool kCullBackfacesForLitMeshes = true;
+  if (kCullBackfacesForLitMeshes &&
+      pipelineState.cullMode == RenderCullMode::NONE) {
+    const GuestShader *vs = g_pipelineState.vertexShader;
+    if (vs != nullptr) {
+      bool hasPos = false, hasNormal = false;
+      for (const auto &he : vs->headerElements) {
+        if (he.usage == D3DDECLUSAGE_POSITION)
+          hasPos = true;
+        else if (he.usage == D3DDECLUSAGE_NORMAL)
+          hasNormal = true;
+      }
+      if (hasPos && hasNormal)
+        pipelineState.cullMode = RenderCullMode::BACK;
+    }
+  }
   // DEBUG (session 6P-3): the PSO is built for the surface's intended MSAA count
   // (often 4) but the actual plume render targets are single-sampled (count 1).
   // D3D12 rejects the sample-desc mismatch (debug id=614/616) and the draw renders
@@ -3108,6 +3141,48 @@ void FlushRenderState(GuestDevice *device) {
     }
     if (any || noPos)
       psConstSrc = s_mergedPsConstants;
+  }
+  // DIAG 2026-07-04: authoritative per-draw dump for the black press-start logo.
+  // It is drawn by 9E93B374 (same shader as the textured bg) with its real art
+  // bound, so shader+texture are correct. Read what the shader ACTUALLY samples
+  // for g_ColorTextureStages(0)=PS[6] from the FINAL (post-PM4-merge) source
+  // (byte-swapped like the <true> upload), plus the output-side state (RT /
+  // colorWrite / blend). Correlate the logo draw via g_textures[0] against the
+  // FM2_LIVE_TEX base=0x10540000 line. cts0.x~=0 => PM4 material drop; else the
+  // black is output-side (RT/blend/colorWrite) or vertex color.
+  {
+    const GuestShader *dps = g_pipelineState.pixelShader;
+    const uint64_t phash = (dps != nullptr && dps->shaderCacheEntry != nullptr)
+                               ? dps->shaderCacheEntry->hash
+                               : 0ull;
+    if (phash == 0x9E93B37448CA0172ull) {
+      static std::atomic<uint32_t> s_pu{0};
+      if (s_pu.fetch_add(1, std::memory_order_relaxed) < 120u) {
+        auto R = [&](uint32_t reg, uint32_t c) -> double {
+          uint32_t v = __builtin_bswap32(psConstSrc[reg * 4u + c]);
+          float f;
+          std::memcpy(&f, &v, 4);
+          return double(f);
+        };
+        GuestBaseTexture *rt = g_renderTarget;
+        if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          std::fprintf(
+              f,
+              "FM2_PSUPLOAD tex0=%p merged=%d cw=0x%X blend=%d src=%d dst=%d "
+              "rt=%p %ux%u cts0=[%.3f %.3f %.3f %.3f] cts1=[%.3f %.3f %.3f "
+              "%.3f]\n",
+              static_cast<void *>(g_textures[0]),
+              psConstSrc == s_mergedPsConstants ? 1 : 0,
+              g_pipelineState.colorWriteEnable,
+              g_pipelineState.alphaBlendEnable ? 1 : 0,
+              int(g_pipelineState.srcBlend), int(g_pipelineState.destBlend),
+              static_cast<void *>(rt), rt ? rt->width : 0, rt ? rt->height : 0,
+              R(6, 0), R(6, 1), R(6, 2), R(6, 3), R(7, 0), R(7, 1), R(7, 2),
+              R(7, 3));
+          std::fclose(f);
+        }
+      }
+    }
   }
   SetRootDescriptor(g_uploadAllocator.allocateCopy<true>(
                         psConstSrc,
