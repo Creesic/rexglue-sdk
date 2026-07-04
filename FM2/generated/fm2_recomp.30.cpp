@@ -59387,7 +59387,7 @@ DEFINE_REX_FUNC(sub_82581AE0) {
 	REX_STORE_U32(ctx.r31.u32 + 0, ctx.r11.u32);
 	// bl 0x8245d510
 	ctx.lr = 0x82581B0C;
-	sub_8245D510(ctx, base);
+	FM2_DeferredRenderCmdPool_Construct(ctx, base);
 	// addi r28,r31,208
 	ctx.r28.s64 = ctx.r31.s64 + 208;
 	// li r4,0

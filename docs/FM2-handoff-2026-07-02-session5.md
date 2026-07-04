@@ -460,6 +460,70 @@ User directive: use `C:\Users\Tera\Documents\GitHub\UnleashedRecomp` as the guid
   pixel in RenderDoc (qrenderdoc GUI, user-driven) for ground truth.
   TEMP diags to strip later: FM2_CBDUMP, FM2_CBDUMP_IN, FM2_CB_IMLOADIMM
   signature histogram.
+
+### 2026-07-03 part 9 (FINAL for the day): pixel-debug verdict + the real
+### root of the missing textures
+
+- **MCP debug_pixel (new tool) verdict on the plume bg draw (capture 8,
+  EID 127, px 640,300)**: PS executes 26 steps, **sample_count=0, zero
+  resource accesses** -- it is a trivial COLOR-PASSTHROUGH shader.
+  Output = interpolated COLOR0 = (0,0,0,1) from the vertex data; ALL
+  TEXCOORD interpolants are zero (the paired VS doesn't even emit UVs).
+  The quad renders exactly what it was told: a black colored quad.
+- **The bindless texture chain is PROVEN intact** (new get_descriptor
+  tool): SharedConstants[0]=32 -> heap[32] = the BC1 art texture (871),
+  correct content. The game's texture fetch constants carry the art for
+  this draw => the game INTENDS a textured draw here; the simple
+  colored-quad shader pair is the FALLBACK path.
+- **Why the textured version never draws**: the textured UI elements
+  render by PLAYING their compiled material command buffers. The compile
+  chain RUNS (CbBatchBegin/Finalize/Clone all 64/s, clones = 0x800-byte
+  buffers at 0x2FD1Bxxx), but **no ~512-dword segment ever reaches the
+  D3D_SubmitCommandBuffer hook** -- the play ops never execute. (The
+  COverlayRendererDeferred RecordPlayCommandBuffer path is a red herring
+  again -- zero calls ever, consistent with the session-3 finding that
+  menu 2D goes through CRenderAdapterLink, not the overlay.)
+- **This converges with the KNOWN #20 DROP LATCH** (session-3 ledger):
+  deferred render-cmd pool (0x4001CA20) backpressure p145 drops
+  CRenderAdapterLink CParams in bursts. The play-CB ops are evidently
+  among the dropped. The long-planned structural fix ("move draw
+  execution to the drain timeline, then re-enable kDrainCatchUp") is now
+  THE blocker for press-A textures (and likely all textured UI).
+  NEXT SESSION: instrument which CParams types get dropped (confirm the
+  play-CB op among them), then tackle the drain-timeline restructure --
+  or find a targeted kForce*Enqueue-style bypass for the play-CB op like
+  the car-node fix (sub_8245CED8 enqueue API, d3d_hooks ~line 363).
+
+### 2026-07-03 part 10 (session close): bypass attempts DISPROVEN --
+### buffer RETIRE is the one true root. Tree left in last-stable state.
+
+- Instrumentation result (task 1): drops confirmed ongoing at press-A
+  (p145 latched, backlog RIDES 14-17 vs lifted thresh 8). Dropped fns are
+  all virtual-dispatch CParams THUNKS (e.g. 0x82279F20: `lwz r11,0(r3);
+  lwz r4,4(r4); lwz r11,8(r11); bctr` = this->vtbl[2](node->payload)) in
+  the 0x82276000..0x8228Fxxx render-op family -- same family as the car
+  node. Play-CB executes are in here; per-fn identification requires
+  resolving each node's `this` vtable (not done).
+- Bypass attempt (task 2): kLiftedThreshold 8->20 + NEW
+  kForceRenderOpFamilyEnqueue (force a5=1 for the 0x82276000..0x82290000
+  family) => **CRASHED in ~20s**: backlog exploded 17 -> 2920
+  (FM2_POOLSTATE), then AV at fm2.exe+0x217a588 = **sub_825E0678, the
+  KNOWN mesh-section-dispatcher payload-recycle race**. With the latch
+  neutralized and retire broken the queue grows unboundedly until
+  payloads recycle under live commands. BOTH toggles REVERTED
+  (thresh=8, family-force=false); build restored to stable.
+- **CONCLUSION (task 3 = the real work): the pool's submitted-buffer
+  RETIRE never keeps up in plume** (ret120 counter crawls while enq124
+  races; retire appears gated on D3D frame completion that plume never
+  signals). Every drop/black-texture symptom flows from this. Next
+  session: find the retire site (the note's "0x8245D5B8" was a stale
+  mid-function offset -- 0x8245D510 is just the pool CTOR; find who
+  DECREMENTS backlog128/+36 and increments ret120/+120, what completion
+  signal it waits on -- likely a fence/callback via
+  D3DDevice_InsertFence/IsFencePending/InsertCallback family -- and
+  synthesize that signal from the plume present). Success criteria:
+  FM2_POOLSTATE backlog stays < 8 organically, p145 unlatched, zero
+  FM2_ENQ_DROP, textured UI appears WITHOUT any force toggles.
 - **Fix implemented: ranged per-draw snapshot** in
   `BindPm4GeometryFromContext` (`kPerDrawIndexedRangeSnapshot`): scan the
   draw's index slice, upload only the referenced vertex window
@@ -478,6 +542,64 @@ User directive: use `C:\Users\Tera\Documents\GitHub\UnleashedRecomp` as the guid
 - **`kPerDrawIndexedRangeSnapshot` RE-ENABLED (true)** with the small-window
   caps and the DrainGpuBeginConstants QueryRangeAccess guard (a real hazard
   fix regardless). Awaiting user press-A letter-legibility verdict.
+
+### 2026-07-03 session 6: "retire" model OVERTURNED — the drop latch is our
+### own 1000 Hz gate pulse uncapping the producer. 60 Hz A/B = big improvement.
+
+- **The pt10 "buffer RETIRE gated on a D3D fence" model was WRONG.** Full IDA
+  decode of the pool (ida37 = FM2.xex.i64):
+  - Pool embedded at renderThread+2224 (thunks `addi r3,r3,0x8B0`): pending
+    list +28/+32 with live count **+36**; free/retired list +40/+44; open
+    buffer +52; executing buffer +56; **+120 = SUBMIT sequence counter** (not
+    a retire counter); +124 = CParams node counter; +128 = backlog snapshot;
+    +132 = threshold (set to **3** by FM2_GraphicsManager_InitRenderersAndTargets
+    via setter 0x8245CD58); +140 credits (0x82277C00/+1 marker, 0x8245D188/-1);
+    +145 drop latch; +160/+164 pump callback used by the enqueue spin.
+  - **SUBMIT = 0x8245D5C0** (misnamed `audio_thread_link_shutdown`, reached via
+    thunk 0x82277BF8 ← sub_8220A628 ← main loop 0x822172E8): lazily frees all
+    retired buffers on the free list (+40), pushes the open buffer onto
+    pending, snapshots +128=+36, **computes latch +145 = (pend36 > thresh132)**
+    and ++seq(+120). Retire itself (0x8245D740 push-to-free-list after the
+    drain) was never broken — it runs fine.
+  - EXECUTE = RunFrame 0x82288948 (free-running render-thread loop 0x82289640),
+    ONE buffer per iteration: pop 0x8245D448 (decrements pend36) → drain
+    0x8245D048 → 0x8245D740. Gated on seq(+120) > lastExecSeq(thread+2100).
+  - Enqueue backpressure (0x8245CED8) spins while backlog > **2×threshold** ⇒
+    the observed steady backlog 14-17 with lifted thresh 8 IS the designed
+    equilibrium of a producer running flat-out.
+  - **Hardware frame pacing**: GPU vblank → guest ISR sub_82371FD8 (source 0)
+    → `D3D::VerticalBlankInterrupt` → device+0x3F28 callback =
+    **FM2_SignalGate (0x8220A4E8)** → `PulseEvent(dword_829C24C0)` → main
+    loop's `WaitForSingleObject(829C24C0, INFINITE)` (when cmdline params
+    +1056 == 1) ⇒ exactly ONE buffer submit per vblank; render thread keeps
+    pace trivially; backlog ≤3; latch never sets.
+  - **In plume WE break the pacing ourselves**: d3d_hooks.cpp
+    `StartGatePulseThreadOnce`/`HostPulseFrameSyncGate` pulses that event at
+    `fm2_plume_gate_pulse_hz` = **default 1000 Hz** (added earlier to unstick
+    boot). Producer uncapped ⇒ submits >> consumes ⇒ backlog rides the
+    backpressure ceiling ⇒ p145 permanently latched ⇒ every droppable (a5==0)
+    CParams burst-dropped, including the textured-UI play-command-buffer ops
+    (pt9) and CRenderAdapterLink state (session 3). ALL of it flows from here.
+- **A/B (no rebuild, `launch-fm2-plume-native.bat --fm2_plume_gate_pulse_hz 60
+  --log_file ...`)**: gate pulses verified ~57/s; submits (+120) pace at
+  ~45/s; **backlog now periodically drains fully to 0** (it NEVER did at
+  1000 Hz) but still sawtooths 0→17 on a ~3 s period — the render thread
+  stalls ~0.3-0.4 s at a time — so p145 still latches in bursts (66
+  FM2_ENQ_DROP in ~100 s vs continuous before). 30 Hz run was closed at 24 s
+  (no data). FramePipe 56-80/s, RenderWorker ~115/s, GpuCmdBuf ~29/s during
+  the 60 Hz run.
+- **USER VERDICT: NO visual difference at 60/30 Hz** — textured UI still
+  black. Reverted to the 1000 Hz default (nothing was in the tree; the A/B
+  was launch-flags only). Interpretation: pacing measurably reduces the latch
+  duty cycle (backlog periodically drains to 0) but the visuals don't change,
+  so either (a) the remaining latch bursts still drop the play-CB ops every
+  frame (they enqueue once per frame; one drop = black that frame), or
+  (b) the drop latch is NOT the actual gate on the textured-UI path and the
+  pt9 "play ops never execute" has a different cause upstream (e.g. the play
+  ops are never RECORDED in plume, not dropped — worth checking whether the
+  play-CB CParams even reach the enqueue hook: grep the FM2_ENQ_HIST fns
+  against the play-op family before blaming the latch again).
+- Buglog: bug-026. Memory: project_fm2_pool_pacing_root_cause.md.
 
 ## Parked / open
 

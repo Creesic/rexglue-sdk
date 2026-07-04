@@ -68151,7 +68151,7 @@ loc_822896A0:
 	ctx.r3.s64 = ctx.r31.s64 + 2224;
 	// bl 0x8245d510
 	ctx.lr = 0x82289740;
-	sub_8245D510(ctx, base);
+	FM2_DeferredRenderCmdPool_Construct(ctx, base);
 	// li r5,0
 	ctx.r5.s64 = 0;
 	// li r4,0

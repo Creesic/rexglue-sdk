@@ -9187,7 +9187,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x82381E30, sub_82381E30);
   registrar->SetFunction(0x82381E60, sub_82381E60);
   registrar->SetFunction(0x82381E90, sub_82381E90);
-  registrar->SetFunction(0x82381FD0, sub_82381FD0);
+  registrar->SetFunction(0x82381FD0, D3D_FlushRingSegmentAndKickScheduler);
   registrar->SetFunction(0x82382148, sub_82382148);
   registrar->SetFunction(0x823822F0, sub_823822F0);
   registrar->SetFunction(0x823823A8, sub_823823A8);
@@ -12451,7 +12451,7 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8245D280, sub_8245D280);
   registrar->SetFunction(0x8245D3E0, sub_8245D3E0);
   registrar->SetFunction(0x8245D448, sub_8245D448);
-  registrar->SetFunction(0x8245D510, sub_8245D510);
+  registrar->SetFunction(0x8245D510, FM2_DeferredRenderCmdPool_Construct);
   registrar->SetFunction(0x8245D5C0, sub_8245D5C0);
   registrar->SetFunction(0x8245D740, sub_8245D740);
   registrar->SetFunction(0x8245D7F0, sub_8245D7F0);

@@ -4832,6 +4832,16 @@ REX_HOOK_RAW(sub_8245CED8) {
     // just flow control, it bounds PAYLOAD LIFETIME. 8 = deep enough that the
     // now-fast drain (~130/s after the tile-surface leak fix) keeps p145
     // unlatched in steady state, shallow enough that payloads stay live.
+    // 2026-07-03 pt10: at press-A the backlog RIDES at 14-17 (FM2_POOLSTATE)
+    // so 8 keeps p145 latched ~permanently => the textured UI elements'
+    // play-command-buffer CParams are dropped every frame (game falls back
+    // to black colored quads -- pixel-debug proof in the session-5 doc pt9).
+    // RAISING TO 20 + family-force CRASHED in ~20s (backlog exploded
+    // 17 -> 2920, then the payload-recycle AV at fm2.exe+0x217a588):
+    // with the latch neutralized and retire broken, the queue grows without
+    // bound. KEEP 8. The real fix is making the pool's submitted-buffer
+    // RETIRE work in plume (see the pt10 notes: retire is tied to D3D frame
+    // completion, sub_8245D5B8) -- not weakening the flow control.
     static constexpr bool kLiftDropThreshold = true;
     static constexpr int32_t kLiftedThreshold = 8;
     if (kLiftDropThreshold && pool == 0x4001CA20u) {
@@ -4872,14 +4882,32 @@ REX_HOOK_RAW(sub_8245CED8) {
     // The REAL bug is that the backlog never drains in plume (buffer retire
     // appears tied to D3D frame-completion) -- see FM2_POOLSTATE diag below.
     static constexpr bool kForceAllNodeEnqueue = false;
+    // 2026-07-03 pt10: force-enqueue the RENDER-OP CParams THUNK FAMILY
+    // (0x82276000..0x82290000 -- the same family as the car node
+    // 0x82279610 that kForceCarNodeEnqueue already rescues; the dropped-fn
+    // log at press-A is ~all in this range, incl. the textured UI
+    // elements' play-command-buffer executes). Unlike the reverted
+    // kForceAllNodeEnqueue this leaves non-render callbacks to the game's
+    // own flow control, and the payload-lifetime guards added since
+    // (UploadGuestVertexData range guard, IsReadableHostPtr commit probes)
+    // degrade a late/recycled payload to a skipped bind instead of a fault.
+    // CRASHED 2026-07-03 pt10 (with thresh 20): backlog 2920, payload-recycle
+    // AV. Do not re-enable without working buffer retire.
+    static constexpr bool kForceRenderOpFamilyEnqueue = false;
+    const bool renderOpFamily = fn >= 0x82276000u && fn < 0x82290000u;
     if (p144 == 0u && p145 && a5 == 0u && p140 <= 0) {
       static std::atomic<uint32_t> s_dropLogs{0};
       if (s_dropLogs.fetch_add(1, std::memory_order_relaxed) < 64u)
         LogReplayDbg("FM2_ENQ_DROP fn=0x%08X pool=0x%08X caller=0x%08X "
                      "forced=%u tid=%u",
-                     fn, pool, (uint32_t)ctx.lr, kForceAllNodeEnqueue ? 1u : 0u,
+                     fn, pool, (uint32_t)ctx.lr,
+                     (kForceAllNodeEnqueue ||
+                      (kForceRenderOpFamilyEnqueue && renderOpFamily))
+                         ? 1u
+                         : 0u,
                      (unsigned)::GetCurrentThreadId());
-      if (kForceAllNodeEnqueue)
+      if (kForceAllNodeEnqueue ||
+          (kForceRenderOpFamilyEnqueue && renderOpFamily))
         ctx.r7.u32 = 1u;
     }
     // Enqueue-rate histogram (1 line/sec): with the drain catch-up keeping

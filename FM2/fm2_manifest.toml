@@ -302,6 +302,9 @@ longjmp_address = 0x82418210
 0x82693988 = { name = "FM2_FmodReadCopy2_82693988" }
 0x823EB998 = { name = "FM2_FmodScheduler_823EB998" }
 0x823EB9D0 = { name = "FM2_FmodScheduler_823EB9D0" }
+# 2026-07-03 (played-command-buffer transport work, docs/FM2-ida-renames-2026-07-03.md)
+0x82381FD0 = { name = "D3D_FlushRingSegmentAndKickScheduler" }
+0x8245D510 = { name = "FM2_DeferredRenderCmdPool_Construct" }
 
 [[entrypoint.midasm_hook]]
 address = 0x82603C28

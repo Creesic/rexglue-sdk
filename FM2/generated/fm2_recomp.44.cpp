@@ -48583,7 +48583,7 @@ loc_82732D38:
 	REX_STORE_U8(ctx.r31.u32 + 10812, ctx.r10.u8);
 	// bl 0x82381fd0
 	ctx.lr = 0x82732D68;
-	sub_82381FD0(ctx, base);
+	D3D_FlushRingSegmentAndKickScheduler(ctx, base);
 	// lis r11,-32254
 	ctx.r11.s64 = -2113798144;
 	// mr r30,r3

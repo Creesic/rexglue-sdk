@@ -1,12 +1,24 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-03T20:26:26.364Z
-> Files: 523 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-04T02:06:10.480Z
+> Files: 533 tracked | Anatomy hits: 0 | Misses: 0
+
+## ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/
+
+- `MEMORY.md` — Memory Index (~2855 tok)
+- `project_fm2_black_textures_no_tfetch.md` — ⚠️ 2026-07-03 — RETRACTED a wrong pivot; ORIGINAL finding STANDS (read first) (~2476 tok)
+- `project_fm2_pool_pacing_root_cause.md` (~1004 tok)
 
 ## ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/22054c61-d9f8-4566-991c-6f9759f41605/scratchpad/
 
 - `burst_fm2.ps1` — Declares WB (~351 tok)
 - `shot_fm2.ps1` — Declares WShot (~316 tok)
+
+## ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/
+
+- `main.cpp` — include <deque> (~4694 tok)
+- `shader_recompiler.cpp` — include "shader_recompiler.h" (~24379 tok)
+- `shader_recompiler.h` — pragma once (~610 tok)
 
 ## ./
 
@@ -543,12 +555,25 @@
 - `rename_infra_pass7.json` (~680 tok)
 - `rename_infra_pass71.json` (~376 tok)
 
+## FM2/
+
+- `fm2_manifest.toml` (~9278 tok)
+
 ## FM2/src/render/
 
-- `d3d_hooks.cpp` — include <algorithm> (~65609 tok)
+- `d3d_hooks.cpp` — include <algorithm> (~66107 tok)
 - `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~17124 tok)
 - `render_state.cpp` — include <algorithm> (~62524 tok)
 
 ## docs/
 
-- `FM2-handoff-2026-07-02-session5.md` — FM2 plume_native handoff — START HERE (session 5 entry) (~7641 tok)
+- `FM2-handoff-2026-07-02-session5.md` — FM2 plume_native handoff — START HERE (session 5 entry) (~9663 tok)
+- `FM2-ida-renames-2026-07-03.md` — FM2 IDA renames — 2026-07-03 (played-command-buffer transport session) (~688 tok)
+
+## docs/superpowers/specs/
+
+- `2026-07-03-fm2-shader-probe-design.md` — FM2 Shader Probe — design (~1453 tok)
+
+## scripts/fm2/
+
+- `launch-fm2-plume-native-clean.bat` (~622 tok)

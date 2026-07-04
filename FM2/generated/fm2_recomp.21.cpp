@@ -18162,7 +18162,7 @@ loc_8245D4D8:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_8245D510) {
+DEFINE_REX_FUNC(FM2_DeferredRenderCmdPool_Construct) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12

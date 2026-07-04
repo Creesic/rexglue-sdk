@@ -15786,7 +15786,7 @@ loc_82381FB0:
 	return;
 }
 
-DEFINE_REX_FUNC(sub_82381FD0) {
+DEFINE_REX_FUNC(D3D_FlushRingSegmentAndKickScheduler) {
 	REX_FUNC_PROLOGUE();
 	uint32_t ea{};
 	// mflr r12
