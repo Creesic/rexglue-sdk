@@ -50,7 +50,8 @@ plume::RenderShader *LoadShader(GuestShader *guestShader,
 // creates an always-on-top window on first call and updates its readout.
 void UpdateShaderProbeWindow(int selDraw, int total, bool solo, int psIndex,
                              int psCount, uint64_t hash, const char *file,
-                             bool psoOk, uint64_t boundHash);
+                             bool psoOk, uint64_t boundHash, bool highlight,
+                             bool filterSeen, int seenCount, bool testIsSeen);
 
 // session 6P-3: the game uploads per-draw VS transform constants via
 // FM2_RenderContext_UploadMatrixConstants, which writes to a render-context object

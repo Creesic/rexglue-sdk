@@ -75,7 +75,7 @@ void ProbeWindowThread() {
 
   HWND hwnd = CreateWindowExA(
       WS_EX_TOPMOST | WS_EX_TOOLWINDOW, wc.lpszClassName, "FM2 Shader Probe",
-      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, 40, 40, 500, 190, nullptr,
+      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, 40, 40, 560, 235, nullptr,
       nullptr, inst, nullptr);
   if (hwnd == nullptr)
     return;
@@ -93,20 +93,23 @@ void ProbeWindowThread() {
 
 void UpdateShaderProbeWindow(int selDraw, int total, bool solo, int psIndex,
                              int psCount, uint64_t hash, const char *file,
-                             bool psoOk, uint64_t boundHash) {
-  char buf[700];
+                             bool psoOk, uint64_t boundHash, bool highlight,
+                             bool filterSeen, int seenCount, bool testIsSeen) {
+  char buf[900];
   std::snprintf(
       buf, sizeof(buf),
-      "Draw:   %d / %d      solo: %s\n"
+      "Draw:   %d / %d      solo: %s   highlight: %s\n"
       "bound:  0x%016llX   (what plume assigns; 0 = not in cache)\n"
-      "test:   0x%016llX   psoOk: %d   [%d / %d]\n"
+      "test:   0x%016llX   psoOk: %d   [%d / %d]   %s\n"
       "file:   %s\n"
+      "shaders:%s  (%d used on-screen)\n"
       "\n"
-      "[F6/F7] draw   [F8/F9] shader   [F5] solo",
-      selDraw, total, solo ? "ON " : "off",
+      "[F6/F7] draw  [F8/F9] shader  [F5] solo  [F10] filter  [F11] hilite",
+      selDraw, total, solo ? "ON " : "off", highlight ? "ON " : "off",
       static_cast<unsigned long long>(boundHash),
       static_cast<unsigned long long>(hash), psoOk ? 1 : 0, psIndex, psCount,
-      file ? file : "");
+      testIsSeen ? "<on-screen>" : "", file ? file : "",
+      filterSeen ? "ON-SCREEN only" : "FULL cache", seenCount);
   {
     std::lock_guard<std::mutex> lock(g_textMutex);
     g_text = buf;

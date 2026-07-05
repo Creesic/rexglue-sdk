@@ -498,3 +498,198 @@
 | 17:32 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified CAUSE() | ~511 |
 | 17:32 | Session end: 14 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 9 reads | ~143213 tok |
 | 17:32 | Session end: 14 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 9 reads | ~143213 tok |
+| 17:40 | Edited FM2/src/render/d3d_hooks.cpp | added 4 condition(s) | ~278 |
+| 17:40 | Edited FM2/src/render/d3d_hooks.cpp | added 4 condition(s) | ~278 |
+| 17:40 | Edited FM2/src/render/d3d_hooks.cpp | added 5 condition(s) | ~346 |
+| 17:40 | Edited FM2/src/render/d3d_hooks.cpp | added 5 condition(s) | ~346 |
+| 17:43 | Session end: 16 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 9 reads | ~143882 tok |
+| 17:43 | Session end: 16 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 9 reads | ~143882 tok |
+| 17:45 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified AUTHENTIC() | ~702 |
+| 17:45 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified AUTHENTIC() | ~702 |
+| 17:46 | Session end: 18 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 9 reads | ~145386 tok |
+| 17:46 | Session end: 18 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 9 reads | ~145386 tok |
+| 17:53 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | inline fix | ~334 |
+| 17:53 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | inline fix | ~334 |
+| 17:53 | Session end: 19 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 11 reads | ~145743 tok |
+| 17:53 | Session end: 19 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 11 reads | ~145743 tok |
+| 18:01 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~373 |
+| 18:01 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~373 |
+| 18:04 | Edited FM2/src/render/render_state.cpp | modified if() | ~170 |
+| 18:04 | Edited FM2/src/render/render_state.cpp | modified if() | ~170 |
+| 18:04 | Session end: 22 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 11 reads | ~147237 tok |
+| 18:04 | Session end: 22 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 11 reads | ~147237 tok |
+| 18:07 | Session end: 22 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 12 reads | ~148338 tok |
+| 18:07 | Session end: 22 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 12 reads | ~148338 tok |
+| 22:13 | Session end: 22 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 13 reads | ~149322 tok |
+| 22:13 | Session end: 22 writes across 3 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp) | 13 reads | ~149322 tok |
+| 22:16 | Edited FM2/src/render/render_internal.h | 3→4 lines | ~82 |
+| 22:16 | Edited FM2/src/render/render_internal.h | 3→4 lines | ~82 |
+| 22:17 | Edited FM2/src/render/shader_probe_window.cpp | modified UpdateShaderProbeWindow() | ~272 |
+| 22:17 | Edited FM2/src/render/shader_probe_window.cpp | modified UpdateShaderProbeWindow() | ~272 |
+| 22:17 | Edited FM2/src/render/shader_probe_window.cpp | inline fix | ~20 |
+| 22:17 | Edited FM2/src/render/shader_probe_window.cpp | inline fix | ~20 |
+| 22:17 | Edited FM2/src/render/render_state.cpp | added 7 condition(s) | ~694 |
+| 22:17 | Edited FM2/src/render/render_state.cpp | added 7 condition(s) | ~694 |
+| 22:18 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~231 |
+| 22:18 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~231 |
+| 22:18 | Edited FM2/src/render/render_state.cpp | 5→10 lines | ~159 |
+| 22:18 | Edited FM2/src/render/render_state.cpp | 5→10 lines | ~159 |
+| 22:18 | Edited FM2/src/render/render_state.cpp | 4→5 lines | ~59 |
+| 22:18 | Edited FM2/src/render/render_state.cpp | 4→5 lines | ~59 |
+| 22:19 | Edited FM2/src/render/render_state.cpp | added 3 condition(s) | ~279 |
+| 22:19 | Edited FM2/src/render/render_state.cpp | added 3 condition(s) | ~279 |
+| 22:19 | Edited FM2/src/render/render_state.cpp | ptrdiff_t() → size_t() | ~54 |
+| 22:19 | Edited FM2/src/render/render_state.cpp | ptrdiff_t() → size_t() | ~54 |
+| 22:20 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified FAILED() | ~518 |
+| 22:20 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | modified FAILED() | ~518 |
+| 22:22 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_logo_cull_depth_2026-07-04.md | — | ~1415 |
+| 22:22 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_logo_cull_depth_2026-07-04.md | — | ~1415 |
+| 22:23 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | — | ~1904 |
+| 22:23 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | — | ~1904 |
+| 22:23 | Session end: 37 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 15 reads | ~160361 tok |
+| 22:23 | Session end: 37 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 15 reads | ~160361 tok |
+| 22:27 | Edited FM2/src/render/render_state.cpp | 2→6 lines | ~111 |
+| 22:27 | Edited FM2/src/render/render_state.cpp | 2→6 lines | ~111 |
+| 22:37 | Session end: 39 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~160819 tok |
+| 22:37 | Session end: 39 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~160819 tok |
+| 22:42 | Session end: 39 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~160819 tok |
+| 22:42 | Session end: 39 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~160819 tok |
+| 22:52 | Session end: 39 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~160906 tok |
+| 22:52 | Session end: 39 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~160906 tok |
+| 23:11 | Edited FM2/src/render/render_state.cpp | added 4 condition(s) | ~667 |
+| 23:11 | Edited FM2/src/render/render_state.cpp | added 4 condition(s) | ~667 |
+| 23:13 | Edited FM2/src/render/render_state.cpp | 20→24 lines | ~376 |
+| 23:13 | Edited FM2/src/render/render_state.cpp | 20→24 lines | ~376 |
+| 23:15 | Edited FM2/src/render/render_state.cpp | expanded (+6 lines) | ~383 |
+| 23:15 | Edited FM2/src/render/render_state.cpp | expanded (+6 lines) | ~383 |
+| 23:17 | Session end: 43 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~163150 tok |
+| 23:17 | Session end: 43 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~163150 tok |
+| 23:20 | Edited FM2/src/render/d3d_hooks.cpp | added 3 condition(s) | ~323 |
+| 23:20 | Edited FM2/src/render/d3d_hooks.cpp | added 3 condition(s) | ~323 |
+| 23:25 | Edited FM2/src/render/d3d_hooks.cpp | modified if() | ~367 |
+| 23:25 | Edited FM2/src/render/d3d_hooks.cpp | modified if() | ~367 |
+| 23:26 | Session end: 46 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~165089 tok |
+| 23:26 | Session end: 46 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~165089 tok |
+| 23:30 | Edited FM2/src/render/render_state.cpp | reduced (-9 lines) | ~318 |
+| 23:30 | Edited FM2/src/render/render_state.cpp | reduced (-9 lines) | ~318 |
+| 23:32 | Edited FM2/src/render/d3d_hooks.cpp | modified if() | ~66 |
+| 23:32 | Edited FM2/src/render/d3d_hooks.cpp | modified if() | ~66 |
+| 23:35 | Session end: 49 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~166320 tok |
+| 23:35 | Session end: 49 writes across 6 files (MEMORY.md, d3d_hooks.cpp, render_state.cpp, render_internal.h, shader_probe_window.cpp) | 17 reads | ~166320 tok |
+
+## Session: 2026-07-05 23:45
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 23:45
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 11:57
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 11:57
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 12:00 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~407 |
+| 12:00 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~407 |
+| 12:09 | Edited FM2/src/render/render_state.cpp | modified if() | ~42 |
+| 12:09 | Edited FM2/src/render/render_state.cpp | modified if() | ~42 |
+| 12:10 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/drive_fm2_menu.ps1 | — | ~419 |
+| 12:10 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/drive_fm2_menu.ps1 | — | ~419 |
+
+## Session: 2026-07-05 12:11
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 12:11
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 12:11
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 12:11
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 12:13 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~272 |
+| 12:13 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~272 |
+| 12:13 | Edited FM2/src/render/render_state.cpp | 2→5 lines | ~83 |
+| 12:13 | Edited FM2/src/render/render_state.cpp | 2→5 lines | ~83 |
+| 12:14 | Edited FM2/src/render/render_state.cpp | modified ApplyPm4VsConstants() | ~129 |
+| 12:14 | Edited FM2/src/render/render_state.cpp | modified ApplyPm4VsConstants() | ~129 |
+| 12:14 | Edited FM2/src/render/render_state.cpp | 7→11 lines | ~160 |
+| 12:14 | Edited FM2/src/render/render_state.cpp | 7→11 lines | ~160 |
+| 12:14 | Edited FM2/src/render/render_state.cpp | 3→5 lines | ~86 |
+| 12:14 | Edited FM2/src/render/render_state.cpp | 3→5 lines | ~86 |
+| 12:14 | Edited FM2/src/render/render_state.cpp | 4→1 lines | ~21 |
+| 12:14 | Edited FM2/src/render/render_state.cpp | 4→1 lines | ~21 |
+| 12:17 | Edited FM2/src/render/render_state.cpp | modified if() | ~96 |
+| 12:17 | Edited FM2/src/render/render_state.cpp | modified if() | ~96 |
+| 12:18 | Session end: 8 writes across 1 files (render_state.cpp) | 4 reads | ~68830 tok |
+| 12:18 | Session end: 8 writes across 1 files (render_state.cpp) | 4 reads | ~68830 tok |
+| 12:21 | Session end: 8 writes across 1 files (render_state.cpp) | 5 reads | ~141568 tok |
+| 12:21 | Session end: 8 writes across 1 files (render_state.cpp) | 5 reads | ~141568 tok |
+| 12:25 | Session end: 8 writes across 1 files (render_state.cpp) | 5 reads | ~141765 tok |
+| 12:25 | Session end: 8 writes across 1 files (render_state.cpp) | 5 reads | ~141765 tok |
+| 12:32 | Edited FM2/src/render/render_state.cpp | added 4 condition(s) | ~472 |
+| 12:32 | Edited FM2/src/render/render_state.cpp | added 4 condition(s) | ~472 |
+| 12:32 | Session end: 9 writes across 1 files (render_state.cpp) | 5 reads | ~142271 tok |
+| 12:32 | Session end: 9 writes across 1 files (render_state.cpp) | 5 reads | ~142271 tok |
+| 12:46 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/disasm_probe.py | — | ~454 |
+| 12:46 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/disasm_probe.py | — | ~454 |
+| 12:56 | Edited ../renderdoc/renderdoc-mcp/renderdoc_mcp/shader_debug.py | expanded (+6 lines) | ~203 |
+| 12:56 | Edited ../renderdoc/renderdoc-mcp/renderdoc_mcp/shader_debug.py | expanded (+6 lines) | ~203 |
+| 12:57 | Edited ../renderdoc/renderdoc-mcp/renderdoc_mcp/server.py | expanded (+9 lines) | ~491 |
+| 12:57 | Edited ../renderdoc/renderdoc-mcp/renderdoc_mcp/server.py | expanded (+9 lines) | ~491 |
+| 12:57 | Edited ../renderdoc/renderdoc-mcp/renderdoc_mcp/shader_debug.py | modified best_disassembly() | ~427 |
+| 12:57 | Edited ../renderdoc/renderdoc-mcp/renderdoc_mcp/shader_debug.py | modified best_disassembly() | ~427 |
+| 12:57 | Edited ../renderdoc/renderdoc-mcp/renderdoc_mcp/server.py | 8→7 lines | ~117 |
+| 12:57 | Edited ../renderdoc/renderdoc-mcp/renderdoc_mcp/server.py | 8→7 lines | ~117 |
+| 13:00 | Session end: 17 writes across 4 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py) | 11 reads | ~146949 tok |
+| 13:00 | Session end: 17 writes across 4 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py) | 11 reads | ~146949 tok |
+| 13:03 | Session end: 17 writes across 4 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py) | 11 reads | ~146949 tok |
+| 13:03 | Session end: 17 writes across 4 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py) | 11 reads | ~146949 tok |
+| 13:15 | Session end: 17 writes across 4 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py) | 11 reads | ~146949 tok |
+| 13:15 | Session end: 17 writes across 4 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py) | 11 reads | ~146949 tok |
+| 13:19 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | — | ~1043 |
+| 13:19 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | — | ~1043 |
+| 13:19 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/reference_renderdoc_mcp_disasm_fix.md | — | ~864 |
+| 13:19 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/reference_renderdoc_mcp_disasm_fix.md | — | ~864 |
+| 13:20 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | 3→5 lines | ~396 |
+| 13:20 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | 3→5 lines | ~396 |
+
+### Session summary 2026-07-05 (car flashing + RenderDoc MCP fix)
+- **CAR flashing root cause NAILED = XenosRecomp translation bug, NOT constants.** VS 4fff9681 log2(0)/rcp(0) on authentically-~0 c32 → −FLT_MAX poison → flashing. Constants + PM4 apply fully exonerated. Proof via RenderDoc matched pair (bad EID1858 == good EID1157) + debug_vertex. Fix pending in XenosRecomp fork. → bug-072, [[project_fm2_car_flashing_xenosrecomp_2026-07-05]].
+- **Fixed RenderDoc MCP DXIL disassembly** (get_shader/debug_vertex returned AMDIL "Unsupported encoding" garbage). Committed renderdoc repo 6735622b2. Runtime: qrenderdoc child on :8765, bundle x64/Development/mcp/renderdoc_mcp, restart via qrenderdoc MCP toggle. Verified working. → bug-073, [[reference_renderdoc_mcp_disasm_fix]].
+- Diagnostics still in FM2 render_state.cpp/d3d_hooks.cpp (FM2_VSC32, FM2_VSAPPLY, FM2_APPLYADDR, FM2_CARLIVE, FM2_VSCWRITE_API, scanner bounds relaxation) — remove in cleanup; all pointed to the (now-exonerated) constant path.
+| 13:22 | Session end: 22 writes across 7 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 12 reads | ~151461 tok |
+| 13:22 | Session end: 22 writes across 7 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 12 reads | ~151461 tok |
+| 13:41 | Session end: 22 writes across 7 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 13 reads | ~151461 tok |
+| 13:41 | Session end: 22 writes across 7 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 13 reads | ~151461 tok |
+| 14:06 | Edited ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_common.h | modified mul() | ~166 |
+| 14:06 | Edited ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_common.h | modified mul() | ~166 |
+| 14:06 | Edited ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | expanded (+15 lines) | ~399 |
+| 14:06 | Edited ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | expanded (+15 lines) | ~399 |
+| 14:11 | Session end: 25 writes across 9 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 16 reads | ~152493 tok |
+| 14:11 | Session end: 25 writes across 9 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 16 reads | ~152493 tok |
+| 14:13 | Edited FM2/src/render/render_state.cpp | inline fix | ~16 |
+| 14:13 | Edited FM2/src/render/render_state.cpp | inline fix | ~16 |
+| 14:13 | Edited FM2/src/render/render_state.cpp | 7→6 lines | ~120 |
+| 14:13 | Edited FM2/src/render/render_state.cpp | 7→6 lines | ~120 |
+| 14:14 | Session end: 27 writes across 9 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 16 reads | ~153056 tok |
+| 14:14 | Session end: 27 writes across 9 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 16 reads | ~153056 tok |
+| 14:16 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | modified fix() | ~444 |
+| 14:16 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | modified fix() | ~444 |
+| 14:17 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "1/dot(c32)" → "never fires" | ~242 |
+| 14:17 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "1/dot(c32)" → "never fires" | ~242 |

@@ -67,6 +67,56 @@ static bool g_probeLastPsoOk = true;
 static uint64_t g_probeSelectedOrigHash = 0; // cache hash bound by the renderer
                                              // to the selected draw (0 = the
                                              // bound PS has no cache entry)
+static bool g_probeHighlight = true;    // F11: blink the selected draw so it is
+                                        // locatable on the full (non-solo) scene
+static bool g_probeFilterSeen = true;   // F10: F8/F9 cycles only shaders bound
+                                        // on-screen this run (not the whole cache)
+static bool g_probeDrawChanged = false; // F6/F7 pressed -> snap the test shader to
+                                        // the newly-selected draw's own shader
+static int g_probeSelectedOrigIndex = -1; // cache index of the selected draw's PS
+static std::vector<uint8_t> g_probeSeen;  // per-cache-index bound-this-run flags
+static std::vector<int> g_probeSeenList;  // seen cache indices, first-seen order
+
+// Cache index of a shader's bound cache entry (-1 if none / out of range).
+static int ProbeCacheIndexOf(const GuestShader *s) {
+  if (s == nullptr || s->shaderCacheEntry == nullptr)
+    return -1;
+  const auto i = s->shaderCacheEntry - g_shaderCacheEntries;
+  return (i >= 0 && size_t(i) < g_shaderCacheEntryCount) ? int(i) : -1;
+}
+
+// Record that a cache shader was bound on-screen this run (for the F8/F9 filter).
+static void ProbeMarkSeen(const GuestShader *s) {
+  const int i = ProbeCacheIndexOf(s);
+  if (i < 0)
+    return;
+  if (g_probeSeen.size() != g_shaderCacheEntryCount)
+    g_probeSeen.assign(g_shaderCacheEntryCount, 0u);
+  if (g_probeSeen[i] == 0u) {
+    g_probeSeen[i] = 1u;
+    g_probeSeenList.push_back(i);
+  }
+}
+
+// Advance the test-shader selection by `dir`. With the on-screen filter on, step
+// through the seen-list (the handful of shaders actually used this run); else
+// step through the whole cache. Keeps g_probePsIndex on a valid cache index.
+static void ProbeStepShader(int dir) {
+  const int n = int(g_shaderCacheEntryCount);
+  if (n <= 0)
+    return;
+  if (g_probeFilterSeen && !g_probeSeenList.empty()) {
+    const int m = int(g_probeSeenList.size());
+    // Find the current index's position in the seen-list (or nearest slot).
+    int pos = 0;
+    for (int k = 0; k < m; ++k)
+      if (g_probeSeenList[k] == g_probePsIndex) { pos = k; break; }
+    pos = ((pos + dir) % m + m) % m;
+    g_probePsIndex = g_probeSeenList[pos];
+  } else {
+    g_probePsIndex = ((g_probePsIndex + dir) % n + n) % n;
+  }
+}
 
 // Lazily-created GuestShader per cache index, pointing at g_shaderCacheEntries[i]
 // so LoadShader pulls that entry's DXIL. Called on the single render thread.
@@ -85,19 +135,21 @@ static GuestShader *ProbeShaderForIndex(int i) {
 }
 
 static void PollProbeKeys() {
-  static bool prev[5] = {};
-  const int vks[5] = {0x74, 0x75, 0x76, 0x77, 0x78}; // VK_F5..VK_F9
-  bool cur[5];
-  for (int k = 0; k < 5; ++k)
+  static bool prev[7] = {};
+  const int vks[7] = {0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A}; // VK_F5..VK_F11
+  bool cur[7];
+  for (int k = 0; k < 7; ++k)
     cur[k] = (GetAsyncKeyState(vks[k]) & 0x8000) != 0;
   bool changed = false;
   auto edge = [&](int k) { return cur[k] && !prev[k]; };
   if (edge(0)) { g_probeSolo = !g_probeSolo; changed = true; }
-  if (edge(1)) { --g_probeSelectedDraw; changed = true; }
-  if (edge(2)) { ++g_probeSelectedDraw; changed = true; }
-  if (edge(3)) { --g_probePsIndex; changed = true; }
-  if (edge(4)) { ++g_probePsIndex; changed = true; }
-  for (int k = 0; k < 5; ++k)
+  if (edge(1)) { --g_probeSelectedDraw; g_probeDrawChanged = true; changed = true; }
+  if (edge(2)) { ++g_probeSelectedDraw; g_probeDrawChanged = true; changed = true; }
+  if (edge(3)) { ProbeStepShader(-1); changed = true; }
+  if (edge(4)) { ProbeStepShader(+1); changed = true; }
+  if (edge(5)) { g_probeFilterSeen = !g_probeFilterSeen; changed = true; }
+  if (edge(6)) { g_probeHighlight = !g_probeHighlight; changed = true; }
+  for (int k = 0; k < 7; ++k)
     prev[k] = cur[k];
 
   // The per-frame draw count fluctuates (variable draws/frame), so clamp the
@@ -114,10 +166,15 @@ static void PollProbeKeys() {
   if (n > 0)
     g_probePsIndex = ((g_probePsIndex % n) + n) % n;
   const ShaderCacheEntry &e = g_shaderCacheEntries[g_probePsIndex];
+  const bool testIsSeen = g_probePsIndex >= 0 &&
+                          g_probePsIndex < int(g_probeSeen.size()) &&
+                          g_probeSeen[g_probePsIndex] != 0u;
 
   UpdateShaderProbeWindow(g_probeSelectedDraw, g_probeMaxDrawCount, g_probeSolo,
                           g_probePsIndex, n, e.hash, e.filename,
-                          g_probeLastPsoOk, g_probeSelectedOrigHash);
+                          g_probeLastPsoOk, g_probeSelectedOrigHash,
+                          g_probeHighlight, g_probeFilterSeen,
+                          int(g_probeSeenList.size()), testIsSeen);
 
   if (changed) {
     if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
@@ -2452,6 +2509,11 @@ static uint64_t g_pm4VsConstantsCoverage[4] = {};
 // per-object WVP pattern).
 static uint64_t g_pm4VsConstantsFreshCoverage[4] = {};
 static std::atomic<bool> g_pm4VsConstantsValid{false};
+// DIAG 2026-07-05: count VS-constant applies to disambiguate ordering (apply
+// vs draw upload) from an instance/thread split; read in FM2_VSC32.
+static std::atomic<uint32_t> g_applyVsCallCount{0};
+// thread id without pulling <windows.h> into this large TU.
+extern "C" unsigned long __stdcall GetCurrentThreadId(void);
 // PS half of the PM4 ALU space (packet idx 0x400-0x7FF / Type-0 base
 // 0x4400-0x47FF). Material/paint colors ride here -- unapplied, the pixel
 // shaders read transient live-file values and surfaces FLASH primary colors
@@ -2601,6 +2663,7 @@ void FlushRenderState(GuestDevice *device) {
   bool probeSkip = false;
   if (REXCVAR_GET(fm2_shader_probe)) {
     const int drawIdx = g_probeFrameDrawCount++;
+    ProbeMarkSeen(g_pipelineState.pixelShader); // for the F8/F9 on-screen filter
     {
       static std::atomic<uint32_t> s_n{0};
       if (s_n.fetch_add(1, std::memory_order_relaxed) < 800) {
@@ -2623,8 +2686,22 @@ void FlushRenderState(GuestDevice *device) {
     if (drawIdx == g_probeSelectedDraw) {
       probeSelected = true;
       g_probeSelectedOrigHash = ShaderHash(g_pipelineState.pixelShader);
-      if (GuestShader *ps = ProbeShaderForIndex(g_probePsIndex))
+      g_probeSelectedOrigIndex = ProbeCacheIndexOf(g_pipelineState.pixelShader);
+      // Snap the test shader to the draw's OWN shader when it was just selected
+      // (F6/F7), so the element first appears normal and F8/F9 explores from
+      // there -- not from a random cache entry.
+      if (g_probeDrawChanged) {
+        g_probeDrawChanged = false;
+        if (g_probeSelectedOrigIndex >= 0)
+          g_probePsIndex = g_probeSelectedOrigIndex;
+      }
+      // Highlight: on the full (non-solo) scene, blink the selected draw OUT for
+      // part of each cycle so you can see which on-screen element it is.
+      if (g_probeHighlight && !g_probeSolo && (g_frameIndex % 40u) < 12u) {
+        probeSkip = true;
+      } else if (GuestShader *ps = ProbeShaderForIndex(g_probePsIndex)) {
         pipelineState.pixelShader = ps;
+      }
     } else if (g_probeSolo) {
       probeSkip = true;
     }
@@ -2652,6 +2729,10 @@ void FlushRenderState(GuestDevice *device) {
   // native path doesn't mirror). Restore BACK-face culling for lit meshes
   // (POSITION+NORMAL) when the mirrored cull is NONE; leaves 2D UI (no POSITION)
   // double-sided. Toggle to compare.
+  // 2026-07-04: DISABLED for the car/scene 3D investigation -- both the cull=BACK
+  // logo stopgap and the failed depth-write experiment lived here and would
+  // contaminate lit-3D meshes (incl. the car). Authentic base = cull=NONE, no
+  // forced zWrite. Re-enable (and pick cull=BACK vs zWrite) for the logo later.
   static constexpr bool kCullBackfacesForLitMeshes = true;
   if (kCullBackfacesForLitMeshes &&
       pipelineState.cullMode == RenderCullMode::NONE) {
@@ -2664,8 +2745,37 @@ void FlushRenderState(GuestDevice *device) {
         else if (he.usage == D3DDECLUSAGE_NORMAL)
           hasNormal = true;
       }
-      if (hasPos && hasNormal)
+      if (hasPos && hasNormal) {
+        // 2026-07-05: user re-enabled BACK-face culling for lit meshes (the
+        // stopgap that fixed the logo). The depth-write experiment that briefly
+        // replaced this line FAILED (user: "No"), so restore cull=BACK. This
+        // also hides the black back-faces of the still-exploding car polys until
+        // their position blow-up (separate XenosRecomp issue) is resolved.
         pipelineState.cullMode = RenderCullMode::BACK;
+        // DIAG 2026-07-04: the authentic fix is depth (cull=NONE + depth-reject
+        // the far back-faces). Confirm the depth state plume applies to these
+        // lit-3D draws: is depth actually enabled with a real depth surface, or
+        // is depthStencil null (=> depth disabled at line ~2645 => nothing
+        // rejects the back-faces)?
+        static std::atomic<uint32_t> s_dz{0};
+        if (s_dz.fetch_add(1, std::memory_order_relaxed) < 48) {
+          if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+            std::fprintf(f,
+                         "FM2_LITDEPTH zEn=%d zWr=%d zFunc=%d dsFmt=%d ds=%p "
+                         "gds=%p impl=%p rt=%p revZ=%d\n",
+                         g_pipelineState.zEnable ? 1 : 0,
+                         g_pipelineState.zWriteEnable ? 1 : 0,
+                         int(g_pipelineState.zFunc),
+                         int(pipelineState.depthStencilFormat),
+                         static_cast<void *>(depthStencil),
+                         static_cast<void *>(g_depthStencil),
+                         static_cast<void *>(g_implicitDepthStencil),
+                         static_cast<void *>(g_renderTarget),
+                         SceneReverseZ() ? 1 : 0);
+            std::fclose(f);
+          }
+        }
+      }
     }
   }
   // DEBUG (session 6P-3): the PSO is built for the surface's intended MSAA count
@@ -3108,6 +3218,88 @@ void FlushRenderState(GuestDevice *device) {
       }
     }
     vsConstSrc = s_mergedVsConstants;
+  }
+  // DIAG 2026-07-04: the main-menu CAR (VS 4fff9681) renders red garbage because
+  // its VS light constants c27+ are stale -- c32 (byte 512) is denormal ~0 so the
+  // lighting does 1/dot(...)=Inf. For 3D (has-POSITION) draws, log reg c32 (dwords
+  // 128-131) from the live-file base, the accumulated PM4 shadow, and the FINAL
+  // uploaded source, plus the fresh/accum coverage bits for reg 32 -- to find
+  // WHERE the correct light vector lives (fresh delta vs accumulated vs live).
+  if (!noPos && g_liveVsFloatConstants != nullptr) {
+    static std::atomic<uint32_t> s_cd{0};
+    // 2026-07-05: sample forever (first 40, then 1-in-1500) so steady-state
+    // menu/car draws are captured during manual navigation, not just boot.
+    const uint32_t nd = s_cd.fetch_add(1, std::memory_order_relaxed);
+    if (nd < 40u || (nd % 1500u) == 0u) {
+      const GuestShader *dvs = g_pipelineState.vertexShader;
+      const uint64_t vh =
+          (dvs && dvs->shaderCacheEntry) ? dvs->shaderCacheEntry->hash : 0ull;
+      auto F = [](const uint32_t *p, uint32_t dw) -> double {
+        if (p == nullptr)
+          return -999.0;
+        uint32_t v = p[dw];
+        v = ((v >> 24) & 0xFFu) | ((v >> 8) & 0xFF00u) | ((v << 8) & 0xFF0000u) |
+            (v << 24);
+        return double(std::bit_cast<float>(v));
+      };
+      const int pm4Valid =
+          g_pm4VsConstantsValid.load(std::memory_order_relaxed) ? 1 : 0;
+      const int fresh32 = int((g_pm4VsConstantsFreshCoverage[0] >> 32) & 1u);
+      const int accum32 = int((g_pm4VsConstantsCoverage[0] >> 32) & 1u);
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(
+            f,
+            "FM2_VSC32 vh=0x%016llX pm4Valid=%d fresh32=%d accum32=%d "
+            "applyCalls=%u tid=%lu &valid=%p "
+            "live_c32=[%.3g %.3g %.3g %.3g] pm4_c32=[%.3g %.3g %.3g %.3g] "
+            "final_c32=[%.3g %.3g %.3g %.3g] pm4_c40=[%.3g %.3g %.3g %.3g]\n",
+            (unsigned long long)vh, pm4Valid, fresh32, accum32,
+            g_applyVsCallCount.load(std::memory_order_relaxed),
+            (unsigned long)GetCurrentThreadId(),
+            (void *)&g_pm4VsConstantsValid,
+            F(g_liveVsFloatConstants, 128), F(g_liveVsFloatConstants, 129),
+            F(g_liveVsFloatConstants, 130), F(g_liveVsFloatConstants, 131),
+            F(g_pm4VsConstants, 128), F(g_pm4VsConstants, 129),
+            F(g_pm4VsConstants, 130), F(g_pm4VsConstants, 131),
+            F(vsConstSrc, 128), F(vsConstSrc, 129), F(vsConstSrc, 130),
+            F(vsConstSrc, 131), F(g_pm4VsConstants, 160),
+            F(g_pm4VsConstants, 161), F(g_pm4VsConstants, 162),
+            F(g_pm4VsConstants, 163));
+        std::fclose(f);
+      }
+    }
+  }
+  // 2026-07-05 register-alignment probe: one-shot full dump of the flashing car
+  // shader's live VS constant file (c0-c63) so we can locate landmarks (WVP
+  // matrix, light vectors) and measure any register shift vs the xenos
+  // xe_float_cbuffer ground truth.
+  if (!noPos && g_liveVsFloatConstants != nullptr) {
+    const GuestShader *cvs = g_pipelineState.vertexShader;
+    const uint64_t cvh =
+        (cvs && cvs->shaderCacheEntry) ? cvs->shaderCacheEntry->hash : 0ull;
+    if (cvh == 0x332E2E419740BB57ull) {
+      static std::atomic<bool> s_dumped{false};
+      bool expected = false;
+      if (s_dumped.compare_exchange_strong(expected, true)) {
+        auto FF = [](const uint32_t *p, uint32_t dw) -> double {
+          uint32_t v = p[dw];
+          v = ((v >> 24) & 0xFFu) | ((v >> 8) & 0xFF00u) |
+              ((v << 8) & 0xFF0000u) | (v << 24);
+          return double(std::bit_cast<float>(v));
+        };
+        if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+          std::fprintf(f, "FM2_CARLIVE begin vh=0x%016llX\n",
+                       (unsigned long long)cvh);
+          for (uint32_t r = 0; r < 64u; ++r)
+            std::fprintf(f, "FM2_CARLIVE c%u = [%.6g %.6g %.6g %.6g]\n", r,
+                         FF(g_liveVsFloatConstants, r * 4 + 0),
+                         FF(g_liveVsFloatConstants, r * 4 + 1),
+                         FF(g_liveVsFloatConstants, r * 4 + 2),
+                         FF(g_liveVsFloatConstants, r * 4 + 3));
+          std::fclose(f);
+        }
+      }
+    }
   }
   SetRootDescriptor(g_uploadAllocator.allocateCopy<true>(
                         vsConstSrc,
@@ -4023,6 +4215,24 @@ void ApplyPm4VsConstants(uint32_t dwordIndex, const void *beDwords,
                          uint32_t dwordCount) {
   if (beDwords == nullptr || dwordIndex >= 0x400u || dwordCount == 0)
     return;
+  // DIAG 2026-07-05: prove whether this apply and FlushRenderState's FM2_VSC32
+  // read hit the same instance/thread and whether the apply happens BEFORE the
+  // draw's constant upload (record-vs-execute ordering).
+  {
+    const uint32_t n =
+        g_applyVsCallCount.fetch_add(1, std::memory_order_relaxed);
+    if (n < 8) {
+      if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
+        std::fprintf(f,
+                     "FM2_APPLYADDR n=%u dwIdx=%u dwCnt=%u tid=%lu &valid=%p "
+                     "&consts=%p\n",
+                     n, dwordIndex, dwordCount,
+                     (unsigned long)GetCurrentThreadId(),
+                     (void *)&g_pm4VsConstantsValid, (void *)g_pm4VsConstants);
+        std::fclose(f);
+      }
+    }
+  }
   dwordCount = std::min(dwordCount, 0x400u - dwordIndex);
   std::memcpy(g_pm4VsConstants + dwordIndex, beDwords, dwordCount * 4u);
   const uint32_t lastReg = (dwordIndex + dwordCount - 1u) / 4u;

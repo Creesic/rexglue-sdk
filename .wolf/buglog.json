@@ -1020,6 +1020,280 @@
       "related_bugs": [],
       "occurrences": 2,
       "last_seen": "2026-07-04T21:26:27.545Z"
+    },
+    {
+      "id": "bug-061",
+      "timestamp": "2026-07-04T21:45:53.711Z",
+      "error_message": "Incorrect value in code",
+      "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "root_cause": "Had 's REAL per-draw cull+winding from the Xenos **PA_",
+      "fix": "Changed to 's back-faces are hidden by **DEPTH**, not culling",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-04T21:45:53.728Z"
+    },
+    {
+      "id": "bug-062",
+      "timestamp": "2026-07-05T02:17:06.626Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/shader_probe_window.cpp",
+      "root_cause": "7 lines replaced/restructured",
+      "fix": "Rewrote 16→19 lines (7 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T02:17:06.626Z"
+    },
+    {
+      "id": "bug-063",
+      "timestamp": "2026-07-05T02:17:45.949Z",
+      "error_message": "Missing guard clause",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "No early return/throw for edge case: s == nullptr || s->shaderCacheEntry == nullptr",
+      "fix": "Added guard clause: if (s == nullptr || s->shaderCacheEntry == n)",
+      "tags": [
+        "auto-detected",
+        "guard-clause",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T02:17:45.949Z"
+    },
+    {
+      "id": "bug-064",
+      "timestamp": "2026-07-05T02:18:15.735Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "9 lines replaced/restructured",
+      "fix": "Rewrote 15→17 lines (9 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T02:18:15.735Z"
+    },
+    {
+      "id": "bug-065",
+      "timestamp": "2026-07-05T03:11:17.482Z",
+      "error_message": "Missing guard clause",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "No early return/throw for edge case: !noPos",
+      "fix": "Added guard clause: if (!noPos)",
+      "tags": [
+        "auto-detected",
+        "guard-clause",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-05T03:11:17.487Z"
+    },
+    {
+      "id": "bug-066",
+      "timestamp": "2026-07-05T03:20:03.395Z",
+      "error_message": "Missing guard clause",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "No early return/throw for edge case: startRegister <= 32u && startRegister + count > 27u",
+      "fix": "Added guard clause: if (startRegister <= 32u && startRegister + )",
+      "tags": [
+        "auto-detected",
+        "guard-clause",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T03:20:03.395Z"
+    },
+    {
+      "id": "bug-067",
+      "timestamp": "2026-07-05T03:25:44.390Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 14→23 lines (3 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T03:25:44.390Z"
+    },
+    {
+      "id": "bug-068",
+      "timestamp": "2026-07-05T03:32:37.384Z",
+      "error_message": "Wrong condition in logic",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Condition was: if (kScannerApplies && off + 8u <= len && cnt0 <= 0x40)",
+      "fix": "Changed to: if (kScannerApplies && off + 4u <= len && cnt0 <= 0x40)",
+      "tags": [
+        "auto-detected",
+        "logic-fix",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-05T03:32:37.395Z"
+    },
+    {
+      "id": "bug-069",
+      "timestamp": "2026-07-05T16:00:08.480Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 11→29 lines (2 removed) | Also: if (kScannerApplies && off + 4u <= len && cnt0 <= ; off + 4u + 4u * cnt0 <= len + kAluApplyOverrunByte",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-05T16:00:08.486Z"
+    },
+    {
+      "id": "bug-070",
+      "timestamp": "2026-07-05T16:09:03.679Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T16:09:03.679Z"
+    },
+    {
+      "id": "bug-071",
+      "timestamp": "2026-07-05T16:32:00.318Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T16:32:00.318Z"
+    },
+    {
+      "id": "bug-072",
+      "timestamp": "2026-07-05",
+      "error_message": "FM2 main-menu car renders as huge polys flashing random colors (plume_native)",
+      "file": "thirdparty/XenosRecomp (shader LOGc/RECIP clamp lowering); manifests via VS 4fff9681",
+      "root_cause": "NOT constants. c32 (VertexShaderConstants byte_offset 512) is authentically ~0 in BOTH backends (RenderDoc matched pair: bad fm2mainmenuredartifact EID1858 c32=[0,4.19e-31,-1.02e-32,0]; good fm2mainmenucorrect EID1157 c32=[0,0,0,~0]). Shader does 1/dot(c32,..)=huge and log2(0)=-Inf. XenosRecomp lowers Xenos LOGc/RECIP clamp as max(x,-FLT_MAX)/min(x,+FLT_MAX), preserving -FLT_MAX as a poison value that propagates into COLOR0 (flashing) and SV_Position (huge polys). Xenos hw + runtime dxbc_translator resolve the degenerate case to a finite result and render correctly.",
+      "fix": "FIXED + user-verified 2026-07-05. XenosRecomp fork shader_recompiler.cpp ~1250: split lumped Logc/Log/Rcpc/Rcpf/Rcp/Rsqc/Rsqf/Rsq into per-variant lowering matching Xenia dxbc_translator_alu.cpp: CLAMP=clamp(op,-FLT_MAX,FLT_MAX), FF=rcpFF/rsqFF flush +-Inf->0 (new helpers in shader_common.h), IEEE=raw. Regenerated 213 shaders + rebuilt fm2 -> color explosion gone (black). Then re-enabled cull=BACK (render_state.cpp kCullBackfacesForLitMeshes=true, RenderCullMode::BACK) -> car polys gone AND press-start logo fixed. Remaining: car position blow-up (another mistranslated op) + 3 structured-exception shaders.",
+      "tags": [
+        "fm2",
+        "xenosrecomp",
+        "shader-translation",
+        "car",
+        "flashing",
+        "log2",
+        "reciprocal",
+        "clamp",
+        "flt_max",
+        "plume_native",
+        "renderdoc",
+        "4fff9681"
+      ],
+      "related_bugs": [
+        "bug-056"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-07-05"
+    },
+    {
+      "id": "bug-073",
+      "timestamp": "2026-07-05",
+      "error_message": "RenderDoc MCP get_shader/debug_vertex returned 'Unsupported encoding for shader 'DXIL'' AMDIL garbage instead of DXIL disassembly",
+      "file": "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/{shader_debug.py,server.py}",
+      "root_cause": "Two bugs: (1) the 38-char ISA 'Unsupported encoding' sentinel had no leading ';' so it wasn't in _DISASSEMBLY_FAILURE_MARKERS; disassembly_failure_reason treated it as valid, so the target loop accepted AMDIL garbage whenever the source-level DXBC/DXIL target failed; debug_vertex/pixel used blind targets[0]. (2) the live server's 2-day-old replay device failed even DXBC/DXIL (a fresh process disassembles fine).",
+      "fix": "Committed 6735622b2 in renderdoc repo: added 'Unsupported encoding for shader' to failure markers; added best_disassembly() helper; get_shader reports per-target disassembly_attempts; debug_vertex/pixel use best_disassembly(). RUNTIME: server is a qrenderdoc child on :8765 running from bundle x64/Development/mcp/renderdoc_mcp - synced files there + user toggled MCP in qrenderdoc to restart (clears stale device). Verified: get_shader now returns real DXBC/DXIL.",
+      "tags": [
+        "renderdoc",
+        "mcp",
+        "disassembly",
+        "dxil",
+        "get_shader",
+        "debug_vertex",
+        "tooling",
+        "qrenderdoc"
+      ],
+      "related_bugs": [
+        "bug-072"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-07-05"
+    },
+    {
+      "id": "bug-074",
+      "timestamp": "2026-07-05T18:06:29.474Z",
+      "error_message": "Significant refactor of ",
+      "file": "../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
+      "root_cause": "8 lines replaced/restructured",
+      "fix": "Rewrote 16→31 lines (8 removed) | Also: case AluScalarOpcode::Logc:; case AluScalarOpcode::Log:",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-05T18:06:29.477Z"
+    },
+    {
+      "id": "bug-075",
+      "timestamp": "2026-07-05T18:13:14.747Z",
+      "error_message": "Wrong reference: false should be true",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Used \"false\" instead of \"true\"",
+      "fix": "Changed false → true",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T18:13:14.747Z"
+    },
+    {
+      "id": "bug-076",
+      "timestamp": "2026-07-05T18:17:10.242Z",
+      "error_message": "Incorrect value in code",
+      "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "root_cause": "Had `1/dot(c32)`",
+      "fix": "Changed to \"never fires\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-05T18:17:10.245Z"
     }
   ]
 }

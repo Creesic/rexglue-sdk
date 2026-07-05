@@ -1,13 +1,16 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-04T21:32:32.989Z
-> Files: 541 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-05T18:17:10.235Z
+> Files: 549 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/
 
-- `MEMORY.md` — Memory Index (~4277 tok)
+- `MEMORY.md` — Memory Index (~2161 tok)
 - `project_fm2_black_textures_no_tfetch.md` — 🎉 2026-07-04 — BG RENDERS! + 2 more XenosRecomp fork bugs fixed (bool hook + NORMAL interpolators) (~10671 tok)
+- `project_fm2_car_flashing_xenosrecomp_2026-07-05.md` — FM2 car flashing polys = XenosRecomp shader-translation bug (2026-07-05) (~1385 tok)
+- `project_fm2_logo_cull_depth_2026-07-04.md` — FM2 press-start logo / cull / depth saga (2026-07-04) (~1346 tok)
 - `project_fm2_pool_pacing_root_cause.md` (~1004 tok)
+- `reference_renderdoc_mcp_disasm_fix.md` — RenderDoc MCP DXIL disassembly fix (2026-07-05) (~810 tok)
 
 ## ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/22054c61-d9f8-4566-991c-6f9759f41605/scratchpad/
 
@@ -17,6 +20,8 @@
 ## ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/
 
 - `check_bg.py` — parse_container, hashpart_digest, psv_resource_count (~1259 tok)
+- `disasm_probe.py` (~454 tok)
+- `drive_fm2_menu.ps1` — Drive FM2 past press-start into the main menu (car scene) so the retargeted (~419 tok)
 - `dxil_sem.py` — parse_parts, strings (~400 tok)
 - `rdat.py` — parse_parts, parse_rdat, get_table, cstr (~866 tok)
 - `rdat2.py` — parse_parts, parse_rdat, cstr (~416 tok)
@@ -25,8 +30,14 @@
 ## ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/
 
 - `main.cpp` — include <deque> (~4694 tok)
-- `shader_recompiler.cpp` — include "shader_recompiler.h" (~24613 tok)
+- `shader_common.h` — ifndef SHADER_COMMON_H_INCLUDED (~5601 tok)
+- `shader_recompiler.cpp` — include "shader_recompiler.h" (~24858 tok)
 - `shader_recompiler.h` — pragma once (~610 tok)
+
+## ../renderdoc/renderdoc-mcp/renderdoc_mcp/
+
+- `server.py` — FastMCP server: RenderDoc replay tools on HTTP `/mcp`. (~21185 tok)
+- `shader_debug.py` — Pixel/vertex shader debug tracing: summarizes ReplayController.DebugPixel/DebugVertex traces. (~4796 tok)
 
 ## ./
 
@@ -570,11 +581,11 @@
 
 ## FM2/src/render/
 
-- `d3d_hooks.cpp` — include <algorithm> (~71482 tok)
+- `d3d_hooks.cpp` — include <algorithm> (~72738 tok)
 - `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~17619 tok)
-- `render_internal.h` — render/render_internal.h (~1529 tok)
-- `render_state.cpp` — include <algorithm> (~65432 tok)
-- `shader_probe_window.cpp` — Small always-on-top status window for the interactive shader probe (~984 tok)
+- `render_internal.h` — render/render_internal.h (~1554 tok)
+- `render_state.cpp` — include <algorithm> (~68416 tok)
+- `shader_probe_window.cpp` — Small always-on-top status window for the interactive shader probe (~1066 tok)
 
 ## docs/
 

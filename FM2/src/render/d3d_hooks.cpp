@@ -2070,6 +2070,26 @@ void SetVertexShaderConstantFN(GuestDevice *device, uint32_t startRegister,
   const uint32_t count = std::min(vector4fCount, 0x100u - startRegister);
   std::memcpy(device->vertexShaderFloatConstants + startRegister * 4, data,
               count * 16);
+  // DIAG 2026-07-04: the main-menu car's VS LIGHT constants c27-c41 are stale in
+  // every plume source. Catch whether the CPU API path ever writes them, and on
+  // which device -- if it never logs, the lights come via PM4/direct, not the API.
+  if (startRegister <= 32u && startRegister + count > 27u) {
+    static std::atomic<uint32_t> s_n{0};
+    if (s_n.fetch_add(1, std::memory_order_relaxed) < 40u) {
+      auto BF = [&](uint32_t reg) -> double {
+        if (reg < startRegister || reg >= startRegister + count)
+          return -111.0;
+        const uint32_t v = __builtin_bswap32(data[(reg - startRegister) * 4]);
+        float f;
+        std::memcpy(&f, &v, sizeof f);
+        return double(f);
+      };
+      LogReplayDbg("FM2_VSCWRITE_API dev=0x%08X start=%u cnt=%u c27.x=%.3g "
+                   "c30.x=%.3g c32.x=%.3g",
+                   ghp::ToGuest(device), startRegister, count, BF(27), BF(30),
+                   BF(32));
+    }
+  }
 }
 
 void SetPixelShaderConstantFN(GuestDevice *device, uint32_t startRegister,
@@ -3247,6 +3267,23 @@ static void ScanPm4AluConstantRange(uint32_t rangePhys, uint32_t len) {
         const uint32_t ot = be(off + 4u);
         const uint32_t idx = ot & 0x7FFu;
         const uint32_t ctype = (ot >> 16) & 0xFFu;
+        // DIAG 2026-07-04: PA_SU_SC_MODE_CNTL (reg 0x2205) carries FM2's real
+        // per-draw cull+winding (bits 0-1 cull: 0=none/1=front/2=back, bit 2
+        // front-face 0=CCW/1=CW). SET_CONSTANT ctype==4 writes registers at
+        // base 0x2000+idx. Confirm whether cull actually varies per draw.
+        if (ctype == 4u && cnt >= 2u) {
+          const uint32_t regBase = 0x2000u + idx;
+          if (0x2205u >= regBase && 0x2205u < regBase + (cnt - 1u)) {
+            const uint32_t vo = off + 8u + 4u * (0x2205u - regBase);
+            if (vo + 4u <= len) {
+              const uint32_t v = be(vo);
+              static std::atomic<uint32_t> s_pn{0};
+              if (s_pn.fetch_add(1, std::memory_order_relaxed) < 256)
+                LogReplayDbg("FM2_PASU via=setc4 val=%08X cull=%u frontCW=%u",
+                             v, v & 0x3u, (v >> 2) & 1u);
+            }
+          }
+        }
         // APPLY (2026-07-02 session 3): ALU float writes below the VS file
         // ceiling carry the per-element 2D placement matrices -- feed them
         // into the PM4 constant shadow in stream order (payload is already
@@ -3351,12 +3388,63 @@ static void ScanPm4AluConstantRange(uint32_t rangePhys, uint32_t len) {
     } else if (type == 0u) {
       const uint32_t cnt0 = ((hdr >> 16) & 0x3FFFu) + 1u;
       const uint32_t base = hdr & 0x7FFFu;
+      // DIAG 2026-07-04: PA_SU_SC_MODE_CNTL (reg 0x2205) via Type-0 register
+      // burst -- the real per-draw cull+winding. Also log DISTINCT Type-0 base
+      // writes in the PA/RB render-state range (0x2000-0x2400) so we can see
+      // whether FM2 programs cull/state through PM4 at all (vs the D3D9 API).
+      if (base <= 0x2205u && 0x2205u < base + cnt0) {
+        const uint32_t vo = off + 4u + 4u * (0x2205u - base);
+        if (vo + 4u <= len) {
+          const uint32_t v = be(vo);
+          static std::atomic<uint32_t> s_pn{0};
+          if (s_pn.fetch_add(1, std::memory_order_relaxed) < 256)
+            LogReplayDbg("FM2_PASU via=t0 base=0x%X cnt=%u val=%08X cull=%u "
+                         "frontCW=%u",
+                         base, cnt0, v, v & 0x3u, (v >> 2) & 1u);
+        }
+      }
+      if (base >= 0x2000u && base < 0x2400u) {
+        static bool s_seenR[0x400] = {};
+        const uint32_t r = base - 0x2000u;
+        if (r < 0x400u && !s_seenR[r]) {
+          s_seenR[r] = true;
+          LogReplayDbg("FM2_PM4T0REG reg=0x%X cnt=%u v=%08X", base, cnt0,
+                       off + 4u <= len ? be(off + 4u) : 0u);
+        }
+      }
       if (base >= 0x4000u && base < 0x4800u) {
         // APPLY: Type-0 direct ALU register burst (dword-indexed at
-        // base-0x4000; PS half starts at 0x4400). Clamp to the file and the
-        // scanned window.
+        // base-0x4000; PS half starts at 0x4400). Clamp to the file.
+        // 2026-07-04: the scene's VS LIGHT constants (c28-c59) ride here as LARGE
+        // blocks (up to 128 dwords = 512B). The old strict `off+4+4*cnt0 <=
+        // len+64` gate DROPPED them (payload overran the under-sampled window),
+        // leaving the car's lights stale garbage -> red flashing polys occluding
+        // the scene. The payload is valid guest physical memory (buf =
+        // TranslatePhysical), so apply it as long as the packet HEADER is
+        // in-window (garbage-header reject preserved) and cnt0 is sane; let the
+        // payload overrun the sampled window by up to one ALU block.
+        static constexpr uint32_t kAluApplyOverrunBytes = 2048u;
         const uint32_t rAll = base - 0x4000u;
-        if (kScannerApplies && off + 4u + 4u * cnt0 <= applyLimit) {
+        const bool applyCond =
+            kScannerApplies && off + 4u <= len && cnt0 <= 0x400u &&
+            off + 4u + 4u * cnt0 <= len + kAluApplyOverrunBytes;
+        // DIAG 2026-07-05: the car's VS light/material constants (Type-0 bursts
+        // at c27-c60 = dword 108-243) never reach g_pm4VsConstants (pm4Valid=0
+        // for every 3D draw). Log the apply-condition breakdown for each VS
+        // register once so we see cnt0/off/len and which term rejects them.
+        if (rAll < 0x400u) {
+          static bool s_va[0x400] = {};
+          if (!s_va[rAll]) {
+            s_va[rAll] = true;
+            LogReplayDbg("FM2_VSAPPLY r=%u (c%u) cnt0=%u off=%u len=%u pass=%d "
+                         "b4=%d cnt=%d ovr=%d",
+                         rAll, rAll / 4u, cnt0, off, len, applyCond ? 1 : 0,
+                         off + 4u <= len ? 1 : 0, cnt0 <= 0x400u ? 1 : 0,
+                         off + 4u + 4u * cnt0 <= len + kAluApplyOverrunBytes ? 1
+                                                                             : 0);
+          }
+        }
+        if (applyCond) {
           if (rAll < 0x400u)
             rr::ApplyPm4VsConstants(rAll, buf + off + 4u,
                                     std::min(cnt0, 0x400u - rAll));
