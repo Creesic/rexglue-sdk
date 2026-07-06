@@ -26,7 +26,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 8→26 lines (2 removed)",
+      "fix": "Rewrote 8\u219226 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -42,7 +42,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/render_state.cpp",
       "root_cause": "27 lines replaced/restructured",
-      "fix": "Rewrote 41→63 lines (27 removed) | Also: const uint64_t off = uint64_t(lo) * vr.stride;; if (off >= vrSize)",
+      "fix": "Rewrote 41\u219263 lines (27 removed) | Also: const uint64_t off = uint64_t(lo) * vr.stride;; if (off >= vrSize)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -58,7 +58,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "4 lines replaced/restructured",
-      "fix": "Rewrote 24→50 lines (4 removed) | Also: // Prefer a registered host surface (the rendered/; // over uploading from black guest memory.",
+      "fix": "Rewrote 24\u219250 lines (4 removed) | Also: // Prefer a registered host surface (the rendered/; // over uploading from black guest memory.",
       "tags": [
         "auto-detected",
         "refactor",
@@ -74,7 +74,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "6 lines replaced/restructured",
-      "fix": "Rewrote 8→19 lines (6 removed)",
+      "fix": "Rewrote 8\u219219 lines (6 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -163,7 +163,7 @@
       "error_message": "Significant refactor of ",
       "file": "docs/FM2-handoff-2026-07-02-session5.md",
       "root_cause": "12 lines replaced/restructured",
-      "fix": "Rewrote 13→25 lines (12 removed)",
+      "fix": "Rewrote 13\u219225 lines (12 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -247,7 +247,7 @@
       "error_message": "Significant refactor of ",
       "file": "docs/FM2-handoff-2026-07-02-session5.md",
       "root_cause": "7 lines replaced/restructured",
-      "fix": "Rewrote 7→43 lines (7 removed)",
+      "fix": "Rewrote 7\u219243 lines (7 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -317,7 +317,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 11→26 lines (3 removed)",
+      "fix": "Rewrote 11\u219226 lines (3 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -333,7 +333,7 @@
       "error_message": "Significant refactor of ",
       "file": "docs/FM2-handoff-2026-07-02-session5.md",
       "root_cause": "12 lines replaced/restructured",
-      "fix": "Rewrote 12→30 lines (12 removed)",
+      "fix": "Rewrote 12\u219230 lines (12 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -367,9 +367,9 @@
     {
       "id": "bug-022",
       "timestamp": "2026-07-03T22:00:00",
-      "error_message": "press-A textures black: ROOT IDENTIFIED — textured UI elements' compiled-CB play ops never execute (game falls back to colored quads)",
+      "error_message": "press-A textures black: ROOT IDENTIFIED \u2014 textured UI elements' compiled-CB play ops never execute (game falls back to colored quads)",
       "file": "FM2/src/render/d3d_hooks.cpp",
-      "root_cause": "debug_pixel proved the bg draw runs the 26-step color-passthrough fallback pair (sample_count=0, output=vertex COLOR0 black) while the bindless chain is intact (heap[32]=BC1 art). The textured path plays compiled material CBs; the compile chain runs (Begin/Finalize/Clone 64/s) but no ~512-dword segment ever reaches D3D_SubmitCommandBuffer — the play CParams are dropped, converging with the known #20 deferred-pool drop latch (0x4001CA20 p145 backpressure).",
+      "root_cause": "debug_pixel proved the bg draw runs the 26-step color-passthrough fallback pair (sample_count=0, output=vertex COLOR0 black) while the bindless chain is intact (heap[32]=BC1 art). The textured path plays compiled material CBs; the compile chain runs (Begin/Finalize/Clone 64/s) but no ~512-dword segment ever reaches D3D_SubmitCommandBuffer \u2014 the play CParams are dropped, converging with the known #20 deferred-pool drop latch (0x4001CA20 p145 backpressure).",
       "fix": "OPEN. Options: (1) instrument dropped CParams types to confirm; (2) targeted force-enqueue bypass for the play-CB op (like kForceCarNodeEnqueue, enqueue API sub_8245CED8); (3) structural drain-timeline fix from the session-3 ledger.",
       "tags": [
         "plume_native",
@@ -392,7 +392,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 11→27 lines (2 removed) | Also: // so 8 kept p145 latched ~permanently => the text; // play-command-buffer CParams were dropped every ",
+      "fix": "Rewrote 11\u219227 lines (2 removed) | Also: // so 8 kept p145 latched ~permanently => the text; // play-command-buffer CParams were dropped every ",
       "tags": [
         "auto-detected",
         "refactor",
@@ -467,7 +467,7 @@
       "error_message": "Significant refactor of ",
       "file": "docs/FM2-handoff-2026-07-02-session5.md",
       "root_cause": "7 lines replaced/restructured",
-      "fix": "Rewrote 7→11 lines (7 removed) | Also: - **NEXT**: (a) visual A/B at 30 Hz (and 60) — suc; background/A-button/logo textured, FM2_POOLSTATE p",
+      "fix": "Rewrote 7\u219211 lines (7 removed) | Also: - **NEXT**: (a) visual A/B at 30 Hz (and 60) \u2014 suc; background/A-button/logo textured, FM2_POOLSTATE p",
       "tags": [
         "auto-detected",
         "refactor",
@@ -499,7 +499,7 @@
       "error_message": "Significant refactor of ",
       "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_black_textures_no_tfetch.md",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 3→8 lines (3 removed) | Also: FIX (two coupled changes, in plume_native native-s; 1. plume_native 2D/UI pixel shader must sample bou",
+      "fix": "Rewrote 3\u21928 lines (3 removed) | Also: FIX (two coupled changes, in plume_native native-s; 1. plume_native 2D/UI pixel shader must sample bou",
       "tags": [
         "auto-detected",
         "refactor",
@@ -531,7 +531,7 @@
       "error_message": "Incorrect value in code",
       "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
       "root_cause": "Had \"textures/PS binding fixed\"",
-      "fix": "Changed to 's real bg PS samples (xenos EID178 → tex8183). ⇒ ",
+      "fix": "Changed to 's real bg PS samples (xenos EID178 \u2192 tex8183). \u21d2 ",
       "tags": [
         "auto-detected",
         "wrong-value",
@@ -563,7 +563,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/render_state.cpp",
       "root_cause": "13 lines replaced/restructured",
-      "fix": "Rewrote 20→3 lines (13 removed) | Also: // DIAG 2026-07-03: log texture binds to correlate; // bg (1280x720) / logo (877x188) textures get bou",
+      "fix": "Rewrote 20\u21923 lines (13 removed) | Also: // DIAG 2026-07-03: log texture binds to correlate; // bg (1280x720) / logo (877x188) textures get bou",
       "tags": [
         "auto-detected",
         "refactor",
@@ -578,7 +578,7 @@
       "timestamp": "2026-07-04T01:32:21.896Z",
       "error_message": "Incorrect value in code",
       "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
-      "root_cause": "Had 's real bg PS samples (xenos EID178 → tex8183). ⇒ ",
+      "root_cause": "Had 's real bg PS samples (xenos EID178 \u2192 tex8183). \u21d2 ",
       "fix": "Changed to 's color-only PS862 predates today'",
       "tags": [
         "auto-detected",
@@ -611,7 +611,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/render_state.cpp",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 21→30 lines (3 removed) | Also: // Clamp every frame (the frame's draw count can c; // status window (created lazily on first call). L",
+      "fix": "Rewrote 21\u219230 lines (3 removed) | Also: // Clamp every frame (the frame's draw count can c; // status window (created lazily on first call). L",
       "tags": [
         "auto-detected",
         "refactor",
@@ -627,7 +627,7 @@
       "error_message": "Wrong reference: g_probeLastFrameDrawCount should be g_probeMaxDrawCount",
       "file": "FM2/src/render/render_state.cpp",
       "root_cause": "Used \"g_probeLastFrameDrawCount\" instead of \"g_probeMaxDrawCount\"",
-      "fix": "Changed g_probeLastFrameDrawCount → g_probeMaxDrawCount",
+      "fix": "Changed g_probeLastFrameDrawCount \u2192 g_probeMaxDrawCount",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -674,7 +674,7 @@
       "timestamp": "2026-07-04T02:56:27.662Z",
       "error_message": "Missing error handling in unknown",
       "file": "FM2/src/render/d3d_resource_hooks.cpp",
-      "root_cause": "Code path had no error handling — exceptions would propagate uncaught",
+      "root_cause": "Code path had no error handling \u2014 exceptions would propagate uncaught",
       "fix": "Added try/catch block",
       "tags": [
         "auto-detected",
@@ -691,7 +691,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/render_state.cpp",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 12→19 lines (2 removed)",
+      "fix": "Rewrote 12\u219219 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -723,7 +723,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 7→16 lines (3 removed) | Also: if (n < 16 || (n & 0x3FFFu) < 2u); LogReplayDbg(\"FM2_LIVE_PS n=%u ctx=0x%08X ps=0x%08",
+      "fix": "Rewrote 7\u219216 lines (3 removed) | Also: if (n < 16 || (n & 0x3FFFu) < 2u); LogReplayDbg(\"FM2_LIVE_PS n=%u ctx=0x%08X ps=0x%08",
       "tags": [
         "auto-detected",
         "refactor",
@@ -792,7 +792,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "12 lines replaced/restructured",
-      "fix": "Rewrote 19→21 lines (12 removed)",
+      "fix": "Rewrote 19\u219221 lines (12 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -808,7 +808,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "9 lines replaced/restructured",
-      "fix": "Rewrote 38→48 lines (9 removed) | Also: void Fm2SetPixelShaderState(uint32_t renderContext; g_origFm2SetPixelShaderState(renderContext, shader",
+      "fix": "Rewrote 38\u219248 lines (9 removed) | Also: void Fm2SetPixelShaderState(uint32_t renderContext; g_origFm2SetPixelShaderState(renderContext, shader",
       "tags": [
         "auto-detected",
         "refactor",
@@ -856,7 +856,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 18→28 lines (3 removed)",
+      "fix": "Rewrote 18\u219228 lines (3 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -872,7 +872,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 8→11 lines (2 removed) | Also: LogReplayDbg(\"FM2_UPCALLER n=%u caller=0x%08X ps=0; \"a1=0x%08X a2=0x%08X v6=0x%08X\",",
+      "fix": "Rewrote 8\u219211 lines (2 removed) | Also: LogReplayDbg(\"FM2_UPCALLER n=%u caller=0x%08X ps=0; \"a1=0x%08X a2=0x%08X v6=0x%08X\",",
       "tags": [
         "auto-detected",
         "refactor",
@@ -888,7 +888,7 @@
       "error_message": "Significant refactor of ",
       "file": "../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 6→20 lines (2 removed)",
+      "fix": "Rewrote 6\u219220 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -920,7 +920,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 4→6 lines (2 removed)",
+      "fix": "Rewrote 4\u21926 lines (2 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1043,7 +1043,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/shader_probe_window.cpp",
       "root_cause": "7 lines replaced/restructured",
-      "fix": "Rewrote 16→19 lines (7 removed)",
+      "fix": "Rewrote 16\u219219 lines (7 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1075,7 +1075,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/render_state.cpp",
       "root_cause": "9 lines replaced/restructured",
-      "fix": "Rewrote 15→17 lines (9 removed)",
+      "fix": "Rewrote 15\u219217 lines (9 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1123,7 +1123,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "3 lines replaced/restructured",
-      "fix": "Rewrote 14→23 lines (3 removed)",
+      "fix": "Rewrote 14\u219223 lines (3 removed)",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1155,7 +1155,7 @@
       "error_message": "Significant refactor of ",
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "2 lines replaced/restructured",
-      "fix": "Rewrote 11→29 lines (2 removed) | Also: if (kScannerApplies && off + 4u <= len && cnt0 <= ; off + 4u + 4u * cnt0 <= len + kAluApplyOverrunByte",
+      "fix": "Rewrote 11\u219229 lines (2 removed) | Also: if (kScannerApplies && off + 4u <= len && cnt0 <= ; off + 4u + 4u * cnt0 <= len + kAluApplyOverrunByte",
       "tags": [
         "auto-detected",
         "refactor",
@@ -1253,15 +1253,19 @@
       "error_message": "Significant refactor of ",
       "file": "../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
       "root_cause": "8 lines replaced/restructured",
-      "fix": "Rewrote 16→31 lines (8 removed) | Also: case AluScalarOpcode::Logc:; case AluScalarOpcode::Log:",
+      "fix": "FIXED 2026-07-05 (in-tree thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp recompile()). Root: shaders with constantTableOffset==0 (05A43916 PS, 082CFF62 VS, 1FA0262C) have NO constant table; code reinterpreted the shader header as a ConstantTableContainer and faulted. In --dump-hlsl (no SEH/try-catch guard) this ABORTED the whole run, which is why only 6/158 missed_shaders dumped and the shadow VS 0ED258 was unreachable. Fix: guard constant-table parsing on constantTableOffset!=0; when 0, point constantTableContainer at a static zeroed ConstantTableContainer{} so every downstream reflection loop sees 0 constants. Removed the now-handled assert(constantTableOffset!=NULL). Verified: rebuilt XenosRecomp; --dump-hlsl missed_shaders 6 -> 158, all 3 exception shaders + 0ED258 now translate. TODO: regen FM2 shader cache + rebuild fm2 to make the 3 shaders render (currently black/skipped in the shipped cache).",
       "tags": [
-        "auto-detected",
+        "constantTableOffset",
+        "dump-hlsl",
+        "structured-exception",
         "refactor",
-        "cpp"
+        "FIXED",
+        "cpp",
+        "auto-detected"
       ],
       "related_bugs": [],
       "occurrences": 2,
-      "last_seen": "2026-07-05T18:06:29.477Z"
+      "last_seen": "2026-07-05"
     },
     {
       "id": "bug-075",
@@ -1269,7 +1273,7 @@
       "error_message": "Wrong reference: false should be true",
       "file": "FM2/src/render/render_state.cpp",
       "root_cause": "Used \"false\" instead of \"true\"",
-      "fix": "Changed false → true",
+      "fix": "Changed false \u2192 true",
       "tags": [
         "auto-detected",
         "wrong-reference",
@@ -1294,6 +1298,348 @@
       "related_bugs": [],
       "occurrences": 2,
       "last_seen": "2026-07-05T18:17:10.245Z"
+    },
+    {
+      "id": "bug-074",
+      "timestamp": "2026-07-05",
+      "error_message": "XenosRecomp: 3 shaders (05A43916BBD6C20A, 082CFF6201F560C1, 1FA0262CA8D2C67E) fail with 'structured exception in recompiler', get stubbed",
+      "file": "ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp:1462 (recompile constant-table parse)",
+      "root_cause": "These 3 shaders (in FM2/assets/missed_shaders/, added Jul 2, tiny 128-212B) have constantTableOffset==0 in their ShaderContainer header (no constant table - minimal shaders with no float/bool/sampler constants). recompile() asserts constantTableOffset != NULL at line 1462 and the parsing below assumes a table always exists, so offset 0 faults -> caught by main.cpp __try/__except as a structured exception. Working shaders have a non-zero offset (e.g. 0x24). Localized via XENOS_RECOMP_TRACE=1 (last trace 'begin recompile' before each skip) + header dump (od -tx4 --endian=big).",
+      "fix": "FIXED 2026-07-05 (in-tree thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp recompile()). Root: shaders with constantTableOffset==0 (05A43916 PS, 082CFF62 VS, 1FA0262C) have NO constant table; code reinterpreted the shader header as a ConstantTableContainer and faulted. In --dump-hlsl (no SEH/try-catch guard) this ABORTED the whole run, which is why only 6/158 missed_shaders dumped and the shadow VS 0ED258 was unreachable. Fix: guard constant-table parsing on constantTableOffset!=0; when 0, point constantTableContainer at a static zeroed ConstantTableContainer{} so every downstream reflection loop sees 0 constants. Removed the now-handled assert(constantTableOffset!=NULL). Verified: rebuilt XenosRecomp; --dump-hlsl missed_shaders 6 -> 158, all 3 exception shaders + 0ED258 now translate. TODO: regen FM2 shader cache + rebuild fm2 to make the 3 shaders render (currently black/skipped in the shipped cache).",
+      "tags": [
+        "missed_shaders",
+        "fm2",
+        "dump-hlsl",
+        "constant-table",
+        "shader-translation",
+        "access-violation",
+        "xenosrecomp",
+        "structured-exception",
+        "FIXED",
+        "constantTableOffset"
+      ],
+      "related_bugs": [
+        "bug-072"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-07-05"
+    },
+    {
+      "id": "bug-078",
+      "timestamp": "2026-07-05T18:53:26.568Z",
+      "error_message": "Significant refactor of ",
+      "file": "../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
+      "root_cause": "6 lines replaced/restructured",
+      "fix": "Rewrote 26\u219227 lines (6 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T18:53:26.568Z"
+    },
+    {
+      "id": "bug-079",
+      "timestamp": "2026-07-05T18:56:06.594Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "43 lines replaced/restructured",
+      "fix": "Rewrote 49\u219213 lines (43 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T18:56:06.594Z"
+    },
+    {
+      "id": "bug-080",
+      "timestamp": "2026-07-05T19:02:18.559Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T19:02:18.559Z"
+    },
+    {
+      "id": "bug-081",
+      "timestamp": "2026-07-05",
+      "error_message": "FM2 main-menu car showroom: fm2menunocar.rdc shows the showroom empty (no car visible anywhere on screen), vs fm2mainmenucorrect.rdc where the car renders centered and correct",
+      "file": "thirdparty/XenosRecomp (shader_recompiler.cpp, same family as bug-072's Logc/Rcp lowering)",
+      "root_cause": "CONTINUATION of bug-072's 'remaining: car position blow-up'. fm2menunocar.rdc is a drastically reduced capture (204 draws vs 1037 in fm2mainmenucorrect.rdc) where the detailed car body never draws at all; the only surviving car-related geometry is a ground-shadow quad (event 1953, VS ResourceId::10567/PS 10568) and an unrelated billboard sprite (event 1945, VS 10564). debug_vertex on the shadow quad's 4 corners shows a badly SHEARED result: 2 corners project to normal on-screen NDC (x=-0.94, -0.12) while the other 2 project off past the right/bottom edge (x_ndc=1.31-1.32, one also y_ndc=-1.84) -- confirmed visually via before/after RT snapshots (event1945 vs event1953): a triangular shadow sliver appears at bottom-left instead of a symmetric patch centered under the car. Both VS10564 and VS10567 carry the identical degenerate constant register c32=[0,0,0,0], the same slot implicated in bug-072's FIXED Logc/Rcp mistranslation -- strong signal this is the same mistranslated-ALU-op family, but nan_or_inf_steps is empty here (finite-but-wrong, ~1.3-1.8x screen-space skew, not the \u00b1FLT_MAX poison already fixed) so it is likely a DIFFERENT op in the same shader/family, not a recurrence of the fixed one. || RESOLVED-AS-NOT-TRANSLATION 2026-07-05 (fresh capture fm2menunocar2.rdc, which DOES disassemble): debug_vertex+full_trace on shadow quad eid1952 (VS 0ED258) AND car body eid1784 (VS 66c7cbfb) both show the POSITION is a CLEAN World-View-Projection matrix multiply -- NO NaN/Inf/FLT_MAX anywhere in the position path (shadow: 238-step trace all finite; car: steps 600-632 that build SV_Position have zero -3.403e38/-inf). The off-screen result comes ENTIRELY from the transform CONSTANTS: shadow matWV = ~100x scale + 45deg rotation (cbuffer0 byte64/80/96/112) puts the quad diagonal corners at view-x=+-353 with depth~354 => 45deg off-axis => outside the ~37deg frustum => 2 corners shear off. Car body VertexShaderConstants world matrix likewise places it at NDC(1.24,-1.79). The -FLT_MAX from log2(0) [Logc] is ONLY in the lighting/specular (pow=exp2(y*log2(x))) chain and resolves to 0 (black), matching bug-072 color path; good-backend kLogc (dxbc_translator_alu.cpp:723) is functionally identical (log2 then replace -inf with -FLT_MAX), so NOT a new divergence. CONCLUSION: the car/shadow off-screen is a CONSTANT-DELIVERY / game-state issue (world/view matrix), NOT a XenosRecomp translation bug. fm2menunocar2 is a nocar state where the car transform is wrong. XenosRecomp translation of these shaders is CORRECT.",
+      "fix": "NOT YET FIXED. full_trace debug_vertex ran (idx0 X=-2,Z=+pi BAD vs idx3 X=-2,Z=-pi GOOD, same X isolates Z). Ruled out one false lead (_134 register just tracks W ratio, not a bug). Found real divergence: registers _76/_77 SWAP between the two vertices (bad=(353.55,-70.71), good=(-70.71,353.55)) exactly at the Z=+pi/-pi boundary -- not explainable by legit perspective, but mathematically sin/cos SHOULD be continuous there so not proven. BLOCKED: RenderDoc cannot disassemble ANY shader in fm2menunocar.rdc (confirmed on 3 shaders: 861, 10564, 10567) -- 'could not resolve shader resource for disassembly, replay-side resource-tracking gap', list_resources shows these shader ids as name='' type='Unknown' (capture-wide gap, good capture disassembles fine). Checked XenosRecomp fork directly: AluScalarOpcode::Sin/Cos (shader_recompiler.cpp:1353-1359) emit raw HLSL sin()/cos(), while Xenia's reference (xenia-canary dxbc_shader_translator_alu.cc:1022-1027) emits the native SM5 sincos DXBC opcode -- a real difference, plausible lead, but NOT confirmed as the cause without real disassembly. NEXT: either get a fresh live capture (disassembly worked on the good capture) or pull this shader's DXIL straight from the FM2 shader cache on disk by hash (bypasses RenderDoc) -- but the hash is unknown since RenderDoc can't name this shader either. | UPDATE 2026-07-05: sin/cos lead DISPROVEN 3 ways: (1) sin/cos are continuous at +-pi so cannot cause a swap; (2) in-repo good backend dxbc_translator_alu.cpp kSin/kCos emit raw OpSinCos with NO range reduction = functionally identical to fork sin()/cos(); (3) --dump-hlsl of all 64 unique FM2 shaders shows ZERO use sin/cos. Also CndEq/CndGe/CndGt operand order in fork == clean-upstream == good backend (cond?op1:op2), so CND is correct too. Shear is a FINITE linear-transform difference; remaining known fork-vs-good divergences (SM3 zero-mul, NaN max/min) do not fit finite values -> lead now: this may NOT be a shader-translation bug (suspect constants/vertex-decode/RT-routing for the reflection family) OR an undiscovered op. NEW capability: XenosRecomp vendored in-tree, XenosRecomp.exe --dump-hlsl writes per-shader HLSL to inspect without RenderDoc.",
+      "tags": [
+        "position-blowup",
+        "fm2",
+        "xenosrecomp",
+        "world-matrix",
+        "position-clean",
+        "plume_native",
+        "game-state",
+        "renderdoc",
+        "off-screen",
+        "showroom",
+        "car",
+        "constants",
+        "NOT-TRANSLATION",
+        "shader-translation"
+      ],
+      "related_bugs": [
+        "bug-072"
+      ],
+      "occurrences": 2,
+      "last_seen": "2026-07-05"
+    },
+    {
+      "id": "bug-082",
+      "timestamp": "2026-07-05T19:54:54.453Z",
+      "error_message": "Significant refactor of ",
+      "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md",
+      "root_cause": "4 lines replaced/restructured",
+      "fix": "Rewrote 8\u219241 lines (4 removed) | Also: Logged as [buglog bug-081]. NEXT: `full_trace=true; corners) vs idx2/idx3 (the good ones) in `fm2menun",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-05T19:54:54.462Z"
+    },
+    {
+      "id": "bug-083",
+      "timestamp": "2026-07-05T19:55:38.644Z",
+      "error_message": "Incorrect value in code",
+      "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "root_cause": "Had \"Hypothesis #3 CONFIRMED\" || ROOT CAUSE FOUND (code trace A, 2026-07-05): the car per-object WVP (c15-c18) is delivered ONLY via PM4 command-buffer packets -- the car renderer never uses the CPU SetVertexShaderConstantFN path, so its matrix is NOT in the live file (ctx+0x710). Scene objects incl. the shadow DO use SetF -> live file -> correct (why shadow is centered). render_state.cpp FlushRenderState: for 3D/POS shaders the PM4 overlay uses cover = (use2dOverlay||kCpAccumulate3D)?accum:fresh, and kCpAccumulate3D=false (line 3049), so 3D uses the FRESH pre-draw delta only. But the car s c15-c18 is emitted OUTSIDE the pre-draw fresh-delta window (#32), so fresh coverage misses it -> the car falls back to the live file c15-c18 (a different object s matrix / stale) -> off-screen. The accumulate alternative (kCpAccumulate3D=true) was tried+reverted because last-writer-wins stomps material/color regs -> flashing. So the car WVP has NO correct delivery path. This is the #32 CP-reconstruction gap.",
+      "fix": "FIX IMPLEMENTED (AWAITING VALIDATION RUN) 2026-07-05, ReOdyssey-style, d3d_hooks.cpp: hooked the precompiled command-buffer constant path directly instead of scanning PM4 (the planned-but-never-done handoff item 6c). (1) REX_HOOK_RAW(sub_823766E0) D3DCommandBuffer_CreateShaderConstantFFixup: maps fixup handle -> {StartRegister r5, Vector4fCount r6}. (2) REX_HOOK_RAW(sub_823767B8) D3DCommandBuffer_SetShaderConstantF: r4=handle, r5=pConstantData (the REAL per-frame matrix, big-endian floats) -- looks up the handle range, copies the values, RECORDS into a per-draw queue (g_pendingCbFixupConsts). (3) DrainCbFixupConstants() applies per-draw into the fresh delta, called right after DrainGpuBeginConstants in ProcessPm4VsConstantsDiag. Uses the SAME record+drain pattern as the working GpuBegin path (kGpuBeginHookFeedsShadow) rather than immediate-apply (kSetFHooksFeedPm4Shadow=false, which smears per-element constants). kCbFixupHooksFeedShadow=true. fm2 rebuilt OK. VALIDATION: run, check if the car appears on-screen; FM2_CBFIXUP log shows handle/startReg/count/values per fire. CAVEAT: correct only if SetShaderConstantF is interleaved per-object with draws (not batched) -- if the car still smears, the CB is batched and needs per-draw handle association.",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-05"
+    },
+    {
+      "id": "bug-084",
+      "timestamp": "2026-07-05T20:08:59.171Z",
+      "error_message": "Significant refactor of ",
+      "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 3\u21928 lines (3 removed) | Also: keep lighting finite. **Fix belongs in the XenosRe; ReOdyssey\\thirdparty\\XenosRecomp` \u2014 how it emits t",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-05T20:08:59.182Z"
+    },
+    {
+      "id": "bug-085",
+      "timestamp": "2026-07-05T20:28:32.595Z",
+      "error_message": "Significant refactor of ",
+      "file": "../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_chunks.py",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 3\u21927 lines (2 removed) | Also: PYMOD = r\"C:\\Users\\Tera\\Documents\\GitHub\\renderdoc; os.environ[\"PATH\"] = PYMOD + os.pathsep + os.envir",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "py"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-05T20:28:32.612Z"
+    },
+    {
+      "id": "bug-086",
+      "timestamp": "2026-07-05T20:30:02.442Z",
+      "error_message": "Significant refactor of ",
+      "file": "../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_pso_chunks.py",
+      "root_cause": "8 lines replaced/restructured",
+      "fix": "Rewrote 23\u219238 lines (8 removed) | Also: # leaf - try to get a value; val = None | Also: print(f\"=== chunk index {i}, {chunk.name} ===\"); n = chunk.NumChildren()",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "py"
+      ],
+      "related_bugs": [],
+      "occurrences": 4,
+      "last_seen": "2026-07-05T20:30:12.424Z"
+    },
+    {
+      "id": "bug-087",
+      "timestamp": "2026-07-05",
+      "error_message": "RenderDoc CORE BUG (not renderdoc-mcp) FIXED + rebuilt + verified: get_shader/DisassembleShader returned 'Invalid Shader Specified' for every shader in fm2menunocar.rdc",
+      "file": "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc/driver/d3d12/d3d12_resources.h (WrappedID3D12PipelineState::ShaderEntry constructor, ~line 890)",
+      "root_cause": "Traced end-to-end via a standalone python script against the renderdoc pymodules (bypassing the MCP layer) to walk the capture's full chunk list + call the replay API directly. D3D12Replay::GetShader() (d3d12_replay.cpp:542) correctly finds the ShaderEntry by resourceId, then returns &sh->GetDetails(). ShaderEntry::GetDetails() (d3d12_resources.h ~1005) sets m_Built=true UNCONDITIONALLY after attempting BuildReflection(), even if BuildReflection() never ran (GetDXBC()==NULL) or threw partway through MakeShaderReflection() -- for this shader's DXC-linker-produced DXIL container (missing PSV0/ISG1/OSG1, a known project finding). ShaderReflection::resourceId is ONLY ever assigned inside BuildReflection() (d3d12_resources.cpp:637, m_Details->resourceId = GetResourceID()), which runs AFTER the (failing) reflection-parse call -- so on failure resourceId stays at its default/invalid ResourceId(). This gets latched forever (m_Built never resets, no retry). DisassembleShader() then does GetResAs<WrappedID3D12Shader>(refl->resourceId) with that invalid id and correctly returns null -> the sentinel. The actual ShaderEntry/bytecode was NEVER missing or unregistered -- confirmed via raw structured-chunk inspection (Device_CreateGraphicsPipeline chunk present, InlineShaderIDs correctly wired to 10567/10568, VS BytecodeLength=6676 real bytes) -- only the REFLECTION OBJECT never got linked back to it.",
+      "fix": "One-line fix: set `m_Details->resourceId = GetResourceID();` unconditionally in the ShaderEntry constructor (right after `m_Details = new ShaderReflection;`, d3d12_resources.h ~line 890), instead of relying solely on the assignment inside BuildReflection() which may never run. VERIFIED: rebuilt full renderdoc.sln (renderdoc.dll + pymodules/renderdoc.pyd) and re-ran the same standalone script against fm2menunocar.rdc -- refl.resourceId now correctly equals the bound shader id (10567), and DisassembleShader returns real ~10.8KB DXIL disassembly instead of the sentinel. Regression-checked fm2mainmenucorrect.rdc (event 61, VS 545) still disassembles fine (69KB DXBC text, unchanged). NOT YET committed to the renderdoc repo (user hasn't asked).",
+      "tags": [
+        "renderdoc",
+        "d3d12",
+        "core-bug",
+        "cpp",
+        "shader-reflection",
+        "disassembly",
+        "resourceId",
+        "verified",
+        "rebuild"
+      ],
+      "related_bugs": [
+        "bug-081"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-07-05"
+    },
+    {
+      "id": "bug-088",
+      "timestamp": "2026-07-05",
+      "error_message": "RenderDoc full-solution build failed with a chain of environment/toolset issues before it would even compile",
+      "file": "C:/Users/Tera/Documents/GitHub/renderdoc (build environment, not source)",
+      "root_cause": "Three stacked issues in this Claude shell environment: (1) git-bash mangles MSBuild's /switch args into POSIX paths (e.g. /t:Build -> t:Build) -- must invoke MSBuild from the PowerShell tool, not Bash. (2) A plain shell here has a stale VS2022-era INCLUDE/LIB already set (same root cause as [[project_fm2_build_lib_env]]) that breaks vcvarsall.bat's setup unless explicitly cleared (`set INCLUDE=` / `set LIB=` / `set LIBPATH=`) before calling it, in a .bat file (not inline via nested cmd /c quoting, which mangles paths). (3) Independent of the env issue: several legacy sub-projects (ARM.vcxproj, renderdoc_dxgi/spirv/dxil, renderdocui_stub) hardcode `<PlatformToolset>v140</PlatformToolset>` (VS2015) which isn't installed alongside the VS18 toolset actually present -- passing `/p:PlatformToolset=v145` on the MSBuild command line overrides it (command-line global properties beat plain PropertyGroup assignments in the vcxproj). Also: building a single .vcxproj directly (not via renderdoc.sln) breaks because renderdoc.vcxproj imports `$(SolutionDir)\\util\\WindowsSDKTarget.props`, and SolutionDir is empty outside a solution build -- must build via renderdoc.sln, not the individual project file.",
+      "fix": "Working recipe: write a .bat file that (a) clears INCLUDE/LIB/LIBPATH and sets a minimal PATH, (b) calls vcvars64.bat, (c) runs `MSBuild.exe renderdoc.sln /t:Build /m /nologo /verbosity:minimal /p:Configuration=Development /p:Platform=x64 /p:PlatformToolset=v145` -- then invoke that .bat via `cmd /c` from the PowerShell tool (not Bash) with output redirected to a log file, run in background (full build ~5-10 min). Confirmed working end-to-end: rebuilt renderdoc.dll + pymodules/renderdoc.pyd + qrenderdoc.exe successfully this way.",
+      "tags": [
+        "renderdoc",
+        "build",
+        "msbuild",
+        "toolset",
+        "environment",
+        "git-bash",
+        "vcvarsall",
+        "v140",
+        "WindowsSDKTarget"
+      ],
+      "related_bugs": [
+        "bug-087"
+      ],
+      "occurrences": 1,
+      "last_seen": "2026-07-05"
+    },
+    {
+      "id": "bug-089",
+      "timestamp": "2026-07-05T20:57:42.704Z",
+      "error_message": "Incorrect value in code",
+      "file": "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "root_cause": "Had \"full_trace follow-up\"",
+      "fix": "Changed to `ShaderEntry::GetDetails()`",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-05T20:57:42.704Z"
+    },
+    {
+      "id": "bug-090",
+      "timestamp": "2026-07-05T21:01:03.540Z",
+      "error_message": "Significant refactor of ",
+      "file": "thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 44\u219256 lines (2 removed) | Also: assert(shaderContainer->constantTableOffset != NUL; const auto constantTableContainer = reinterpret_ca",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-05T21:01:03.549Z"
+    },
+    {
+      "id": "bug-091",
+      "timestamp": "2026-07-05T22:00:51.848Z",
+      "error_message": "Incorrect value in code",
+      "file": "thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
+      "root_cause": "Had \"{} * {} + {}\"",
+      "fix": "Changed to \"mulSM3({}, {}) + {}\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 9,
+      "last_seen": "2026-07-05T22:01:09.625Z"
+    },
+    {
+      "id": "bug-082",
+      "timestamp": "2026-07-05",
+      "last_seen": "2026-07-05",
+      "error_message": "XenosRecomp diverges from Xenia on SM3 ALU semantics (latent): 0*Inf=NaN not +0; max/min use fmax/fmin not a>=b?a:b",
+      "file": "thirdparty/XenosRecomp/XenosRecomp/{shader_common.h,shader_recompiler.cpp}",
+      "root_cause": "Fork emitted plain a*b, max(), min(), dot() for Mul/Mad/Muls/Mulsc/MulsPrev/Dp and Max/Min/Maxs/Mins. Xenia (dxbc_translator_alu.cpp) guards SM3 zero-multiply (min(|a|,|b|)==0->+0) and NaN max/min (a>=b?a:b). Latent: only manifests on Inf/NaN operands downstream of a clamped Logc/Rcpc/Rsqc (same class as the fixed car-flash bug-072). Affects 84/158 shaders that use log/rcp/rsq.",
+      "fix": "Added mulSM3/maxSM3/minSM3/dotSM3 helpers (float/2/3/4) to shader_common.h using selectWrapper; rewired 11 lowerings in shader_recompiler.cpp. Guards are exact no-ops for finite inputs. Verified all 216 shaders still compile (DXIL/AIR/SPIRV), cache regen 216, fm2 rebuilt. NOT done: MulsPrev2 -FLT_MAX sentinel (#3, rare). Needs capture to confirm no visual regression.",
+      "tags": [
+        "xenosrecomp",
+        "shader-translation",
+        "sm3",
+        "zero-multiply",
+        "nan-max",
+        "audit",
+        "fm2"
+      ],
+      "related_bugs": [
+        "bug-072",
+        "bug-081"
+      ],
+      "occurrences": 1
+    },
+    {
+      "id": "bug-083",
+      "timestamp": "2026-07-05",
+      "last_seen": "2026-07-05",
+      "error_message": "FM2 plume_native main-menu car ALWAYS off-screen (user-confirmed persistent, not transitional)",
+      "file": "(constant delivery, TBD)",
+      "root_cause": "CONFIRMED not translation (car VS 332E2E419740BB57 position transform proven correct op-by-op vs neutral disasm). The delivered MVP/world matrix (car uses combined matrix at VertexShaderConstants c15-c18 = g_Transforms(8-11)) translates the car off the bottom-right: idx0 clip=(343,-499,268,278)=NDC(1.24,-1.79); local origin ~NDC(0,-1.2). Car sits BELOW its own ground-shadow quad (which is centered NDC~0) -- backwards (car should be above shadow). So the car-specific world/bone matrix delivery is wrong while the shadow matrices (c4-c7,c20-c23) are correct. Likely a constant-delivery issue specific to the car (skinned mesh: bone matrices c5-c18) -- ties into the plume_native constant path / drop-latch saga (state rewire ledger #20: pool p145 backpressure drops state/matrix CParams). || ROOT CAUSE FOUND (code trace A, 2026-07-05): the car per-object WVP (c15-c18) is delivered ONLY via PM4 command-buffer packets -- the car renderer never uses the CPU SetVertexShaderConstantFN path, so its matrix is NOT in the live file (ctx+0x710). Scene objects incl. the shadow DO use SetF -> live file -> correct (why shadow is centered). render_state.cpp FlushRenderState: for 3D/POS shaders the PM4 overlay uses cover = (use2dOverlay||kCpAccumulate3D)?accum:fresh, and kCpAccumulate3D=false (line 3049), so 3D uses the FRESH pre-draw delta only. But the car s c15-c18 is emitted OUTSIDE the pre-draw fresh-delta window (#32), so fresh coverage misses it -> the car falls back to the live file c15-c18 (a different object s matrix / stale) -> off-screen. The accumulate alternative (kCpAccumulate3D=true) was tried+reverted because last-writer-wins stomps material/color regs -> flashing. So the car WVP has NO correct delivery path. This is the #32 CP-reconstruction gap.",
+      "fix": "FIX IMPLEMENTED (AWAITING VALIDATION RUN) 2026-07-05, ReOdyssey-style, d3d_hooks.cpp: hooked the precompiled command-buffer constant path directly instead of scanning PM4 (the planned-but-never-done handoff item 6c). (1) REX_HOOK_RAW(sub_823766E0) D3DCommandBuffer_CreateShaderConstantFFixup: maps fixup handle -> {StartRegister r5, Vector4fCount r6}. (2) REX_HOOK_RAW(sub_823767B8) D3DCommandBuffer_SetShaderConstantF: r4=handle, r5=pConstantData (the REAL per-frame matrix, big-endian floats) -- looks up the handle range, copies the values, RECORDS into a per-draw queue (g_pendingCbFixupConsts). (3) DrainCbFixupConstants() applies per-draw into the fresh delta, called right after DrainGpuBeginConstants in ProcessPm4VsConstantsDiag. Uses the SAME record+drain pattern as the working GpuBegin path (kGpuBeginHookFeedsShadow) rather than immediate-apply (kSetFHooksFeedPm4Shadow=false, which smears per-element constants). kCbFixupHooksFeedShadow=true. fm2 rebuilt OK. VALIDATION: run, check if the car appears on-screen; FM2_CBFIXUP log shows handle/startReg/count/values per fire. CAVEAT: correct only if SetShaderConstantF is interleaved per-object with draws (not batched) -- if the car still smears, the CB is batched and needs per-draw handle association.",
+      "tags": [
+        "fm2",
+        "plume_native",
+        "off-screen",
+        "car",
+        "constant-delivery",
+        "mvp",
+        "world-matrix",
+        "not-translation",
+        "bone-matrix"
+      ],
+      "related_bugs": [
+        "bug-081",
+        "bug-072"
+      ],
+      "occurrences": 1
+    },
+    {
+      "id": "bug-094",
+      "timestamp": "2026-07-06T00:03:02.574Z",
+      "error_message": "Missing guard clause",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "No early return/throw for edge case: r.startReg == 0u && r.count4 == 4u",
+      "fix": "Added guard clause: if (r.startReg == 0u && r.count4 == 4u)",
+      "tags": [
+        "auto-detected",
+        "guard-clause",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 4,
+      "last_seen": "2026-07-06T00:03:28.481Z"
     }
   ]
 }

@@ -1,21 +1,30 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-05T18:17:10.235Z
-> Files: 549 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-06T00:03:28.468Z
+> Files: 559 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/
 
-- `MEMORY.md` — Memory Index (~2161 tok)
+- `MEMORY.md` — Memory Index (~2745 tok)
 - `project_fm2_black_textures_no_tfetch.md` — 🎉 2026-07-04 — BG RENDERS! + 2 more XenosRecomp fork bugs fixed (bool hook + NORMAL interpolators) (~10671 tok)
-- `project_fm2_car_flashing_xenosrecomp_2026-07-05.md` — FM2 car flashing polys = XenosRecomp shader-translation bug (2026-07-05) (~1385 tok)
+- `project_fm2_car_flashing_xenosrecomp_2026-07-05.md` — FM2 car flashing polys = XenosRecomp shader-translation bug (2026-07-05) (~3083 tok)
 - `project_fm2_logo_cull_depth_2026-07-04.md` — FM2 press-start logo / cull / depth saga (2026-07-04) (~1346 tok)
+- `project_fm2_pm4_legacy_audit_2026-07-05.md` (~1171 tok)
 - `project_fm2_pool_pacing_root_cause.md` (~1004 tok)
+- `project_renderdoc_core_disassembly_fix_2026-07-05.md` — RenderDoc core disassembly bug: root cause, fix, and build recipe (2026-07-05) (~2433 tok)
 - `reference_renderdoc_mcp_disasm_fix.md` — RenderDoc MCP DXIL disassembly fix (2026-07-05) (~810 tok)
 
 ## ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/22054c61-d9f8-4566-991c-6f9759f41605/scratchpad/
 
 - `burst_fm2.ps1` — Declares WB (~351 tok)
 - `shot_fm2.ps1` — Declares WShot (~316 tok)
+
+## ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/
+
+- `build_renderdoc.bat` (~161 tok)
+- `inspect_chunks.py` (~339 tok)
+- `inspect_pso_chunks.py` — leaf_value, dump_obj, find_child (~828 tok)
+- `verify_fix.py` (~487 tok)
 
 ## ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/
 
@@ -25,19 +34,24 @@
 - `dxil_sem.py` — parse_parts, strings (~400 tok)
 - `rdat.py` — parse_parts, parse_rdat, get_table, cstr (~866 tok)
 - `rdat2.py` — parse_parts, parse_rdat, cstr (~416 tok)
+- `xdisasm.cpp` — Standalone Xenos microcode disassembler using the SDK's NEUTRAL (Xenia-derived) (~779 tok)
 - `xdisasm.py` — be32, analyze (~895 tok)
 
 ## ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/
 
 - `main.cpp` — include <deque> (~4694 tok)
 - `shader_common.h` — ifndef SHADER_COMMON_H_INCLUDED (~5601 tok)
-- `shader_recompiler.cpp` — include "shader_recompiler.h" (~24858 tok)
+- `shader_recompiler.cpp` — include "shader_recompiler.h" (~24959 tok)
 - `shader_recompiler.h` — pragma once (~610 tok)
 
 ## ../renderdoc/renderdoc-mcp/renderdoc_mcp/
 
 - `server.py` — FastMCP server: RenderDoc replay tools on HTTP `/mcp`. (~21185 tok)
 - `shader_debug.py` — Pixel/vertex shader debug tracing: summarizes ReplayController.DebugPixel/DebugVertex traces. (~4796 tok)
+
+## ../renderdoc/renderdoc/driver/d3d12/
+
+- `d3d12_resources.h` — *************************************************************************** (~18486 tok)
 
 ## ./
 
@@ -579,12 +593,14 @@
 - `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~1764 tok)
 - `fm2_manifest.toml` (~9278 tok)
 
+## FM2/src/native_renderer/
+
+
 ## FM2/src/render/
 
-- `d3d_hooks.cpp` — include <algorithm> (~72738 tok)
+- `d3d_hooks.cpp` — include <algorithm> (~73965 tok)
 - `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~17619 tok)
-- `render_internal.h` — render/render_internal.h (~1554 tok)
-- `render_state.cpp` — include <algorithm> (~68416 tok)
+- `render_internal.h` — render/render_internal.h (~1627 tok)
 - `shader_probe_window.cpp` — Small always-on-top status window for the interactive shader probe (~1066 tok)
 
 ## docs/
@@ -599,3 +615,9 @@
 ## scripts/fm2/
 
 - `launch-fm2-plume-native-clean.bat` (~622 tok)
+- `Update-FM2ShaderCache.ps1` (~884 tok)
+
+## thirdparty/XenosRecomp/XenosRecomp/
+
+- `shader_common.h` — ifndef SHADER_COMMON_H_INCLUDED (~6082 tok)
+- `shader_recompiler.cpp` — include "shader_recompiler.h" (~25189 tok)

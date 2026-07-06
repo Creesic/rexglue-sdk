@@ -1,289 +1,152 @@
 {
-  "session_id": "session-2026-07-05-1211",
-  "started": "2026-07-05T16:11:39.905Z",
+  "session_id": "session-2026-07-05-1931",
+  "started": "2026-07-05T23:31:09.016Z",
   "files_read": {
-    "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/9c3354f1-a51d-4190-8c75-5d4eeb986a0c/tool-results/toolu_019F8maLjCzBiYMPLkxNPi6y.txt": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-05T16:12:46.261Z"
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/CMakeLists.txt": {
+      "count": 2,
+      "tokens": 2572,
+      "first_read": "2026-07-05T23:33:45.961Z"
     },
-    "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_logo_cull_depth_2026-07-04.md": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-05T16:12:46.593Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp": {
-      "count": 9,
-      "tokens": 68436,
-      "first_read": "2026-07-05T16:13:45.080Z"
-    },
-    "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/22054c61-d9f8-4566-991c-6f9759f41605/tasks/b98ahjsad.output": {
-      "count": 5,
-      "tokens": 0,
-      "first_read": "2026-07-05T16:15:17.338Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp": {
-      "count": 5,
-      "tokens": 72738,
-      "first_read": "2026-07-05T16:21:05.144Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/shader_debug.py": {
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/native_renderer/fm2_native_renderer.h": {
       "count": 3,
       "tokens": 0,
-      "first_read": "2026-07-05T16:42:56.445Z"
+      "first_read": "2026-07-05T23:33:59.210Z"
     },
-    "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/session.py": {
-      "count": 1,
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/native_renderer/fm2_native_renderer.cpp": {
+      "count": 16,
       "tokens": 0,
-      "first_read": "2026-07-05T16:44:01.660Z"
+      "first_read": "2026-07-05T23:35:53.405Z"
     },
-    "C:/Users/Tera/Documents/GitHub/renderdoc/CLAUDE.md": {
-      "count": 1,
-      "tokens": 2175,
-      "first_read": "2026-07-05T16:44:21.631Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/rdutil.py": {
-      "count": 1,
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/FM2-native-renderer-gap-analysis.md": {
+      "count": 3,
       "tokens": 0,
-      "first_read": "2026-07-05T16:44:50.532Z"
+      "first_read": "2026-07-05T23:35:54.755Z"
     },
-    "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/server.py": {
-      "count": 5,
-      "tokens": 0,
-      "first_read": "2026-07-05T16:45:54.871Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/renderdoc/qrenderdoc/Code/Interface/MCPServerManager.cpp": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-05T16:59:21.935Z"
-    },
-    "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-05T17:20:04.034Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/src/graphics/pipeline/shader/dxbc_translator_alu.cpp": {
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/scripts/fm2/launch-fm2-plume-native.bat": {
       "count": 2,
       "tokens": 0,
-      "first_read": "2026-07-05T17:39:54.689Z"
+      "first_read": "2026-07-05T23:36:01.692Z"
     },
-    "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp": {
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/scripts/fm2/launch-fm2-plume-native-clean.bat": {
+      "count": 1,
+      "tokens": 622,
+      "first_read": "2026-07-05T23:36:02.156Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/scripts/fm2/Invoke-FM2GameplaySmoke.ps1": {
       "count": 4,
       "tokens": 0,
-      "first_read": "2026-07-05T18:04:12.562Z"
+      "first_read": "2026-07-05T23:36:25.260Z"
     },
-    "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_common.h": {
-      "count": 1,
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp": {
+      "count": 24,
       "tokens": 0,
-      "first_read": "2026-07-05T18:04:50.458Z"
+      "first_read": "2026-07-05T23:37:01.451Z"
     },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/scripts/fm2/Update-FM2ShaderCache.ps1": {
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/fm2_hooks.cpp": {
       "count": 2,
       "tokens": 0,
-      "first_read": "2026-07-05T18:06:36.725Z"
+      "first_read": "2026-07-05T23:37:45.645Z"
     },
-    "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/main.cpp": {
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/FM2-native-renderer-not-wired.md": {
+      "count": 2,
+      "tokens": 0,
+      "first_read": "2026-07-05T23:37:45.984Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/fm2_app.h": {
+      "count": 2,
+      "tokens": 0,
+      "first_read": "2026-07-05T23:45:53.242Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/native_renderer/fm2_direct_draw_decode.h": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-07-05T18:26:36.971Z"
+      "first_read": "2026-07-05T23:46:12.228Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/native_renderer/fm2_shader_analysis.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-05T23:46:47.748Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/native_renderer/fm2_native_state.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-05T23:48:07.480Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/FM2-handoff-2026-07-02-session5.md": {
+      "count": 2,
+      "tokens": 9663,
+      "first_read": "2026-07-05T23:49:08.223Z"
     }
   },
   "files_written": [
     {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 292,
-      "at": "2026-07-05T16:13:26.245Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 88,
-      "at": "2026-07-05T16:13:50.848Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 138,
-      "at": "2026-07-05T16:14:02.372Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 171,
-      "at": "2026-07-05T16:14:11.060Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 92,
-      "at": "2026-07-05T16:14:35.289Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 22,
-      "at": "2026-07-05T16:14:39.917Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 103,
-      "at": "2026-07-05T16:17:41.028Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 103,
-      "at": "2026-07-05T16:17:41.037Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
-      "action": "edit",
-      "tokens": 506,
-      "at": "2026-07-05T16:32:00.316Z"
-    },
-    {
-      "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/disasm_probe.py",
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_pm4_legacy_audit_2026-07-05.md",
       "action": "create",
-      "tokens": 454,
-      "at": "2026-07-05T16:46:21.866Z"
+      "tokens": 1315,
+      "at": "2026-07-05T23:42:04.502Z"
     },
     {
-      "file": "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/shader_debug.py",
-      "action": "edit",
-      "tokens": 203,
-      "at": "2026-07-05T16:56:45.471Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/shader_debug.py",
-      "action": "edit",
-      "tokens": 203,
-      "at": "2026-07-05T16:56:45.482Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/server.py",
-      "action": "edit",
-      "tokens": 491,
-      "at": "2026-07-05T16:57:04.717Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/server.py",
-      "action": "edit",
-      "tokens": 491,
-      "at": "2026-07-05T16:57:04.732Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/shader_debug.py",
-      "action": "edit",
-      "tokens": 427,
-      "at": "2026-07-05T16:57:32.192Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/server.py",
-      "action": "edit",
-      "tokens": 117,
-      "at": "2026-07-05T16:57:42.203Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/renderdoc/renderdoc-mcp/renderdoc_mcp/server.py",
-      "action": "edit",
-      "tokens": 117,
-      "at": "2026-07-05T16:57:42.215Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md",
+      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_pm4_legacy_audit_2026-07-05.md",
       "action": "create",
-      "tokens": 1118,
-      "at": "2026-07-05T17:19:35.328Z"
+      "tokens": 1315,
+      "at": "2026-07-05T23:42:04.512Z"
     },
     {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md",
-      "action": "create",
-      "tokens": 1118,
-      "at": "2026-07-05T17:19:35.332Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/reference_renderdoc_mcp_disasm_fix.md",
-      "action": "create",
-      "tokens": 926,
-      "at": "2026-07-05T17:19:58.399Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/reference_renderdoc_mcp_disasm_fix.md",
-      "action": "create",
-      "tokens": 926,
-      "at": "2026-07-05T17:19:58.403Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 424,
-      "at": "2026-07-05T17:20:21.983Z"
+      "tokens": 476,
+      "at": "2026-07-06T00:02:52.119Z"
     },
     {
-      "file": "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_common.h",
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 178,
-      "at": "2026-07-05T18:06:13.896Z"
+      "tokens": 476,
+      "at": "2026-07-06T00:02:52.121Z"
     },
     {
-      "file": "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 427,
-      "at": "2026-07-05T18:06:29.471Z"
+      "tokens": 214,
+      "at": "2026-07-06T00:03:02.571Z"
     },
     {
-      "file": "C:/Users/Tera/Documents/GitHub/ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp",
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 427,
-      "at": "2026-07-05T18:06:29.474Z"
+      "tokens": 214,
+      "at": "2026-07-06T00:03:02.581Z"
     },
     {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 17,
-      "at": "2026-07-05T18:13:14.744Z"
+      "tokens": 25,
+      "at": "2026-07-06T00:03:09.087Z"
     },
     {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp",
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 128,
-      "at": "2026-07-05T18:13:24.614Z"
+      "tokens": 25,
+      "at": "2026-07-06T00:03:09.098Z"
     },
     {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md",
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 475,
-      "at": "2026-07-05T18:16:41.015Z"
+      "tokens": 721,
+      "at": "2026-07-06T00:03:28.472Z"
     },
     {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 259,
-      "at": "2026-07-05T18:17:10.239Z"
-    },
-    {
-      "file": "C:/Users/Tera/.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md",
-      "action": "edit",
-      "tokens": 259,
-      "at": "2026-07-05T18:17:10.242Z"
+      "tokens": 721,
+      "at": "2026-07-06T00:03:28.478Z"
     }
   ],
   "edit_counts": {
-    "FM2/src/render/render_state.cpp": 11,
-    "../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/disasm_probe.py": 1,
-    "../renderdoc/renderdoc-mcp/renderdoc_mcp/shader_debug.py": 3,
-    "../renderdoc/renderdoc-mcp/renderdoc_mcp/server.py": 4,
-    "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md": 3,
-    "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/reference_renderdoc_mcp_disasm_fix.md": 2,
-    "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md": 3,
-    "../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_common.h": 1,
-    "../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp": 2
+    "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_pm4_legacy_audit_2026-07-05.md": 2,
+    "FM2/src/render/d3d_hooks.cpp": 8
   },
-  "anatomy_hits": 3,
-  "anatomy_misses": 14,
-  "repeated_reads_warned": 27,
+  "anatomy_hits": 4,
+  "anatomy_misses": 11,
+  "repeated_reads_warned": 51,
   "cerebrum_warnings": 0,
-  "stop_count": 14
+  "stop_count": 0
 }

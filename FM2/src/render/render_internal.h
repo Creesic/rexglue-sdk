@@ -90,6 +90,10 @@ void ApplyPm4VsConstants(uint32_t dwordIndex, const void *beDwords,
 // PS half of the PM4 ALU space (packet idx 0x400-0x7FF, rebase before call).
 void ApplyPm4PsConstants(uint32_t dwordIndex, const void *beDwords,
                          uint32_t dwordCount);
+// 2026-07-05: mirror the guest's real per-draw cull mode from the Xenos
+// PA_SU_SC_MODE_CNTL register (reg 0x2205) the PM4 scanner decodes, so lit 3D
+// meshes (the car) get the game's actual cull instead of a blanket override.
+void SetGamePaSuScModeCntl(uint32_t v);
 // Reset the per-delta "fresh" register set (see render_state.cpp); the
 // scanner calls this before walking each command-buffer delta so 3D draws
 // only overlay constants written immediately before them.

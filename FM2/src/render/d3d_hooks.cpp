@@ -189,6 +189,35 @@ struct GpuBeginConstRec {
 static std::mutex g_gpuBeginConstMutex;
 static std::vector<GpuBeginConstRec> g_pendingGpuBeginConsts;
 static std::atomic<uint32_t> g_gpuBeginConstDropped{0};
+
+// 2026-07-05: the CAR's per-object WVP/materials travel via the precompiled
+// command-buffer fixup path (D3DCommandBuffer_SetShaderConstantF /
+// CreateShaderConstantFFixup), NOT the immediate SetVertexShaderConstantFN the
+// scene objects (shadow etc.) use -- so plume only saw them via the fragile ring
+// scanner (fresh-delta misses c7-c18, accumulate stomps materials) and the car
+// drew off-screen with a stale/foreign matrix. Hook the fixup functions directly
+// (ReOdyssey/UnleashedRecomp style): CreateFixup carries the register range,
+// SetShaderConstantF carries the real values. Record into the SAME per-draw
+// record+drain the GpuBegin path uses -- immediate apply smears (every draw sees
+// the newest upload; see kSetFHooksFeedPm4Shadow) so defer to the next draw.
+static constexpr bool kCbFixupHooksFeedShadow = true;
+REX_IMPORT(__imp__sub_823767B8, g_origCbSetShaderConstantF,
+           void(uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_823766E0, g_origCbCreateShaderConstantFFixup,
+           uint32_t(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+struct CbFixupRegs {
+  uint16_t startReg;
+  uint16_t count;
+};
+static std::mutex g_cbFixupMapMutex;
+static std::unordered_map<uint32_t, CbFixupRegs> g_cbFixupMap;
+struct CbFixupConstRec {
+  uint32_t startReg;
+  uint32_t count;
+  uint32_t data[256]; // up to 64 vec4 registers, big-endian dwords (record copy)
+};
+static std::mutex g_cbFixupConstMutex;
+static std::vector<CbFixupConstRec> g_pendingCbFixupConsts;
 // FM2_RenderContext_SetActivePassId (sub_8236E228): stores the active vertex
 // declaration handle at renderContext+11540, read by FM2_D3D_EmitDrawListStatePackets
 // at draw time. Forza binds the per-draw vertex declaration here (a D3DVERTEXELEMENT9
@@ -3157,11 +3186,27 @@ static void DrainGpuBeginConstants() {
   }
 }
 
+// Twin of DrainGpuBeginConstants for the precompiled command-buffer fixup path
+// (the car's per-object WVP). Values were copied at record time in the
+// SetShaderConstantF hook, so just apply them into the current fresh delta.
+static void DrainCbFixupConstants() {
+  if (!kCbFixupHooksFeedShadow) return;
+  std::vector<CbFixupConstRec> recs;
+  {
+    std::lock_guard<std::mutex> lk(g_cbFixupConstMutex);
+    if (g_pendingCbFixupConsts.empty()) return;
+    recs.swap(g_pendingCbFixupConsts);
+  }
+  for (const auto &r : recs)
+    rr::ApplyPm4VsConstants(r.startReg * 4u, r.data, r.count * 4u);
+}
+
 void ProcessPm4VsConstantsDiag(uint32_t context) {
   // Fresh-set reset FIRST (even on the early-out paths): a draw with no new
   // command-buffer bytes gets an EMPTY fresh set, never the previous draw's.
   rr::BeginPm4ConstantDelta();
   DrainGpuBeginConstants();
+  DrainCbFixupConstants();
   auto rd = [&](uint32_t ga) -> uint32_t {
     auto *p = ghp::ToHost<rex::be<uint32_t>>(ga);
     return p ? p->get() : 0u;
@@ -3277,6 +3322,7 @@ static void ScanPm4AluConstantRange(uint32_t rangePhys, uint32_t len) {
             const uint32_t vo = off + 8u + 4u * (0x2205u - regBase);
             if (vo + 4u <= len) {
               const uint32_t v = be(vo);
+              rr::SetGamePaSuScModeCntl(v);
               static std::atomic<uint32_t> s_pn{0};
               if (s_pn.fetch_add(1, std::memory_order_relaxed) < 256)
                 LogReplayDbg("FM2_PASU via=setc4 val=%08X cull=%u frontCW=%u",
@@ -3396,6 +3442,7 @@ static void ScanPm4AluConstantRange(uint32_t rangePhys, uint32_t len) {
         const uint32_t vo = off + 4u + 4u * (0x2205u - base);
         if (vo + 4u <= len) {
           const uint32_t v = be(vo);
+          rr::SetGamePaSuScModeCntl(v);
           static std::atomic<uint32_t> s_pn{0};
           if (s_pn.fetch_add(1, std::memory_order_relaxed) < 256)
             LogReplayDbg("FM2_PASU via=t0 base=0x%X cnt=%u val=%08X cull=%u "
@@ -4707,6 +4754,61 @@ REX_HOOK_RAW(sub_82803358) {
     LogReplayDbg("FM2_GPUBEGINCONST n=%u ps=%u reg=%u count4=%u payload=0x%08X "
                  "lr=0x%08X",
                  n, isPs, startReg, count4, payload, (uint32_t)ctx.lr);
+}
+
+// D3DCommandBuffer_CreateShaderConstantFFixup (sub_823766E0; r3=pThis, r4=Flags,
+// r5=StartRegister, r6=Vector4fCount; returns r3=fixup handle). Record which
+// register range the handle covers so SetShaderConstantF can apply by register.
+REX_HOOK_RAW(sub_823766E0) {
+  const uint32_t startReg = ctx.r5.u32;
+  const uint32_t count = ctx.r6.u32;
+  g_origCbCreateShaderConstantFFixup.fn(ctx, base);
+  const uint32_t handle = ctx.r3.u32;
+  if (!kCbFixupHooksFeedShadow || count == 0u || count > 64u ||
+      startReg >= 0x100u)
+    return;
+  std::lock_guard<std::mutex> lk(g_cbFixupMapMutex);
+  g_cbFixupMap[handle] = {uint16_t(startReg), uint16_t(count)};
+}
+
+// D3DCommandBuffer_SetShaderConstantF (sub_823767B8; r3=pThis, r4=fixup handle,
+// r5=pConstantData = the real per-frame matrix/material values, big-endian floats).
+// Forza's command-buffer analog of SetVertexShaderConstantFN and the path the car's
+// per-object WVP rides. Copy the values keyed by the handle's register range and
+// record into the per-draw drain (each draw applies its own; immediate apply smears).
+REX_HOOK_RAW(sub_823767B8) {
+  const uint32_t handle = ctx.r4.u32;
+  const uint32_t srcAddr = ctx.r5.u32;
+  g_origCbSetShaderConstantF.fn(ctx, base);
+  if (!kCbFixupHooksFeedShadow || srcAddr == 0u ||
+      !ShouldMirrorPlumeRenderState())
+    return;
+  CbFixupRegs fr{};
+  {
+    std::lock_guard<std::mutex> lk(g_cbFixupMapMutex);
+    auto it = g_cbFixupMap.find(handle);
+    if (it == g_cbFixupMap.end()) return;
+    fr = it->second;
+  }
+  if (fr.count == 0u || fr.count > 64u) return;
+  const auto *src = static_cast<const uint32_t *>(ghp::ToHost<void>(srcAddr));
+  if (src == nullptr) return;
+  CbFixupConstRec rec;
+  rec.startReg = fr.startReg;
+  rec.count = fr.count;
+  std::memcpy(rec.data, src, size_t(fr.count) * 16u);
+  {
+    std::lock_guard<std::mutex> lk(g_cbFixupConstMutex);
+    if (g_pendingCbFixupConsts.size() < 2048)
+      g_pendingCbFixupConsts.push_back(rec);
+  }
+  static std::atomic<uint32_t> s_n{0};
+  const uint32_t n = s_n.fetch_add(1, std::memory_order_relaxed);
+  if (n < 24 || (n & 0xFFFu) == 0)
+    LogReplayDbg("FM2_CBFIXUP n=%u handle=0x%08X startReg=%u count=%u src=0x%08X "
+                 "v0=%08X v3=%08X lr=0x%08X",
+                 n, handle, (unsigned)fr.startReg, (unsigned)fr.count, srcAddr,
+                 src[0], fr.count >= 1u ? src[3] : 0u, (uint32_t)ctx.lr);
 }
 
 REX_HOOK(FM2_FmodIrqSubmit_8236C688, Fm2FmodIrqSubmitSafe);

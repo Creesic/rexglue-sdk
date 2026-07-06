@@ -2110,8 +2110,18 @@ CreateGraphicsPipeline(const PipelineState &ps) {
   desc.inputSlotsCount = inputSlotCount;
 
   auto pipeline = Device()->createGraphicsPipeline(desc);
-  if (pipeline == nullptr)
+  if (pipeline == nullptr) {
     g_lastPipelineRejectReason = PipelineRejectReason::CreateFailed;
+  } else {
+    // Stamp the guest shader-cache hashes onto the PSO name so RenderDoc
+    // captures self-identify: the PSO name shows the VS/PS hash, which is the
+    // on-disk shader-cache key (== the XenosRecomp "{hash}.hlsl" dump filename).
+    char psoName[96];
+    std::snprintf(psoName, sizeof(psoName), "FM2 VS=%016llX PS=%016llX",
+                  (unsigned long long)ShaderHash(ps.vertexShader),
+                  (unsigned long long)ShaderHash(ps.pixelShader));
+    pipeline->setName(psoName);
+  }
   return pipeline;
 }
 
@@ -2514,6 +2524,15 @@ static std::atomic<bool> g_pm4VsConstantsValid{false};
 static std::atomic<uint32_t> g_applyVsCallCount{0};
 // thread id without pulling <windows.h> into this large TU.
 extern "C" unsigned long __stdcall GetCurrentThreadId(void);
+
+// 2026-07-05: the game's REAL per-draw cull mode, mirrored from the Xenos
+// PA_SU_SC_MODE_CNTL register (reg 0x2205) that the PM4 scanner decodes. The
+// D3D9 D3DRS_CULLMODE path plume normally follows reports NONE for every draw,
+// so lit 3D meshes rendered double-sided; the blanket cull=BACK stopgap that
+// hid the logo's black back-faces also culled the whole car (it renders
+// cull=NONE on hardware). Mirror the guest's actual cull here instead.
+// Stored as int(RenderCullMode); UNKNOWN(0) means "not seen yet, leave alone".
+static std::atomic<int> g_gameCullMode{int(RenderCullMode::UNKNOWN)};
 // PS half of the PM4 ALU space (packet idx 0x400-0x7FF / Type-0 base
 // 0x4400-0x47FF). Material/paint colors ride here -- unapplied, the pixel
 // shaders read transient live-file values and surfaces FLASH primary colors
@@ -2729,10 +2748,13 @@ void FlushRenderState(GuestDevice *device) {
   // native path doesn't mirror). Restore BACK-face culling for lit meshes
   // (POSITION+NORMAL) when the mirrored cull is NONE; leaves 2D UI (no POSITION)
   // double-sided. Toggle to compare.
-  // 2026-07-04: DISABLED for the car/scene 3D investigation -- both the cull=BACK
-  // logo stopgap and the failed depth-write experiment lived here and would
-  // contaminate lit-3D meshes (incl. the car). Authentic base = cull=NONE, no
-  // forced zWrite. Re-enable (and pick cull=BACK vs zWrite) for the logo later.
+  // 2026-07-05: the per-draw cull MIRROR (SetGamePaSuScModeCntl) was reverted --
+  // a single global "latest cull mode" cannot be applied per-draw (UI draws that
+  // should be cull=NONE picked up a stale FRONT/BACK and flickered). The plumbing
+  // (g_gameCullMode / the scanner calls) is left in place but unused. Back to the
+  // cull=BACK stopgap: hides the still-exploding car polys' black back-faces and
+  // keeps the logo fixed. The car's real fix is stopping the shader explosion
+  // (degenerate c32~0 lighting), not culling. (void)g_gameCullMode.
   static constexpr bool kCullBackfacesForLitMeshes = true;
   if (kCullBackfacesForLitMeshes &&
       pipelineState.cullMode == RenderCullMode::NONE) {
@@ -2745,37 +2767,8 @@ void FlushRenderState(GuestDevice *device) {
         else if (he.usage == D3DDECLUSAGE_NORMAL)
           hasNormal = true;
       }
-      if (hasPos && hasNormal) {
-        // 2026-07-05: user re-enabled BACK-face culling for lit meshes (the
-        // stopgap that fixed the logo). The depth-write experiment that briefly
-        // replaced this line FAILED (user: "No"), so restore cull=BACK. This
-        // also hides the black back-faces of the still-exploding car polys until
-        // their position blow-up (separate XenosRecomp issue) is resolved.
+      if (hasPos && hasNormal)
         pipelineState.cullMode = RenderCullMode::BACK;
-        // DIAG 2026-07-04: the authentic fix is depth (cull=NONE + depth-reject
-        // the far back-faces). Confirm the depth state plume applies to these
-        // lit-3D draws: is depth actually enabled with a real depth surface, or
-        // is depthStencil null (=> depth disabled at line ~2645 => nothing
-        // rejects the back-faces)?
-        static std::atomic<uint32_t> s_dz{0};
-        if (s_dz.fetch_add(1, std::memory_order_relaxed) < 48) {
-          if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
-            std::fprintf(f,
-                         "FM2_LITDEPTH zEn=%d zWr=%d zFunc=%d dsFmt=%d ds=%p "
-                         "gds=%p impl=%p rt=%p revZ=%d\n",
-                         g_pipelineState.zEnable ? 1 : 0,
-                         g_pipelineState.zWriteEnable ? 1 : 0,
-                         int(g_pipelineState.zFunc),
-                         int(pipelineState.depthStencilFormat),
-                         static_cast<void *>(depthStencil),
-                         static_cast<void *>(g_depthStencil),
-                         static_cast<void *>(g_implicitDepthStencil),
-                         static_cast<void *>(g_renderTarget),
-                         SceneReverseZ() ? 1 : 0);
-            std::fclose(f);
-          }
-        }
-      }
     }
   }
   // DEBUG (session 6P-3): the PSO is built for the surface's intended MSAA count
@@ -4206,6 +4199,30 @@ void MirrorPassVsConstants(uint32_t startRegister, const void *src,
 void SetLiveFloatConstantFiles(const void *vsFile, const void *psFile) {
   g_liveVsFloatConstants = static_cast<const uint32_t *>(vsFile);
   g_livePsFloatConstants = static_cast<const uint32_t *>(psFile);
+}
+
+// 2026-07-05: mirror the guest's real cull mode from PA_SU_SC_MODE_CNTL (Xenos
+// reg 0x2205), called by the PM4 scanner. Bits 0-1 = cull (0 none, 1 front,
+// 2 back); bit 2 = front-face winding (0 = CCW, 1 = CW). plume rasterizes with
+// front = CLOCKWISE and has no per-draw front-face field wired here, so when the
+// guest's front is CCW the winding is inverted vs plume -> swap FRONT<->BACK so
+// we cull the same physical faces the guest intended. (For cull=NONE, the
+// overwhelming majority of FM2 draws incl. the car, winding is irrelevant.)
+void SetGamePaSuScModeCntl(uint32_t v) {
+  const uint32_t cull = v & 0x3u;
+  const bool frontCW = ((v >> 2) & 1u) != 0u;
+  RenderCullMode mode = RenderCullMode::NONE;
+  if (cull == 1u)
+    mode = RenderCullMode::FRONT;
+  else if (cull == 2u)
+    mode = RenderCullMode::BACK;
+  if (!frontCW) {
+    if (mode == RenderCullMode::FRONT)
+      mode = RenderCullMode::BACK;
+    else if (mode == RenderCullMode::BACK)
+      mode = RenderCullMode::FRONT;
+  }
+  g_gameCullMode.store(int(mode), std::memory_order_relaxed);
 }
 
 // 2026-07-02 session 3: PM4 ALU constant apply (see render_internal.h). The

@@ -693,3 +693,173 @@
 | 14:16 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | modified fix() | ~444 |
 | 14:17 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "1/dot(c32)" → "never fires" | ~242 |
 | 14:17 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "1/dot(c32)" → "never fires" | ~242 |
+| 14:31 | Session end: 30 writes across 9 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 17 reads | ~154049 tok |
+| 14:31 | Session end: 30 writes across 9 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 17 reads | ~154049 tok |
+| 14:35 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | modified draw() | ~510 |
+| 14:35 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | modified draw() | ~510 |
+| 14:35 | Session end: 32 writes across 9 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 17 reads | ~155141 tok |
+| 14:35 | Session end: 32 writes across 9 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 17 reads | ~155141 tok |
+| 14:53 | Edited ../ReOdyssey/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 26→27 lines | ~405 |
+| 14:55 | Edited FM2/src/render/render_state.cpp | expanded (+9 lines) | ~248 |
+| 14:55 | Edited FM2/src/render/render_state.cpp | added 5 condition(s) | ~340 |
+| 14:56 | Edited FM2/src/render/render_state.cpp | reduced (-36 lines) | ~218 |
+| 14:56 | Edited FM2/src/render/render_internal.h | 5→9 lines | ~154 |
+| 14:56 | Edited FM2/src/render/d3d_hooks.cpp | modified if() | ~64 |
+| 14:56 | Edited FM2/src/render/d3d_hooks.cpp | modified if() | ~58 |
+| 14:58 | Session end: 39 writes across 11 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 18 reads | ~157168 tok |
+| 15:02 | Edited FM2/src/render/render_state.cpp | added 4 condition(s) | ~305 |
+| 15:03 | Session end: 40 writes across 11 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 18 reads | ~157495 tok |
+| 15:03 | Session end: 40 writes across 11 files (render_state.cpp, disasm_probe.py, shader_debug.py, server.py, project_fm2_car_flashing_xenosrecomp_2026-07-05.md) | 18 reads | ~157495 tok |
+
+## Session: 2026-07-05 15:10
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 15:10
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 21:15 | Investigated fm2mainmenucorrect.rdc vs fm2menunocar.rdc via RenderDoc MCP (open_capture, list_draws_with_state, decode_mesh_inputs, debug_vertex, get_texture_image) | .wolf/buglog.json (bug-081), .wolf/cerebrum.md | Found car ground-shadow quad (event 1953, VS 10567) sheared off-screen right in the no-car capture; continuation of bug-072's open "car position blow-up" | ~40k |
+| 15:30 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | modified corners() | ~604 |
+| 15:30 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | modified corners() | ~604 |
+| 15:31 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | 1→2 lines | ~236 |
+| 15:31 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | 1→2 lines | ~236 |
+| 15:31 | Session end: 4 writes across 2 files (project_fm2_car_flashing_xenosrecomp_2026-07-05.md, MEMORY.md) | 13 reads | ~1798 tok |
+| 15:31 | Session end: 4 writes across 2 files (project_fm2_car_flashing_xenosrecomp_2026-07-05.md, MEMORY.md) | 13 reads | ~1798 tok |
+| 15:34 | Session end: 4 writes across 2 files (project_fm2_car_flashing_xenosrecomp_2026-07-05.md, MEMORY.md) | 13 reads | ~1798 tok |
+| 15:34 | Session end: 4 writes across 2 files (project_fm2_car_flashing_xenosrecomp_2026-07-05.md, MEMORY.md) | 13 reads | ~1798 tok |
+
+## Session: 2026-07-05 15:45
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 15:45
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 15:54 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | expanded (+33 lines) | ~962 |
+| 15:54 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | expanded (+33 lines) | ~962 |
+| 15:55 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "Hypothesis #3 CONFIRMED" → "full_trace follow-up" | ~270 |
+| 15:55 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | "Hypothesis #3 CONFIRMED" → "full_trace follow-up" | ~270 |
+| 16:07 | Edited scripts/fm2/Update-FM2ShaderCache.ps1 | 9→12 lines | ~141 |
+| 16:07 | Edited scripts/fm2/Update-FM2ShaderCache.ps1 | 9→12 lines | ~141 |
+| 16:10 | Vendored XenosRecomp in-tree (thirdparty/XenosRecomp, 225MB) — was cross-repo dep on ../ReOdyssey; repointed Update-FM2ShaderCache.ps1, cleared stale build cache, rebuilt exe OK | thirdparty/XenosRecomp, scripts/fm2/Update-FM2ShaderCache.ps1 | verified builds | ~8k |
+| 16:08 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | 3→8 lines | ~172 |
+| 16:08 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_car_flashing_xenosrecomp_2026-07-05.md | 3→8 lines | ~172 |
+| 16:27 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_chunks.py | — | ~302 |
+| 16:27 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_chunks.py | — | ~302 |
+| 16:28 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_chunks.py | modified hasattr() | ~88 |
+| 16:28 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_chunks.py | modified hasattr() | ~88 |
+| 16:28 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_chunks.py | 5→5 lines | ~47 |
+| 16:28 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_chunks.py | 5→5 lines | ~47 |
+| 16:29 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_pso_chunks.py | — | ~521 |
+| 16:29 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_pso_chunks.py | — | ~521 |
+| 16:30 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_pso_chunks.py | modified leaf_value() | ~348 |
+| 16:30 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_pso_chunks.py | modified leaf_value() | ~348 |
+| 16:30 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_pso_chunks.py | modified find_child() | ~287 |
+| 16:30 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/inspect_pso_chunks.py | modified find_child() | ~287 |
+| 16:37 | Edited FM2/src/render/render_state.cpp | modified if() | ~183 |
+| 16:37 | Edited FM2/src/render/render_state.cpp | modified if() | ~183 |
+| 16:40 | RenderDoc<->disk shader mapping: stamp guest VS/PS hash onto PSO name at pipeline-create; disproved bug-081 sin/cos lead (0 FM2 shaders use trig); dumped 64 HLSL | render_state.cpp, thirdparty/XenosRecomp | fm2 rebuilt OK | ~14k |
+| 16:45 | Edited ../renderdoc/renderdoc/driver/d3d12/d3d12_resources.h | expanded (+6 lines) | ~167 |
+| 16:45 | Edited ../renderdoc/renderdoc/driver/d3d12/d3d12_resources.h | expanded (+6 lines) | ~167 |
+| 16:46 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/build_renderdoc.bat | — | ~91 |
+| 16:46 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/build_renderdoc.bat | — | ~91 |
+| 16:48 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/build_renderdoc.bat | expanded (+7 lines) | ~104 |
+| 16:48 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/build_renderdoc.bat | expanded (+7 lines) | ~104 |
+| 16:48 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/build_renderdoc.bat | 2→2 lines | ~67 |
+| 16:48 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/build_renderdoc.bat | 2→2 lines | ~67 |
+| 16:50 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/build_renderdoc.bat | 2→2 lines | ~69 |
+| 16:50 | Edited ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/build_renderdoc.bat | 2→2 lines | ~69 |
+| 16:52 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/verify_fix.py | — | ~487 |
+| 16:52 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/477e3f92-8007-4042-a9fb-f255bc648979/scratchpad/verify_fix.py | — | ~487 |
+
+## Session: 2026-07-05 16:52
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 16:52
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 16:52
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 16:52
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 20:35 | Traced + fixed RenderDoc core bug (DisassembleShader "Invalid Shader Specified" for fm2menunocar.rdc), rebuilt full renderdoc.sln, verified fix + no regression | renderdoc/renderdoc/driver/d3d12/d3d12_resources.h, .wolf/buglog.json (bug-087/088), .wolf/cerebrum.md | ShaderEntry::GetDetails() latched m_Built=true even on reflection-build failure, leaving ShaderReflection::resourceId at invalid default forever; fixed by setting resourceId unconditionally in the constructor. Verified via standalone python script against rebuilt pymodules: refl.resourceId now matches bound shader, DisassembleShader returns real DXIL text | ~180k |
+| 16:57 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_renderdoc_core_disassembly_fix_2026-07-05.md | — | ~2580 |
+| 16:57 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_renderdoc_core_disassembly_fix_2026-07-05.md | — | ~2580 |
+| 16:57 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | 1→2 lines | ~513 |
+| 16:57 | Edited ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/MEMORY.md | 1→2 lines | ~513 |
+| 17:01 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | added 1 condition(s) | ~817 |
+| 17:01 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | added 1 condition(s) | ~817 |
+| 16:58 | bug-074 FIXED: constantTableOffset==0 shaders crashed dump/cache; guarded parse -> dump 6->158, 3 exception shaders + shadow VS translate; RenderDoc->disk map confirmed on fm2menunocar2.rdc | thirdparty/XenosRecomp shader_recompiler.cpp | verified | ~18k |
+| 17:25 | DECISIVE: car+shadow off-screen = transform CONSTANTS not XenosRecomp (position path clean, no FLT_MAX; FLT_MAX only in lighting->0). regen+rebuild done (216 shaders). | debug_vertex fm2menunocar2 eid1952/1784 | root cause redirected | ~30k |
+| 17:33 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/xdisasm.cpp | — | ~779 |
+| 17:33 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXGlue080plume/f3992dc1-dd45-4f81-9bb0-7134270fddcf/scratchpad/xdisasm.cpp | — | ~779 |
+| 17:55 | PROVED off-screen car/shadow = constants not translation via NEUTRAL microcode diff (built scratchpad/xdisasm.cpp linking rexruntimerd AnalyzeUcode). Shadow 0ED258 + car 332E2E41 position transforms match op-for-op (regs+swizzles). | scratchpad/xdisasm.cpp | rigorous proof | ~22k |
+| 17:44 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 9→9 lines | ~87 |
+| 17:44 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 9→9 lines | ~87 |
+| 17:44 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 8→8 lines | ~67 |
+| 17:44 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 8→8 lines | ~67 |
+| 17:51 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 4→4 lines | ~19 |
+| 17:51 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 4→4 lines | ~19 |
+| 17:51 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 6→6 lines | ~29 |
+| 17:51 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 6→6 lines | ~29 |
+| 18:30 | Full shader-translation AUDIT: swept all 216 shaders (neutral disasm vs dump-hlsl + XR_UNHANDLED marker). Structural=0 broken (0 unhandled ops, 0 skips). 3 latent SM3 divergences (zero-mul, NaN max/min, MulsPrev2) affect 84/158 log/rcp/rsq shaders. Doc written. Reverted markers. | docs/FM2-shader-translation-audit-2026-07-05.md | complete | ~26k |
+| 17:59 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_common.h | modified rcpFF() | ~513 |
+| 17:59 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_common.h | modified rcpFF() | ~513 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 7→7 lines | ~79 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 7→7 lines | ~79 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 8→8 lines | ~89 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 8→8 lines | ~89 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | min() → minSM3() | ~79 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | min() → minSM3() | ~79 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 3→3 lines | ~58 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 3→3 lines | ~58 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | dot() → dotSM3() | ~55 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | dot() → dotSM3() | ~55 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | "dot({}, {}) + {}" → "dotSM3({}, {}) + {}" | ~30 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | "dot({}, {}) + {}" → "dotSM3({}, {}) + {}" | ~30 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 3→3 lines | ~38 |
+| 18:00 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 3→3 lines | ~38 |
+| 18:01 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 4→4 lines | ~43 |
+| 18:01 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 4→4 lines | ~43 |
+| 18:01 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | max() → maxSM3() | ~58 |
+| 18:01 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | max() → maxSM3() | ~58 |
+| 18:01 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | min() → minSM3() | ~38 |
+| 18:01 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | min() → minSM3() | ~38 |
+| 18:01 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 3→3 lines | ~48 |
+| 18:01 | Edited thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp | 3→3 lines | ~48 |
+| 18:55 | Implemented SM3 guards (bug-082): mulSM3/maxSM3/minSM3/dotSM3 helpers + 11 lowerings in fork. Gate held 216/216 compile; no-op for finite; cache regen + fm2 rebuilt. #3 MulsPrev2 sentinel omitted. | shader_common.h, shader_recompiler.cpp | verified compiles | ~16k |
+
+## Session: 2026-07-05 19:31
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+
+## Session: 2026-07-05 19:31
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 22:xx | Audited whether early "hook PM4 directly" code still lingers | FM2/src/native_renderer/*, FM2/src/render/d3d_hooks.cpp, render_state.cpp, fm2_manifest.toml, docs/FM2-native-renderer-gap-analysis.md | Found + verified: native_renderer/ overlay (~5000 lines) is recording-only dead weight in default plume_native workflow (submission gated off by cvars); PM4 constant-shadow scanner in d3d_hooks.cpp/render_state.cpp is load-bearing but hand-rolled + currently double-fed by scanner+emitter-hook (kScannerApplies + kGpuBeginHookFeedsShadow both true) — self-acknowledged known flaw in code comments. Own gap-analysis doc already flagged overlay removal as an undone step 4. | ~35k |
+| 19:42 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_pm4_legacy_audit_2026-07-05.md | — | ~1227 |
+| 19:42 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_pm4_legacy_audit_2026-07-05.md | — | ~1227 |
+| 20:02 | Edited FM2/src/render/d3d_hooks.cpp | expanded (+29 lines) | ~444 |
+| 20:02 | Edited FM2/src/render/d3d_hooks.cpp | expanded (+29 lines) | ~444 |
+| 20:03 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~200 |
+| 20:03 | Edited FM2/src/render/d3d_hooks.cpp | added 2 condition(s) | ~200 |
+| 20:03 | Edited FM2/src/render/d3d_hooks.cpp | 2→3 lines | ~23 |
+| 20:03 | Edited FM2/src/render/d3d_hooks.cpp | 2→3 lines | ~23 |
+| 20:03 | Edited FM2/src/render/d3d_hooks.cpp | added 7 condition(s) | ~673 |
+| 20:03 | Edited FM2/src/render/d3d_hooks.cpp | added 7 condition(s) | ~673 |
+| 20:05 | Wired ReOdyssey-style CB-fixup constant hooks (bug-083 fix): hook D3DCommandBuffer_SetShaderConstantF(sub_823767B8)+CreateShaderConstantFFixup(sub_823766E0), record car WVP into per-draw drain (DrainCbFixupConstants) instead of PM4 scan. Compiles+links, fm2 rebuilt. AWAITING validation run. | FM2/src/render/d3d_hooks.cpp | built | ~20k |

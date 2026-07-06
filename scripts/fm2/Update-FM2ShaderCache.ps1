@@ -9,14 +9,17 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-if ([string]::IsNullOrWhiteSpace($ReOdysseyRoot)) {
-    $ReOdysseyRoot = Join-Path (Split-Path -Parent $repoRoot) "ReOdyssey"
-}
 if ([string]::IsNullOrWhiteSpace($BuildDir)) {
     $BuildDir = Join-Path $repoRoot ".cache\xenosrecomp-clangcl-build"
 }
 
-$xenosSource = Join-Path $ReOdysseyRoot "thirdparty\XenosRecomp"
+# XenosRecomp is vendored in-tree at thirdparty/XenosRecomp. Pass -ReOdysseyRoot to
+# override with an external checkout (legacy sibling-repo layout).
+if ([string]::IsNullOrWhiteSpace($ReOdysseyRoot)) {
+    $xenosSource = Join-Path $repoRoot "thirdparty\XenosRecomp"
+} else {
+    $xenosSource = Join-Path $ReOdysseyRoot "thirdparty\XenosRecomp"
+}
 $shaderCommon = Join-Path $xenosSource "XenosRecomp\shader_common.h"
 $assetDir = Join-Path $repoRoot "FM2\assets"
 $generatedDir = Join-Path $repoRoot "FM2\generated"
