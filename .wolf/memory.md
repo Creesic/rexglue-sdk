@@ -863,3 +863,6 @@
 | 20:03 | Edited FM2/src/render/d3d_hooks.cpp | added 7 condition(s) | ~673 |
 | 20:03 | Edited FM2/src/render/d3d_hooks.cpp | added 7 condition(s) | ~673 |
 | 20:05 | Wired ReOdyssey-style CB-fixup constant hooks (bug-083 fix): hook D3DCommandBuffer_SetShaderConstantF(sub_823767B8)+CreateShaderConstantFFixup(sub_823766E0), record car WVP into per-draw drain (DrainCbFixupConstants) instead of PM4 scan. Compiles+links, fm2 rebuilt. AWAITING validation run. | FM2/src/render/d3d_hooks.cpp | built | ~20k |
+| 20:14 | Edited FM2/src/render/d3d_hooks.cpp | modified emitters() | ~202 |
+| 20:14 | Edited FM2/src/render/d3d_hooks.cpp | modified emitters() | ~202 |
+| 20:16 | Completed PM4->D3D9-hook transition (bug-083): retired ring-scanner constant applies (kScannerApplies=false); all ALU constants now captured at D3D emitters (SetF+live-file, GpuBegin, CB-fixup). Scanner-off makes CB-fixup hook the SOLE car c15-c18 source = clean validation. fm2 rebuilt. AWAITING run. Revert: kScannerApplies=true. | FM2/src/render/d3d_hooks.cpp | built | ~8k |

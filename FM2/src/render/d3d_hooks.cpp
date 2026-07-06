@@ -3276,7 +3276,16 @@ static void ScanPm4AluConstantRange(uint32_t rangePhys, uint32_t len) {
   // application is the correct ordering even though its parsing can read
   // stale ring bytes across undetected wraps (garbage histogram entries).
   // Known flaw to fix separately, one variable at a time.
-  static constexpr bool kScannerApplies = true;
+  // 2026-07-05: RETIRED. All ALU constant sources are now captured at their D3D
+  // emitters (ReOdyssey/UnleashedRecomp model): immediate SetVertexShaderConstantFN
+  // (sub_8236D958) + the live file (SetLiveFloatConstantFiles), GpuBegin
+  // (sub_82803358), and the precompiled command-buffer fixup path
+  // (SetShaderConstantF/CreateShaderConstantFFixup). SetPending_AluConstants only
+  // reflushes the live file (redundant). The ring scanner's own applies read stale
+  // ring bytes across undetected wraps and poisoned other regs -- turned off so the
+  // hooks are the single source of truth. Flip back to true to A/B if a regressed
+  // path proves an unhooked SET_CONSTANT emitter still exists.
+  static constexpr bool kScannerApplies = false;
   // Session 5: the sampled write pointer consistently trails the final
   // pre-draw packet by ONE dword (log-proven FM2_C0WRITE inb=0 off=12 len=80
   // on every glyph draw; FM2_C0DUMP shows the payload complete in memory just

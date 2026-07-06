@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-06T00:03:28.468Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-06T00:14:58.402Z
 > Files: 559 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/
@@ -598,7 +598,7 @@
 
 ## FM2/src/render/
 
-- `d3d_hooks.cpp` — include <algorithm> (~73965 tok)
+- `d3d_hooks.cpp` — include <algorithm> (~74154 tok)
 - `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~17619 tok)
 - `render_internal.h` — render/render_internal.h (~1627 tok)
 - `shader_probe_window.cpp` — Small always-on-top status window for the interactive shader probe (~1066 tok)

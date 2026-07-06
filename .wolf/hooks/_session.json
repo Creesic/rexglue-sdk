@@ -38,8 +38,8 @@
       "first_read": "2026-07-05T23:36:25.260Z"
     },
     "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp": {
-      "count": 24,
-      "tokens": 0,
+      "count": 28,
+      "tokens": 74154,
       "first_read": "2026-07-05T23:37:01.451Z"
     },
     "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/fm2_hooks.cpp": {
@@ -138,15 +138,27 @@
       "action": "edit",
       "tokens": 721,
       "at": "2026-07-06T00:03:28.478Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 216,
+      "at": "2026-07-06T00:14:58.403Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp",
+      "action": "edit",
+      "tokens": 216,
+      "at": "2026-07-06T00:14:58.411Z"
     }
   ],
   "edit_counts": {
     "../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXGlue080plume/memory/project_fm2_pm4_legacy_audit_2026-07-05.md": 2,
-    "FM2/src/render/d3d_hooks.cpp": 8
+    "FM2/src/render/d3d_hooks.cpp": 10
   },
   "anatomy_hits": 4,
   "anatomy_misses": 11,
-  "repeated_reads_warned": 51,
+  "repeated_reads_warned": 55,
   "cerebrum_warnings": 0,
   "stop_count": 0
 }
