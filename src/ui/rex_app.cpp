@@ -28,7 +28,11 @@
 #include <rex/graphics/d3d12/graphics_system.h>
 #endif
 #include <rex/audio/audio_system.h>
+#include <rex/audio/nop/nop_audio_system.h>
 #include <rex/audio/sdl/sdl_audio_system.h>
+#if defined(REXGLUE_HAS_AUDIO_XAUDIO2)
+#include <rex/audio/xaudio2/xaudio2_audio_system.h>
+#endif
 #include <rex/input/input_system.h>
 #include <rex/kernel/init.h>
 #include <rex/system.h>
@@ -44,6 +48,14 @@
 #include <algorithm>
 #include <filesystem>
 #include <string_view>
+
+#if defined(REXGLUE_HAS_AUDIO_XAUDIO2)
+REXCVAR_DEFINE_STRING(audio_backend, "sdl", "Audio", "Audio backend: sdl, xaudio2, nop")
+    .allowed({"sdl", "xaudio2", "nop"});
+#else
+REXCVAR_DEFINE_STRING(audio_backend, "sdl", "Audio", "Audio backend: sdl, nop")
+    .allowed({"sdl", "nop"});
+#endif
 
 namespace rex {
 
@@ -266,7 +278,19 @@ bool ReXApp::SetupPresentation() {
 #elif REX_HAS_VULKAN
   config_.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
 #endif
-  config_.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+  const auto backend = REXCVAR_GET(audio_backend);
+  if (backend == "nop") {
+    config_.audio_factory = REX_AUDIO_BACKEND(rex::audio::nop::NopAudioSystem);
+  }
+#if defined(REXGLUE_HAS_AUDIO_XAUDIO2)
+  else if (backend == "xaudio2") {
+    config_.audio_factory = REX_AUDIO_BACKEND(rex::audio::xaudio2::XAudio2AudioSystem);
+  }
+#endif
+  else {
+    config_.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+  }
+
   config_.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
   config_.kernel_init = rex::kernel::InitializeKernel;
 
