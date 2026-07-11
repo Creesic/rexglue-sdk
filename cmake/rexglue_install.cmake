@@ -9,6 +9,10 @@ set_target_properties(rexaudio PROPERTIES EXPORT_NAME audio)
 set_target_properties(rexruntime PROPERTIES EXPORT_NAME runtime)
 set_target_properties(rexcodegen PROPERTIES EXPORT_NAME codegen)
 
+if(WIN32)
+    set_target_properties(rexaudio-xaudio2 PROPERTIES EXPORT_NAME audio-xaudio2)
+endif()
+
 include(${CMAKE_CURRENT_LIST_DIR}/rexglue_helpers.cmake)
 
 # Build install target list dynamically based on backend options
@@ -19,6 +23,10 @@ set(REXGLUE_INSTALL_TARGETS
     aes128 mspack o1heap disasm xxhash
     libavcodec libavutil
 )
+
+if(WIN32)
+    list(APPEND REXGLUE_INSTALL_TARGETS rexaudio-xaudio2)
+endif()
 
 if(REXGLUE_USE_VULKAN)
     list(APPEND REXGLUE_INSTALL_TARGETS
