@@ -273,12 +273,20 @@ u32 XamShowMessageBoxUI_entry(u32 user_index, mapped_wstring title_ptr, mapped_w
       uint32_t(user_index), title_ptr.guest_address(), text_ptr.guest_address(),
       uint32_t(button_count), button_ptrs.guest_address(), uint32_t(active_button), uint32_t(flags),
       result_ptr.guest_address(), overlapped.guest_address());
+  // Guest UTF-16 strings are big-endian; title_ptr.value()/text_ptr.value()
+  // read host-endian without swapping, which garbles non-ASCII text. Use
+  // load_and_swap here to match the (already-correct) button decode below.
   std::string title;
   if (title_ptr) {
-    title = rex::string::to_utf8(title_ptr.value());
+    title = rex::string::to_utf8(rex::memory::load_and_swap<std::u16string>(
+        REX_KERNEL_MEMORY()->TranslateVirtual(title_ptr.guest_address())));
   } else {
     title = "";  // TODO(gibbed): default title based on flags?
   }
+  std::string text_str =
+      text_ptr ? rex::string::to_utf8(rex::memory::load_and_swap<std::u16string>(
+                     REX_KERNEL_MEMORY()->TranslateVirtual(text_ptr.guest_address())))
+               : "";
 
   std::vector<std::string> buttons;
   for (uint32_t i = 0; i < button_count; ++i) {
@@ -320,8 +328,7 @@ u32 XamShowMessageBoxUI_entry(u32 user_index, mapped_wstring title_ptr, mapped_w
     ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
     if (imgui_drawer) {
       result = xeXamDispatchDialog<MessageBoxDialog>(
-          new MessageBoxDialog(imgui_drawer, title, rex::string::to_utf8(text_ptr.value()), buttons,
-                               active_button),
+          new MessageBoxDialog(imgui_drawer, title, text_str, buttons, active_button),
           close, overlapped.guest_address());
     } else {
       // Fallback to headless if no drawer available
