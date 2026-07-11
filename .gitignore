@@ -419,3 +419,8 @@ FodyWeavers.xsd
 
 # CMake User Overrides
 CMakeUserPresets.json
+
+# Extracted game data (copyrighted, large) and codegen output for downstream
+# recompiled projects -- reproducible from the manifest given a local game copy.
+/assets/
+FM2/generated/

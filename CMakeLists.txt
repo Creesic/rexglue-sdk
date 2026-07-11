@@ -81,7 +81,7 @@ endif()
 
 # Enforce a Clang toolchain (LLVM Clang or Apple's Clang)
 if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$")
-    message(FATAL_ERROR "ReXGlue requires the Clang compiler (LLVM Clang or AppleClang). Please set CMAKE_CXX_COMPILER to clang++")
+    message(FATAL_ERROR "ReXGlue requires the Clang compiler (LLVM Clang, clang-cl or AppleClang). Please set CMAKE_CXX_COMPILER to clang++, clang-cl or clang")
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -114,6 +114,23 @@ function(rex_config_postfix target)
         RELWITHDEBINFO_POSTFIX "${CMAKE_RELWITHDEBINFO_POSTFIX}")
 endfunction()
 
+# Normalize architecture detection once so SDK and vendored dependencies agree.
+# clang-cl + ninja outside a VS developer shell leaves CMAKE_SYSTEM_PROCESSOR
+# empty, which would otherwise strand REX_TARGET_PROCESSOR below.
+set(REXGLUE_SYSTEM_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
+if(NOT REXGLUE_SYSTEM_PROCESSOR)
+    set(REXGLUE_SYSTEM_PROCESSOR "${CMAKE_HOST_SYSTEM_PROCESSOR}")
+endif()
+if(NOT REXGLUE_SYSTEM_PROCESSOR AND DEFINED ENV{PROCESSOR_ARCHITECTURE})
+    set(REXGLUE_SYSTEM_PROCESSOR "$ENV{PROCESSOR_ARCHITECTURE}")
+endif()
+if(NOT REXGLUE_SYSTEM_PROCESSOR AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(REXGLUE_SYSTEM_PROCESSOR "AMD64")
+endif()
+if(NOT CMAKE_SYSTEM_PROCESSOR AND REXGLUE_SYSTEM_PROCESSOR)
+    set(CMAKE_SYSTEM_PROCESSOR "${REXGLUE_SYSTEM_PROCESSOR}")
+endif()
+
 if(NOT WIN32)
     # Use appropriate code model based on architecture
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64" AND NOT APPLE)
@@ -131,13 +148,24 @@ endif()
 # Global compile options
 add_compile_options(
     -fno-strict-aliasing
-    -ffp-model=strict
-    $<$<CONFIG:DEBUG>:-g>
-    $<$<CONFIG:DEBUG>:-O0>
-    $<$<CONFIG:RELEASE>:-O3>
-    $<$<CONFIG:RELEASE>:-DNDEBUG>
-    -fno-char8_t
 )
+
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    add_compile_options(
+        /fp:strict
+        $<$<COMPILE_LANGUAGE:CXX>:/EHsc>
+        $<$<COMPILE_LANGUAGE:CXX>:/Zc:char8_t->
+    )
+else()
+    add_compile_options(
+        -ffp-model=strict
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-char8_t>
+        $<$<CONFIG:DEBUG>:-g>
+        $<$<CONFIG:DEBUG>:-O0>
+        $<$<CONFIG:RELEASE>:-O3>
+        $<$<CONFIG:RELEASE>:-DNDEBUG>
+    )
+endif()
 
 # Platform detection (supports AMD64 and ARM64)
 set(REX_TARGET_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
@@ -227,6 +255,42 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${REXGLUE_ROOT}/out/${REX_PLATFORM}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${REXGLUE_ROOT}/out/${REX_PLATFORM}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${REXGLUE_ROOT}/out/${REX_PLATFORM}")
 
+# clang-cl + lld-link can miss the MSVC STL libdir outside a VS developer shell.
+# Resolve it dynamically instead of hard-coding a specific VS toolset path.
+if(WIN32 AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    if(REX_TARGET_PROCESSOR MATCHES "aarch64|ARM64|arm64")
+        set(_rex_msvc_arch_dir "arm64")
+    else()
+        set(_rex_msvc_arch_dir "x64")
+    endif()
+
+    set(_rex_msvc_lib_dir "")
+    if(DEFINED ENV{VCToolsInstallDir})
+        file(TO_CMAKE_PATH "$ENV{VCToolsInstallDir}/lib/${_rex_msvc_arch_dir}" _rex_msvc_lib_dir)
+    else()
+        get_filename_component(_rex_clang_bindir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        get_filename_component(_rex_tools_dir "${_rex_clang_bindir}/../../.." ABSOLUTE)
+        file(GLOB _rex_msvc_versions RELATIVE "${_rex_tools_dir}/MSVC" "${_rex_tools_dir}/MSVC/*")
+        if(_rex_msvc_versions)
+            list(SORT _rex_msvc_versions COMPARE NATURAL ORDER DESCENDING)
+            list(GET _rex_msvc_versions 0 _rex_msvc_ver)
+            set(_rex_msvc_lib_dir "${_rex_tools_dir}/MSVC/${_rex_msvc_ver}/lib/${_rex_msvc_arch_dir}")
+        endif()
+    endif()
+    if(_rex_msvc_lib_dir AND EXISTS "${_rex_msvc_lib_dir}")
+        link_directories("${_rex_msvc_lib_dir}")
+        message(STATUS "MSVC STL lib dir: ${_rex_msvc_lib_dir}")
+    else()
+        message(WARNING "MSVC STL lib dir not found; clang-cl link may fail on MSVC STL symbols")
+    endif()
+    unset(_rex_msvc_arch_dir)
+    unset(_rex_msvc_lib_dir)
+    unset(_rex_clang_bindir)
+    unset(_rex_tools_dir)
+    unset(_rex_msvc_versions)
+    unset(_rex_msvc_ver)
+endif()
+
 # Sanitizer support for debugging memory corruption and undefined behavior
 if(REXGLUE_ENABLE_SANITIZERS)
     message(STATUS "Enabling UndefinedBehaviorSanitizer (UBSan only - ASan conflicts with custom memory mapping)")
@@ -244,10 +308,14 @@ endif()
 add_subdirectory(thirdparty)
 
 # Enable warnings after thirdparty
-add_compile_options(
-    -Wall
-    -Wextra
-)
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    add_compile_options(/W4)
+else()
+    add_compile_options(
+        -Wall
+        -Wextra
+    )
+endif()
 
 include_directories(${REXGLUE_ROOT}/include)
 
@@ -294,5 +362,7 @@ else()
     # This sets REXGLUE_SHARE_DIR and makes rexglue_configure_target() available.
     set(REXGLUE_SHARE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/ui" PARENT_SCOPE)
     set(REXGLUE_SHARE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/ui")
+    set(REXGLUE_IMGUI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/imgui" PARENT_SCOPE)
+    set(REXGLUE_IMGUI_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/imgui")
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rexglue_helpers.cmake)
 endif()
