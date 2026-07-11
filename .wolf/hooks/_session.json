@@ -523,7 +523,7 @@
       "first_read": "2026-07-11T17:49:19.110Z"
     },
     "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/core/logging.cpp": {
-      "count": 1,
+      "count": 3,
       "tokens": 0,
       "first_read": "2026-07-11T17:52:41.613Z"
     },
@@ -576,6 +576,21 @@
       "count": 1,
       "tokens": 0,
       "first_read": "2026-07-11T18:24:05.529Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/FM2-xam-notes.md": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-11T18:30:58.825Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/kernel/xam/apps/xlivebase_app.cpp": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-11T18:34:45.108Z"
+    },
+    "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/73c07587-62aa-41e8-85c2-863556eaa5d0/scratchpad/fm2_login_1.png": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-11T18:35:53.843Z"
     }
   },
   "files_written": [
@@ -782,6 +797,12 @@
       "action": "create",
       "tokens": 2812,
       "at": "2026-07-11T18:27:57.405Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/kernel/xam/apps/xlivebase_app.cpp",
+      "action": "edit",
+      "tokens": 178,
+      "at": "2026-07-11T18:34:52.972Z"
     }
   ],
   "edit_counts": {
@@ -800,11 +821,12 @@
     "cmake/rexglue_helpers.cmake": 2,
     "cmake/rexglue_install.cmake": 1,
     "src/ui/rex_app.cpp": 3,
-    "docs/xaudio2-conversion-guide.md": 1
+    "docs/xaudio2-conversion-guide.md": 1,
+    "src/kernel/xam/apps/xlivebase_app.cpp": 1
   },
   "anatomy_hits": 18,
-  "anatomy_misses": 97,
-  "repeated_reads_warned": 57,
+  "anatomy_misses": 100,
+  "repeated_reads_warned": 59,
   "cerebrum_warnings": 0,
-  "stop_count": 17
+  "stop_count": 19
 }
