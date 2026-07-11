@@ -10,6 +10,10 @@ set_target_properties(rexgraphics PROPERTIES EXPORT_NAME graphics)
 set_target_properties(rexruntime PROPERTIES EXPORT_NAME runtime)
 set_target_properties(rexcodegen PROPERTIES EXPORT_NAME codegen)
 
+if(WIN32)
+    set_target_properties(rexaudio-xaudio2 PROPERTIES EXPORT_NAME audio-xaudio2)
+endif()
+
 set(REXGLUE_INSTALL_TARGETS
     rexruntime
     disruptorplus renderdoc simde tomlplusplus
@@ -17,6 +21,10 @@ set(REXGLUE_INSTALL_TARGETS
     libavcodec libavutil
     rexglue
 )
+
+if(WIN32)
+    list(APPEND REXGLUE_INSTALL_TARGETS rexaudio-xaudio2)
+endif()
 
 if(REXGLUE_USE_VULKAN)
     list(APPEND REXGLUE_INSTALL_TARGETS

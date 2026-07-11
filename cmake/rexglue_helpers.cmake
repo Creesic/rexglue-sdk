@@ -48,6 +48,8 @@ endfunction()
 #     so this single copy handles them transitively.
 #==========================================================
 function(rexglue_configure_target target_name)
+    cmake_parse_arguments(ARG "" "" "AUDIO_BACKENDS" ${ARGN})
+
     if(WIN32)
         target_sources(${target_name} PRIVATE
             ${REXGLUE_SHARE_DIR}/windowed_app_main_win.cpp)
@@ -92,6 +94,21 @@ function(rexglue_configure_target target_name)
             endif()
         endforeach()
     endif()
+
+    foreach(_backend IN LISTS ARG_AUDIO_BACKENDS)
+        if(TARGET rexaudio-${_backend})
+            set(_backend_target rexaudio-${_backend})
+        elseif(TARGET rex::audio-${_backend})
+            set(_backend_target rex::audio-${_backend})
+        else()
+            message(FATAL_ERROR
+                "rexglue_configure_target: unknown audio backend '${_backend}' "
+                "(no target rexaudio-${_backend} or rex::audio-${_backend})")
+        endif()
+        target_link_libraries(${target_name} PRIVATE ${_backend_target})
+        string(TOUPPER "${_backend}" _backend_upper)
+        target_compile_definitions(${target_name} PRIVATE REXGLUE_HAS_AUDIO_${_backend_upper})
+    endforeach()
 endfunction()
 
 #==========================================================

@@ -25,3 +25,18 @@ target_link_libraries(rexaudio
     PUBLIC rexcore SDL3::SDL3
     PRIVATE libavcodec libavutil
 )
+
+if(WIN32)
+    add_library(rexaudio-xaudio2 STATIC
+        xaudio2/xaudio2_audio_system.cpp
+        xaudio2/xaudio2_audio_driver.cpp
+    )
+    add_library(rex::audio-xaudio2 ALIAS rexaudio-xaudio2)
+    set_target_properties(rexaudio-xaudio2 PROPERTIES EXCLUDE_FROM_ALL ON)
+
+    target_include_directories(rexaudio-xaudio2 PUBLIC
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+    target_link_libraries(rexaudio-xaudio2 PUBLIC rex::audio PRIVATE ole32)
+endif()
