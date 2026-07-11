@@ -74,6 +74,8 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
       return X_E_SUCCESS;
     }
     case 0x00058037: {
+      // XPresenceInitialize. Some titles gate profile acceptance at the
+      // press-start flow on this succeeding (matches Xenia Canary behavior).
       REXKRNL_DEBUG("XPresenceInitialize({:08X}, {:08X})", buffer_ptr, buffer_length);
       return X_E_SUCCESS;
     }
