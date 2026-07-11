@@ -273,6 +273,9 @@ u32 XamShowMessageBoxUI_entry(u32 user_index, mapped_wstring title_ptr, mapped_w
       uint32_t(user_index), title_ptr.guest_address(), text_ptr.guest_address(),
       uint32_t(button_count), button_ptrs.guest_address(), uint32_t(active_button), uint32_t(flags),
       result_ptr.guest_address(), overlapped.guest_address());
+  // Guest UTF-16 strings are big-endian; title_ptr.value()/text_ptr.value()
+  // read host-endian without swapping, which garbles non-ASCII text. Use
+  // load_and_swap here to match the (already-correct) button decode below.
   std::string title;
   if (title_ptr) {
     title = rex::string::to_utf8(rex::memory::load_and_swap<std::u16string>(

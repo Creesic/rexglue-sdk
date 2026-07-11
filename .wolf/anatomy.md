@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-11T18:34:52.965Z
-> Files: 525 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-11T18:47:33.401Z
+> Files: 526 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
 
@@ -597,6 +597,10 @@
 
 - `xaudio2_audio_driver.cpp` — ***************************************************************************** (~3772 tok)
 - `xaudio2_audio_system.cpp` — ***************************************************************************** (~498 tok)
+
+## src/kernel/xam/
+
+- `xam_ui.cpp` — ***************************************************************************** (~7178 tok)
 
 ## src/kernel/xam/apps/
 
