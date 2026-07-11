@@ -15,7 +15,11 @@ function Invoke-ReXInstall {
     $preset = Get-ReXPreset
     $buildDir = Join-Path $root "out/build/$preset"
 
-    foreach ($config in @("Debug", "Release", "RelWithDebInfo")) {
+    foreach ($config in @(
+        # "Debug",
+        # "Release",
+        "RelWithDebInfo"
+    )) {
         Write-Host "=== Installing $config ==="
         cmake --install $buildDir --config $config
         if ($LASTEXITCODE -ne 0) { throw "cmake install ($config) failed (exit $LASTEXITCODE)" }

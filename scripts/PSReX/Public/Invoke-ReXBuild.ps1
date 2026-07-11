@@ -10,9 +10,8 @@
 function Invoke-ReXBuild {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
-        [ValidateSet("Debug", "Release", "RelWithDebInfo")]
-        [string]$Config
+        [ValidateSet("RelWithDebInfo")]
+        [string]$Config = "RelWithDebInfo"
     )
 
     $root = Get-ReXRoot

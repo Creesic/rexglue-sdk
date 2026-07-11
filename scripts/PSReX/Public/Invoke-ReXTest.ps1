@@ -10,8 +10,8 @@
 function Invoke-ReXTest {
     [CmdletBinding()]
     param(
-        [ValidateSet("Debug", "Release", "RelWithDebInfo")]
-        [string]$Config = "Debug"
+        [ValidateSet("RelWithDebInfo")]
+        [string]$Config = "RelWithDebInfo"
     )
 
     $preset = Get-ReXPreset

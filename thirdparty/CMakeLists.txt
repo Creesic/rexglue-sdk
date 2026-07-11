@@ -273,6 +273,9 @@ if(UNIX AND NOT APPLE)
 endif()
 
 add_subdirectory(sdl3)
+if(WIN32 AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC" AND TARGET SDL3-static)
+    set_target_properties(SDL3-static PROPERTIES DISABLE_PRECOMPILE_HEADERS ON)
+endif()
 
 #=============================================================================
 # DXC API headers (vendored from DirectXShaderCompiler, runtime-loaded)

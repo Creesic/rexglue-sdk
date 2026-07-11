@@ -82,7 +82,11 @@ function Invoke-ReXSetup {
     Write-Host ""
     Write-Host "Toolchain:"
 
-    $required = @("pwsh", "clang++", "clang-format", "cmake", "ninja")
+    $required = if ($IsWindows) {
+        @("pwsh", "clang-cl", "clang-format", "cmake", "ninja")
+    } else {
+        @("pwsh", "clang++", "clang-format", "cmake", "ninja")
+    }
     $optional = @("clang-tidy", "cmake-format")
 
     foreach ($tool in $required) {
@@ -109,7 +113,7 @@ function Invoke-ReXSetup {
     Write-Host ""
     Write-Host "Setup complete."
     Write-Host "  Configure:  rex-configure       (or cmake --preset <preset>)"
-    Write-Host "  Build:      rex-build -Config Debug"
+    Write-Host "  Build:      rex-build           (RelWithDebInfo only)"
     Write-Host "  Test:       rex-test"
     Write-Host "  Format:     rex-format"
     Write-Host "  Lint:       rex-lint"

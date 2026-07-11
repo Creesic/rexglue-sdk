@@ -14,6 +14,22 @@
 # runtime DLL staging is the host's job (see rexglue_configure_target).
 #==========================================================
 function(rexglue_apply_target_settings target_name)
+    target_compile_options(${target_name} PRIVATE
+        -fno-strict-aliasing
+    )
+
+    if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        target_compile_options(${target_name} PRIVATE
+            /fp:strict
+            $<$<COMPILE_LANGUAGE:CXX>:/EHa>
+            $<$<COMPILE_LANGUAGE:CXX>:/Zc:char8_t->
+        )
+    else()
+        target_compile_options(${target_name} PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:-fno-char8_t>
+        )
+    endif()
+
     if(UNIX AND NOT APPLE)
         # Large executable support
         if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
@@ -52,6 +68,15 @@ function(rexglue_configure_target target_name)
 
     target_compile_definitions(${target_name} PRIVATE
         REXGLUE_BUILD_CONFIG="$<CONFIG>")
+
+    if(REXGLUE_IMGUI_INCLUDE_DIR)
+        target_include_directories(${target_name} PRIVATE "${REXGLUE_IMGUI_INCLUDE_DIR}")
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_BINARY_DIR}/rexglue-sdk/include")
+        target_include_directories(${target_name} PRIVATE
+            "${CMAKE_CURRENT_BINARY_DIR}/rexglue-sdk/include")
+    endif()
 
     if(UNIX AND NOT APPLE)
         set_target_properties(${target_name} PROPERTIES

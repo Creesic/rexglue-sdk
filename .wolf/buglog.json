@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "bugs": [
+    {
+      "id": "bug-001",
+      "timestamp": "2026-07-11T17:30:37.935Z",
+      "error_message": "Significant refactor of ",
+      "file": "docs/migration-from-plume.md",
+      "root_cause": "13 lines replaced/restructured",
+      "fix": "Rewrote 16→51 lines (13 removed) | Also: - [ ] **Decide on the 3 Tier-0-adjacent gameplay t; porting them — they're not crash fixes, and one ha",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-11T17:33:05.866Z"
+    },
+    {
+      "id": "bug-002",
+      "timestamp": "2026-07-11T17:44:06.415Z",
+      "error_message": "Incorrect value in code",
+      "file": "FM2/src/fm2_hooks.cpp",
+      "root_cause": "Had \"generated/fm2_init.h\"",
+      "fix": "Changed to \"generated/default/fm2_init.h\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T17:44:06.415Z"
+    },
+    {
+      "id": "bug-003",
+      "timestamp": "2026-07-11T17:58:45.680Z",
+      "error_message": "Significant refactor of ",
+      "file": "docs/migration-from-plume.md",
+      "root_cause": "10 lines replaced/restructured",
+      "fix": "Rewrote 10→23 lines (10 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T17:58:45.680Z"
+    }
+  ]
+}
