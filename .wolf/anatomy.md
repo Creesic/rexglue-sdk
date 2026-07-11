@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-11T18:05:14.688Z
-> Files: 515 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-11T18:27:57.398Z
+> Files: 524 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
 
@@ -49,7 +49,7 @@
 
 ## FM2/
 
-- `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~119 tok)
+- `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~125 tok)
 - `fm2_manifest.toml` (~5450 tok)
 
 ## FM2/out/build/win-amd64-relwithdebinfo/
@@ -574,6 +574,30 @@
 - `MAZ_RX7_88_073004_2R1.fsb` (~182206 tok)
 - `MAZ_RX7_93_000000_2R0.fsb` (~180523 tok)
 
+## cmake/
+
+- `rexglue_helpers.cmake` — ========================================================== (~3204 tok)
+- `rexglue_install.cmake` — ========================================================== (~1687 tok)
+
 ## docs/
 
 - `migration-from-plume.md` — Migration from ReXGlue080plume (~3015 tok)
+- `xaudio2-conversion-guide.md` — Adding the XAudio2 Audio Backend (~2461 tok)
+
+## include/rex/audio/xaudio2/
+
+- `xaudio2_audio_driver.h` — ***************************************************************************** (~739 tok)
+- `xaudio2_audio_system.h` — ***************************************************************************** (~326 tok)
+
+## src/audio/
+
+- `CMakeLists.txt` — rexaudio - Audio subsystem library (~360 tok)
+
+## src/audio/xaudio2/
+
+- `xaudio2_audio_driver.cpp` — ***************************************************************************** (~3772 tok)
+- `xaudio2_audio_system.cpp` — ***************************************************************************** (~498 tok)
+
+## src/ui/
+
+- `rex_app.cpp` — include <rex/rex_app.h> (~5531 tok)

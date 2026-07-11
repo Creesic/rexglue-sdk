@@ -138,12 +138,12 @@
       "first_read": "2026-07-11T16:43:36.529Z"
     },
     "C:/Users/Tera/Documents/GitHub/ReXFM2P/include/rex/audio/audio_driver.h": {
-      "count": 1,
+      "count": 2,
       "tokens": 0,
       "first_read": "2026-07-11T16:43:37.013Z"
     },
     "C:/Users/Tera/Documents/GitHub/ReXFM2P/include/rex/audio/audio_system.h": {
-      "count": 1,
+      "count": 2,
       "tokens": 0,
       "first_read": "2026-07-11T16:43:37.382Z"
     },
@@ -183,7 +183,7 @@
       "first_read": "2026-07-11T16:43:42.600Z"
     },
     "C:/Users/Tera/Documents/GitHub/ReXFM2P/cmake/rexglue_helpers.cmake": {
-      "count": 2,
+      "count": 3,
       "tokens": 0,
       "first_read": "2026-07-11T16:43:43.200Z"
     },
@@ -193,7 +193,7 @@
       "first_read": "2026-07-11T16:43:43.362Z"
     },
     "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/audio/CMakeLists.txt": {
-      "count": 1,
+      "count": 2,
       "tokens": 3023,
       "first_read": "2026-07-11T16:43:43.710Z"
     },
@@ -208,7 +208,7 @@
       "first_read": "2026-07-11T16:43:43.999Z"
     },
     "C:/Users/Tera/Documents/GitHub/ReXFM2P/cmake/rexglue_install.cmake": {
-      "count": 1,
+      "count": 3,
       "tokens": 0,
       "first_read": "2026-07-11T16:43:44.404Z"
     },
@@ -243,7 +243,7 @@
       "first_read": "2026-07-11T16:43:46.564Z"
     },
     "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/CMakeLists.txt": {
-      "count": 5,
+      "count": 6,
       "tokens": 3023,
       "first_read": "2026-07-11T16:43:46.891Z"
     },
@@ -418,7 +418,7 @@
       "first_read": "2026-07-11T16:44:30.043Z"
     },
     "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/ui/rex_app.cpp": {
-      "count": 2,
+      "count": 4,
       "tokens": 0,
       "first_read": "2026-07-11T16:44:32.280Z"
     },
@@ -541,6 +541,41 @@
       "count": 1,
       "tokens": 1978,
       "first_read": "2026-07-11T18:05:10.521Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/include/rex/audio/xaudio2/xaudio2_audio_system.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-11T18:12:13.230Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/include/rex/audio/xaudio2/xaudio2_audio_driver.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-11T18:12:13.572Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/include/rex/runtime.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-11T18:15:40.561Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/src/audio/xaudio2/xaudio2_audio_system.cpp": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-11T18:16:04.649Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/src/audio/xaudio2/xaudio2_audio_driver.cpp": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-11T18:16:25.019Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/FM2-xaudio2-conversion-guide.md": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-11T18:17:50.729Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/out/build/win-amd64-relwithdebinfo/logs/fm2_009.log": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-11T18:24:05.529Z"
     }
   },
   "files_written": [
@@ -669,20 +704,107 @@
       "action": "edit",
       "tokens": 65,
       "at": "2026-07-11T18:05:14.696Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/include/rex/audio/xaudio2/xaudio2_audio_system.h",
+      "action": "create",
+      "tokens": 349,
+      "at": "2026-07-11T18:20:11.776Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/include/rex/audio/xaudio2/xaudio2_audio_driver.h",
+      "action": "create",
+      "tokens": 791,
+      "at": "2026-07-11T18:20:29.554Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/audio/xaudio2/xaudio2_audio_system.cpp",
+      "action": "create",
+      "tokens": 534,
+      "at": "2026-07-11T18:20:41.366Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/audio/xaudio2/xaudio2_audio_driver.cpp",
+      "action": "create",
+      "tokens": 4041,
+      "at": "2026-07-11T18:21:31.688Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/audio/CMakeLists.txt",
+      "action": "edit",
+      "tokens": 248,
+      "at": "2026-07-11T18:21:39.415Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/cmake/rexglue_helpers.cmake",
+      "action": "edit",
+      "tokens": 21,
+      "at": "2026-07-11T18:21:49.184Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/cmake/rexglue_helpers.cmake",
+      "action": "edit",
+      "tokens": 324,
+      "at": "2026-07-11T18:21:55.877Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/cmake/rexglue_install.cmake",
+      "action": "edit",
+      "tokens": 158,
+      "at": "2026-07-11T18:22:04.362Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/ui/rex_app.cpp",
+      "action": "edit",
+      "tokens": 64,
+      "at": "2026-07-11T18:22:11.882Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/ui/rex_app.cpp",
+      "action": "edit",
+      "tokens": 149,
+      "at": "2026-07-11T18:22:19.079Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/ui/rex_app.cpp",
+      "action": "edit",
+      "tokens": 160,
+      "at": "2026-07-11T18:22:26.586Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/CMakeLists.txt",
+      "action": "edit",
+      "tokens": 19,
+      "at": "2026-07-11T18:22:38.638Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/docs/xaudio2-conversion-guide.md",
+      "action": "create",
+      "tokens": 2812,
+      "at": "2026-07-11T18:27:57.405Z"
     }
   ],
   "edit_counts": {
     "CLAUDE.md": 1,
     "docs/migration-from-plume.md": 4,
     "FM2/src/fm2_hooks.cpp": 7,
-    "FM2/CMakeLists.txt": 2,
+    "FM2/CMakeLists.txt": 3,
     "FM2/fm2_manifest.toml": 3,
     "FM2/out/build/win-amd64-relwithdebinfo/launch-fm2.bat": 3,
-    ".gitignore": 1
+    ".gitignore": 1,
+    "include/rex/audio/xaudio2/xaudio2_audio_system.h": 1,
+    "include/rex/audio/xaudio2/xaudio2_audio_driver.h": 1,
+    "src/audio/xaudio2/xaudio2_audio_system.cpp": 1,
+    "src/audio/xaudio2/xaudio2_audio_driver.cpp": 1,
+    "src/audio/CMakeLists.txt": 1,
+    "cmake/rexglue_helpers.cmake": 2,
+    "cmake/rexglue_install.cmake": 1,
+    "src/ui/rex_app.cpp": 3,
+    "docs/xaudio2-conversion-guide.md": 1
   },
   "anatomy_hits": 18,
-  "anatomy_misses": 90,
-  "repeated_reads_warned": 48,
+  "anatomy_misses": 97,
+  "repeated_reads_warned": 57,
   "cerebrum_warnings": 0,
-  "stop_count": 13
+  "stop_count": 17
 }

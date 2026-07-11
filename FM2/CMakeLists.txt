@@ -22,4 +22,4 @@ else()
     add_executable(fm2 ${FM2_SOURCES})
 endif()
 
-rexglue_setup_target(fm2 GPU_PLUGINS xenos)
+rexglue_setup_target(fm2 GPU_PLUGINS xenos AUDIO_BACKENDS xaudio2)

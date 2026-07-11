@@ -41,3 +41,20 @@
 | 13:58 | Edited docs/migration-from-plume.md | expanded (+13 lines) | ~433 |
 | 13:58 | Session end: 20 writes across 6 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 106 reads | ~54380 tok |
 | 14:05 | Edited .gitignore | 2→7 lines | ~61 |
+| 14:07 | Session end: 21 writes across 7 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 108 reads | ~56423 tok |
+| 14:09 | Session end: 21 writes across 7 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 108 reads | ~56423 tok |
+| 14:20 | Created include/rex/audio/xaudio2/xaudio2_audio_system.h | — | ~326 |
+| 14:20 | Created include/rex/audio/xaudio2/xaudio2_audio_driver.h | — | ~739 |
+| 14:20 | Created src/audio/xaudio2/xaudio2_audio_system.cpp | — | ~498 |
+| 14:21 | Created src/audio/xaudio2/xaudio2_audio_driver.cpp | — | ~3772 |
+| 14:21 | Edited src/audio/CMakeLists.txt | added 1 condition(s) | ~231 |
+| 14:21 | Edited cmake/rexglue_helpers.cmake | inline fix | ~20 |
+| 14:21 | Edited cmake/rexglue_helpers.cmake | added 2 condition(s) | ~302 |
+| 14:22 | Edited cmake/rexglue_install.cmake | added 2 condition(s) | ~148 |
+| 14:22 | Edited src/ui/rex_app.cpp | 2→6 lines | ~59 |
+| 14:22 | Edited src/ui/rex_app.cpp | expanded (+8 lines) | ~139 |
+| 14:22 | Edited src/ui/rex_app.cpp | added 2 condition(s) | ~150 |
+| 14:22 | Edited FM2/CMakeLists.txt | inline fix | ~18 |
+| 14:22 | Session end: 33 writes across 14 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 114 reads | ~63281 tok |
+| 14:24 | Session end: 33 writes across 14 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 115 reads | ~63281 tok |
+| 14:27 | Created docs/xaudio2-conversion-guide.md | — | ~2625 |
