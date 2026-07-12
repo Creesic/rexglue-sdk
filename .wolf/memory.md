@@ -342,3 +342,4 @@
 |------|--------|---------|---------|--------|
 | 15:05 | Deferred StretchRect/MSAA + SetTexture/Create on RT | render_state.*, guest_resources.h, d3d_resource_hooks.cpp, video.cpp | fm2 build OK | ~40k |
 | 15:31 | Hooked D3DResource AddRef/Release + Enqueue shader/stream/index | d3d_hooks.cpp, guest_resources.h, render_state.cpp, fm2_manifest.toml | build ok | ~8k |
+| 15:38 | POD RenderCommand + Proc* for state setters | render_commands.h, render_queue.*, render_state.cpp | build ok | ~12k |

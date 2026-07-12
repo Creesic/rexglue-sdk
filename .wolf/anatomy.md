@@ -119,7 +119,8 @@
 - `guest_device.h` — render/guest_device.h (~1570 tok)
 - `guest_heap.h` — pragma once (~472 tok)
 - `guest_resources.h` — render/guest_resources.h (~1800 tok); GuestTexture.sourceSurface + GuestSurface.destinationTextures for deferred StretchRect
-- `render_queue.h` — render/render_queue.h (~200 tok); sync Run + dedicated render thread
+- `render_queue.h` — render/render_queue.h (~280 tok); Run(fn) + Enqueue(fn|RenderCommand) + dedicated render thread
+- `render_commands.h` — render/render_commands.h (~450 tok); POD RenderCommand enum/union + DispatchRenderCommand
 - `render_queue.cpp` — render/render_queue.cpp (~400 tok)
 - `pipeline.cpp` — render/pipeline.cpp (~4631 tok)
 - `render_internal.h` — render/render_internal.h (~469 tok)

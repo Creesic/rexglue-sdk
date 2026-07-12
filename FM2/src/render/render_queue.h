@@ -7,6 +7,8 @@
 
 #include <functional>
 
+#include "render/render_commands.h"
+
 namespace fm2::render {
 
 struct RenderQueue {
@@ -21,10 +23,12 @@ struct RenderQueue {
   static void Run(std::function<void()> fn);
 
   // Fire-and-forget: enqueue `fn` and return immediately. Preserves FIFO order
-  // with Run(). Nested calls from the render thread execute inline. Use for
-  // state setters (RT/viewport/scissor/texture bind) so guest job threads do
-  // not block on every D3D call.
+  // with Run(). Nested calls from the render thread execute inline.
+  // Prefer Enqueue(RenderCommand) for state setters.
   static void Enqueue(std::function<void()> fn);
+
+  // Fire-and-forget POD command (Unleashed RenderCommand path).
+  static void Enqueue(const RenderCommand& cmd);
 
   // True when called on the dedicated render thread.
   static bool IsOnRenderThread();

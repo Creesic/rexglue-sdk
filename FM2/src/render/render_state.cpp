@@ -738,7 +738,7 @@ uint64_t CurrentFrameIndex() { return g_frameIndex; }
 // Render state.
 // ---------------------------------------------------------------------------
 
-void SetRenderState(GuestDevice* /*device*/, uint32_t state, uint32_t value) {
+void ApplyRenderState(uint32_t state, uint32_t value) {
   switch (state) {
     case D3DRS_ZENABLE:
       SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zEnable, value != 0);
@@ -813,9 +813,20 @@ void SetRenderState(GuestDevice* /*device*/, uint32_t state, uint32_t value) {
   }
 }
 
+void SetRenderState(GuestDevice* /*device*/, uint32_t state, uint32_t value) {
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetRenderState;
+  cmd.setRenderState.state = state;
+  cmd.setRenderState.value = value;
+  RenderQueue::Enqueue(cmd);
+}
+
 void SetViewportEnable(GuestDevice* /*device*/, uint32_t value) {
   // The Xenos ViewportEnable render state maps to PA_CL_CLIP_CNTL.clip_disable.
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthClipEnabled, value != 0);
+  RenderQueue::Enqueue([value] {
+    std::lock_guard lock(RecordingMutex());
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthClipEnabled, value != 0);
+  });
 }
 
 void UpdateClipPlaneConstants(GuestDevice* device) {
@@ -832,242 +843,189 @@ void UpdateClipPlaneConstants(GuestDevice* device) {
 }
 
 void SetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc) {
-  const bool ze = zEnable != 0;
-  if (g_pipelineState.zEnable != ze) g_dirtyStates.renderTargetAndDepthStencil = true;
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zEnable, ze);
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zWriteEnable, zWriteEnable != 0);
-  // No compare-func flip -- see SetRenderState's D3DRS_ZFUNC case.
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zFunc, ConvertCmpFunc(cmpFunc));
+  RenderQueue::Enqueue([zEnable, zWriteEnable, cmpFunc] {
+    std::lock_guard lock(RecordingMutex());
+    const bool ze = zEnable != 0;
+    if (g_pipelineState.zEnable != ze) g_dirtyStates.renderTargetAndDepthStencil = true;
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zEnable, ze);
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zWriteEnable, zWriteEnable != 0);
+    // No compare-func flip -- see SetRenderState's D3DRS_ZFUNC case.
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zFunc, ConvertCmpFunc(cmpFunc));
+  });
 }
 
 void SetStencilState(const GuestStencilState& s) {
-  if (g_pipelineState.stencilEnable != s.enable) g_dirtyStates.renderTargetAndDepthStencil = true;
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilEnable, s.enable);
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFunc, ConvertCmpFunc(s.frontFunc));
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFail, ConvertStencilOp(s.frontFail));
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontDepthFail,
-               ConvertStencilOp(s.frontDepthFail));
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontPass, ConvertStencilOp(s.frontPass));
+  RenderQueue::Enqueue([s] {
+    std::lock_guard lock(RecordingMutex());
+    if (g_pipelineState.stencilEnable != s.enable) g_dirtyStates.renderTargetAndDepthStencil = true;
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilEnable, s.enable);
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFunc,
+                  ConvertCmpFunc(s.frontFunc));
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFail,
+                  ConvertStencilOp(s.frontFail));
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontDepthFail,
+                  ConvertStencilOp(s.frontDepthFail));
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontPass,
+                  ConvertStencilOp(s.frontPass));
 
-  const uint32_t backFunc = s.twoSided ? s.backFunc : s.frontFunc;
-  const uint32_t backFail = s.twoSided ? s.backFail : s.frontFail;
-  const uint32_t backDepthFail = s.twoSided ? s.backDepthFail : s.frontDepthFail;
-  const uint32_t backPass = s.twoSided ? s.backPass : s.frontPass;
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFunc, ConvertCmpFunc(backFunc));
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFail, ConvertStencilOp(backFail));
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackDepthFail,
-               ConvertStencilOp(backDepthFail));
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackPass, ConvertStencilOp(backPass));
+    const uint32_t backFunc = s.twoSided ? s.backFunc : s.frontFunc;
+    const uint32_t backFail = s.twoSided ? s.backFail : s.frontFail;
+    const uint32_t backDepthFail = s.twoSided ? s.backDepthFail : s.frontDepthFail;
+    const uint32_t backPass = s.twoSided ? s.backPass : s.frontPass;
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFunc,
+                  ConvertCmpFunc(backFunc));
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFail,
+                  ConvertStencilOp(backFail));
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackDepthFail,
+                  ConvertStencilOp(backDepthFail));
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackPass,
+                  ConvertStencilOp(backPass));
 
-  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilRef, uint8_t(s.ref));
-  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilReadMask, uint8_t(s.readMask));
-  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilWriteMask, uint8_t(s.writeMask));
+    SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilRef, uint8_t(s.ref));
+    SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilReadMask,
+                           uint8_t(s.readMask));
+    SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilWriteMask,
+                           uint8_t(s.writeMask));
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Texture binding.
 // ---------------------------------------------------------------------------
 
-void SetTexture(GuestDevice* /*device*/, uint32_t index, GuestTexture* texture) {
-  RenderQueue::Enqueue([index, texture] {
-    std::lock_guard lock(RecordingMutex());
-    if (IsDeviceLost()) return;
-
-    // Unleashed ProcSetTexture: if a StretchRect linked this texture to a
-    // source surface, either sample the surface directly (1x) or mark MSAA
-    // for resolve-before-draw and bind the destination texture.
-    if (texture != nullptr && texture->sourceSurface != nullptr) {
-      GuestSurface* surface = texture->sourceSurface;
-      if (surface->sampleCount != RenderSampleCount::COUNT_1) {
-        g_pendingMsaaResolves.insert(surface);
-        BindTextureDescriptor(index, texture, texture->viewDimension);
-      } else {
-        BindTextureDescriptor(index, surface, RenderTextureViewDimension::TEXTURE_2D);
-      }
-      g_textures[index] = texture;
-      return;
-    }
-
-    GuestBaseTexture* bound = texture;
-    RenderTextureViewDimension viewDimension =
-        texture ? texture->viewDimension : RenderTextureViewDimension::UNKNOWN;
-
-    // Prefer a non-MSAA source surface when the GuestTexture is only a resolve
-    // destination wrapper (same pattern as UnleashedRecomp / the plume sibling).
-    if (texture != nullptr && texture->sourceTexture != nullptr) {
-      bound = texture->sourceTexture;
-      viewDimension = RenderTextureViewDimension::TEXTURE_2D;
-    }
-
-    BindTextureDescriptor(index, bound, viewDimension);
-    g_textures[index] = texture;
-  });
-}
-
-void SetTextureBase(GuestDevice* /*device*/, uint32_t index, GuestBaseTexture* texture) {
-  RenderQueue::Enqueue([index, texture] {
-    std::lock_guard lock(RecordingMutex());
-    if (IsDeviceLost()) return;
-    if (texture == nullptr || texture->texture == nullptr) {
-      BindTextureDescriptor(index, nullptr, RenderTextureViewDimension::UNKNOWN);
-      g_textures[index] = nullptr;
-      return;
-    }
-    GuestBaseTexture* bound =
-        texture->sourceTexture != nullptr ? texture->sourceTexture : texture;
-    BindTextureDescriptor(index, bound, RenderTextureViewDimension::TEXTURE_2D);
-    g_textures[index] = nullptr;
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Shader / declaration binding (state tracking only; PSO build is Phase 4).
-// ---------------------------------------------------------------------------
-
-void SetVertexShader(GuestDevice* /*device*/, GuestShader* shader) {
-  RenderQueue::Enqueue([shader] {
-    std::lock_guard lock(RecordingMutex());
-    GuestShader* live =
-        (shader != nullptr && IsFm2Resource(shader)) ? shader : nullptr;
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexShader, live);
-  });
-}
-
-void SetPixelShader(GuestDevice* /*device*/, GuestShader* shader) {
-  RenderQueue::Enqueue([shader] {
-    std::lock_guard lock(RecordingMutex());
-    GuestShader* live =
-        (shader != nullptr && IsFm2Resource(shader)) ? shader : nullptr;
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.pixelShader, live);
-  });
-}
-
-void SetVertexDeclaration(GuestDevice* /*device*/, GuestVertexDeclaration* declaration) {
-  RenderQueue::Enqueue([declaration] {
-    std::lock_guard lock(RecordingMutex());
-    GuestVertexDeclaration* live =
-        (declaration != nullptr && IsFm2Resource(declaration)) ? declaration : nullptr;
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexDeclaration, live);
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Vertex/index buffer binding.
-// ---------------------------------------------------------------------------
-
-void SetStreamSource(GuestDevice* /*device*/, uint32_t index, GuestBuffer* buffer, uint32_t offset,
-                     uint32_t stride) {
-  RenderQueue::Enqueue([index, buffer, offset, stride] {
-    std::lock_guard lock(RecordingMutex());
-    if (index >= 16u) return;
-
-    GuestBuffer* live =
-        (buffer != nullptr && IsFm2Resource(buffer) && buffer->buffer != nullptr &&
-         offset <= buffer->dataSize)
-            ? buffer
-            : nullptr;
-
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexStrides[index],
-                  uint8_t(live ? stride : 0));
-
-    bool dirty = false;
-    SetDirtyValue(dirty, g_vertexBufferViews[index].buffer,
-                  live ? live->buffer->at(offset) : RenderBufferReference{});
-    SetDirtyValue(dirty, g_vertexBufferViews[index].size,
-                  live ? (live->dataSize - offset) : 0u);
-    SetDirtyValue(dirty, g_inputSlots[index].stride, live ? stride : 0u);
-    if (dirty) {
-      g_dirtyStates.vertexStreamFirst =
-          std::min<uint8_t>(g_dirtyStates.vertexStreamFirst, uint8_t(index));
-      g_dirtyStates.vertexStreamLast =
-          std::max<uint8_t>(g_dirtyStates.vertexStreamLast, uint8_t(index));
-    }
-  });
-}
-
-void SetIndices(GuestDevice* /*device*/, GuestBuffer* buffer) {
-  RenderQueue::Enqueue([buffer] {
-    std::lock_guard lock(RecordingMutex());
-    GuestBuffer* live =
-        (buffer != nullptr && IsFm2Resource(buffer) && buffer->buffer != nullptr)
-            ? buffer
-            : nullptr;
-    SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.buffer,
-                  live ? live->buffer->at(0) : RenderBufferReference{});
-    SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.format,
-                  live ? live->format : RenderFormat::R16_UINT);
-    SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.size,
-                  live ? live->dataSize : 0u);
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Viewport / scissor.
-// ---------------------------------------------------------------------------
-
-void SetViewport(GuestDevice* /*device*/, GuestViewport* viewport) {
-  // D3D9 validation: a zero-sized viewport is INVALIDCALL and leaves state
-  // unchanged. Read guest be<> values on the caller thread, then enqueue.
-  if (viewport->width.get() == 0 || viewport->height.get() == 0) return;
-  const float x = float(viewport->x.get());
-  const float y = float(viewport->y.get());
-  const float width = float(viewport->width.get());
-  const float height = float(viewport->height.get());
-  const float minZ = viewport->minZ.get();
-  const float maxZ = viewport->maxZ.get();
-  RenderQueue::Enqueue([x, y, width, height, minZ, maxZ] {
-    std::lock_guard lock(RecordingMutex());
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.x, x);
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.y, y);
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.width, width);
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.height, height);
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.minDepth, minZ);
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.maxDepth, maxZ);
-
-    uint32_t specConstants = g_pipelineState.specConstants;
-    if (minZ > maxZ) {
-      specConstants |= SPEC_CONSTANT_REVERSE_Z;
-    } else {
-      specConstants &= ~uint32_t(SPEC_CONSTANT_REVERSE_Z);
-    }
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.specConstants, specConstants);
-
-    g_dirtyStates.scissorRect |= g_dirtyStates.viewport;
-  });
-}
-
-void SetScissorRect(GuestDevice* device, GuestRect* rect) {
-  const bool scissorEnable = ScissorTestEnabled(device);
-  const int32_t top = rect->top.get();
-  const int32_t left = rect->left.get();
-  const int32_t bottom = rect->bottom.get();
-  const int32_t right = rect->right.get();
-  RenderQueue::Enqueue([scissorEnable, top, left, bottom, right] {
-    std::lock_guard lock(RecordingMutex());
-    SetDirtyValue(g_dirtyStates.scissorRect, g_scissorTestEnable, scissorEnable);
-    SetDirtyValue<int32_t>(g_dirtyStates.scissorRect, g_scissorRect.top, top);
-    SetDirtyValue<int32_t>(g_dirtyStates.scissorRect, g_scissorRect.left, left);
-    SetDirtyValue<int32_t>(g_dirtyStates.scissorRect, g_scissorRect.bottom, bottom);
-    SetDirtyValue<int32_t>(g_dirtyStates.scissorRect, g_scissorRect.right, right);
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Render target / depth-stencil binding.
-// ---------------------------------------------------------------------------
-
 namespace {
+
+void ProcSetTexture(uint32_t index, GuestTexture* texture) {
+  if (IsDeviceLost()) return;
+
+  // Unleashed ProcSetTexture: if a StretchRect linked this texture to a
+  // source surface, either sample the surface directly (1x) or mark MSAA
+  // for resolve-before-draw and bind the destination texture.
+  if (texture != nullptr && texture->sourceSurface != nullptr) {
+    GuestSurface* surface = texture->sourceSurface;
+    if (surface->sampleCount != RenderSampleCount::COUNT_1) {
+      g_pendingMsaaResolves.insert(surface);
+      BindTextureDescriptor(index, texture, texture->viewDimension);
+    } else {
+      BindTextureDescriptor(index, surface, RenderTextureViewDimension::TEXTURE_2D);
+    }
+    g_textures[index] = texture;
+    return;
+  }
+
+  GuestBaseTexture* bound = texture;
+  RenderTextureViewDimension viewDimension =
+      texture ? texture->viewDimension : RenderTextureViewDimension::UNKNOWN;
+
+  if (texture != nullptr && texture->sourceTexture != nullptr) {
+    bound = texture->sourceTexture;
+    viewDimension = RenderTextureViewDimension::TEXTURE_2D;
+  }
+
+  BindTextureDescriptor(index, bound, viewDimension);
+  g_textures[index] = texture;
+}
+
+void ProcSetTextureBase(uint32_t index, GuestBaseTexture* texture) {
+  if (IsDeviceLost()) return;
+  if (texture == nullptr || texture->texture == nullptr) {
+    BindTextureDescriptor(index, nullptr, RenderTextureViewDimension::UNKNOWN);
+    g_textures[index] = nullptr;
+    return;
+  }
+  GuestBaseTexture* bound =
+      texture->sourceTexture != nullptr ? texture->sourceTexture : texture;
+  BindTextureDescriptor(index, bound, RenderTextureViewDimension::TEXTURE_2D);
+  g_textures[index] = nullptr;
+}
+
+void ProcSetVertexShader(GuestShader* shader) {
+  GuestShader* live = (shader != nullptr && IsFm2Resource(shader)) ? shader : nullptr;
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexShader, live);
+}
+
+void ProcSetPixelShader(GuestShader* shader) {
+  GuestShader* live = (shader != nullptr && IsFm2Resource(shader)) ? shader : nullptr;
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.pixelShader, live);
+}
+
+void ProcSetVertexDeclaration(GuestVertexDeclaration* declaration) {
+  GuestVertexDeclaration* live =
+      (declaration != nullptr && IsFm2Resource(declaration)) ? declaration : nullptr;
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexDeclaration, live);
+}
+
+void ProcSetStreamSource(uint32_t index, GuestBuffer* buffer, uint32_t offset, uint32_t stride) {
+  if (index >= 16u) return;
+
+  GuestBuffer* live =
+      (buffer != nullptr && IsFm2Resource(buffer) && buffer->buffer != nullptr &&
+       offset <= buffer->dataSize)
+          ? buffer
+          : nullptr;
+
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexStrides[index],
+                uint8_t(live ? stride : 0));
+
+  bool dirty = false;
+  SetDirtyValue(dirty, g_vertexBufferViews[index].buffer,
+                live ? live->buffer->at(offset) : RenderBufferReference{});
+  SetDirtyValue(dirty, g_vertexBufferViews[index].size, live ? (live->dataSize - offset) : 0u);
+  SetDirtyValue(dirty, g_inputSlots[index].stride, live ? stride : 0u);
+  if (dirty) {
+    g_dirtyStates.vertexStreamFirst =
+        std::min<uint8_t>(g_dirtyStates.vertexStreamFirst, uint8_t(index));
+    g_dirtyStates.vertexStreamLast =
+        std::max<uint8_t>(g_dirtyStates.vertexStreamLast, uint8_t(index));
+  }
+}
+
+void ProcSetIndices(GuestBuffer* buffer) {
+  GuestBuffer* live =
+      (buffer != nullptr && IsFm2Resource(buffer) && buffer->buffer != nullptr) ? buffer
+                                                                               : nullptr;
+  SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.buffer,
+                live ? live->buffer->at(0) : RenderBufferReference{});
+  SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.format,
+                live ? live->format : RenderFormat::R16_UINT);
+  SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.size, live ? live->dataSize : 0u);
+}
+
+void ProcSetViewport(float x, float y, float width, float height, float minZ, float maxZ) {
+  SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.x, x);
+  SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.y, y);
+  SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.width, width);
+  SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.height, height);
+  SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.minDepth, minZ);
+  SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.maxDepth, maxZ);
+
+  uint32_t specConstants = g_pipelineState.specConstants;
+  if (minZ > maxZ) {
+    specConstants |= SPEC_CONSTANT_REVERSE_Z;
+  } else {
+    specConstants &= ~uint32_t(SPEC_CONSTANT_REVERSE_Z);
+  }
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.specConstants, specConstants);
+  g_dirtyStates.scissorRect |= g_dirtyStates.viewport;
+}
+
+void ProcSetScissorRect(bool scissorEnable, int32_t top, int32_t left, int32_t bottom,
+                        int32_t right) {
+  SetDirtyValue(g_dirtyStates.scissorRect, g_scissorTestEnable, scissorEnable);
+  SetDirtyValue<int32_t>(g_dirtyStates.scissorRect, g_scissorRect.top, top);
+  SetDirtyValue<int32_t>(g_dirtyStates.scissorRect, g_scissorRect.left, left);
+  SetDirtyValue<int32_t>(g_dirtyStates.scissorRect, g_scissorRect.bottom, bottom);
+  SetDirtyValue<int32_t>(g_dirtyStates.scissorRect, g_scissorRect.right, right);
+}
 
 void SetRenderTargetInternal(GuestBaseTexture* renderTarget) {
   SetDirtyValue(g_dirtyStates.renderTargetAndDepthStencil, g_renderTarget, renderTarget);
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.renderTargetFormat,
-               renderTarget ? renderTarget->format : RenderFormat::UNKNOWN);
+                renderTarget ? renderTarget->format : RenderFormat::UNKNOWN);
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.sampleCount, GetSampleCount(renderTarget));
   SetAlphaTestMode((g_pipelineState.specConstants &
                     (SPEC_CONSTANT_ALPHA_TEST | SPEC_CONSTANT_ALPHA_TO_COVERAGE)) != 0);
 
-  // D3D9/Xenon semantics: SetRenderTarget resets the viewport to cover the
-  // whole surface.
   if (renderTarget != nullptr && renderTarget->width != 0 && renderTarget->height != 0) {
     SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.x, 0.0f);
     SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.y, 0.0f);
@@ -1079,23 +1037,124 @@ void SetRenderTargetInternal(GuestBaseTexture* renderTarget) {
   }
 }
 
+void ProcSetRenderTarget(GuestBaseTexture* renderTarget) {
+  GuestBaseTexture* target = renderTarget != nullptr ? renderTarget : g_implicitRenderTarget;
+  SetRenderTargetInternal(target);
+}
+
+void ProcSetImplicitRenderTarget(GuestBaseTexture* renderTarget) {
+  g_implicitRenderTarget = renderTarget;
+  SetRenderTargetInternal(renderTarget);
+}
+
+void ProcSetDepthStencilSurface(GuestSurface* depthStencil) {
+  SetDirtyValue(g_dirtyStates.renderTargetAndDepthStencil, g_depthStencil, depthStencil);
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthStencilFormat,
+                depthStencil ? depthStencil->format : RenderFormat::UNKNOWN);
+  g_dirtyStates.viewport = true;
+  if (depthStencil != nullptr) g_implicitDepthStencil = depthStencil;
+}
+
+void ProcDestructResource(GuestResource* resource) {
+  g_tempResources[CurrentRecordingFrame() % kNumFrames].push_back(resource);
+}
+
 }  // namespace
+
+void SetTexture(GuestDevice* /*device*/, uint32_t index, GuestTexture* texture) {
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetTexture;
+  cmd.setTexture.index = index;
+  cmd.setTexture.texture = texture;
+  RenderQueue::Enqueue(cmd);
+}
+
+void SetTextureBase(GuestDevice* /*device*/, uint32_t index, GuestBaseTexture* texture) {
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetTextureBase;
+  cmd.setTextureBase.index = index;
+  cmd.setTextureBase.texture = texture;
+  RenderQueue::Enqueue(cmd);
+}
+
+void SetVertexShader(GuestDevice* /*device*/, GuestShader* shader) {
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetVertexShader;
+  cmd.setVertexShader.shader = shader;
+  RenderQueue::Enqueue(cmd);
+}
+
+void SetPixelShader(GuestDevice* /*device*/, GuestShader* shader) {
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetPixelShader;
+  cmd.setPixelShader.shader = shader;
+  RenderQueue::Enqueue(cmd);
+}
+
+void SetVertexDeclaration(GuestDevice* /*device*/, GuestVertexDeclaration* declaration) {
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetVertexDeclaration;
+  cmd.setVertexDeclaration.declaration = declaration;
+  RenderQueue::Enqueue(cmd);
+}
+
+void SetStreamSource(GuestDevice* /*device*/, uint32_t index, GuestBuffer* buffer, uint32_t offset,
+                     uint32_t stride) {
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetStreamSource;
+  cmd.setStreamSource.index = index;
+  cmd.setStreamSource.buffer = buffer;
+  cmd.setStreamSource.offset = offset;
+  cmd.setStreamSource.stride = stride;
+  RenderQueue::Enqueue(cmd);
+}
+
+void SetIndices(GuestDevice* /*device*/, GuestBuffer* buffer) {
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetIndices;
+  cmd.setIndices.buffer = buffer;
+  RenderQueue::Enqueue(cmd);
+}
+
+void SetViewport(GuestDevice* /*device*/, GuestViewport* viewport) {
+  // D3D9 validation: a zero-sized viewport is INVALIDCALL and leaves state
+  // unchanged. Read guest be<> values on the caller thread, then enqueue.
+  if (viewport->width.get() == 0 || viewport->height.get() == 0) return;
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetViewport;
+  cmd.setViewport.x = float(viewport->x.get());
+  cmd.setViewport.y = float(viewport->y.get());
+  cmd.setViewport.width = float(viewport->width.get());
+  cmd.setViewport.height = float(viewport->height.get());
+  cmd.setViewport.minDepth = viewport->minZ.get();
+  cmd.setViewport.maxDepth = viewport->maxZ.get();
+  RenderQueue::Enqueue(cmd);
+}
+
+void SetScissorRect(GuestDevice* device, GuestRect* rect) {
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetScissorRect;
+  cmd.setScissorRect.scissorEnable = ScissorTestEnabled(device);
+  cmd.setScissorRect.top = rect->top.get();
+  cmd.setScissorRect.left = rect->left.get();
+  cmd.setScissorRect.bottom = rect->bottom.get();
+  cmd.setScissorRect.right = rect->right.get();
+  RenderQueue::Enqueue(cmd);
+}
 
 void SetRenderTarget(GuestDevice* /*device*/, uint32_t index, GuestBaseTexture* renderTarget) {
   if (index != 0) return;  // FM2 only ever uses a single color render target.
-  GuestBaseTexture* target = renderTarget ? renderTarget : g_implicitRenderTarget;
-  RenderQueue::Enqueue([target] {
-    std::lock_guard lock(RecordingMutex());
-    SetRenderTargetInternal(target);
-  });
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetRenderTarget;
+  cmd.setRenderTarget.renderTarget = renderTarget;
+  RenderQueue::Enqueue(cmd);
 }
 
 void SetImplicitRenderTarget(GuestBaseTexture* renderTarget) {
-  g_implicitRenderTarget = renderTarget;
-  RenderQueue::Enqueue([renderTarget] {
-    std::lock_guard lock(RecordingMutex());
-    SetRenderTargetInternal(renderTarget);
-  });
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetImplicitRenderTarget;
+  cmd.setImplicitRenderTarget.renderTarget = renderTarget;
+  RenderQueue::Enqueue(cmd);
 }
 
 GuestBaseTexture* GetCurrentColorRenderTarget() { return g_renderTarget; }
@@ -1107,14 +1166,10 @@ void PrepareFramePresent() {
 }
 
 void SetDepthStencilSurface(GuestDevice* /*device*/, GuestSurface* depthStencil) {
-  RenderQueue::Enqueue([depthStencil] {
-    std::lock_guard lock(RecordingMutex());
-    SetDirtyValue(g_dirtyStates.renderTargetAndDepthStencil, g_depthStencil, depthStencil);
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthStencilFormat,
-                 depthStencil ? depthStencil->format : RenderFormat::UNKNOWN);
-    g_dirtyStates.viewport = true;
-    if (depthStencil != nullptr) g_implicitDepthStencil = depthStencil;
-  });
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetDepthStencilSurface;
+  cmd.setDepthStencilSurface.depthStencil = depthStencil;
+  RenderQueue::Enqueue(cmd);
 }
 
 void OnRecordingFrameReady(uint32_t frame) {
@@ -1130,10 +1185,63 @@ void ScheduleResourceDestruction(GuestResource* resource) {
   // Invalidate magic immediately so guest re-uses of this address don't look
   // like live FM2 resources while destruction is pending.
   resource->magic = 0;
-  RenderQueue::Enqueue([resource] {
-    std::lock_guard lock(RecordingMutex());
-    g_tempResources[CurrentRecordingFrame() % kNumFrames].push_back(resource);
-  });
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::DestructResource;
+  cmd.destructResource.resource = resource;
+  RenderQueue::Enqueue(cmd);
+}
+
+void DispatchRenderCommand(const RenderCommand& cmd) {
+  std::lock_guard lock(RecordingMutex());
+  switch (cmd.type) {
+    case RenderCommandType::DestructResource:
+      ProcDestructResource(cmd.destructResource.resource);
+      break;
+    case RenderCommandType::SetViewport:
+      ProcSetViewport(cmd.setViewport.x, cmd.setViewport.y, cmd.setViewport.width,
+                      cmd.setViewport.height, cmd.setViewport.minDepth,
+                      cmd.setViewport.maxDepth);
+      break;
+    case RenderCommandType::SetScissorRect:
+      ProcSetScissorRect(cmd.setScissorRect.scissorEnable, cmd.setScissorRect.top,
+                         cmd.setScissorRect.left, cmd.setScissorRect.bottom,
+                         cmd.setScissorRect.right);
+      break;
+    case RenderCommandType::SetRenderTarget:
+      ProcSetRenderTarget(cmd.setRenderTarget.renderTarget);
+      break;
+    case RenderCommandType::SetImplicitRenderTarget:
+      ProcSetImplicitRenderTarget(cmd.setImplicitRenderTarget.renderTarget);
+      break;
+    case RenderCommandType::SetDepthStencilSurface:
+      ProcSetDepthStencilSurface(cmd.setDepthStencilSurface.depthStencil);
+      break;
+    case RenderCommandType::SetRenderState:
+      ApplyRenderState(cmd.setRenderState.state, cmd.setRenderState.value);
+      break;
+    case RenderCommandType::SetTexture:
+      ProcSetTexture(cmd.setTexture.index, cmd.setTexture.texture);
+      break;
+    case RenderCommandType::SetTextureBase:
+      ProcSetTextureBase(cmd.setTextureBase.index, cmd.setTextureBase.texture);
+      break;
+    case RenderCommandType::SetVertexShader:
+      ProcSetVertexShader(cmd.setVertexShader.shader);
+      break;
+    case RenderCommandType::SetPixelShader:
+      ProcSetPixelShader(cmd.setPixelShader.shader);
+      break;
+    case RenderCommandType::SetVertexDeclaration:
+      ProcSetVertexDeclaration(cmd.setVertexDeclaration.declaration);
+      break;
+    case RenderCommandType::SetStreamSource:
+      ProcSetStreamSource(cmd.setStreamSource.index, cmd.setStreamSource.buffer,
+                          cmd.setStreamSource.offset, cmd.setStreamSource.stride);
+      break;
+    case RenderCommandType::SetIndices:
+      ProcSetIndices(cmd.setIndices.buffer);
+      break;
+  }
 }
 
 // ---------------------------------------------------------------------------
