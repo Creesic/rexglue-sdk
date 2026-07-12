@@ -348,4 +348,5 @@
 | 18:15 | Unleashed Present split: ExecuteCommandList / guest present / BeginCommandList | video.cpp, render_commands.h, render_state.cpp | build ok | ~8k |
 | 18:25 | POD Unlock/Copy/Translate upload; retire ExecuteUpload | render_commands.h, d3d_resource_hooks.cpp, render_state.cpp, video.cpp | fm2 build OK | ~20k |
 | 18:35 | POD SetViewportEnable/SetDepthState/SetStencilState | render_commands.h, render_state.cpp | last Enqueue(fn) gone; build OK | ~8k |
+| 19:25 | Triaged fm2_104.log | notes-2026-07-12-fm2-104-triage.md | DEVICE_REMOVED ~140ms after first blit; not empty-RT | ~8k |
 | 18:24 | Session end: 5 writes across 3 files (d3d_hooks.cpp, render_state.h, render_state.cpp) | 23 reads | ~81521 tok |

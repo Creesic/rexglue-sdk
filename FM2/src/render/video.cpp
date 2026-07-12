@@ -715,6 +715,16 @@ void ProcBeginCommandList() {
 }
 
 void ProcWaitForGpu() {
+  // Finish any open recording list before Reset/begin — otherwise we Reset an
+  // open allocator and later ExecuteCommandLists reports "must be closed".
+  if (g_frameOpen) {
+    RenderCommandList* openList = g_commandLists[g_frame].get();
+    openList->end();
+    g_frameOpen = false;
+    g_queue->executeCommandLists(openList, g_commandFences[g_frame].get());
+    g_commandListSubmitted[g_frame] = true;
+  }
+
   for (uint32_t i = 0; i < kNumFrames; ++i) {
     if (g_commandListSubmitted[i]) {
       g_queue->waitForCommandFence(g_commandFences[i].get());
@@ -723,11 +733,11 @@ void ProcWaitForGpu() {
     OnRecordingFrameReady(i);
   }
 
-  assert(!g_frameOpen);
-  g_commandLists[g_frame]->begin();
-  g_commandLists[g_frame]->end();
-  g_queue->executeCommandLists(g_commandLists[g_frame].get(), g_commandFences[g_frame].get());
-  g_queue->waitForCommandFence(g_commandFences[g_frame].get());
+  // Empty command list drain (Unleashed uses slot 0) — both slots are closed.
+  g_commandLists[0]->begin();
+  g_commandLists[0]->end();
+  g_queue->executeCommandLists(g_commandLists[0].get(), g_commandFences[0].get());
+  g_queue->waitForCommandFence(g_commandFences[0].get());
 }
 
 }  // namespace fm2::render

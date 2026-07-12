@@ -62,9 +62,13 @@ RenderFormat ConvertFormat(uint32_t d3dFormat) {
     case 0x28000102:  // D3DFMT_L8
     case 0x28000002:  // D3DFMT_L8_2
       return RenderFormat::R8_UNORM;
+    case 0x2D20014A:  // k_8_8 (R8G8) variant — same 0x2D20 class as D24S8/G16R16F
+      return RenderFormat::R8G8_UNORM;
   }
 
   switch (d3dFormat & 0x3F) {
+    case 10:  // k_8_8
+      return RenderFormat::R8G8_UNORM;
     case 22:  // k_24_8 (D24S8 variants)
     case 23:  // k_24_8_FLOAT (D24FS8 variants)
       return RenderFormat::D32_FLOAT_S8_UINT;
@@ -93,6 +97,7 @@ uint32_t FormatBytes(RenderFormat format) {
     case RenderFormat::D32_FLOAT:
     case RenderFormat::R32_UINT:
       return 4;
+    case RenderFormat::R8G8_UNORM:
     case RenderFormat::R16_UINT:
       return 2;
     case RenderFormat::R8_UNORM:
@@ -658,6 +663,10 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
     case 6:  // k_8_8_8_8 (A8R8G8B8 cooked; 8-in-32 swap yields BGRA bytes)
       info.format = RenderFormat::B8G8R8A8_UNORM;
       info.bytesPerBlock = 4;
+      break;
+    case 10:  // k_8_8
+      info.format = RenderFormat::R8G8_UNORM;
+      info.bytesPerBlock = 2;
       break;
     case 18:  // k_DXT1
       info.format = RenderFormat::BC1_UNORM;

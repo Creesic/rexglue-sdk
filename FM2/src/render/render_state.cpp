@@ -423,6 +423,21 @@ void MarkAttachmentInitialized(GuestBaseTexture* texture) {
   texture->hostInitialized = true;
 }
 
+// D3D12 CREATE_NOT_ZEROED RTs/DSVs must Discard/Clear/Copy before other uses.
+// Partial clearRect does not count as initialization — Discard first.
+void EnsureAttachmentInitialized(GuestBaseTexture* texture) {
+  if (texture == nullptr || texture->texture == nullptr) return;
+  if (texture->hostInitialized) return;
+  if (!texture->requiresHostInitialization) {
+    texture->hostInitialized = true;
+    return;
+  }
+  RenderCommandList* cl = CommandList();
+  if (cl == nullptr) return;
+  cl->discardTexture(texture->texture);
+  MarkAttachmentInitialized(texture);
+}
+
 RenderSampleCounts GetSampleCount(GuestBaseTexture* texture) {
   if (texture != nullptr &&
       (texture->type == ResourceType::RenderTarget || texture->type == ResourceType::DepthStencil)) {
@@ -467,8 +482,9 @@ bool PopulateBarriersForStretchRect(GuestSurface* renderTarget, GuestSurface* de
     if (surface == nullptr || surface->destinationTextures.empty()) continue;
     const bool multiSampling = surface->sampleCount != RenderSampleCount::COUNT_1;
     const RenderTextureLayout srcLayout =
-        multiSampling ? RenderTextureLayout::RESOLVE_SOURCE : RenderTextureLayout::RESOLVE_SOURCE;
-    const RenderTextureLayout dstLayout = RenderTextureLayout::RESOLVE_DEST;
+        multiSampling ? RenderTextureLayout::RESOLVE_SOURCE : RenderTextureLayout::COPY_SOURCE;
+    const RenderTextureLayout dstLayout =
+        multiSampling ? RenderTextureLayout::RESOLVE_DEST : RenderTextureLayout::COPY_DEST;
     AddBarrier(surface, srcLayout);
     for (GuestTexture* texture : surface->destinationTextures) {
       AddBarrier(texture, dstLayout);
@@ -494,7 +510,9 @@ void ExecutePendingStretchRectCommands(GuestSurface* renderTarget, GuestSurface*
       if (multiSampling) {
         commandList->resolveTexture(texture->texture, surface->texture);
       } else {
-        commandList->resolveTextureRegion(texture->texture, 0, 0, surface->texture, nullptr);
+        // 1x→1x must copy, not ResolveSubresourceRegion (D3D12 requires MSAA src).
+        commandList->copyTextureRegion(RenderTextureCopyLocation::Subresource(texture->texture, 0),
+                                       RenderTextureCopyLocation::Subresource(surface->texture, 0));
       }
       MarkAttachmentInitialized(texture);
       texture->sourceSurface = nullptr;
@@ -1827,6 +1845,8 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
     AddBarrier(g_renderTarget, RenderTextureLayout::COLOR_WRITE);
     AddBarrier(g_depthStencil, RenderTextureLayout::DEPTH_WRITE);
     FlushBarriers();
+    EnsureAttachmentInitialized(g_renderTarget);
+    EnsureAttachmentInitialized(g_depthStencil);
     SetFramebuffer(g_renderTarget, g_depthStencil, false);
     g_dirtyStates.renderTargetAndDepthStencil = false;
   }
@@ -1937,6 +1957,8 @@ void ProcClear(uint32_t flags, const float rgba[4], float z) {
   AddBarrier(g_renderTarget, RenderTextureLayout::COLOR_WRITE);
   AddBarrier(g_depthStencil, RenderTextureLayout::DEPTH_WRITE);
   FlushBarriers();
+  EnsureAttachmentInitialized(g_renderTarget);
+  EnsureAttachmentInitialized(g_depthStencil);
 
   const bool onePass = (g_renderTarget == nullptr) || (g_depthStencil == nullptr) ||
                        (g_renderTarget->width == g_depthStencil->width &&
@@ -1997,15 +2019,32 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
   AddBarrier(destTexture, RenderTextureLayout::RESOLVE_DEST);
   FlushBarriers();
 
-  if (hasSrc) {
-    CommandList()->resolveTextureRegion(destTexture->texture, destX, destY, source->texture,
-                                        &srcRect);
-  } else if (surface != nullptr && surface->sampleCount != RenderSampleCount::COUNT_1 &&
-             destX == 0 && destY == 0) {
-    CommandList()->resolveTexture(destTexture->texture, source->texture);
+  const bool multiSampling =
+      surface != nullptr && surface->sampleCount != RenderSampleCount::COUNT_1;
+  if (multiSampling) {
+    if (hasSrc) {
+      CommandList()->resolveTextureRegion(destTexture->texture, destX, destY, source->texture,
+                                          &srcRect);
+    } else if (destX == 0 && destY == 0) {
+      CommandList()->resolveTexture(destTexture->texture, source->texture);
+    } else {
+      CommandList()->resolveTextureRegion(destTexture->texture, destX, destY, source->texture,
+                                          nullptr);
+    }
   } else {
-    CommandList()->resolveTextureRegion(destTexture->texture, destX, destY, source->texture,
-                                        nullptr);
+    // 1x surfaces: copy, never ResolveSubresourceRegion.
+    AddBarrier(source, RenderTextureLayout::COPY_SOURCE);
+    AddBarrier(destTexture, RenderTextureLayout::COPY_DEST);
+    FlushBarriers();
+    RenderBox srcBox;
+    const RenderBox* srcBoxPtr = nullptr;
+    if (hasSrc) {
+      srcBox = RenderBox(srcRect.left, srcRect.top, srcRect.right, srcRect.bottom);
+      srcBoxPtr = &srcBox;
+    }
+    CommandList()->copyTextureRegion(RenderTextureCopyLocation::Subresource(destTexture->texture, 0),
+                                     RenderTextureCopyLocation::Subresource(source->texture, 0),
+                                     destX, destY, 0, srcBoxPtr);
   }
   MarkAttachmentInitialized(destTexture);
 }

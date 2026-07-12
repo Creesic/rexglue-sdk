@@ -592,6 +592,114 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-07-12T04:15:57.526Z"
+    },
+    {
+      "id": "bug-038",
+      "timestamp": "2026-07-12T05:33:59.633Z",
+      "error_message": "Wrong return value",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Was returning: Device()->createGraphicsPipeline(desc);",
+      "fix": "Now returns: pipeline;",
+      "tags": [
+        "auto-detected",
+        "return-value",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-12T05:33:59.633Z"
+    },
+    {
+      "id": "bug-039",
+      "timestamp": "2026-07-12T05:34:12.943Z",
+      "error_message": "Wrong reference: cstddef should be chrono",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Used \"cstddef\" instead of \"chrono\"",
+      "fix": "Changed cstddef → chrono",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-12T05:34:12.943Z"
+    },
+    {
+      "id": "bug-040",
+      "timestamp": "2026-07-12T15:28:19.322Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-12T15:28:19.322Z"
+    },
+    {
+      "id": "bug-041",
+      "timestamp": "2026-07-12T15:36:33.363Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "4 lines replaced/restructured",
+      "fix": "Rewrote 13→17 lines (4 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-12T15:36:33.363Z"
+    },
+    {
+      "id": "bug-042",
+      "timestamp": "2026-07-12T15:53:03.642Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-12T15:53:03.642Z"
+    },
+    {
+      "id": "bug-043",
+      "timestamp": "2026-07-12T15:54:19.444Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-12T15:54:19.444Z"
+    },
+    {
+      "id": "bug-fm2-device-removed-invalid-call",
+      "timestamp": "2026-07-12T23:45:00.000Z",
+      "error_message": "GPU device lost latch (CreateTexture); GetDeviceRemovedReason 0x887A0001 DXGI_ERROR_INVALID_CALL",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "1x ResolveSubresourceRegion; WaitForGpu begin() on open recording CL; clearRect on CREATE_NOT_ZEROED RT/DS without prior Discard",
+      "fix": "copyTextureRegion for 1x StretchRect/Resolve; ProcWaitForGpu closes open CL then uses slot 0; EnsureAttachmentInitialized discardTexture before first clear/draw; map 0x2D20014A to R8G8_UNORM",
+      "tags": ["fm2", "d3d12", "device-removed", "plume"],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-12T23:45:00.000Z"
     }
   ]
 }
