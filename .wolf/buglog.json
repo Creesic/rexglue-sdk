@@ -64,6 +64,278 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-07-11T18:21:49.187Z"
+    },
+    {
+      "id": "bug-005",
+      "timestamp": "2026-07-11T21:38:09.595Z",
+      "error_message": "Significant refactor of ",
+      "file": "../../../.claude/plans/memoized-purring-newt.md",
+      "root_cause": "8 lines replaced/restructured",
+      "fix": "Rewrote 8→20 lines (8 removed) | Also: during Phase 4 playtesting (this is where vendorin; becomes worth doing, if not done already).",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-11T21:38:36.620Z"
+    },
+    {
+      "id": "bug-006",
+      "timestamp": "2026-07-11T21:53:34.304Z",
+      "error_message": "Missing error handling in unknown",
+      "file": "FM2/tests/shader_cache_test.cpp",
+      "root_cause": "Code path had no error handling — exceptions would propagate uncaught",
+      "fix": "Added try/catch block",
+      "tags": [
+        "auto-detected",
+        "error-handling",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T21:53:34.304Z"
+    },
+    {
+      "id": "bug-007",
+      "timestamp": "2026-07-11T22:04:45.891Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/guest_device.h",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 4→5 lines (2 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "h"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T22:04:45.891Z"
+    },
+    {
+      "id": "bug-008",
+      "timestamp": "2026-07-11T22:45:05.108Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T22:45:05.108Z"
+    },
+    {
+      "id": "bug-009",
+      "timestamp": "2026-07-11T22:46:47.953Z",
+      "error_message": "Wrong reference: UnlockResource should be UnlockGuestResource",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Used \"UnlockResource\" instead of \"UnlockGuestResource\"",
+      "fix": "Changed UnlockResource → UnlockGuestResource",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-11T22:46:57.252Z"
+    },
+    {
+      "id": "bug-010",
+      "timestamp": "2026-07-11T22:57:08.109Z",
+      "error_message": "Missing guard clause",
+      "file": "FM2/src/render/d3d_resource_hooks.cpp",
+      "root_cause": "No early return/throw for edge case: size < 128 || *reinterpret_cast<const uint32_t*>(data",
+      "fix": "Added guard clause: if (size < 128 || *reinterpret_cast<const ui)",
+      "tags": [
+        "auto-detected",
+        "guard-clause",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T22:57:08.110Z"
+    },
+    {
+      "id": "bug-011",
+      "timestamp": "2026-07-11T22:57:36.237Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T22:57:36.237Z"
+    },
+    {
+      "id": "bug-012",
+      "timestamp": "2026-07-11T23:01:22.781Z",
+      "error_message": "Incorrect value in code",
+      "file": "FM2/fm2_manifest.toml",
+      "root_cause": "Had \"FM2_D3DResource_UnlockResource\"",
+      "fix": "Changed to \"FM2_D3DTexture_LockRect\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "toml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T23:01:22.781Z"
+    },
+    {
+      "id": "bug-013",
+      "timestamp": "2026-07-11T23:02:44.761Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T23:02:44.761Z"
+    },
+    {
+      "id": "bug-014",
+      "timestamp": "2026-07-11T23:08:14.375Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "11 lines replaced/restructured",
+      "fix": "Rewrote 44→88 lines (11 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T23:08:14.375Z"
+    },
+    {
+      "id": "bug-015",
+      "timestamp": "2026-07-11T23:49:20.336Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_resource_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T23:49:20.336Z"
+    },
+    {
+      "id": "bug-016",
+      "timestamp": "2026-07-11T23:50:25.730Z",
+      "error_message": "Incorrect value in code",
+      "file": "FM2/fm2_manifest.toml",
+      "root_cause": "Had \"FM2_Render_SetClearColorByteAndDirtyFlag\"",
+      "fix": "Changed to \"D3DDevice_SetRenderState_AlphaRef\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "toml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T23:50:25.730Z"
+    },
+    {
+      "id": "bug-017",
+      "timestamp": "2026-07-11T23:56:16.489Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T23:56:16.489Z"
+    },
+    {
+      "id": "bug-018",
+      "timestamp": "2026-07-11T23:57:22.743Z",
+      "error_message": "Wrong reference: REVERSE_SUBTRACT should be REV_SUBTRACT",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Used \"REVERSE_SUBTRACT\" instead of \"REV_SUBTRACT\"",
+      "fix": "Changed REVERSE_SUBTRACT → REV_SUBTRACT",
+      "tags": [
+        "auto-detected",
+        "wrong-reference",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T23:57:22.743Z"
+    },
+    {
+      "id": "bug-019",
+      "timestamp": "2026-07-11T23:57:27.966Z",
+      "error_message": "Wrong return value",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Was returning: RenderStencilOp::INCREASE_SATURATE;",
+      "fix": "Now returns: RenderStencilOp::INCREMENT_AND_CLAMP;",
+      "tags": [
+        "auto-detected",
+        "return-value",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-11T23:57:27.966Z"
+    },
+    {
+      "id": "bug-020",
+      "timestamp": "2026-07-12T00:01:43.264Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check)",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-12T00:01:43.264Z"
+    },
+    {
+      "id": "bug-021",
+      "timestamp": "2026-07-12T00:02:08.243Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 15→21 lines (3 removed) | Also: // FM2_RenderContext_BindVertexStream carries a ui; // across r8:r9 in the 32-bit PPC ABI; the standar",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-07-12T00:02:21.283Z"
     }
   ]
 }

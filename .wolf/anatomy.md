@@ -1,7 +1,42 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-11T18:47:33.401Z
-> Files: 526 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-12T00:02:36.352Z
+> Files: 558 tracked | Anatomy hits: 0 | Misses: 0
+
+## ../../../.claude/plans/
+
+- `memoized-purring-newt.md` — FM2 Native Renderer — Implementation Plan (~5014 tok)
+
+## ../rexglue-sdk/cmake/
+
+- `rexglue_helpers.cmake` — ========================================================== (~1777 tok)
+- `rexglue_install.cmake` — ========================================================== (~1712 tok)
+
+## ../rexglue-sdk/include/rex/audio/xaudio2/
+
+- `xaudio2_audio_driver.h` — ***************************************************************************** (~739 tok)
+- `xaudio2_audio_system.h` — ***************************************************************************** (~326 tok)
+
+## ../rexglue-sdk/src/audio/
+
+- `CMakeLists.txt` — rexaudio - Audio subsystem library (~301 tok)
+
+## ../rexglue-sdk/src/audio/xaudio2/
+
+- `xaudio2_audio_driver.cpp` — ***************************************************************************** (~3772 tok)
+- `xaudio2_audio_system.cpp` — ***************************************************************************** (~498 tok)
+
+## ../rexglue-sdk/src/kernel/xam/
+
+- `xam_ui.cpp` — ***************************************************************************** (~7131 tok)
+
+## ../rexglue-sdk/src/kernel/xam/apps/
+
+- `xlivebase_app.cpp` — ***************************************************************************** (~935 tok)
+
+## ../rexglue-sdk/src/ui/
+
+- `rex_app.cpp` — include <rex/rex_app.h> (~4060 tok)
 
 ## ./
 
@@ -49,8 +84,12 @@
 
 ## FM2/
 
-- `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~125 tok)
-- `fm2_manifest.toml` (~5450 tok)
+- `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~1318 tok)
+- `fm2_manifest.toml` (~5462 tok)
+
+## FM2/cmake/
+
+- `EmbedBinaryHeader.cmake` (~402 tok)
 
 ## FM2/out/build/win-amd64-relwithdebinfo/
 
@@ -58,7 +97,32 @@
 
 ## FM2/src/
 
+- `fm2_app.h` — fm2 - ReXGlue Recompiled Project (~595 tok)
 - `fm2_hooks.cpp` — include "generated/default/fm2_init.h" (~2006 tok)
+
+## FM2/src/render/
+
+- `d3d_hooks.cpp` — render/d3d_hooks.cpp (~7428 tok)
+- `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~8339 tok)
+- `guest_device.h` — render/guest_device.h (~1570 tok)
+- `guest_heap.h` — pragma once (~472 tok)
+- `guest_resources.h` — render/guest_resources.h (~1607 tok)
+- `pipeline.cpp` — render/pipeline.cpp (~3741 tok)
+- `render_internal.h` — render/render_internal.h (~469 tok)
+- `render_state.cpp` — render/render_state.cpp (~8034 tok)
+- `render_state.h` — render/render_state.h (~657 tok)
+- `video.cpp` — include "video.h" (~4870 tok)
+- `video.h` — render/video.h (~366 tok)
+
+## FM2/src/render/shaders/
+
+- `copy_ps.hlsl` (~149 tok)
+- `copy_vs.hlsl` — Fullscreen-triangle vertex shader for the present blit (~89 tok)
+
+## FM2/tests/
+
+- `CMakeLists.txt` — FM2 tests - standalone validators (no Catch2/REXGLUE_BUILD_TESTS dependency, (~129 tok)
+- `shader_cache_test.cpp` — include <cstddef> (~801 tok)
 
 ## assets/Media/
 
@@ -584,6 +648,10 @@
 - `migration-from-plume.md` — Migration from ReXGlue080plume (~3015 tok)
 - `xaudio2-conversion-guide.md` — Adding the XAudio2 Audio Backend (~2461 tok)
 
+## include/rex/
+
+- `cvar.h` — cvar system: `REXCVAR_DEFINE_*` macros register flags settable via CLI (`--name=value`, see `launch-fm2.bat`) or config; `REXCVAR_GET`/`REXCVAR_SET` accessors (~1900 tok)
+
 ## include/rex/audio/xaudio2/
 
 - `xaudio2_audio_driver.h` — ***************************************************************************** (~739 tok)
@@ -598,6 +666,20 @@
 - `xaudio2_audio_driver.cpp` — ***************************************************************************** (~3772 tok)
 - `xaudio2_audio_system.cpp` — ***************************************************************************** (~498 tok)
 
+## src/graphics/
+
+- `flags.cpp` — GPU category cvars, incl. `dump_shaders` (string path, default "", gates raw-ucode + DXBC dump) (~800 tok)
+
+## src/graphics/d3d12/
+
+
+## src/graphics/pipeline/shader/
+
+- `shader.cpp` — `Shader`/`Shader::Translation` base: `DumpUcode()` writes raw untranslated microcode to `<dump_shaders>/shader_<hash>.ucode.bin.{vert,frag}` (+disasm text), gated by `dump_shaders` cvar in `AnalyzeUcode` (~700 tok)
+
+## src/graphics/vulkan/
+
+
 ## src/kernel/xam/
 
 - `xam_ui.cpp` — ***************************************************************************** (~7178 tok)
@@ -609,3 +691,7 @@
 ## src/ui/
 
 - `rex_app.cpp` — include <rex/rex_app.h> (~5531 tok)
+
+## thirdparty/
+
+- `CMakeLists.txt` — Third-party vendored dependencies for ReXGlue (~6579 tok)

@@ -32,6 +32,7 @@ set(REQUIRED_SUBMODULES
     utfcpp
     imgui
     sdl3
+    zstd
 )
 
 if(REXGLUE_USE_VULKAN)
@@ -180,6 +181,17 @@ target_compile_options(snappy PRIVATE -w)
 # utfcpp - UTF-8 string library (header-only)
 #=============================================================================
 add_subdirectory(utfcpp)
+
+#=============================================================================
+# zstd - Compression (FM2 shader cache decompression)
+#=============================================================================
+set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+add_subdirectory(zstd/build/cmake)
+target_compile_options(libzstd_static PRIVATE -w)
 
 #=============================================================================
 # Vulkan dependencies (only when Vulkan backend is enabled)
