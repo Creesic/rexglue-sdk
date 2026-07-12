@@ -248,6 +248,7 @@ class UploadAllocator {
   uint64_t offset_ = 0;
 };
 std::array<UploadAllocator, kNumFrames> g_uploadAllocators;
+std::array<std::vector<std::unique_ptr<RenderBuffer>>, kNumFrames> g_tempUploadBuffers;
 
 UploadAllocator& CurrentUploadAllocator() {
   return g_uploadAllocators[CurrentRecordingFrame() % kNumFrames];
@@ -659,6 +660,15 @@ void SetFramebuffer(GuestBaseTexture* colorTarget, GuestSurface* depthTarget, bo
 }
 
 }  // namespace
+
+RenderBufferReference UploadFrameData(const void* src, uint64_t size, bool byteSwap) {
+  return CurrentUploadAllocator().Upload(src, size, byteSwap);
+}
+
+void RetainTempUploadBuffer(std::unique_ptr<RenderBuffer> buffer) {
+  if (buffer == nullptr) return;
+  g_tempUploadBuffers[CurrentRecordingFrame() % kNumFrames].push_back(std::move(buffer));
+}
 
 void FlushPendingStretchRectCommands() {
   // Caller is expected to already be on the render thread (Present / Flush /
@@ -1182,6 +1192,7 @@ void SetDepthStencilSurface(GuestDevice* /*device*/, GuestSurface* depthStencil)
 void OnRecordingFrameReady(uint32_t frame) {
   DestructTempResources(frame);
   g_uploadAllocators[frame % kNumFrames].Reset();
+  g_tempUploadBuffers[frame % kNumFrames].clear();
   // Intermediary is shared; safe to reset once the queue has drained jobs that
   // pointed into it (Present/WaitForGPU call this after sync Run).
   g_intermediaryUploadAllocator.Reset();
@@ -2181,6 +2192,33 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
       ProcCreateSurfaceHost(cmd.createSurfaceHost.surface, cmd.createSurfaceHost.width,
                             cmd.createSurfaceHost.height, cmd.createSurfaceHost.format,
                             cmd.createSurfaceHost.sampleCount, cmd.createSurfaceHost.depth);
+      break;
+    case RenderCommandType::UnlockTextureRect:
+      ProcUnlockTextureRect(cmd.unlockTextureRect.texture);
+      break;
+    case RenderCommandType::UnlockBuffer16:
+      ProcUnlockBuffer16(cmd.unlockBuffer.buffer);
+      break;
+    case RenderCommandType::UnlockBuffer32:
+      ProcUnlockBuffer32(cmd.unlockBuffer.buffer);
+      break;
+    case RenderCommandType::CopyBufferFromUpload:
+      ProcCopyBufferFromUpload(cmd.copyBufferFromUpload.dst, cmd.copyBufferFromUpload.src,
+                               cmd.copyBufferFromUpload.size);
+      break;
+    case RenderCommandType::CopyTextureFromUpload:
+      ProcCopyTextureFromUpload(
+          cmd.copyTextureFromUpload.dst, cmd.copyTextureFromUpload.src,
+          cmd.copyTextureFromUpload.format, cmd.copyTextureFromUpload.width,
+          cmd.copyTextureFromUpload.height, cmd.copyTextureFromUpload.rowTexels,
+          cmd.copyTextureFromUpload.mip, cmd.copyTextureFromUpload.srcOffset);
+      break;
+    case RenderCommandType::CreateTranslatedTextureHost:
+      ProcCreateTranslatedTextureHost(
+          cmd.createTranslatedTextureHost.texture, cmd.createTranslatedTextureHost.width,
+          cmd.createTranslatedTextureHost.height, cmd.createTranslatedTextureHost.format,
+          cmd.createTranslatedTextureHost.baseAddress,
+          cmd.createTranslatedTextureHost.createdOut);
       break;
   }
 }

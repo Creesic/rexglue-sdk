@@ -18,7 +18,7 @@ struct RenderQueue {
 
   // Run `fn` on the render thread and block until it finishes. Nested calls
   // from the render thread itself execute inline (no deadlock). Prefer
-  // Run(RenderCommand) for typed work; this remains for ExecuteUpload.
+  // Run(RenderCommand) for typed POD work.
   static void Run(std::function<void()> fn);
 
   // Sync POD: enqueue `cmd`, block until Dispatch finishes (Unleashed

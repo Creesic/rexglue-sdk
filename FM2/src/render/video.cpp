@@ -4,7 +4,6 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -616,17 +615,34 @@ void FreeTextureDescriptor(uint32_t index) {
   g_freedDescriptors.push_back(index);
 }
 
-void ExecuteUpload(const std::function<void(RenderCommandList*)>& record) {
-  // Copy-queue submits must not race guest threads against the render thread's
-  // graphics recording; run them on the render thread (Unleashed Unlock*).
-  RenderQueue::Run([&record] {
-    std::lock_guard lock(g_copyMutex);
-    g_copyCommandList->begin();
-    record(g_copyCommandList.get());
-    g_copyCommandList->end();
-    g_copyQueue->executeCommandLists(g_copyCommandList.get(), g_copyFence.get());
-    g_copyQueue->waitForCommandFence(g_copyFence.get());
-  });
+void ProcCopyBufferFromUpload(void* dst, void* src, uint64_t size) {
+  if (dst == nullptr || src == nullptr || size == 0) return;
+  auto* dstBuf = static_cast<RenderBuffer*>(dst);
+  auto* srcBuf = static_cast<RenderBuffer*>(src);
+  std::lock_guard lock(g_copyMutex);
+  g_copyCommandList->begin();
+  g_copyCommandList->copyBufferRegion(dstBuf->at(0), srcBuf->at(0), size);
+  g_copyCommandList->end();
+  g_copyQueue->executeCommandLists(g_copyCommandList.get(), g_copyFence.get());
+  g_copyQueue->waitForCommandFence(g_copyFence.get());
+}
+
+void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t width, uint32_t height,
+                               uint32_t rowTexels, uint32_t mip, uint64_t srcOffset) {
+  if (dst == nullptr || src == nullptr) return;
+  auto* dstTex = static_cast<RenderTexture*>(dst);
+  auto* srcBuf = static_cast<RenderBuffer*>(src);
+  const auto fmt = static_cast<RenderFormat>(format);
+  std::lock_guard lock(g_copyMutex);
+  g_copyCommandList->begin();
+  g_copyCommandList->barriers(RenderBarrierStage::COPY,
+                              RenderTextureBarrier(dstTex, RenderTextureLayout::COPY_DEST));
+  g_copyCommandList->copyTextureRegion(
+      RenderTextureCopyLocation::Subresource(dstTex, mip),
+      RenderTextureCopyLocation::PlacedFootprint(srcBuf, fmt, width, height, 1, rowTexels, srcOffset));
+  g_copyCommandList->end();
+  g_copyQueue->executeCommandLists(g_copyCommandList.get(), g_copyFence.get());
+  g_copyQueue->waitForCommandFence(g_copyFence.get());
 }
 
 }  // namespace fm2::render

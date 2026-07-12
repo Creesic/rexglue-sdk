@@ -15,8 +15,9 @@
 - Build requires Clang >= 18, C++23, RelWithDebInfo-only (Debug/Release presets are disabled in CMakePresets.json). Day-to-day commands go through the `PSReX` PowerShell module (`rex-configure`/`rex-build`/`rex-test`/etc.), not raw cmake.
 - **FM2 native Plume renderer (branch `plume`):** intentional rebuild into `FM2/src/render/`, NOT a port of `ReXGlue080plume/FM2/src/native_renderer/`. That overlay (~5k lines: debug replay, compare window, `FM2PlumeTrace*` midasm hooks, PM4 scanner) was deliberately dropped. Production path is direct `REX_HOOK` D3D replacements against vendored `thirdparty/plume`. Commits: `d3748a68` (Phases 1–3), `34a4bf8a` (Phase 4 draws), `64d7a2a8` (present/audio/vsync fixes; still black).
 - **Cleanup left real gaps vs SOURCE `render/`:** `D3DDevice_SetTexture` is now hooked (2026-07-12) into `rr::SetTexture`/`SetTextureBase`; XG-header textures still bind null until TranslateGuestTexture. Resolve hook exists; float constants mostly land via unhooked `SetVertexShaderConstantFN` into GuestDevice. Clear/viewport are wired.
-- **FM2→Unleashed convergence (2026-07-12):** POD `RenderCommand`+`Proc*` covers state setters, Clear/Resolve/Draw*, Present/WaitForGPU/BeginFrame, CreateTexture/Surface sync Run. `Run(fn)` left for ExecuteUpload + TranslateGuestTexture. Still: Unleashed Present split (guest swapchain), Unlock POD, drop RecordingMutex, optional moodycamel.
+- **FM2→Unleashed convergence (2026-07-12):** POD commands cover setters/draws/creates/Present split/Unlock+upload copies/Translate create. `ExecuteUpload` retired. Still optional: async ECL+ready gate, drop RecordingMutex, any leftover `Run(fn)`.
 - Guest `D3DResource_Release`/`AddRef` (@ `0x82369E08`/`0x82369D90`) BE-atomic `ReferenceCount` at +4 — must fully hook FM2 `GuestResource` (host-LE atomic) or refcount/free paths corrupt. On zero call `ScheduleResourceDestruction`, never guest `sub_82369868`.
+- **Upload helpers linkage:** `UploadFrameData` / `RetainTempUploadBuffer` must live in `fm2::render` (not anonymous namespace) — other TUs (`d3d_resource_hooks`) link them.
 
 ## Do-Not-Repeat
 
@@ -25,6 +26,7 @@
 - [2026-07-12] Do not re-port `native_renderer/` or `FM2PlumeTrace*` when fixing black screen — port the missing SOURCE `render/` hooks into the cleaned direct-hook path instead.
 - [2026-07-12] Do **not** assume FM2 skips `D3DDevice_SetTexture` in favor of fetch constants. IDA37: `D3DDevice_SetTexture` @ `0x8236C208` has 65 code xrefs from material/object/PM4 paths; `SetTextureFetchBitsLow/Mid` are tiny dirty-flag setters. Primary fix = Unleashed-style SetTexture hook.
 - [2026-07-12] Never let guest `D3DResource_Release`/`AddRef` run on FM2 `GuestResource` — BE atomics vs host-LE `refCount`; on zero use `ScheduleResourceDestruction`, not guest free.
+- [2026-07-12] Do not define `UploadFrameData`/`RetainTempUploadBuffer` inside an anonymous namespace in `render_state.cpp` — link errors from `d3d_resource_hooks.cpp`.
 
 ## Decision Log
 

@@ -1,9 +1,7 @@
 // render/render_commands.h
 //
 // Unleashed-style POD render commands. Guest threads enqueue these; the
-// dedicated render thread dispatches Proc* handlers. std::function Run/Enqueue
-// remain only for ExecuteUpload (arbitrary copy-queue lambdas) until Unlock*
-// paths are specialized.
+// dedicated render thread dispatches Proc* handlers.
 
 #pragma once
 
@@ -46,6 +44,12 @@ enum class RenderCommandType : uint32_t {
   BeginRenderStateFrame,
   CreateTextureHost,
   CreateSurfaceHost,
+  UnlockTextureRect,
+  UnlockBuffer16,
+  UnlockBuffer32,
+  CopyBufferFromUpload,
+  CopyTextureFromUpload,
+  CreateTranslatedTextureHost,
 };
 
 struct RenderCommand {
@@ -174,13 +178,47 @@ struct RenderCommand {
       uint32_t sampleCount;  // plume::RenderSampleCounts
       bool depth;
     } createSurfaceHost;
+
+    struct {
+      GuestBaseTexture* texture;
+    } unlockTextureRect;
+
+    struct {
+      GuestBuffer* buffer;
+    } unlockBuffer;
+
+    // void* = plume::RenderBuffer* (opaque here to avoid plume include).
+    struct {
+      void* dst;
+      void* src;
+      uint64_t size;
+    } copyBufferFromUpload;
+
+    // dst = plume::RenderTexture*, src = plume::RenderBuffer*.
+    struct {
+      void* dst;
+      void* src;
+      uint32_t format;  // plume::RenderFormat
+      uint32_t width;
+      uint32_t height;
+      uint32_t rowTexels;
+      uint32_t mip;
+      uint64_t srcOffset;
+    } copyTextureFromUpload;
+
+    struct {
+      GuestTexture* texture;
+      uint32_t width;
+      uint32_t height;
+      uint32_t format;  // plume::RenderFormat
+      uint32_t baseAddress;
+      bool* createdOut;
+    } createTranslatedTextureHost;
   };
 };
 
-// Called only on the render thread (or inline when queue is down / nested).
 void DispatchRenderCommand(const RenderCommand& cmd);
 
-// Implemented in video.cpp / d3d_resource_hooks.cpp; invoked from Dispatch.
 void ProcExecuteCommandList();
 void ProcBeginCommandList();
 void ProcWaitForGpu();
@@ -188,5 +226,13 @@ void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t heigh
                            uint32_t levels, uint32_t usage, uint32_t format, bool volume);
 void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t height, uint32_t format,
                            uint32_t sampleCount, bool depth);
+void ProcUnlockTextureRect(GuestBaseTexture* texture);
+void ProcUnlockBuffer16(GuestBuffer* buffer);
+void ProcUnlockBuffer32(GuestBuffer* buffer);
+void ProcCopyBufferFromUpload(void* dst, void* src, uint64_t size);
+void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t width, uint32_t height,
+                               uint32_t rowTexels, uint32_t mip, uint64_t srcOffset);
+void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint32_t height,
+                                     uint32_t format, uint32_t baseAddress, bool* createdOut);
 
 }  // namespace fm2::render

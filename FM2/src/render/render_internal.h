@@ -4,7 +4,7 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -50,8 +50,11 @@ plume::RenderPipeline* GetBlitPipeline(plume::RenderFormat format);
 uint32_t AllocTextureDescriptor();
 void FreeTextureDescriptor(uint32_t index);
 
-void ExecuteUpload(
-    const std::function<void(plume::RenderCommandList*)>& record);
+// Frame upload scratch (graphics CL path for UnlockTextureRect / constants).
+plume::RenderBufferReference UploadFrameData(const void* src, uint64_t size, bool byteSwap = false);
+// Keep a staging upload buffer alive until the recording frame's fence retires.
+void RetainTempUploadBuffer(std::unique_ptr<plume::RenderBuffer> buffer);
+
 plume::RenderCommandList* CommandList();
 
 // Serializes all recording into the global Plume command list. FM2's guest

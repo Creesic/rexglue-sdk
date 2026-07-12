@@ -24,6 +24,7 @@
 #include "render/guest_device.h"
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
+#include "render/render_commands.h"
 #include "render/render_internal.h"
 #include "render/render_queue.h"
 #include "render/render_state.h"
@@ -158,39 +159,57 @@ static void UploadBufferSwapped(GuestBuffer* buffer) {
   if (!buffer->buffer)
     return;
 
+  RenderCommand cmd{};
+  cmd.type = (sizeof(T) == 2) ? RenderCommandType::UnlockBuffer16 : RenderCommandType::UnlockBuffer32;
+  cmd.unlockBuffer.buffer = buffer;
+  // Async like Unleashed: FIFO with later draws/Present ensures the upload
+  // lands before the buffer is sampled.
+  RenderQueue::Enqueue(cmd);
+}
+
+template <typename T>
+static void ProcUnlockBufferT(GuestBuffer* buffer) {
+  if (buffer == nullptr || buffer->mappedMemory == nullptr || buffer->buffer == nullptr) return;
+
   const T* src = reinterpret_cast<const T*>(buffer->mappedMemory);
   const size_t count = buffer->dataSize / sizeof(T);
 
   auto swapInto = [&](T* dest) {
-    for (size_t i = 0; i < count; ++i)
-      dest[i] = std::byteswap(src[i]);
+    for (size_t i = 0; i < count; ++i) dest[i] = std::byteswap(src[i]);
   };
 
   if (Device()->getCapabilities().gpuUploadHeap) {
     T* dest = reinterpret_cast<T*>(buffer->buffer->map());
-    if (dest == nullptr)
-      return;
+    if (dest == nullptr) return;
     swapInto(dest);
     buffer->buffer->unmap();
-  } else {
-    auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(buffer->dataSize));
-    if (!upload) {
-      REXGPU_ERROR("UploadBufferSwapped: failed to create staging upload buffer (size={})",
-                   buffer->dataSize);
-      return;
-    }
-    T* dest = reinterpret_cast<T*>(upload->map());
-    if (dest == nullptr)
-      return;
-    swapInto(dest);
-    upload->unmap();
-    RenderBuffer* dst = buffer->buffer.get();
-    RenderBuffer* srcBuf = upload.get();
-    const uint64_t size = buffer->dataSize;
-    ExecuteUpload(
-        [&](RenderCommandList* cl) { cl->copyBufferRegion(dst->at(0), srcBuf->at(0), size); });
+    return;
   }
+
+  auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(buffer->dataSize));
+  if (!upload) {
+    REXGPU_ERROR("UnlockBuffer: failed to create staging upload buffer (size={})", buffer->dataSize);
+    return;
+  }
+  T* dest = reinterpret_cast<T*>(upload->map());
+  if (dest == nullptr) return;
+  swapInto(dest);
+  upload->unmap();
+
+  RenderBuffer* dst = buffer->buffer.get();
+  RenderBuffer* srcBuf = upload.get();
+  const uint64_t size = buffer->dataSize;
+  // Graphics CL path (Unleashed non-copy-queue): keep staging until frame fence.
+  RenderCommandList* cl = CommandList();
+  if (cl == nullptr) return;
+  cl->barriers(RenderBarrierStage::COPY, RenderBufferBarrier(dst, RenderBufferAccess::WRITE));
+  cl->copyBufferRegion(dst->at(0), srcBuf->at(0), size);
+  cl->barriers(RenderBarrierStage::GRAPHICS, RenderBufferBarrier(dst, RenderBufferAccess::READ));
+  RetainTempUploadBuffer(std::move(upload));
 }
+
+void ProcUnlockBuffer16(GuestBuffer* buffer) { ProcUnlockBufferT<uint16_t>(buffer); }
+void ProcUnlockBuffer32(GuestBuffer* buffer) { ProcUnlockBufferT<uint32_t>(buffer); }
 
 uint32_t LockVertexBuffer(GuestBuffer* buffer, uint32_t flags) {
   return LockBuffer(buffer, flags);
@@ -324,6 +343,56 @@ void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t heigh
                                      RenderTextureLayout::SHADER_READ, texture->textureView.get());
 }
 
+void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint32_t height,
+                                     uint32_t format, uint32_t baseAddress, bool* createdOut) {
+  if (createdOut != nullptr) *createdOut = false;
+  if (texture == nullptr || IsDeviceLost()) return;
+
+  const auto fmt = static_cast<RenderFormat>(format);
+  RenderTextureDesc desc;
+  desc.dimension = RenderTextureDimension::TEXTURE_2D;
+  desc.width = width;
+  desc.height = height;
+  desc.depth = 1;
+  desc.mipLevels = 1;
+  desc.arraySize = 1;
+  desc.format = fmt;
+  desc.flags = RenderTextureFlag::NONE;
+  texture->textureHolder = Device()->createTexture(desc);
+  texture->texture = texture->textureHolder.get();
+  if (texture->texture == nullptr) {
+    static std::unordered_set<uint32_t> s_warned;
+    if (s_warned.insert(baseAddress).second) {
+      NoteDeviceLost("TranslateGuestTexture");
+      REXGPU_WARN("TranslateGuestTexture: failed to create {}x{} fmt={} texture (base=0x{:08X})",
+                  width, height, int(fmt), baseAddress);
+    }
+    return;
+  }
+
+  RenderTextureViewDesc viewDesc;
+  viewDesc.format = fmt;
+  viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
+  viewDesc.mipLevels = 1;
+  if (fmt == RenderFormat::R8_UNORM) {
+    viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R,
+                                                       RenderSwizzle::R, RenderSwizzle::ONE);
+  }
+  texture->textureView = texture->texture->createTextureView(viewDesc);
+  texture->width = width;
+  texture->height = height;
+  texture->depth = 1;
+  texture->levels = 1;
+  texture->format = fmt;
+  texture->requiresHostInitialization = false;
+  texture->hostInitialized = true;
+  texture->viewDimension = RenderTextureViewDimension::TEXTURE_2D;
+  texture->descriptorIndex = AllocTextureDescriptor();
+  TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
+                                     RenderTextureLayout::SHADER_READ, texture->textureView.get());
+  if (createdOut != nullptr) *createdOut = true;
+}
+
 GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format,
                             uint32_t multiSample) {
   if (IsDeviceLost()) {
@@ -427,31 +496,52 @@ void LockRect(GuestBaseTexture* texture, uint32_t* outPitch, uint32_t* outBits) 
 void UnlockRect(GuestBaseTexture* texture) {
   if (texture == nullptr || texture->mappedMemory == nullptr || texture->texture == nullptr)
     return;
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::UnlockTextureRect;
+  cmd.unlockTextureRect.texture = texture;
+  RenderQueue::Enqueue(cmd);
+}
+
+void ProcUnlockTextureRect(GuestBaseTexture* texture) {
+  if (texture == nullptr || texture->mappedMemory == nullptr || texture->texture == nullptr)
+    return;
+
   uint32_t pitch = ComputeTexturePitch(texture);
   uint32_t slicePitch = pitch * texture->height;
 
-  auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(slicePitch));
-  if (!upload) {
-    REXGPU_ERROR("UnlockRect: failed to create staging upload buffer (size={})", slicePitch);
+  RenderBufferReference ref = UploadFrameData(texture->mappedMemory, slicePitch, false);
+  if (ref.ref == nullptr) {
+    // Frame upload exhausted -- fall back to a dedicated staging buffer + copy queue.
+    auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(slicePitch));
+    if (!upload) {
+      REXGPU_ERROR("UnlockTextureRect: failed to create staging upload buffer (size={})", slicePitch);
+      return;
+    }
+    void* mapped = upload->map();
+    if (mapped == nullptr) return;
+    std::memcpy(mapped, texture->mappedMemory, slicePitch);
+    upload->unmap();
+
+    // Already on the render thread (Dispatch); call Proc* directly so staging
+    // stays live across the copy-queue submit without nested Run().
+    ProcCopyTextureFromUpload(texture->texture, upload.get(), uint32_t(texture->format),
+                              texture->width, texture->height,
+                              pitch / FormatBytes(texture->format), 0, 0);
+    texture->hostInitialized = true;
+    texture->layout = RenderTextureLayout::COPY_DEST;
     return;
   }
-  void* mapped = upload->map();
-  if (mapped == nullptr)
-    return;
-  std::memcpy(mapped, texture->mappedMemory, slicePitch);
-  upload->unmap();
 
-  RenderTexture* dst = texture->texture;
-  RenderBuffer* src = upload.get();
-  const RenderFormat fmt = texture->format;
-  const uint32_t w = texture->width, h = texture->height;
-  const uint32_t rowTexels = pitch / FormatBytes(fmt);
-  ExecuteUpload([&](RenderCommandList* cl) {
-    cl->barriers(RenderBarrierStage::COPY,
-                 RenderTextureBarrier(dst, RenderTextureLayout::COPY_DEST));
-    cl->copyTextureRegion(RenderTextureCopyLocation::Subresource(dst, 0),
-                          RenderTextureCopyLocation::PlacedFootprint(src, fmt, w, h, 1, rowTexels));
-  });
+  RenderCommandList* cl = CommandList();
+  if (cl == nullptr) return;
+  cl->barriers(RenderBarrierStage::COPY,
+               RenderTextureBarrier(texture->texture, RenderTextureLayout::COPY_DEST));
+  cl->copyTextureRegion(
+      RenderTextureCopyLocation::Subresource(texture->texture, 0),
+      RenderTextureCopyLocation::PlacedFootprint(ref.ref, texture->format, texture->width,
+                                                 texture->height, 1,
+                                                 pitch / FormatBytes(texture->format), ref.offset));
+  texture->layout = RenderTextureLayout::COPY_DEST;
   texture->hostInitialized = true;
 }
 
@@ -705,17 +795,20 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
   }
   upload->unmap();
 
-  RenderTexture* dst = texture->texture;
-  RenderBuffer* srcBuf = upload.get();
   const uint32_t rowTexels = (dstRowPitch / info.bytesPerBlock) * info.blockDim;
-  ExecuteUpload([&](RenderCommandList* cl) {
-    cl->barriers(RenderBarrierStage::COPY,
-                 RenderTextureBarrier(dst, RenderTextureLayout::COPY_DEST));
-    cl->copyTextureRegion(RenderTextureCopyLocation::Subresource(dst, 0),
-                          RenderTextureCopyLocation::PlacedFootprint(
-                              srcBuf, info.format, info.width, info.height, 1, rowTexels));
-  });
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::CopyTextureFromUpload;
+  cmd.copyTextureFromUpload.dst = texture->texture;
+  cmd.copyTextureFromUpload.src = upload.get();
+  cmd.copyTextureFromUpload.format = uint32_t(info.format);
+  cmd.copyTextureFromUpload.width = info.width;
+  cmd.copyTextureFromUpload.height = info.height;
+  cmd.copyTextureFromUpload.rowTexels = rowTexels;
+  cmd.copyTextureFromUpload.mip = 0;
+  cmd.copyTextureFromUpload.srcOffset = 0;
+  RenderQueue::Run(cmd);
   texture->hostInitialized = true;
+  texture->layout = RenderTextureLayout::COPY_DEST;
   return true;
 }
 
@@ -736,55 +829,20 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
   texture->type = ResourceType::Texture;
 
   bool created = false;
-  RenderQueue::Run([&, texture] {
-    if (IsDeviceLost()) return;
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::CreateTranslatedTextureHost;
+  cmd.createTranslatedTextureHost.texture = texture;
+  cmd.createTranslatedTextureHost.width = info.width;
+  cmd.createTranslatedTextureHost.height = info.height;
+  cmd.createTranslatedTextureHost.format = uint32_t(info.format);
+  cmd.createTranslatedTextureHost.baseAddress = info.baseAddress;
+  cmd.createTranslatedTextureHost.createdOut = &created;
+  RenderQueue::Run(cmd);
 
-    RenderTextureDesc desc;
-    desc.dimension = RenderTextureDimension::TEXTURE_2D;
-    desc.width = info.width;
-    desc.height = info.height;
-    desc.depth = 1;
-    desc.mipLevels = 1;
-    desc.arraySize = 1;
-    desc.format = info.format;
-    desc.flags = RenderTextureFlag::NONE;
-    texture->textureHolder = Device()->createTexture(desc);
-    texture->texture = texture->textureHolder.get();
-    if (texture->texture == nullptr) {
-      g_failedGuestTextureBases.insert(info.baseAddress);
-      static std::unordered_set<uint32_t> s_warned;
-      if (s_warned.insert(info.baseAddress).second) {
-        NoteDeviceLost("TranslateGuestTexture");
-        REXGPU_WARN("TranslateGuestTexture: failed to create {}x{} fmt={} texture (base=0x{:08X})",
-                    info.width, info.height, int(info.format), info.baseAddress);
-      }
-      return;
-    }
-
-    RenderTextureViewDesc viewDesc;
-    viewDesc.format = info.format;
-    viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
-    viewDesc.mipLevels = 1;
-    if (info.format == RenderFormat::R8_UNORM) {
-      viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R,
-                                                         RenderSwizzle::R, RenderSwizzle::ONE);
-    }
-    texture->textureView = texture->texture->createTextureView(viewDesc);
-    texture->width = info.width;
-    texture->height = info.height;
-    texture->depth = 1;
-    texture->levels = 1;
-    texture->format = info.format;
-    texture->requiresHostInitialization = false;
-    texture->hostInitialized = true;
-    texture->viewDimension = RenderTextureViewDimension::TEXTURE_2D;
-    texture->descriptorIndex = AllocTextureDescriptor();
-    TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
-                                       RenderTextureLayout::SHADER_READ, texture->textureView.get());
-    created = true;
-  });
-
-  if (!created) return nullptr;
+  if (!created) {
+    g_failedGuestTextureBases.insert(info.baseAddress);
+    return nullptr;
+  }
 
   if (uploadGuestData) UploadGuestTextureData(texture, info);
 
@@ -1174,17 +1232,21 @@ GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size) {
   RenderBuffer* srcBuf = upload.get();
   const RenderFormat fmt = dds.format;
   const uint32_t blockW = dds.blockWidth, bpb = dds.bytesPerBlock;
-  ExecuteUpload([&](RenderCommandList* cl) {
-    cl->barriers(RenderBarrierStage::COPY,
-                 RenderTextureBarrier(dstTex, RenderTextureLayout::COPY_DEST));
-    for (uint32_t i = 0; i < slices.size(); ++i) {
-      const Slice& s = slices[i];
-      uint32_t rowTexels = (s.dstRowPitch / bpb) * blockW;
-      cl->copyTextureRegion(RenderTextureCopyLocation::Subresource(dstTex, i),
-                            RenderTextureCopyLocation::PlacedFootprint(
-                                srcBuf, fmt, s.width, s.height, 1, rowTexels, s.dstOffset));
-    }
-  });
+  for (uint32_t i = 0; i < slices.size(); ++i) {
+    const Slice& s = slices[i];
+    const uint32_t rowTexels = (s.dstRowPitch / bpb) * blockW;
+    RenderCommand cmd{};
+    cmd.type = RenderCommandType::CopyTextureFromUpload;
+    cmd.copyTextureFromUpload.dst = dstTex;
+    cmd.copyTextureFromUpload.src = srcBuf;
+    cmd.copyTextureFromUpload.format = uint32_t(fmt);
+    cmd.copyTextureFromUpload.width = s.width;
+    cmd.copyTextureFromUpload.height = s.height;
+    cmd.copyTextureFromUpload.rowTexels = rowTexels;
+    cmd.copyTextureFromUpload.mip = i;
+    cmd.copyTextureFromUpload.srcOffset = s.dstOffset;
+    RenderQueue::Run(cmd);
+  }
 
   return texture;
 }
