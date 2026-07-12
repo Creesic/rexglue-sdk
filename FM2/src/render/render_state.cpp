@@ -165,6 +165,9 @@ void SetDirtyValue(bool& dirty, T& dest, const T& src) {
 
 GuestBaseTexture* g_renderTarget = nullptr;
 GuestBaseTexture* g_implicitRenderTarget = nullptr;
+// Last live color RT bound for drawing. Present snapshots this when the guest
+// has already unbound g_renderTarget (common at Swap time).
+GuestBaseTexture* g_lastPresentableRenderTarget = nullptr;
 GuestSurface* g_depthStencil = nullptr;
 GuestSurface* g_implicitDepthStencil = nullptr;
 RenderFramebuffer* g_framebuffer = nullptr;
@@ -307,6 +310,9 @@ void DestructTempResources(uint32_t frame) {
       case ResourceType::Texture:
       case ResourceType::VolumeTexture: {
         auto* texture = static_cast<GuestTexture*>(resource);
+        if (g_renderTarget == texture) g_renderTarget = nullptr;
+        if (g_lastPresentableRenderTarget == texture) g_lastPresentableRenderTarget = nullptr;
+        if (g_implicitRenderTarget == texture) g_implicitRenderTarget = nullptr;
         if (texture->sourceSurface != nullptr) {
           texture->sourceSurface->destinationTextures.erase(texture);
           texture->sourceSurface = nullptr;
@@ -341,6 +347,11 @@ void DestructTempResources(uint32_t frame) {
       case ResourceType::RenderTarget:
       case ResourceType::DepthStencil: {
         auto* surface = static_cast<GuestSurface*>(resource);
+        if (g_renderTarget == surface) g_renderTarget = nullptr;
+        if (g_lastPresentableRenderTarget == surface) g_lastPresentableRenderTarget = nullptr;
+        if (g_implicitRenderTarget == surface) g_implicitRenderTarget = nullptr;
+        if (g_depthStencil == surface) g_depthStencil = nullptr;
+        if (g_implicitDepthStencil == surface) g_implicitDepthStencil = nullptr;
         for (GuestTexture* dest : surface->destinationTextures) {
           if (dest != nullptr) dest->sourceSurface = nullptr;
         }
@@ -1089,6 +1100,12 @@ void SetRenderTargetInternal(GuestBaseTexture* renderTarget) {
   SetAlphaTestMode((g_pipelineState.specConstants &
                     (SPEC_CONSTANT_ALPHA_TEST | SPEC_CONSTANT_ALPHA_TO_COVERAGE)) != 0);
 
+  // Remember the last live color target for Present. Swap often runs after the
+  // guest has unbound the RT; blitting nullptr yields a black swapchain clear.
+  if (IsLiveHostTexture(renderTarget)) {
+    g_lastPresentableRenderTarget = renderTarget;
+  }
+
   if (renderTarget != nullptr && renderTarget->width != 0 && renderTarget->height != 0) {
     SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.x, 0.0f);
     SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.y, 0.0f);
@@ -1220,7 +1237,14 @@ void SetImplicitRenderTarget(GuestBaseTexture* renderTarget) {
   RenderQueue::Enqueue(cmd);
 }
 
-GuestBaseTexture* GetCurrentColorRenderTarget() { return g_renderTarget; }
+GuestBaseTexture* GetCurrentColorRenderTarget() {
+  // Prefer the currently bound RT; fall back to the last live presentable so
+  // Swap still blits after the guest unbound (or destroyed+rebound late).
+  if (IsLiveHostTexture(g_renderTarget)) return g_renderTarget;
+  if (IsLiveHostTexture(g_lastPresentableRenderTarget)) return g_lastPresentableRenderTarget;
+  if (IsLiveHostTexture(g_implicitRenderTarget)) return g_implicitRenderTarget;
+  return nullptr;
+}
 
 void PrepareFramePresent() {
   // PresentImpl/ExecuteCommandList on the render thread snapshots g_renderTarget after prior
