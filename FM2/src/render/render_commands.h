@@ -26,6 +26,9 @@ enum class RenderCommandType : uint32_t {
   SetImplicitRenderTarget,
   SetDepthStencilSurface,
   SetRenderState,
+  SetViewportEnable,
+  SetDepthState,
+  SetStencilState,
   SetTexture,
   SetTextureBase,
   SetVertexShader,
@@ -84,6 +87,24 @@ struct RenderCommand {
       uint32_t state;
       uint32_t value;
     } setRenderState;
+
+    struct {
+      uint32_t value;
+    } setViewportEnable;
+
+    struct {
+      uint32_t zEnable;
+      uint32_t zWriteEnable;
+      uint32_t cmpFunc;
+    } setDepthState;
+
+    struct {
+      uint32_t enable;  // bool as uint32_t for POD packing
+      uint32_t twoSided;
+      uint32_t frontFunc, frontFail, frontDepthFail, frontPass;
+      uint32_t backFunc, backFail, backDepthFail, backPass;
+      uint32_t readMask, writeMask, ref;
+    } setStencilState;
 
     struct {
       uint32_t index;
@@ -234,5 +255,11 @@ void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t w
                                uint32_t rowTexels, uint32_t mip, uint64_t srcOffset);
 void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint32_t height,
                                      uint32_t format, uint32_t baseAddress, bool* createdOut);
+void ProcSetViewportEnable(uint32_t value);
+void ProcSetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc);
+void ProcSetStencilState(uint32_t enable, uint32_t twoSided, uint32_t frontFunc, uint32_t frontFail,
+                         uint32_t frontDepthFail, uint32_t frontPass, uint32_t backFunc,
+                         uint32_t backFail, uint32_t backDepthFail, uint32_t backPass,
+                         uint32_t readMask, uint32_t writeMask, uint32_t ref);
 
 }  // namespace fm2::render

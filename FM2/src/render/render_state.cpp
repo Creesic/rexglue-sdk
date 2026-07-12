@@ -840,10 +840,14 @@ void SetRenderState(GuestDevice* /*device*/, uint32_t state, uint32_t value) {
 
 void SetViewportEnable(GuestDevice* /*device*/, uint32_t value) {
   // The Xenos ViewportEnable render state maps to PA_CL_CLIP_CNTL.clip_disable.
-  RenderQueue::Enqueue([value] {
-    std::lock_guard lock(RecordingMutex());
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthClipEnabled, value != 0);
-  });
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetViewportEnable;
+  cmd.setViewportEnable.value = value;
+  RenderQueue::Enqueue(cmd);
+}
+
+void ProcSetViewportEnable(uint32_t value) {
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthClipEnabled, value != 0);
 }
 
 void UpdateClipPlaneConstants(GuestDevice* device) {
@@ -860,50 +864,74 @@ void UpdateClipPlaneConstants(GuestDevice* device) {
 }
 
 void SetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc) {
-  RenderQueue::Enqueue([zEnable, zWriteEnable, cmpFunc] {
-    std::lock_guard lock(RecordingMutex());
-    const bool ze = zEnable != 0;
-    if (g_pipelineState.zEnable != ze) g_dirtyStates.renderTargetAndDepthStencil = true;
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zEnable, ze);
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zWriteEnable, zWriteEnable != 0);
-    // No compare-func flip -- see SetRenderState's D3DRS_ZFUNC case.
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zFunc, ConvertCmpFunc(cmpFunc));
-  });
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetDepthState;
+  cmd.setDepthState.zEnable = zEnable;
+  cmd.setDepthState.zWriteEnable = zWriteEnable;
+  cmd.setDepthState.cmpFunc = cmpFunc;
+  RenderQueue::Enqueue(cmd);
+}
+
+void ProcSetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc) {
+  const bool ze = zEnable != 0;
+  if (g_pipelineState.zEnable != ze) g_dirtyStates.renderTargetAndDepthStencil = true;
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zEnable, ze);
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zWriteEnable, zWriteEnable != 0);
+  // No compare-func flip -- see SetRenderState's D3DRS_ZFUNC case.
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zFunc, ConvertCmpFunc(cmpFunc));
 }
 
 void SetStencilState(const GuestStencilState& s) {
-  RenderQueue::Enqueue([s] {
-    std::lock_guard lock(RecordingMutex());
-    if (g_pipelineState.stencilEnable != s.enable) g_dirtyStates.renderTargetAndDepthStencil = true;
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilEnable, s.enable);
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFunc,
-                  ConvertCmpFunc(s.frontFunc));
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFail,
-                  ConvertStencilOp(s.frontFail));
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontDepthFail,
-                  ConvertStencilOp(s.frontDepthFail));
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontPass,
-                  ConvertStencilOp(s.frontPass));
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetStencilState;
+  cmd.setStencilState.enable = s.enable ? 1u : 0u;
+  cmd.setStencilState.twoSided = s.twoSided ? 1u : 0u;
+  cmd.setStencilState.frontFunc = s.frontFunc;
+  cmd.setStencilState.frontFail = s.frontFail;
+  cmd.setStencilState.frontDepthFail = s.frontDepthFail;
+  cmd.setStencilState.frontPass = s.frontPass;
+  cmd.setStencilState.backFunc = s.backFunc;
+  cmd.setStencilState.backFail = s.backFail;
+  cmd.setStencilState.backDepthFail = s.backDepthFail;
+  cmd.setStencilState.backPass = s.backPass;
+  cmd.setStencilState.readMask = s.readMask;
+  cmd.setStencilState.writeMask = s.writeMask;
+  cmd.setStencilState.ref = s.ref;
+  RenderQueue::Enqueue(cmd);
+}
 
-    const uint32_t backFunc = s.twoSided ? s.backFunc : s.frontFunc;
-    const uint32_t backFail = s.twoSided ? s.backFail : s.frontFail;
-    const uint32_t backDepthFail = s.twoSided ? s.backDepthFail : s.frontDepthFail;
-    const uint32_t backPass = s.twoSided ? s.backPass : s.frontPass;
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFunc,
-                  ConvertCmpFunc(backFunc));
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFail,
-                  ConvertStencilOp(backFail));
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackDepthFail,
-                  ConvertStencilOp(backDepthFail));
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackPass,
-                  ConvertStencilOp(backPass));
+void ProcSetStencilState(uint32_t enable, uint32_t twoSided, uint32_t frontFunc, uint32_t frontFail,
+                         uint32_t frontDepthFail, uint32_t frontPass, uint32_t backFunc,
+                         uint32_t backFail, uint32_t backDepthFail, uint32_t backPass,
+                         uint32_t readMask, uint32_t writeMask, uint32_t ref) {
+  const bool en = enable != 0;
+  if (g_pipelineState.stencilEnable != en) g_dirtyStates.renderTargetAndDepthStencil = true;
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilEnable, en);
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFunc,
+                ConvertCmpFunc(frontFunc));
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFail,
+                ConvertStencilOp(frontFail));
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontDepthFail,
+                ConvertStencilOp(frontDepthFail));
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontPass,
+                ConvertStencilOp(frontPass));
 
-    SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilRef, uint8_t(s.ref));
-    SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilReadMask,
-                           uint8_t(s.readMask));
-    SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilWriteMask,
-                           uint8_t(s.writeMask));
-  });
+  const uint32_t useBack = twoSided != 0;
+  const uint32_t bf = useBack ? backFunc : frontFunc;
+  const uint32_t bfail = useBack ? backFail : frontFail;
+  const uint32_t bdfail = useBack ? backDepthFail : frontDepthFail;
+  const uint32_t bpass = useBack ? backPass : frontPass;
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFunc, ConvertCmpFunc(bf));
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFail, ConvertStencilOp(bfail));
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackDepthFail,
+                ConvertStencilOp(bdfail));
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackPass, ConvertStencilOp(bpass));
+
+  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilRef, uint8_t(ref));
+  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilReadMask,
+                         uint8_t(readMask));
+  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilWriteMask,
+                         uint8_t(writeMask));
 }
 
 // ---------------------------------------------------------------------------
@@ -2122,6 +2150,21 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
       break;
     case RenderCommandType::SetRenderState:
       ApplyRenderState(cmd.setRenderState.state, cmd.setRenderState.value);
+      break;
+    case RenderCommandType::SetViewportEnable:
+      ProcSetViewportEnable(cmd.setViewportEnable.value);
+      break;
+    case RenderCommandType::SetDepthState:
+      ProcSetDepthState(cmd.setDepthState.zEnable, cmd.setDepthState.zWriteEnable,
+                        cmd.setDepthState.cmpFunc);
+      break;
+    case RenderCommandType::SetStencilState:
+      ProcSetStencilState(
+          cmd.setStencilState.enable, cmd.setStencilState.twoSided, cmd.setStencilState.frontFunc,
+          cmd.setStencilState.frontFail, cmd.setStencilState.frontDepthFail,
+          cmd.setStencilState.frontPass, cmd.setStencilState.backFunc, cmd.setStencilState.backFail,
+          cmd.setStencilState.backDepthFail, cmd.setStencilState.backPass,
+          cmd.setStencilState.readMask, cmd.setStencilState.writeMask, cmd.setStencilState.ref);
       break;
     case RenderCommandType::SetTexture:
       ProcSetTexture(cmd.setTexture.index, cmd.setTexture.texture);
