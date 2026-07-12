@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -707,6 +708,19 @@ void SetImplicitRenderTarget(GuestBaseTexture* renderTarget) {
 
 GuestBaseTexture* GetCurrentColorRenderTarget() { return g_renderTarget; }
 
+void PrepareFramePresent() {
+  static bool loggedFirstTarget = false;
+  static uint64_t callCount = 0;
+  ++callCount;
+  if (g_renderTarget != nullptr && !loggedFirstTarget) {
+    loggedFirstTarget = true;
+    REXGPU_INFO("PrepareFramePresent: first non-null render target seen after {} present call(s)", callCount);
+  } else if (g_renderTarget == nullptr && callCount % 300 == 0) {
+    REXGPU_WARN("PrepareFramePresent: still no render target bound after {} present call(s)", callCount);
+  }
+  SetPresentSource(g_renderTarget);
+}
+
 void SetDepthStencilSurface(GuestDevice* /*device*/, GuestSurface* depthStencil) {
   SetDirtyValue(g_dirtyStates.renderTargetAndDepthStencil, g_depthStencil, depthStencil);
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthStencilFormat,
@@ -996,6 +1010,13 @@ GuestVertexDeclaration* ResolveVertexDeclaration(GuestDevice* device) {
 
 std::unordered_map<uint64_t, std::unique_ptr<RenderPipeline>> g_pipelines;
 
+// PSO creation can fail for reasons that will never change on retry (a
+// permanently-mismatched/uncompilable shader in the cache) -- without this,
+// GetPipeline() would re-run the full DXC compile+link path from scratch on
+// every single draw call using that state, since a failed attempt leaves
+// g_pipelines[hash] null indistinguishable from "never tried".
+std::unordered_set<uint64_t> g_failedPipelines;
+
 // Canonicalizes logically-equivalent states onto the same cache key: state
 // that can't affect the result when its owning enable bit is off must be
 // zeroed first, or two draws that only differ in "don't-care" bits would
@@ -1045,18 +1066,53 @@ RenderShader* GetPlaceholderPixelShader() {
   return shader.get();
 }
 
+// One-time diagnostic logging of *why* a PSO build was rejected -- these
+// paths used to fail completely silently, making an all-black screen
+// indistinguishable from "every draw's pipeline build is failing."
+void LogPipelineRejectOnce(const char* reason) {
+  static std::unordered_set<std::string> s_logged;
+  if (s_logged.insert(reason).second) {
+    REXGPU_WARN("CreateGraphicsPipeline: rejected ({}) -- this draw will be skipped", reason);
+  }
+}
+
 std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps, bool placeholderShader) {
   RenderShader* vertexShader = LoadShader(ps.vertexShader, ps.specConstants);
-  if (vertexShader == nullptr) return nullptr;
+  if (vertexShader == nullptr) {
+    if (ps.vertexShader == nullptr) {
+      LogPipelineRejectOnce("no vertex shader bound");
+    } else {
+      static std::unordered_set<uint64_t> s_loggedShaders;
+      const uint64_t hash = ps.vertexShader->shaderCacheEntry != nullptr ? ps.vertexShader->shaderCacheEntry->hash : 0;
+      if (s_loggedShaders.insert(hash ^ ps.specConstants).second) {
+        REXGPU_WARN(
+            "CreateGraphicsPipeline: vertex shader failed to load (hash=0x{:016X} cacheEntry={} "
+            "specMask={} specConstants={}) -- this draw will be skipped",
+            hash, ps.vertexShader->shaderCacheEntry != nullptr,
+            ps.vertexShader->shaderCacheEntry != nullptr ? ps.vertexShader->shaderCacheEntry->spec_constants_mask : 0,
+            ps.specConstants);
+      }
+    }
+    return nullptr;
+  }
 
   RenderShader* pixelShader =
       placeholderShader ? GetPlaceholderPixelShader() : LoadShader(ps.pixelShader, ps.specConstants);
-  if (!placeholderShader && ps.pixelShader != nullptr && pixelShader == nullptr) return nullptr;
+  if (!placeholderShader && ps.pixelShader != nullptr && pixelShader == nullptr) {
+    LogPipelineRejectOnce("pixel shader failed to load");
+    return nullptr;
+  }
 
   GuestVertexDeclaration* decl = ps.vertexDeclaration;
-  if (decl == nullptr) return nullptr;
+  if (decl == nullptr) {
+    LogPipelineRejectOnce("no vertex declaration resolved");
+    return nullptr;
+  }
   CompleteVertexDeclaration(decl);
-  if (decl->inputElements == nullptr) return nullptr;
+  if (decl->inputElements == nullptr) {
+    LogPipelineRejectOnce("vertex declaration has no input elements");
+    return nullptr;
+  }
 
   RenderGraphicsPipelineDesc desc;
   desc.pipelineLayout = PipelineLayout();
@@ -1120,14 +1176,34 @@ std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps, 
 
 RenderPipeline* GetPipeline(PipelineState ps, bool placeholderShader) {
   SanitizePipelineState(ps);
-  if (ps.renderTargetFormat == RenderFormat::UNKNOWN && ps.depthStencilFormat == RenderFormat::UNKNOWN)
+  if (ps.renderTargetFormat == RenderFormat::UNKNOWN && ps.depthStencilFormat == RenderFormat::UNKNOWN) {
+    LogPipelineRejectOnce("no color or depth attachment bound");
     return nullptr;
-  if (ps.vertexDeclaration == nullptr) return nullptr;
+  }
+  if (ps.vertexDeclaration == nullptr) {
+    LogPipelineRejectOnce("no vertex declaration resolved (GetPipeline)");
+    return nullptr;
+  }
 
   uint64_t hash = XXH3_64bits(&ps, sizeof(ps));
   if (placeholderShader) hash ^= 0x9E3779B97F4A7C15ull;
+  if (g_failedPipelines.contains(hash)) {
+    return nullptr;
+  }
   auto& pipeline = g_pipelines[hash];
-  if (pipeline == nullptr) pipeline = CreateGraphicsPipeline(ps, placeholderShader);
+  if (pipeline == nullptr) {
+    pipeline = CreateGraphicsPipeline(ps, placeholderShader);
+    if (pipeline == nullptr) {
+      g_pipelines.erase(hash);
+      g_failedPipelines.insert(hash);
+      return nullptr;
+    }
+    static bool loggedFirstSuccess = false;
+    if (!loggedFirstSuccess) {
+      loggedFirstSuccess = true;
+      REXGPU_INFO("CreateGraphicsPipeline: first PSO built successfully");
+    }
+  }
   return pipeline.get();
 }
 

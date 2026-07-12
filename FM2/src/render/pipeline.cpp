@@ -5,6 +5,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <unordered_map>
 
 #include <plume_render_interface.h>
@@ -146,7 +147,7 @@ class DxcRuntime {
     HRESULT hr = compiler_->Compile(&sourceBuffer, args, std::size(args), nullptr,
                                     __uuidof(IDxcResult), reinterpret_cast<void**>(&result));
     if (FAILED(hr) || result == nullptr) {
-      REXLOG_ERROR("DXC: spec constant library compile failed hr=0x%08X", static_cast<unsigned>(hr));
+      REXLOG_ERROR("DXC: spec constant library compile failed hr=0x{:08X}", static_cast<unsigned>(hr));
       return nullptr;
     }
 
@@ -161,16 +162,31 @@ class DxcRuntime {
 
   IDxcBlobEncoding* CreatePinnedLibraryBlob(const void* dxilData, uint32_t dxilSize) {
     if (!ready()) {
+      REXLOG_ERROR("PIPELINE-TRACE: CreatePinnedLibraryBlob: DxcRuntime not ready (compiler={} utils={})",
+                   compiler_ != nullptr, utils_ != nullptr);
       return nullptr;
     }
 
     IDxcBlobEncoding* shaderBlob = nullptr;
     HRESULT hr = utils_->CreateBlobFromPinned(dxilData, dxilSize, DXC_CP_ACP, &shaderBlob);
     if (FAILED(hr) || shaderBlob == nullptr) {
-      REXLOG_ERROR("DXC: failed to create shader library blob hr=0x%08X", static_cast<unsigned>(hr));
+      REXLOG_ERROR("DXC: failed to create shader library blob hr=0x{:08X}", static_cast<unsigned>(hr));
       return nullptr;
     }
     return shaderBlob;
+  }
+
+  // Plain function (not called from inside the __try frame) so it's safe to
+  // call from the __except handler despite using C++ objects internally.
+  static void LogDxcLinkCrashOnce(uint32_t dxilOffset, uint32_t specConstants) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      REXLOG_ERROR(
+          "DXC: caught a structured exception linking shader dxilOffset={} specConstants={} -- "
+          "skipping this shader (known dxcompiler.dll crash on some regenerated permutations)",
+          dxilOffset, specConstants);
+    }
   }
 
   // Public entry: SEH-guard the ENTIRE DXC link path. Some regenerated FM2 menu
@@ -185,17 +201,20 @@ class DxcRuntime {
       result = LinkShaderLibraryInner(shaderBlob, dxilOffset, shaderType, specConstants);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
       result = nullptr;
+      LogDxcLinkCrashOnce(dxilOffset, specConstants);
     }
     return result;
   }
 
   IDxcBlob* LinkShaderLibraryInner(IDxcBlob* shaderBlob, uint32_t dxilOffset, ResourceType shaderType,
                                    uint32_t specConstants) {
+    REXLOG_ERROR("PIPELINE-TRACE: LinkShaderLibraryInner entered");
     if (!ready()) {
       return nullptr;
     }
 
     IDxcBlob* specBlob = GetSpecConstantLibrary(specConstants);
+    REXLOG_ERROR("PIPELINE-TRACE: GetSpecConstantLibrary returned {}", specBlob != nullptr ? "non-null" : "NULL");
     if (specBlob == nullptr) {
       return nullptr;
     }
@@ -204,7 +223,7 @@ class DxcRuntime {
     HRESULT hr =
         createInstance_(CLSID_DxcLinker, __uuidof(IDxcLinker), reinterpret_cast<void**>(&linker));
     if (FAILED(hr) || linker == nullptr) {
-      REXLOG_ERROR("DXC: failed to create IDxcLinker hr=0x%08X", static_cast<unsigned>(hr));
+      REXLOG_ERROR("DXC: failed to create IDxcLinker hr=0x{:08X}", static_cast<unsigned>(hr));
       specBlob->Release();
       return nullptr;
     }
@@ -229,7 +248,7 @@ class DxcRuntime {
     hr = SafeDxcLink(linker, profile, libraries, std::size(libraries), &linkResult);
     linker->Release();
     if (FAILED(hr) || linkResult == nullptr) {
-      REXLOG_ERROR("DXC: shader link failed hr=0x%08X", static_cast<unsigned>(hr));
+      REXLOG_ERROR("DXC: shader link failed hr=0x{:08X}", static_cast<unsigned>(hr));
       return nullptr;
     }
 
@@ -251,7 +270,7 @@ class DxcRuntime {
     hr = result->GetOutput(DXC_OUT_OBJECT, __uuidof(IDxcBlob), reinterpret_cast<void**>(&object),
                            nullptr);
     if (FAILED(hr) || object == nullptr) {
-      REXLOG_ERROR("%s: failed to get object hr=0x%08X", label, static_cast<unsigned>(hr));
+      REXLOG_ERROR("{}: failed to get object hr=0x{:08X}", label, static_cast<unsigned>(hr));
       return nullptr;
     }
     return object;
@@ -263,11 +282,12 @@ class DxcRuntime {
     if (FAILED(hr) || FAILED(status)) {
       IDxcBlobEncoding* errors = nullptr;
       if (SUCCEEDED(result->GetErrorBuffer(&errors)) && errors != nullptr) {
-        REXLOG_ERROR("%s: %.*s", label, static_cast<int>(errors->GetBufferSize()),
-                     static_cast<const char*>(errors->GetBufferPointer()));
+        REXLOG_ERROR("{}: {}", label,
+                     std::string_view(static_cast<const char*>(errors->GetBufferPointer()),
+                                      errors->GetBufferSize()));
         errors->Release();
       } else {
-        REXLOG_ERROR("%s: failed status hr=0x%08X", label, static_cast<unsigned>(status));
+        REXLOG_ERROR("{}: failed status hr=0x{:08X}", label, static_cast<unsigned>(status));
       }
       return nullptr;
     }
@@ -275,7 +295,7 @@ class DxcRuntime {
     IDxcBlob* object = nullptr;
     hr = result->GetResult(&object);
     if (FAILED(hr) || object == nullptr) {
-      REXLOG_ERROR("%s: failed to get linked object hr=0x%08X", label, static_cast<unsigned>(hr));
+      REXLOG_ERROR("{}: failed to get linked object hr=0x{:08X}", label, static_cast<unsigned>(hr));
       return nullptr;
     }
     return object;
@@ -286,10 +306,10 @@ class DxcRuntime {
     if (SUCCEEDED(result->GetOutput(DXC_OUT_ERRORS, __uuidof(IDxcBlobUtf8),
                                     reinterpret_cast<void**>(&errors), nullptr)) &&
         errors != nullptr) {
-      REXLOG_ERROR("%s: %s", label, errors->GetStringPointer());
+      REXLOG_ERROR("{}: {}", label, errors->GetStringPointer());
       errors->Release();
     } else {
-      REXLOG_ERROR("%s: failed", label);
+      REXLOG_ERROR("{}: failed", label);
     }
   }
 
@@ -310,8 +330,13 @@ DxcRuntime& GetDxcRuntime() {
 void EnsureDxilCache() {
   std::call_once(g_dxilCacheOnce, [] {
     g_dxilCache = std::make_unique<uint8_t[]>(g_dxilCacheDecompressedSize);
-    ZSTD_decompress(g_dxilCache.get(), g_dxilCacheDecompressedSize, g_compressedDxilCache,
-                    g_dxilCacheCompressedSize);
+    size_t result = ZSTD_decompress(g_dxilCache.get(), g_dxilCacheDecompressedSize, g_compressedDxilCache,
+                                    g_dxilCacheCompressedSize);
+    if (ZSTD_isError(result)) {
+      REXLOG_ERROR("EnsureDxilCache: ZSTD_decompress failed: {}", ZSTD_getErrorName(result));
+    } else if (result != g_dxilCacheDecompressedSize) {
+      REXLOG_ERROR("EnsureDxilCache: decompressed {} bytes, expected {}", result, g_dxilCacheDecompressedSize);
+    }
   });
 }
 
@@ -362,8 +387,26 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
     if (guestShader->shader != nullptr) {
       return guestShader->shader.get();
     }
+    if (entry->dxil_offset + entry->dxil_size > g_dxilCacheDecompressedSize) {
+      static bool loggedOob = false;
+      if (!loggedOob) {
+        loggedOob = true;
+        REXLOG_ERROR(
+            "LoadShader: entry offset+size out of bounds (offset={} size={} cacheSize={})",
+            entry->dxil_offset, entry->dxil_size, g_dxilCacheDecompressedSize);
+      }
+      return nullptr;
+    }
     guestShader->shader = Device()->createShader(g_dxilCache.get() + entry->dxil_offset,
                                                  entry->dxil_size, "main", RenderShaderFormat::DXIL);
+    if (guestShader->shader == nullptr) {
+      static bool loggedFail = false;
+      if (!loggedFail) {
+        loggedFail = true;
+        REXLOG_ERROR("LoadShader: Device()->createShader failed (offset={} size={} hash=0x{:016X})",
+                     entry->dxil_offset, entry->dxil_size, entry->hash);
+      }
+    }
     return guestShader->shader.get();
   }
 
@@ -375,8 +418,12 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
       return cached->second.get();
     }
     if (guestShader->dxilLibraryBlob == nullptr) {
+      REXLOG_ERROR("PIPELINE-TRACE: about to call CreatePinnedLibraryBlob (offset={} size={})",
+                   entry->dxil_offset, entry->dxil_size);
       guestShader->dxilLibraryBlob = GetDxcRuntime().CreatePinnedLibraryBlob(
           g_dxilCache.get() + entry->dxil_offset, entry->dxil_size);
+      REXLOG_ERROR("PIPELINE-TRACE: CreatePinnedLibraryBlob returned {}",
+                   guestShader->dxilLibraryBlob != nullptr ? "non-null" : "NULL");
     }
   }
 
@@ -389,11 +436,14 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
     }
   }
   if (libraryBlob == nullptr) {
+    REXLOG_ERROR("PIPELINE-TRACE: libraryBlob is null, returning from LoadShader (path #1)");
     return nullptr;
   }
 
+  REXLOG_ERROR("PIPELINE-TRACE: calling LinkShaderLibrary");
   IDxcBlob* linkedBlob = GetDxcRuntime().LinkShaderLibrary(libraryBlob, entry->dxil_offset,
                                                            guestShader->type, specializedValue);
+  REXLOG_ERROR("PIPELINE-TRACE: LinkShaderLibrary returned {}", linkedBlob != nullptr ? "non-null" : "NULL");
   libraryBlob->Release();
   if (linkedBlob == nullptr) {
     return nullptr;
@@ -405,6 +455,7 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
   std::unique_ptr<RenderShader> shader(SafeCreateShaderFromDxcBlob(linkedBlob));
   linkedBlob->Release();
   if (shader == nullptr) {
+    REXLOG_ERROR("PIPELINE-TRACE: SafeCreateShaderFromDxcBlob returned NULL (path #3)");
     return nullptr;
   }
 

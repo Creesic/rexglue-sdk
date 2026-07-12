@@ -55,6 +55,12 @@ void SetScissorRect(GuestDevice* device, GuestRect* rect);
 void SetRenderTarget(GuestDevice* device, uint32_t index, GuestBaseTexture* renderTarget);
 void SetImplicitRenderTarget(GuestBaseTexture* renderTarget);
 GuestBaseTexture* GetCurrentColorRenderTarget();
+
+// Marks the currently-bound color render target as this frame's present
+// source. Call right before Video::Present() (from whichever hook is the
+// live present trigger) -- without this, Present() never has a front buffer
+// to blit and always falls back to a flat clear color.
+void PrepareFramePresent();
 void SetDepthStencilSurface(GuestDevice* device, GuestSurface* depthStencil);
 
 void Clear(GuestDevice* device, uint32_t flags, const float* color, float z);

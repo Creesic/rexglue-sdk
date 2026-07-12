@@ -85,8 +85,10 @@ void ClearF(GuestDevice* /*device*/, uint32_t /*flags*/, void* /*rect*/,
 // does not exist under the native renderer, so it must not run here; this
 // hook fully replaces it.
 void Swap(uint32_t /*commandBuffer*/, uint32_t /*arg4*/, uint32_t /*arg5*/) {
+  fm2::render::PrepareFramePresent();
   Video::ClaimPresentOwner();
   Video::Present();
+  fm2::render::BeginRenderStateFrame();
 }
 
 }  // namespace
@@ -102,7 +104,9 @@ namespace {
 // present trigger for some code path Swap doesn't cover.
 void PresentAndUpdateStatus(uint32_t presentChain) {
   g_origTryPresentAndUpdateStatus(presentChain);
+  fm2::render::PrepareFramePresent();
   Video::Present();
+  fm2::render::BeginRenderStateFrame();
 }
 
 }  // namespace
@@ -511,7 +515,13 @@ namespace {
 
 rr::GuestBaseTexture* TranslateSurfaceForBind(uint32_t surfaceAddr) {
   auto* gs = ghp::ToHost<GuestSurface>(surfaceAddr);
-  return gs;  // pure-replace resources: the guest address always resolves directly.
+  // Unlike Lock/GetDesc/Unlock (which fall back to the original guest
+  // function for a non-FM2 address), there's no "original" render-target-bind
+  // path to fall back to here -- this is the only caller. Reject a garbage
+  // address instead of handing back a wild pointer that SetRenderTargetInternal
+  // would later store into g_renderTarget and dereference at present time.
+  if (!rr::IsFm2Resource(gs)) return nullptr;
+  return gs;
 }
 
 void SetRenderTargetNative(GuestDevice* device, uint32_t index, uint32_t surfaceAddr) {
@@ -682,6 +692,35 @@ REX_HOOK(D3DDevice_DrawVertices, DrawVerticesHook);
 REX_HOOK(D3DDevice_DrawIndexedVertices, DrawIndexedVerticesHook);
 REX_HOOK(D3DDevice_DrawIndexedVertices_WithVertexFormatSetup, DrawIndexedVerticesHook);
 REX_HOOK(D3DDevice_DrawVerticesUP, DrawVerticesUPHook);
+
+// ---------------------------------------------------------------------------
+// GPU-hang watchdog defusal. D3D_CommandWaitForCompletion (a still-running,
+// unhooked original function -- called both by the PM4 draw emitters this
+// renderer bypasses AND by independent guest worker threads waiting for the
+// GPU ring to "catch up") spins on D3D::CBlocker::Check waiting for a ring-
+// position counter this renderer never advances (that bookkeeping lived
+// entirely inside the original PM4 emission code the draw hooks replace).
+// Confirmed via a live thread-stack dump: a guest worker thread spins here
+// indefinitely, its internal ~5-unit timeout never resolving because the
+// progress counter it polls never moves, until D3D_GpuHangHandler's
+// last-resort path decides the GPU is unrecoverably hung and executes a
+// literal __trap() -- silently killing the whole process with no visible
+// crash dialog.
+//
+// This renderer never actually needs the wait: Video::Present() already
+// fully drains the GPU (waitForCommandFence) every frame, so by the time any
+// guest code could ask "has the GPU caught up", it always already has.
+// Hooking Check() to unconditionally report "not blocked" short-circuits
+// the spin after its first iteration without ever reaching the hang
+// watchdog, while leaving D3D_CommandWaitForCompletion's own (still
+// relevant to other unhooked PM4 code) submit-triggering logic untouched.
+// ---------------------------------------------------------------------------
+
+namespace {
+uint32_t CBlockerCheckHook(uint32_t /*blockerThis*/) { return 0; }
+}  // namespace
+
+REX_HOOK(D3D_CBlocker_Check, CBlockerCheckHook);
 
 // ---------------------------------------------------------------------------
 // Recorded command-buffer object-pass batch boundary (car/showroom

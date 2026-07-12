@@ -1,7 +1,13 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-12T00:59:21.330Z
-> Files: 559 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-12T04:15:57.517Z
+> Files: 566 tracked | Anatomy hits: 0 | Misses: 0
+
+## ../../../../../temp/
+
+- `crash_investigate.cdbcmd` (~4 tok)
+- `trace_signals.cdbcmd` (~118 tok)
+- `trace_signals2.cdbcmd` (~121 tok)
 
 ## ../../../.claude/plans/
 
@@ -84,8 +90,8 @@
 
 ## FM2/
 
-- `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~1365 tok)
-- `fm2_manifest.toml` (~5460 tok)
+- `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~1538 tok)
+- `fm2_manifest.toml` (~5455 tok)
 
 ## FM2/cmake/
 
@@ -93,7 +99,8 @@
 
 ## FM2/out/build/win-amd64-relwithdebinfo/
 
-- `launch-fm2.bat` (~36 tok)
+- `launch-fm2-shaderdump.bat` (~53 tok)
+- `launch-fm2.bat` (~38 tok)
 
 ## FM2/src/
 
@@ -102,16 +109,16 @@
 
 ## FM2/src/render/
 
-- `d3d_hooks.cpp` — render/d3d_hooks.cpp (~9028 tok)
-- `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~8339 tok)
+- `d3d_hooks.cpp` — render/d3d_hooks.cpp (~9606 tok)
+- `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~8571 tok)
 - `guest_device.h` — render/guest_device.h (~1570 tok)
 - `guest_heap.h` — pragma once (~472 tok)
 - `guest_resources.h` — render/guest_resources.h (~1607 tok)
-- `pipeline.cpp` — render/pipeline.cpp (~3741 tok)
+- `pipeline.cpp` — render/pipeline.cpp (~4476 tok)
 - `render_internal.h` — render/render_internal.h (~469 tok)
-- `render_state.cpp` — render/render_state.cpp (~15523 tok)
-- `render_state.h` — render/render_state.h (~1278 tok)
-- `video.cpp` — include "video.h" (~4870 tok)
+- `render_state.cpp` — render/render_state.cpp (~16314 tok)
+- `render_state.h` — render/render_state.h (~1360 tok)
+- `video.cpp` — include "video.h" (~5499 tok)
 - `video.h` — render/video.h (~366 tok)
 
 ## FM2/src/render/shaders/
@@ -658,6 +665,10 @@
 - `xaudio2_audio_driver.h` — ***************************************************************************** (~739 tok)
 - `xaudio2_audio_system.h` — ***************************************************************************** (~326 tok)
 
+## include/rex/kernel/xboxkrnl/
+
+- `video.h` — ***************************************************************************** (~440 tok)
+
 ## src/audio/
 
 - `CMakeLists.txt` — rexaudio - Audio subsystem library (~360 tok)
@@ -688,6 +699,11 @@
 ## src/kernel/xam/apps/
 
 - `xlivebase_app.cpp` — ***************************************************************************** (~975 tok)
+
+## src/kernel/xboxkrnl/
+
+- `xboxkrnl_io.cpp` — ***************************************************************************** (~8323 tok)
+- `xboxkrnl_video.cpp` — ***************************************************************************** (~7010 tok)
 
 ## src/ui/
 

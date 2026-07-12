@@ -228,3 +228,66 @@
 | 20:58 | Edited FM2/src/render/render_state.cpp | 3→4 lines | ~26 |
 | 20:59 | Edited FM2/src/render/render_state.cpp | 9→13 lines | ~187 |
 | 20:59 | Edited FM2/src/render/render_state.cpp | 2→2 lines | ~29 |
+| 21:03 | Session end: 27 writes across 6 files (fm2_manifest.toml, render_state.h, render_state.cpp, placeholder_ps.hlsl, CMakeLists.txt) | 43 reads | ~99664 tok |
+| 21:52 | Session end: 27 writes across 6 files (fm2_manifest.toml, render_state.h, render_state.cpp, placeholder_ps.hlsl, CMakeLists.txt) | 43 reads | ~99664 tok |
+| 21:54 | Edited FM2/src/render/render_state.h | expanded (+6 lines) | ~136 |
+| 21:54 | Edited FM2/src/render/render_state.cpp | modified GetCurrentColorRenderTarget() | ~38 |
+| 21:54 | Edited FM2/src/render/d3d_hooks.cpp | modified Swap() | ~43 |
+| 21:54 | Edited FM2/src/render/d3d_hooks.cpp | modified Swap() | ~45 |
+| 21:54 | Edited FM2/src/render/d3d_hooks.cpp | modified PresentAndUpdateStatus() | ~43 |
+| 21:55 | Session end: 32 writes across 6 files (fm2_manifest.toml, render_state.h, render_state.cpp, placeholder_ps.hlsl, CMakeLists.txt) | 43 reads | ~101598 tok |
+| 22:04 | Edited FM2/fm2_manifest.toml | "FM2_ProducerProgressGuard" → "D3D_CBlocker_Check" | ~12 |
+| 22:04 | Edited FM2/src/render/d3d_hooks.cpp | modified Swap() | ~56 |
+| 22:04 | Edited FM2/src/render/d3d_hooks.cpp | modified PresentAndUpdateStatus() | ~54 |
+| 22:05 | Edited FM2/src/render/d3d_hooks.cpp | modified CBlockerCheckHook() | ~456 |
+| 22:07 | Session end: 36 writes across 6 files (fm2_manifest.toml, render_state.h, render_state.cpp, placeholder_ps.hlsl, CMakeLists.txt) | 45 reads | ~102230 tok |
+| 22:08 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~385 |
+| 22:08 | Edited FM2/src/render/render_state.cpp | 5→6 lines | ~33 |
+| 22:08 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~244 |
+| 22:09 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~142 |
+| 22:10 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~271 |
+| 22:11 | Edited FM2/src/render/pipeline.cpp | added 4 condition(s) | ~288 |
+| 22:11 | Edited FM2/src/render/pipeline.cpp | added 2 condition(s) | ~165 |
+| 22:13 | Edited FM2/src/render/pipeline.cpp | modified __except() | ~75 |
+| 22:13 | Edited FM2/src/render/pipeline.cpp | added 1 condition(s) | ~258 |
+| 22:15 | Edited FM2/src/render/pipeline.cpp | modified LinkShaderLibraryInner() | ~67 |
+| 22:16 | Edited FM2/src/render/pipeline.cpp | modified if() | ~309 |
+| 22:16 | Edited FM2/src/render/pipeline.cpp | modified if() | ~248 |
+| 22:16 | Edited FM2/src/render/pipeline.cpp | modified CreatePinnedLibraryBlob() | ~81 |
+| 22:19 | Edited FM2/src/render/pipeline.cpp | modified if() | ~64 |
+| 22:21 | Edited FM2/src/render/pipeline.cpp | "DXC: spec constant librar" → "DXC: spec constant librar" | ~28 |
+| 22:21 | Edited FM2/src/render/pipeline.cpp | "DXC: failed to create sha" → "DXC: failed to create sha" | ~28 |
+| 22:21 | Edited FM2/src/render/pipeline.cpp | "DXC: failed to create IDx" → "DXC: failed to create IDx" | ~26 |
+| 22:21 | Edited FM2/src/render/pipeline.cpp | "DXC: shader link failed h" → "DXC: shader link failed h" | ~23 |
+| 22:21 | Edited FM2/src/render/pipeline.cpp | modified GetOperationResultObject() | ~426 |
+| 22:22 | Edited FM2/src/render/pipeline.cpp | 5→6 lines | ~32 |
+| 22:28 | Edited FM2/CMakeLists.txt | added 1 condition(s) | ~255 |
+| 22:28 | Edited FM2/CMakeLists.txt | 4→6 lines | ~119 |
+| 22:30 | Session end: 58 writes across 7 files (fm2_manifest.toml, render_state.h, render_state.cpp, placeholder_ps.hlsl, CMakeLists.txt) | 48 reads | ~116910 tok |
+| 22:51 | Edited src/kernel/xboxkrnl/xboxkrnl_io.cpp | modified if() | ~307 |
+
+## Session: 2026-07-12 23:16
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 23:27 | Edited FM2/out/build/win-amd64-relwithdebinfo/launch-fm2.bat | inline fix | ~35 |
+| 23:27 | Edited FM2/out/build/win-amd64-relwithdebinfo/launch-fm2-shaderdump.bat | inline fix | ~50 |
+| 23:31 | Session end: 2 writes across 2 files (launch-fm2.bat, launch-fm2-shaderdump.bat) | 22 reads | ~27225 tok |
+| 23:46 | Created ../../../../../temp/trace_signals.cdbcmd | — | ~118 |
+| 23:52 | Edited src/kernel/xboxkrnl/xboxkrnl_video.cpp | modified WarnNoGpuEmulation() | ~193 |
+| 23:52 | Edited src/kernel/xboxkrnl/xboxkrnl_video.cpp | added 2 condition(s) | ~363 |
+| 23:53 | Edited src/kernel/xboxkrnl/xboxkrnl_video.cpp | 16→18 lines | ~156 |
+| 23:53 | Edited include/rex/kernel/xboxkrnl/video.h | expanded (+8 lines) | ~148 |
+| 23:54 | Edited FM2/src/render/video.cpp | 4→8 lines | ~71 |
+| 23:54 | Edited FM2/src/render/video.cpp | added 1 condition(s) | ~680 |
+| 23:54 | Edited FM2/src/render/video.cpp | 5→7 lines | ~55 |
+| 23:54 | Edited FM2/src/render/video.cpp | modified Shutdown() | ~27 |
+| 00:00 | Session end: 11 writes across 6 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 38 reads | ~39316 tok |
+| 00:03 | Edited FM2/src/render/d3d_resource_hooks.cpp | added 2 condition(s) | ~421 |
+| 00:05 | Session end: 12 writes across 7 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 41 reads | ~48106 tok |
+| 00:09 | Created ../../../../../temp/trace_signals2.cdbcmd | — | ~121 |
+| 00:11 | Edited FM2/src/render/render_state.cpp | expanded (+7 lines) | ~130 |
+| 00:11 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~172 |
+| 00:12 | Created ../../../../../temp/crash_investigate.cdbcmd | — | ~4 |
+| 00:15 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~151 |
+| 00:17 | Session end: 17 writes across 11 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 44 reads | ~74550 tok |

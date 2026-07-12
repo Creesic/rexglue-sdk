@@ -762,9 +762,25 @@ GuestShader* CreateShaderFromFunction(const uint32_t* function, ResourceType typ
       RegisterShaderContainerForUcodeLookup(function, size, shader, type);
       return finish(shader);
     }
-    RegisterShaderContainerForUcodeLookup(
-        function, size, reinterpret_cast<GuestShader*>(entry->guest_shader), type);
-    return finish(reinterpret_cast<GuestShader*>(entry->guest_shader));
+    auto* cached = reinterpret_cast<GuestShader*>(entry->guest_shader);
+    if (cached->type != type) {
+      // The cache stores one compiled DXIL variant per microcode hash, but this
+      // hash's bytes are also being reused for the other shader stage. Treat it
+      // like a cache miss for this stage instead of handing back the
+      // wrongly-typed shader: pipeline.cpp would otherwise link that DXIL
+      // (compiled for the other stage) against this stage's profile and fail
+      // -- every single draw, since the mismatch is deterministic.
+      static std::unordered_set<uint64_t> s_typeMismatchWarned;
+      if (s_typeMismatchWarned.insert(hash).second) {
+        REXGPU_WARN(
+            "Shader cache type mismatch: hash=0x{:016X} already cached as type={}, requested "
+            "type={} -- treating as a cache miss for this stage",
+            hash, int(cached->type), int(type));
+      }
+      return finish(GuestNew<GuestShader>(type));
+    }
+    RegisterShaderContainerForUcodeLookup(function, size, cached, type);
+    return finish(cached);
   }
 
   // Dump the raw ShaderContainer so XenosRecomp can translate it offline
