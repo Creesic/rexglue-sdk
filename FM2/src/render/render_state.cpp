@@ -1167,7 +1167,7 @@ void SetImplicitRenderTarget(GuestBaseTexture* renderTarget) {
 GuestBaseTexture* GetCurrentColorRenderTarget() { return g_renderTarget; }
 
 void PrepareFramePresent() {
-  // PresentImpl on the render thread snapshots g_renderTarget after prior
+  // PresentImpl/ExecuteCommandList on the render thread snapshots g_renderTarget after prior
   // Enqueue'd SetRT jobs (FIFO with Present's Run). Guest-side snapshot here
   // would race async binds -- kept as a no-op hook for call-site compatibility.
 }
@@ -2160,8 +2160,11 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
                           cmd.drawPrimitiveUP.vertexCount, cmd.drawPrimitiveUP.vertexData,
                           cmd.drawPrimitiveUP.stride, cmd.drawPrimitiveUP.bytes);
       break;
-    case RenderCommandType::ExecutePresent:
-      ProcExecutePresent();
+    case RenderCommandType::ExecuteCommandList:
+      ProcExecuteCommandList();
+      break;
+    case RenderCommandType::BeginCommandList:
+      ProcBeginCommandList();
       break;
     case RenderCommandType::WaitForGpu:
       break;  // handled above

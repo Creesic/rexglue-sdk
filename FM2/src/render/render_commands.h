@@ -40,7 +40,8 @@ enum class RenderCommandType : uint32_t {
   DrawPrimitive,
   DrawIndexedPrimitive,
   DrawPrimitiveUP,
-  ExecutePresent,
+  ExecuteCommandList,
+  BeginCommandList,
   WaitForGpu,
   BeginRenderStateFrame,
   CreateTextureHost,
@@ -151,7 +152,8 @@ struct RenderCommand {
       uint32_t bytes;
     } drawPrimitiveUP;
 
-    // ExecutePresent / WaitForGpu / BeginRenderStateFrame: no payload.
+    // ExecuteCommandList / BeginCommandList / WaitForGpu / BeginRenderStateFrame:
+    // no payload.
 
     struct {
       GuestTexture* texture;
@@ -179,7 +181,8 @@ struct RenderCommand {
 void DispatchRenderCommand(const RenderCommand& cmd);
 
 // Implemented in video.cpp / d3d_resource_hooks.cpp; invoked from Dispatch.
-void ProcExecutePresent();
+void ProcExecuteCommandList();
+void ProcBeginCommandList();
 void ProcWaitForGpu();
 void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t height, uint32_t depth,
                            uint32_t levels, uint32_t usage, uint32_t format, bool volume);

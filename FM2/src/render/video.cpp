@@ -37,7 +37,8 @@ extern std::unique_ptr<RenderInterface> CreateVulkanInterface();
 
 namespace fm2::render {
 // Not part of render_internal.h's public surface (only used within this
-// TU); forward-declared here so PresentImpl (below) can call it ahead of
+// TU); forward-declared here so ExecuteCommandListImpl (below) can call it ahead of
+// its definition.
 // its definition further down this file.
 void EnsureFrameStarted();
 }  // namespace fm2::render
@@ -101,7 +102,7 @@ bool g_frameOpen = false;
 // Waiting on a slot without a pending signal blocks forever.
 std::array<bool, kNumFrames> g_commandListSubmitted{false, false};
 // Slot currently being recorded into, and the slot Present() will hand off
-// to next. Advanced once per Present() call (see PresentImpl).
+// to next. Advanced once per Present() call (guest PresentAndAdvanceFrame).
 uint32_t g_frame = 0;
 uint32_t g_nextFrame = 1;
 uint32_t g_backBufferIndex = 0;
@@ -119,6 +120,10 @@ std::atomic<bool> g_deviceLost{false};
 // recording/submitting (on the render thread, via RenderQueue::Run), drop
 // this call instead of piling up work behind it.
 std::atomic<bool> g_presentBusy{false};
+
+// Set by ExecuteCommandListImpl when a frame was submitted; consumed by the
+// guest-thread PresentAndAdvanceFrame half.
+bool g_presentSubmitOk = false;
 
 // The guest's final front-buffer surface to blit this frame (D3DDevice_Swap).
 fm2::render::GuestBaseTexture* g_presentSource = nullptr;
@@ -138,12 +143,12 @@ void RebuildFramebuffers() {
   }
 }
 
-// Records and submits one frame's blit/clear + present, then advances the
-// 2-frame pipeline. Only ever runs on the dedicated render thread (inline if
-// the caller already is that thread, otherwise dispatched via
-// RenderQueue::Run from Video::Present()).
-void PresentImpl() {
+// Records the present blit into the open command list and submits it.
+// Swapchain present + 2-frame advance run on the guest thread (Unleashed).
+// Only ever runs on the dedicated render thread.
+void ExecuteCommandListImpl() {
   std::lock_guard lock(fm2::render::RecordingMutex());
+  g_presentSubmitOk = false;
   if (fm2::render::IsDeviceLost()) return;
 
   // The guest's draws/clears for this frame have already been recorded into
@@ -158,8 +163,8 @@ void PresentImpl() {
   fm2::render::FlushPendingStretchRectCommands();
 
   // Present source is taken on the render thread after prior SetRT/enqueue
-  // work has drained into this Present job (guest PrepareFramePresent no
-  // longer races async RT binds).
+  // work has drained into this job (guest PrepareFramePresent no longer
+  // races async RT binds).
   {
     static bool loggedFirstTarget = false;
     static uint64_t presentSourceChecks = 0;
@@ -167,10 +172,11 @@ void PresentImpl() {
     auto* rt = fm2::render::GetCurrentColorRenderTarget();
     if (rt != nullptr && !loggedFirstTarget) {
       loggedFirstTarget = true;
-      REXGPU_INFO("PresentImpl: first non-null render target after {} present(s)",
+      REXGPU_INFO("ExecuteCommandList: first non-null render target after {} present(s)",
                   presentSourceChecks);
     } else if (rt == nullptr && presentSourceChecks % 300 == 0) {
-      REXGPU_WARN("PresentImpl: still no render target after {} present(s)", presentSourceChecks);
+      REXGPU_WARN("ExecuteCommandList: still no render target after {} present(s)",
+                  presentSourceChecks);
     }
     fm2::render::SetPresentSource(rt);
   }
@@ -197,8 +203,9 @@ void PresentImpl() {
         REXGPU_WARN(
             "Video::Present: no blit this call (source={} texture={} pipeline={}) -- clearing to "
             "fallback color instead (present call {})",
-            g_presentSource != nullptr, g_presentSource != nullptr && g_presentSource->texture != nullptr,
-            blitPipeline != nullptr, presentCallCount);
+            g_presentSource != nullptr,
+            g_presentSource != nullptr && g_presentSource->texture != nullptr, blitPipeline != nullptr,
+            presentCallCount);
       }
     }
   }
@@ -211,8 +218,7 @@ void PresentImpl() {
         RenderTextureLayout::SHADER_READ, g_presentSource->textureView.get());
 
     RenderTextureBarrier toBlit[] = {
-        RenderTextureBarrier(g_presentSource->texture,
-                             RenderTextureLayout::SHADER_READ),
+        RenderTextureBarrier(g_presentSource->texture, RenderTextureLayout::SHADER_READ),
         RenderTextureBarrier(backBuffer, RenderTextureLayout::COLOR_WRITE),
     };
     commandList->barriers(RenderBarrierStage::GRAPHICS, toBlit, 2);
@@ -223,29 +229,23 @@ void PresentImpl() {
     commandList->setPipeline(blitPipeline);
     commandList->setGraphicsDescriptorSet(g_textureDescriptorSet.get(), 0);
     commandList->setGraphicsDescriptorSet(g_samplerDescriptorSet.get(), 3);
-    commandList->setGraphicsPushConstants(0, &descriptorIndex, 0,
-                                          sizeof(descriptorIndex));
+    commandList->setGraphicsPushConstants(0, &descriptorIndex, 0, sizeof(descriptorIndex));
     commandList->setFramebuffer(framebuffer);
-    commandList->setViewports(
-        RenderViewport(0.0f, 0.0f, float(g_swapChain->getWidth()),
-                       float(g_swapChain->getHeight())));
+    commandList->setViewports(RenderViewport(0.0f, 0.0f, float(g_swapChain->getWidth()),
+                                             float(g_swapChain->getHeight())));
     commandList->setScissors(
         RenderRect(0, 0, g_swapChain->getWidth(), g_swapChain->getHeight()));
     commandList->drawInstanced(3, 1, 0, 0);
-    commandList->barriers(
-        RenderBarrierStage::GRAPHICS,
-        RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
+    commandList->barriers(RenderBarrierStage::GRAPHICS,
+                          RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
   } else {
-    // No usable front buffer yet (resource hooks not wired up): clear to the
-    // guest's own most recent D3DDevice_ClearF color so we still present.
-    commandList->barriers(
-        RenderBarrierStage::GRAPHICS,
-        RenderTextureBarrier(backBuffer, RenderTextureLayout::COLOR_WRITE));
+    // No usable front buffer yet: clear to the guest's most recent ClearF color.
+    commandList->barriers(RenderBarrierStage::GRAPHICS,
+                          RenderTextureBarrier(backBuffer, RenderTextureLayout::COLOR_WRITE));
     commandList->setFramebuffer(framebuffer);
     commandList->clearColor(0, g_fallbackClearColor);
-    commandList->barriers(
-        RenderBarrierStage::GRAPHICS,
-        RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
+    commandList->barriers(RenderBarrierStage::GRAPHICS,
+                          RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
   }
   commandList->end();
   g_frameOpen = false;
@@ -254,26 +254,33 @@ void PresentImpl() {
   RenderCommandSemaphore* waitSemaphores[] = {g_acquireSemaphores[g_frame].get()};
   RenderCommandSemaphore* signalSemaphores[] = {g_renderSemaphores[g_frame].get()};
   const RenderCommandList* submittedLists[] = {commandList};
-  g_queue->executeCommandLists(submittedLists, 1, waitSemaphores, 1,
-                               signalSemaphores, 1, g_commandFences[g_frame].get());
+  g_queue->executeCommandLists(submittedLists, 1, waitSemaphores, 1, signalSemaphores, 1,
+                               g_commandFences[g_frame].get());
   g_commandListSubmitted[g_frame] = true;
+  g_presentSubmitOk = true;
+}
 
-  g_swapChainValid = g_swapChain->present(g_backBufferIndex, signalSemaphores, 1);
+// Guest-thread half of Present (Unleashed): swapchain present + 2-frame advance.
+// Caller must hold RecordingMutex so the render thread cannot Dispatch draws
+// against g_frame while we mutate it.
+void PresentAndAdvanceFrame() {
+  if (!g_presentSubmitOk) return;
 
-  // 2-frame pipelining: don't block on this slot's fence now. Advance to
-  // the other slot -- only wait there if it still has an unretired
-  // submission from two Presents ago. That's what actually overlaps GPU
-  // work with the next frame's recording instead of fully serializing every
-  // Present like the single-buffered path did.
+  RenderCommandSemaphore* signalSemaphores[] = {g_renderSemaphores[g_frame].get()};
+  if (g_swapChainValid) {
+    g_swapChainValid = g_swapChain->present(g_backBufferIndex, signalSemaphores, 1);
+  }
+
+  // 2-frame pipelining: don't block on this slot's fence now. Advance to the
+  // other slot -- only wait there if it still has an unretired submission
+  // from two Presents ago.
   g_frame = g_nextFrame;
   g_nextFrame = (g_frame + 1) % kNumFrames;
   if (g_commandListSubmitted[g_frame]) {
     g_queue->waitForCommandFence(g_commandFences[g_frame].get());
     g_commandListSubmitted[g_frame] = false;
   }
-  // Safe to reuse this slot's upload scratch now that its prior GPU work
-  // has retired (Unleashed g_uploadAllocators[g_frame].reset()).
-  fm2::render::OnRecordingFrameReady(g_frame);
+  g_presentSubmitOk = false;
 }
 
 // FM2 runs in detached mode (no IGraphicsSystem/gpu_plugin), so
@@ -631,9 +638,7 @@ void Video::Present() {
 
   // Present-storm coalescing: FM2's job-system pool can call this far
   // faster than the GPU retires frames. If a Present is already recording/
-  // submitting (on the render thread, via RenderQueue::Run below), drop
-  // this call rather than piling up work behind it. Render thread + queue
-  // are the sole GPU owners; the old ClaimPresentOwner latch is gone.
+  // submitting, drop this call rather than piling up work behind it.
   bool expected = false;
   if (!g_presentBusy.compare_exchange_strong(expected, true,
                                              std::memory_order_acq_rel)) {
@@ -647,10 +652,20 @@ void Video::Present() {
     return;
   }
 
-  // Sync POD present (Unleashed ExecuteCommandList wait). FIFO with prior
-  // Enqueue'd SetRT/draws; PresentImpl still owns blit+submit+swapchain for now.
+  // Unleashed split: render thread executes/submits the command list; guest
+  // thread presents the swapchain and advances the 2-frame pipeline.
   fm2::render::RenderCommand cmd{};
-  cmd.type = fm2::render::RenderCommandType::ExecutePresent;
+  cmd.type = fm2::render::RenderCommandType::ExecuteCommandList;
+  fm2::render::RenderQueue::Run(cmd);
+
+  {
+    // Hold RecordingMutex so Dispatch cannot race g_frame / swapchain while
+    // we present and advance (draws queued during Run sit until we unlock).
+    std::lock_guard lock(fm2::render::RecordingMutex());
+    PresentAndAdvanceFrame();
+  }
+
+  cmd.type = fm2::render::RenderCommandType::BeginCommandList;
   fm2::render::RenderQueue::Run(cmd);
 
   g_presentBusy.store(false, std::memory_order_release);
@@ -675,7 +690,13 @@ void Video::WaitForGPU() {
 
 namespace fm2::render {
 
-void ProcExecutePresent() { PresentImpl(); }
+void ProcExecuteCommandList() { ExecuteCommandListImpl(); }
+
+void ProcBeginCommandList() {
+  // Safe to reuse this slot's upload scratch now that its prior GPU work
+  // has retired (Unleashed BeginCommandList / allocator reset).
+  OnRecordingFrameReady(g_frame);
+}
 
 void ProcWaitForGpu() {
   for (uint32_t i = 0; i < kNumFrames; ++i) {
