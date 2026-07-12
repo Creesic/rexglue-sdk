@@ -1,19 +1,16 @@
-# 2026-07-12 — POD RenderCommand + Proc* (slice 1)
+# 2026-07-12 — POD RenderCommand + Proc* (slice 2: Clear/Draw)
 
 ## Landed
 
-- `render_commands.h`: POD `RenderCommandType` / `RenderCommand` union
-- `RenderQueue::Enqueue(const RenderCommand&)` alongside `std::function` path
-- `DispatchRenderCommand` → Proc* for: DestructResource, SetViewport/Scissor,
-  SetRT/ImplicitRT/DS, SetRenderState, SetTexture/Base, shaders, decl,
-  stream/indices
-- SetDepthState / SetStencilState / SetViewportEnable also Enqueued (fn for now)
-- Fixed SetRenderTarget null→implicit resolve to happen on render thread
-  (was racing `g_implicitRenderTarget` on guest)
+- POD commands: `Clear`, `ResolveToTexture`, `DrawPrimitive`,
+  `DrawIndexedPrimitive`, `DrawPrimitiveUP`
+- Guest Clear/Resolve/Draw/DrawUP/DrawIndexed now `Enqueue` (async);
+  Present's `Run` still drains FIFO before submit
+- `DrawIndexedVertices` API — one command for flush+draw (replaces hook's
+  nested `Run`)
 
 ## Still next
 
-- Convert Clear / Draw / Present / Create / DrawUP to POD (drop most `Run(fn)`)
-- Optional moodycamel `BlockingConcurrentQueue` like Unleashed
+- Convert Present / WaitForGPU / Create* / ExecuteUpload to POD
+- Optional moodycamel `BlockingConcurrentQueue`
 - Drop `RecordingMutex` once only render thread touches GPU state
-- After codegen: rename AddRef/Release hooks to `D3DResource_*`

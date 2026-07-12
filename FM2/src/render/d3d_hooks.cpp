@@ -908,14 +908,7 @@ void DrawVerticesHook(GuestDevice* device, uint32_t primitiveType, uint32_t star
 void DrawIndexedVerticesHook(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
                              uint32_t startIndex, uint32_t indexCount) {
   TrackDrawForInstrumentation();
-  // Flush + draw must share one render-thread job so no other guest thread
-  // can interleave on the same command list between them.
-  fm2::render::RenderQueue::Run([device, primitiveType, baseVertexIndex, startIndex, indexCount] {
-    rr::FlushRenderState(device, primitiveType);
-    if (rr::HasBoundPipeline()) {
-      rr::DrawIndexedInstanced(indexCount, startIndex, baseVertexIndex);
-    }
-  });
+  rr::DrawIndexedVertices(device, primitiveType, baseVertexIndex, startIndex, indexCount);
 }
 
 void DrawVerticesUPHook(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,

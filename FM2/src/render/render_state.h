@@ -117,6 +117,10 @@ void DrawIndexedInstanced(uint32_t indexCount, uint32_t startIndex, int32_t base
 void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
                   uint32_t vertexCount);
 
+// Indexed draw (FlushRenderState + drawIndexedInstanced in one render-queue job).
+void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
+                         uint32_t startIndex, uint32_t indexCount);
+
 // D3DDevice_DrawVerticesUP: inline (non-buffer-backed) vertex data supplied
 // directly by the guest for this one draw. Uploads it to a scratch buffer
 // and binds it at stream 0 for just this call -- callers must not rely on

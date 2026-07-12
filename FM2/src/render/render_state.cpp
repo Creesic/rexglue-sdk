@@ -1191,121 +1191,20 @@ void ScheduleResourceDestruction(GuestResource* resource) {
   RenderQueue::Enqueue(cmd);
 }
 
-void DispatchRenderCommand(const RenderCommand& cmd) {
-  std::lock_guard lock(RecordingMutex());
-  switch (cmd.type) {
-    case RenderCommandType::DestructResource:
-      ProcDestructResource(cmd.destructResource.resource);
-      break;
-    case RenderCommandType::SetViewport:
-      ProcSetViewport(cmd.setViewport.x, cmd.setViewport.y, cmd.setViewport.width,
-                      cmd.setViewport.height, cmd.setViewport.minDepth,
-                      cmd.setViewport.maxDepth);
-      break;
-    case RenderCommandType::SetScissorRect:
-      ProcSetScissorRect(cmd.setScissorRect.scissorEnable, cmd.setScissorRect.top,
-                         cmd.setScissorRect.left, cmd.setScissorRect.bottom,
-                         cmd.setScissorRect.right);
-      break;
-    case RenderCommandType::SetRenderTarget:
-      ProcSetRenderTarget(cmd.setRenderTarget.renderTarget);
-      break;
-    case RenderCommandType::SetImplicitRenderTarget:
-      ProcSetImplicitRenderTarget(cmd.setImplicitRenderTarget.renderTarget);
-      break;
-    case RenderCommandType::SetDepthStencilSurface:
-      ProcSetDepthStencilSurface(cmd.setDepthStencilSurface.depthStencil);
-      break;
-    case RenderCommandType::SetRenderState:
-      ApplyRenderState(cmd.setRenderState.state, cmd.setRenderState.value);
-      break;
-    case RenderCommandType::SetTexture:
-      ProcSetTexture(cmd.setTexture.index, cmd.setTexture.texture);
-      break;
-    case RenderCommandType::SetTextureBase:
-      ProcSetTextureBase(cmd.setTextureBase.index, cmd.setTextureBase.texture);
-      break;
-    case RenderCommandType::SetVertexShader:
-      ProcSetVertexShader(cmd.setVertexShader.shader);
-      break;
-    case RenderCommandType::SetPixelShader:
-      ProcSetPixelShader(cmd.setPixelShader.shader);
-      break;
-    case RenderCommandType::SetVertexDeclaration:
-      ProcSetVertexDeclaration(cmd.setVertexDeclaration.declaration);
-      break;
-    case RenderCommandType::SetStreamSource:
-      ProcSetStreamSource(cmd.setStreamSource.index, cmd.setStreamSource.buffer,
-                          cmd.setStreamSource.offset, cmd.setStreamSource.stride);
-      break;
-    case RenderCommandType::SetIndices:
-      ProcSetIndices(cmd.setIndices.buffer);
-      break;
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Clear.
+// Clear / Resolve (POD enqueue; Proc* live below with draw helpers).
 // ---------------------------------------------------------------------------
 
 void Clear(GuestDevice* /*device*/, uint32_t flags, const float* color, float z) {
-  const float rgba[4] = {color[0], color[1], color[2], color[3]};
-  RenderQueue::Run([flags, rgba, z] {
-    std::lock_guard lock(RecordingMutex());
-    if (IsDeviceLost()) return;
-
-    // Drop stale RT/DS bindings before touching width/height or barriers.
-    if (g_renderTarget != nullptr && !IsLiveHostTexture(g_renderTarget)) {
-      g_renderTarget = nullptr;
-    }
-    if (g_depthStencil != nullptr && !IsLiveHostTexture(g_depthStencil)) {
-      g_depthStencil = nullptr;
-    }
-
-    AddBarrier(g_renderTarget, RenderTextureLayout::COLOR_WRITE);
-    AddBarrier(g_depthStencil, RenderTextureLayout::DEPTH_WRITE);
-    FlushBarriers();
-
-    const bool onePass = (g_renderTarget == nullptr) || (g_depthStencil == nullptr) ||
-                         (g_renderTarget->width == g_depthStencil->width &&
-                          g_renderTarget->height == g_depthStencil->height);
-    if (onePass) SetFramebuffer(g_renderTarget, g_depthStencil, true);
-
-    RenderRect clearRect(int32_t(g_viewport.x), int32_t(g_viewport.y),
-                         int32_t(g_viewport.x + g_viewport.width),
-                         int32_t(g_viewport.y + g_viewport.height));
-    if (g_scissorTestEnable) {
-      clearRect.left = std::max(clearRect.left, g_scissorRect.left);
-      clearRect.top = std::max(clearRect.top, g_scissorRect.top);
-      clearRect.right = std::min(clearRect.right, g_scissorRect.right);
-      clearRect.bottom = std::min(clearRect.bottom, g_scissorRect.bottom);
-    }
-
-    RenderCommandList* commandList = CommandList();
-    if (g_renderTarget != nullptr && g_renderTarget->texture != nullptr &&
-        (flags & D3DCLEAR_TARGET) != 0) {
-      if (!onePass) SetFramebuffer(g_renderTarget, nullptr, true);
-      if (g_framebuffer != nullptr) {
-        commandList->clearColor(0, RenderColor(rgba[0], rgba[1], rgba[2], rgba[3]), &clearRect, 1);
-        MarkAttachmentInitialized(g_renderTarget);
-      }
-    }
-    const bool clearDepth = (flags & D3DCLEAR_ZBUFFER) != 0;
-    const bool clearStencil = (flags & D3DCLEAR_STENCIL) != 0;
-    if (g_depthStencil != nullptr && g_depthStencil->texture != nullptr &&
-        (clearDepth || clearStencil)) {
-      if (!onePass) SetFramebuffer(nullptr, g_depthStencil, true);
-      if (g_framebuffer != nullptr) {
-        // Pass the guest's clear z through unflipped: FM2 is natively reverse-Z
-        // (viewport minZ=1/maxZ=0, ZFunc GREATER-family), and SetViewport already
-        // preserves that reversed depth range, so no additional flip is needed
-        // here for the scheme to be coherent end to end.
-        commandList->clearDepthStencil(clearDepth, clearStencil, z, 0, &clearRect, 1);
-        MarkAttachmentInitialized(g_depthStencil);
-        g_implicitDepthStencil = g_depthStencil;
-      }
-    }
-  });
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::Clear;
+  cmd.clear.flags = flags;
+  cmd.clear.color[0] = color != nullptr ? color[0] : 0.0f;
+  cmd.clear.color[1] = color != nullptr ? color[1] : 0.0f;
+  cmd.clear.color[2] = color != nullptr ? color[2] : 0.0f;
+  cmd.clear.color[3] = color != nullptr ? color[3] : 0.0f;
+  cmd.clear.z = z;
+  RenderQueue::Enqueue(cmd);
 }
 
 void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint,
@@ -1313,49 +1212,19 @@ void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint
   // Unleashed StretchRect pattern: link dest to the current RT and defer the
   // copy/MSAA resolve until FlushPendingStretchRectCommands (before Present /
   // draw). Immediate path kept for non-texture destinations or region copies.
-  const uint32_t destX = destPoint != nullptr ? uint32_t(destPoint->x.get()) : 0;
-  const uint32_t destY = destPoint != nullptr ? uint32_t(destPoint->y.get()) : 0;
-  const bool hasSrc = sourceRect != nullptr;
-  RenderRect srcRect{};
-  if (hasSrc) {
-    srcRect = RenderRect(sourceRect->left.get(), sourceRect->top.get(), sourceRect->right.get(),
-                         sourceRect->bottom.get());
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::ResolveToTexture;
+  cmd.resolveToTexture.destTexture = destTexture;
+  cmd.resolveToTexture.destX = destPoint != nullptr ? uint32_t(destPoint->x.get()) : 0;
+  cmd.resolveToTexture.destY = destPoint != nullptr ? uint32_t(destPoint->y.get()) : 0;
+  cmd.resolveToTexture.hasSrc = sourceRect != nullptr;
+  if (sourceRect != nullptr) {
+    cmd.resolveToTexture.srcLeft = sourceRect->left.get();
+    cmd.resolveToTexture.srcTop = sourceRect->top.get();
+    cmd.resolveToTexture.srcRight = sourceRect->right.get();
+    cmd.resolveToTexture.srcBottom = sourceRect->bottom.get();
   }
-  RenderQueue::Run([destTexture, destX, destY, hasSrc, srcRect] {
-    std::lock_guard lock(RecordingMutex());
-    if (IsDeviceLost()) return;
-    if (destTexture == nullptr || destTexture->texture == nullptr) return;
-    GuestBaseTexture* source = g_renderTarget;
-    if (source == nullptr || source->texture == nullptr || source == destTexture) return;
-
-    GuestSurface* surface = AsSurface(source);
-    auto* destAsTexture =
-        (destTexture->type == ResourceType::Texture || destTexture->type == ResourceType::VolumeTexture)
-            ? static_cast<GuestTexture*>(destTexture)
-            : nullptr;
-
-    // Full-surface Resolve into a GuestTexture → deferred StretchRect.
-    if (surface != nullptr && destAsTexture != nullptr && !hasSrc && destX == 0 && destY == 0) {
-      RegisterStretchRect(destAsTexture, surface);
-      return;
-    }
-
-    AddBarrier(source, RenderTextureLayout::RESOLVE_SOURCE);
-    AddBarrier(destTexture, RenderTextureLayout::RESOLVE_DEST);
-    FlushBarriers();
-
-    if (hasSrc) {
-      CommandList()->resolveTextureRegion(destTexture->texture, destX, destY, source->texture,
-                                          &srcRect);
-    } else if (surface != nullptr && surface->sampleCount != RenderSampleCount::COUNT_1 &&
-               destX == 0 && destY == 0) {
-      CommandList()->resolveTexture(destTexture->texture, source->texture);
-    } else {
-      CommandList()->resolveTextureRegion(destTexture->texture, destX, destY, source->texture,
-                                          nullptr);
-    }
-    MarkAttachmentInitialized(destTexture);
-  });
+  RenderQueue::Enqueue(cmd);
 }
 
 // ---------------------------------------------------------------------------
@@ -1997,37 +1866,186 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
 }
 
 void DrawInstanced(uint32_t vertexCount, uint32_t startVertex) {
-  RenderQueue::Run([vertexCount, startVertex] {
-    std::lock_guard lock(RecordingMutex());
-    if (IsDeviceLost()) return;
-    CommandList()->drawInstanced(vertexCount, 1, startVertex, 0);
-  });
+  // Intended for render-thread callers (nested under Dispatch / Run).
+  if (IsDeviceLost()) return;
+  CommandList()->drawInstanced(vertexCount, 1, startVertex, 0);
 }
 
 void DrawIndexedInstanced(uint32_t indexCount, uint32_t startIndex, int32_t baseVertexIndex) {
-  RenderQueue::Run([indexCount, startIndex, baseVertexIndex] {
-    std::lock_guard lock(RecordingMutex());
-    if (IsDeviceLost()) return;
-    CommandList()->drawIndexedInstanced(indexCount, 1, startIndex, baseVertexIndex, 0);
-  });
+  if (IsDeviceLost()) return;
+  CommandList()->drawIndexedInstanced(indexCount, 1, startIndex, baseVertexIndex, 0);
 }
+
+namespace {
+
+void ProcClear(uint32_t flags, const float rgba[4], float z) {
+  if (IsDeviceLost()) return;
+
+  if (g_renderTarget != nullptr && !IsLiveHostTexture(g_renderTarget)) {
+    g_renderTarget = nullptr;
+  }
+  if (g_depthStencil != nullptr && !IsLiveHostTexture(g_depthStencil)) {
+    g_depthStencil = nullptr;
+  }
+
+  AddBarrier(g_renderTarget, RenderTextureLayout::COLOR_WRITE);
+  AddBarrier(g_depthStencil, RenderTextureLayout::DEPTH_WRITE);
+  FlushBarriers();
+
+  const bool onePass = (g_renderTarget == nullptr) || (g_depthStencil == nullptr) ||
+                       (g_renderTarget->width == g_depthStencil->width &&
+                        g_renderTarget->height == g_depthStencil->height);
+  if (onePass) SetFramebuffer(g_renderTarget, g_depthStencil, true);
+
+  RenderRect clearRect(int32_t(g_viewport.x), int32_t(g_viewport.y),
+                       int32_t(g_viewport.x + g_viewport.width),
+                       int32_t(g_viewport.y + g_viewport.height));
+  if (g_scissorTestEnable) {
+    clearRect.left = std::max(clearRect.left, g_scissorRect.left);
+    clearRect.top = std::max(clearRect.top, g_scissorRect.top);
+    clearRect.right = std::min(clearRect.right, g_scissorRect.right);
+    clearRect.bottom = std::min(clearRect.bottom, g_scissorRect.bottom);
+  }
+
+  RenderCommandList* commandList = CommandList();
+  if (g_renderTarget != nullptr && g_renderTarget->texture != nullptr &&
+      (flags & D3DCLEAR_TARGET) != 0) {
+    if (!onePass) SetFramebuffer(g_renderTarget, nullptr, true);
+    if (g_framebuffer != nullptr) {
+      commandList->clearColor(0, RenderColor(rgba[0], rgba[1], rgba[2], rgba[3]), &clearRect, 1);
+      MarkAttachmentInitialized(g_renderTarget);
+    }
+  }
+  const bool clearDepth = (flags & D3DCLEAR_ZBUFFER) != 0;
+  const bool clearStencil = (flags & D3DCLEAR_STENCIL) != 0;
+  if (g_depthStencil != nullptr && g_depthStencil->texture != nullptr &&
+      (clearDepth || clearStencil)) {
+    if (!onePass) SetFramebuffer(nullptr, g_depthStencil, true);
+    if (g_framebuffer != nullptr) {
+      commandList->clearDepthStencil(clearDepth, clearStencil, z, 0, &clearRect, 1);
+      MarkAttachmentInitialized(g_depthStencil);
+      g_implicitDepthStencil = g_depthStencil;
+    }
+  }
+}
+
+void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_t destY,
+                          bool hasSrc, const RenderRect& srcRect) {
+  if (IsDeviceLost()) return;
+  if (destTexture == nullptr || destTexture->texture == nullptr) return;
+  GuestBaseTexture* source = g_renderTarget;
+  if (source == nullptr || source->texture == nullptr || source == destTexture) return;
+
+  GuestSurface* surface = AsSurface(source);
+  auto* destAsTexture =
+      (destTexture->type == ResourceType::Texture || destTexture->type == ResourceType::VolumeTexture)
+          ? static_cast<GuestTexture*>(destTexture)
+          : nullptr;
+
+  if (surface != nullptr && destAsTexture != nullptr && !hasSrc && destX == 0 && destY == 0) {
+    RegisterStretchRect(destAsTexture, surface);
+    return;
+  }
+
+  AddBarrier(source, RenderTextureLayout::RESOLVE_SOURCE);
+  AddBarrier(destTexture, RenderTextureLayout::RESOLVE_DEST);
+  FlushBarriers();
+
+  if (hasSrc) {
+    CommandList()->resolveTextureRegion(destTexture->texture, destX, destY, source->texture,
+                                        &srcRect);
+  } else if (surface != nullptr && surface->sampleCount != RenderSampleCount::COUNT_1 &&
+             destX == 0 && destY == 0) {
+    CommandList()->resolveTexture(destTexture->texture, source->texture);
+  } else {
+    CommandList()->resolveTextureRegion(destTexture->texture, destX, destY, source->texture,
+                                        nullptr);
+  }
+  MarkAttachmentInitialized(destTexture);
+}
+
+void ProcDrawPrimitive(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
+                       uint32_t vertexCount) {
+  if (IsDeviceLost()) return;
+  g_hasBoundPipeline = false;
+  const uint32_t convertedIndexCount = PrepareConvertedIndices(primitiveType, vertexCount);
+  FlushRenderState(device, primitiveType);
+  if (!g_hasBoundPipeline) return;
+  if (convertedIndexCount != 0) {
+    CommandList()->drawIndexedInstanced(convertedIndexCount, 1, 0, int32_t(startVertex), 0);
+  } else {
+    CommandList()->drawInstanced(vertexCount, 1, startVertex, 0);
+  }
+}
+
+void ProcDrawIndexedPrimitive(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
+                              uint32_t startIndex, uint32_t indexCount) {
+  if (IsDeviceLost()) return;
+  FlushRenderState(device, primitiveType);
+  if (!g_hasBoundPipeline) return;
+  CommandList()->drawIndexedInstanced(indexCount, 1, startIndex, baseVertexIndex, 0);
+}
+
+void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
+                         uint8_t* copy, uint32_t stride, uint32_t bytes) {
+  if (IsDeviceLost()) return;
+  g_hasBoundPipeline = false;
+
+  const uint8_t savedStride0 = g_pipelineState.vertexStrides[0];
+  g_pipelineState.vertexStrides[0] = uint8_t(stride);
+  const uint32_t convertedIndexCount = PrepareConvertedIndices(primitiveType, vertexCount);
+  FlushRenderState(device, primitiveType);
+  g_pipelineState.vertexStrides[0] = savedStride0;
+  if (!g_hasBoundPipeline) return;
+
+  RenderBufferReference ref = CurrentUploadAllocator().Upload(copy, bytes, false);
+  if (ref.ref == nullptr) {
+    g_hasBoundPipeline = false;
+    return;
+  }
+  RenderPipelineLayout* layout = PipelineLayout();
+  RenderCommandList* commandList = CommandList();
+  RenderPipeline* pipeline = GetPipeline(g_pipelineState, g_insideRecordedBatch);
+  if (layout == nullptr || commandList == nullptr || pipeline == nullptr) {
+    g_hasBoundPipeline = false;
+    return;
+  }
+  commandList->setGraphicsPipelineLayout(layout);
+  commandList->setPipeline(pipeline);
+  RenderVertexBufferView view(ref, bytes);
+  RenderInputSlot slot(0, stride, RenderInputSlotClassification::PER_VERTEX_DATA);
+  commandList->setVertexBuffers(0, &view, 1, &slot);
+  if (convertedIndexCount != 0) {
+    commandList->drawIndexedInstanced(convertedIndexCount, 1, 0, 0, 0);
+  } else {
+    commandList->drawInstanced(vertexCount, 1, 0, 0);
+  }
+  g_dirtyStates.vertexStreamFirst = 0;
+}
+
+}  // namespace
 
 void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
                   uint32_t vertexCount) {
-  RenderQueue::Run([device, primitiveType, startVertex, vertexCount] {
-    std::lock_guard lock(RecordingMutex());
-    if (IsDeviceLost()) return;
-    g_hasBoundPipeline = false;
-    const uint32_t convertedIndexCount = PrepareConvertedIndices(primitiveType, vertexCount);
-    // Nested RecordingMutex is fine (recursive); FlushRenderState also locks.
-    FlushRenderState(device, primitiveType);
-    if (!g_hasBoundPipeline) return;
-    if (convertedIndexCount != 0) {
-      CommandList()->drawIndexedInstanced(convertedIndexCount, 1, 0, int32_t(startVertex), 0);
-    } else {
-      CommandList()->drawInstanced(vertexCount, 1, startVertex, 0);
-    }
-  });
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::DrawPrimitive;
+  cmd.drawPrimitive.device = device;
+  cmd.drawPrimitive.primitiveType = primitiveType;
+  cmd.drawPrimitive.startVertex = startVertex;
+  cmd.drawPrimitive.vertexCount = vertexCount;
+  RenderQueue::Enqueue(cmd);
+}
+
+void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
+                         uint32_t startIndex, uint32_t indexCount) {
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::DrawIndexedPrimitive;
+  cmd.drawIndexedPrimitive.device = device;
+  cmd.drawIndexedPrimitive.primitiveType = primitiveType;
+  cmd.drawIndexedPrimitive.baseVertexIndex = baseVertexIndex;
+  cmd.drawIndexedPrimitive.startIndex = startIndex;
+  cmd.drawIndexedPrimitive.indexCount = indexCount;
+  RenderQueue::Enqueue(cmd);
 }
 
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
@@ -2041,42 +2059,94 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
     REXGPU_WARN("DrawUserPointerVertices: intermediary upload exhausted ({} bytes)", bytes);
     return;
   }
-  RenderQueue::Enqueue([device, primitiveType, vertexCount, copy, stride, bytes] {
-    std::lock_guard lock(RecordingMutex());
-    if (IsDeviceLost()) return;
-    g_hasBoundPipeline = false;
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::DrawPrimitiveUP;
+  cmd.drawPrimitiveUP.device = device;
+  cmd.drawPrimitiveUP.primitiveType = primitiveType;
+  cmd.drawPrimitiveUP.vertexCount = vertexCount;
+  cmd.drawPrimitiveUP.vertexData = copy;
+  cmd.drawPrimitiveUP.stride = stride;
+  cmd.drawPrimitiveUP.bytes = bytes;
+  RenderQueue::Enqueue(cmd);
+}
 
-    const uint8_t savedStride0 = g_pipelineState.vertexStrides[0];
-    g_pipelineState.vertexStrides[0] = uint8_t(stride);
-    const uint32_t convertedIndexCount = PrepareConvertedIndices(primitiveType, vertexCount);
-    FlushRenderState(device, primitiveType);
-    g_pipelineState.vertexStrides[0] = savedStride0;
-    if (!g_hasBoundPipeline) return;
-
-    RenderBufferReference ref = CurrentUploadAllocator().Upload(copy, bytes, false);
-    if (ref.ref == nullptr) {
-      g_hasBoundPipeline = false;
-      return;
+void DispatchRenderCommand(const RenderCommand& cmd) {
+  std::lock_guard lock(RecordingMutex());
+  switch (cmd.type) {
+    case RenderCommandType::DestructResource:
+      ProcDestructResource(cmd.destructResource.resource);
+      break;
+    case RenderCommandType::SetViewport:
+      ProcSetViewport(cmd.setViewport.x, cmd.setViewport.y, cmd.setViewport.width,
+                      cmd.setViewport.height, cmd.setViewport.minDepth,
+                      cmd.setViewport.maxDepth);
+      break;
+    case RenderCommandType::SetScissorRect:
+      ProcSetScissorRect(cmd.setScissorRect.scissorEnable, cmd.setScissorRect.top,
+                         cmd.setScissorRect.left, cmd.setScissorRect.bottom,
+                         cmd.setScissorRect.right);
+      break;
+    case RenderCommandType::SetRenderTarget:
+      ProcSetRenderTarget(cmd.setRenderTarget.renderTarget);
+      break;
+    case RenderCommandType::SetImplicitRenderTarget:
+      ProcSetImplicitRenderTarget(cmd.setImplicitRenderTarget.renderTarget);
+      break;
+    case RenderCommandType::SetDepthStencilSurface:
+      ProcSetDepthStencilSurface(cmd.setDepthStencilSurface.depthStencil);
+      break;
+    case RenderCommandType::SetRenderState:
+      ApplyRenderState(cmd.setRenderState.state, cmd.setRenderState.value);
+      break;
+    case RenderCommandType::SetTexture:
+      ProcSetTexture(cmd.setTexture.index, cmd.setTexture.texture);
+      break;
+    case RenderCommandType::SetTextureBase:
+      ProcSetTextureBase(cmd.setTextureBase.index, cmd.setTextureBase.texture);
+      break;
+    case RenderCommandType::SetVertexShader:
+      ProcSetVertexShader(cmd.setVertexShader.shader);
+      break;
+    case RenderCommandType::SetPixelShader:
+      ProcSetPixelShader(cmd.setPixelShader.shader);
+      break;
+    case RenderCommandType::SetVertexDeclaration:
+      ProcSetVertexDeclaration(cmd.setVertexDeclaration.declaration);
+      break;
+    case RenderCommandType::SetStreamSource:
+      ProcSetStreamSource(cmd.setStreamSource.index, cmd.setStreamSource.buffer,
+                          cmd.setStreamSource.offset, cmd.setStreamSource.stride);
+      break;
+    case RenderCommandType::SetIndices:
+      ProcSetIndices(cmd.setIndices.buffer);
+      break;
+    case RenderCommandType::Clear:
+      ProcClear(cmd.clear.flags, cmd.clear.color, cmd.clear.z);
+      break;
+    case RenderCommandType::ResolveToTexture: {
+      RenderRect srcRect(cmd.resolveToTexture.srcLeft, cmd.resolveToTexture.srcTop,
+                         cmd.resolveToTexture.srcRight, cmd.resolveToTexture.srcBottom);
+      ProcResolveToTexture(cmd.resolveToTexture.destTexture, cmd.resolveToTexture.destX,
+                           cmd.resolveToTexture.destY, cmd.resolveToTexture.hasSrc, srcRect);
+      break;
     }
-    RenderPipelineLayout* layout = PipelineLayout();
-    RenderCommandList* commandList = CommandList();
-    RenderPipeline* pipeline = GetPipeline(g_pipelineState, g_insideRecordedBatch);
-    if (layout == nullptr || commandList == nullptr || pipeline == nullptr) {
-      g_hasBoundPipeline = false;
-      return;
-    }
-    commandList->setGraphicsPipelineLayout(layout);
-    commandList->setPipeline(pipeline);
-    RenderVertexBufferView view(ref, bytes);
-    RenderInputSlot slot(0, stride, RenderInputSlotClassification::PER_VERTEX_DATA);
-    commandList->setVertexBuffers(0, &view, 1, &slot);
-    if (convertedIndexCount != 0) {
-      commandList->drawIndexedInstanced(convertedIndexCount, 1, 0, 0, 0);
-    } else {
-      commandList->drawInstanced(vertexCount, 1, 0, 0);
-    }
-    g_dirtyStates.vertexStreamFirst = 0;
-  });
+    case RenderCommandType::DrawPrimitive:
+      ProcDrawPrimitive(cmd.drawPrimitive.device, cmd.drawPrimitive.primitiveType,
+                        cmd.drawPrimitive.startVertex, cmd.drawPrimitive.vertexCount);
+      break;
+    case RenderCommandType::DrawIndexedPrimitive:
+      ProcDrawIndexedPrimitive(cmd.drawIndexedPrimitive.device,
+                               cmd.drawIndexedPrimitive.primitiveType,
+                               cmd.drawIndexedPrimitive.baseVertexIndex,
+                               cmd.drawIndexedPrimitive.startIndex,
+                               cmd.drawIndexedPrimitive.indexCount);
+      break;
+    case RenderCommandType::DrawPrimitiveUP:
+      ProcDrawPrimitiveUP(cmd.drawPrimitiveUP.device, cmd.drawPrimitiveUP.primitiveType,
+                          cmd.drawPrimitiveUP.vertexCount, cmd.drawPrimitiveUP.vertexData,
+                          cmd.drawPrimitiveUP.stride, cmd.drawPrimitiveUP.bytes);
+      break;
+  }
 }
 
 }  // namespace fm2::render

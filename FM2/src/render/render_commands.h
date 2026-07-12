@@ -1,8 +1,8 @@
 // render/render_commands.h
 //
 // Unleashed-style POD render commands. Guest threads enqueue these; the
-// dedicated render thread dispatches Proc* handlers. std::function Enqueue/
-// Run remain for Present/draws/creates until those are converted.
+// dedicated render thread dispatches Proc* handlers. std::function Run()
+// remains for Present / WaitForGPU / resource create until those convert.
 
 #pragma once
 
@@ -33,7 +33,14 @@ enum class RenderCommandType : uint32_t {
   SetVertexDeclaration,
   SetStreamSource,
   SetIndices,
+  Clear,
+  ResolveToTexture,
+  DrawPrimitive,
+  DrawIndexedPrimitive,
+  DrawPrimitiveUP,
 };
+
+struct GuestDevice;
 
 struct RenderCommand {
   RenderCommandType type{};
@@ -100,6 +107,44 @@ struct RenderCommand {
     struct {
       GuestBuffer* buffer;
     } setIndices;
+
+    struct {
+      uint32_t flags;
+      float color[4];
+      float z;
+    } clear;
+
+    struct {
+      GuestBaseTexture* destTexture;
+      uint32_t destX;
+      uint32_t destY;
+      bool hasSrc;
+      int32_t srcLeft, srcTop, srcRight, srcBottom;
+    } resolveToTexture;
+
+    struct {
+      GuestDevice* device;
+      uint32_t primitiveType;
+      uint32_t startVertex;
+      uint32_t vertexCount;
+    } drawPrimitive;
+
+    struct {
+      GuestDevice* device;
+      uint32_t primitiveType;
+      int32_t baseVertexIndex;
+      uint32_t startIndex;
+      uint32_t indexCount;
+    } drawIndexedPrimitive;
+
+    struct {
+      GuestDevice* device;
+      uint32_t primitiveType;
+      uint32_t vertexCount;
+      uint8_t* vertexData;
+      uint32_t stride;
+      uint32_t bytes;
+    } drawPrimitiveUP;
   };
 };
 
