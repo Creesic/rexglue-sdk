@@ -47,6 +47,7 @@
 #include "render/render_queue.h"
 #include "render/render_state.h"
 #include "render/shaders/placeholder_ps.hlsl.dxil.h"
+#include "render/video.h"
 
 // Spec-constant bits (XenosRecomp shared ABI -- must match the offline
 // shader-translation tool's bit layout exactly).
@@ -400,6 +401,20 @@ bool IsLiveHostTexture(GuestBaseTexture* texture) {
   return texture != nullptr && IsFm2Resource(texture) &&
          texture->textureHolder != nullptr && texture->texture != nullptr &&
          texture->texture == texture->textureHolder.get();
+}
+
+// FM2 EDRAM predicated tiling binds 1280x256 color RTs near frame end. Those
+// are intermediates, not the composited frontbuffer — sticky Present must not
+// adopt them (would stretch a tile band to full swapchain). Prefer host
+// viewport-sized (or larger) color targets until resolve-aperture present
+// lands.
+bool IsFramebufferSizedPresentSource(GuestBaseTexture* texture) {
+  if (!IsLiveHostTexture(texture)) return false;
+  const uint32_t frameW = Video::s_viewportWidth;
+  const uint32_t frameH = Video::s_viewportHeight;
+  if (frameW == 0 || frameH == 0) return true;
+  if (texture->width == frameW && texture->height < frameH) return false;
+  return texture->width >= frameW && texture->height >= frameH;
 }
 
 void AddBarrier(GuestBaseTexture* texture, RenderTextureLayout layout) {
@@ -1100,9 +1115,11 @@ void SetRenderTargetInternal(GuestBaseTexture* renderTarget) {
   SetAlphaTestMode((g_pipelineState.specConstants &
                     (SPEC_CONSTANT_ALPHA_TEST | SPEC_CONSTANT_ALPHA_TO_COVERAGE)) != 0);
 
-  // Remember the last live color target for Present. Swap often runs after the
-  // guest has unbound the RT; blitting nullptr yields a black swapchain clear.
-  if (IsLiveHostTexture(renderTarget)) {
+  // Remember the last full-frame color target for Present. Swap often runs
+  // after the guest has unbound the RT; blitting nullptr yields a clear.
+  // Skip EDRAM tile-height binds (e.g. 1280x256) so they cannot displace the
+  // real 720p present source.
+  if (IsFramebufferSizedPresentSource(renderTarget)) {
     g_lastPresentableRenderTarget = renderTarget;
   }
 
@@ -1238,11 +1255,13 @@ void SetImplicitRenderTarget(GuestBaseTexture* renderTarget) {
 }
 
 GuestBaseTexture* GetCurrentColorRenderTarget() {
-  // Prefer the currently bound RT; fall back to the last live presentable so
-  // Swap still blits after the guest unbound (or destroyed+rebound late).
-  if (IsLiveHostTexture(g_renderTarget)) return g_renderTarget;
-  if (IsLiveHostTexture(g_lastPresentableRenderTarget)) return g_lastPresentableRenderTarget;
-  if (IsLiveHostTexture(g_implicitRenderTarget)) return g_implicitRenderTarget;
+  // Prefer a full-frame color target. Tile-sized current binds must not win
+  // Present over sticky/implicit 720p surfaces.
+  if (IsFramebufferSizedPresentSource(g_renderTarget)) return g_renderTarget;
+  if (IsFramebufferSizedPresentSource(g_lastPresentableRenderTarget)) {
+    return g_lastPresentableRenderTarget;
+  }
+  if (IsFramebufferSizedPresentSource(g_implicitRenderTarget)) return g_implicitRenderTarget;
   return nullptr;
 }
 
