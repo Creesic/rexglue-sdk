@@ -69,3 +69,130 @@
 | 14:46 | Session end: 38 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 119 reads | ~67604 tok |
 | 14:47 | Edited src/kernel/xam/apps/xlivebase_app.cpp | 8→6 lines | ~78 |
 | 14:47 | Session end: 39 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 119 reads | ~67716 tok |
+| 14:48 | Session end: 39 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 119 reads | ~67716 tok |
+| 14:54 | Edited ../rexglue-sdk/src/kernel/xam/apps/xlivebase_app.cpp | 8→12 lines | ~126 |
+| 14:54 | Edited ../rexglue-sdk/src/kernel/xam/xam_ui.cpp | modified if() | ~140 |
+| 14:55 | Edited ../rexglue-sdk/src/kernel/xam/xam_ui.cpp | 3→2 lines | ~38 |
+| 14:55 | Session end: 42 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 121 reads | ~76193 tok |
+| 14:56 | Session end: 42 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 121 reads | ~76193 tok |
+| 15:04 | Session end: 42 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 121 reads | ~76193 tok |
+| 15:06 | Session end: 42 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 121 reads | ~76193 tok |
+| 15:14 | Session end: 42 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 121 reads | ~76193 tok |
+| 15:16 | Edited ../rexglue-sdk/src/kernel/xam/xam_ui.cpp | modified if() | ~140 |
+| 15:16 | Edited ../rexglue-sdk/src/kernel/xam/xam_ui.cpp | 3→2 lines | ~38 |
+| 15:16 | Session end: 44 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 121 reads | ~76383 tok |
+| 15:20 | Session end: 44 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 121 reads | ~76383 tok |
+| 15:21 | Session end: 44 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 121 reads | ~76383 tok |
+| 15:28 | Created ../rexglue-sdk/include/rex/audio/xaudio2/xaudio2_audio_system.h | — | ~326 |
+| 15:28 | Created ../rexglue-sdk/include/rex/audio/xaudio2/xaudio2_audio_driver.h | — | ~739 |
+| 15:29 | Created ../rexglue-sdk/src/audio/xaudio2/xaudio2_audio_system.cpp | — | ~498 |
+| 15:30 | Created ../rexglue-sdk/src/audio/xaudio2/xaudio2_audio_driver.cpp | — | ~3772 |
+| 15:30 | Edited ../rexglue-sdk/src/audio/CMakeLists.txt | added 1 condition(s) | ~168 |
+| 15:31 | Edited ../rexglue-sdk/cmake/rexglue_helpers.cmake | 2→4 lines | ~33 |
+| 15:31 | Edited ../rexglue-sdk/cmake/rexglue_helpers.cmake | added 2 condition(s) | ~235 |
+| 15:31 | Edited ../rexglue-sdk/cmake/rexglue_install.cmake | added 2 condition(s) | ~127 |
+| 15:32 | Edited ../rexglue-sdk/src/ui/rex_app.cpp | 2→6 lines | ~59 |
+| 15:32 | Edited ../rexglue-sdk/src/ui/rex_app.cpp | expanded (+8 lines) | ~100 |
+| 15:32 | Edited ../rexglue-sdk/src/ui/rex_app.cpp | added 2 condition(s) | ~136 |
+| 15:33 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 126 reads | ~100237 tok |
+| 15:44 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 126 reads | ~100237 tok |
+| 15:52 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 126 reads | ~100237 tok |
+| 15:58 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 126 reads | ~100237 tok |
+| 16:10 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 126 reads | ~100237 tok |
+| 16:12 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 126 reads | ~100237 tok |
+| 16:15 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 143 reads | ~100237 tok |
+| 16:22 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 155 reads | ~103980 tok |
+| 16:22 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 155 reads | ~103980 tok |
+| 16:23 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 155 reads | ~103980 tok |
+| 16:30 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 156 reads | ~103980 tok |
+| 16:35 | Session end: 55 writes across 17 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 159 reads | ~103980 tok |
+| 17:34 | Created ../../../.claude/plans/memoized-purring-newt.md | — | ~4997 |
+| 17:38 | Edited ../../../.claude/plans/memoized-purring-newt.md | expanded (+12 lines) | ~393 |
+| 17:38 | Edited ../../../.claude/plans/memoized-purring-newt.md | 21→24 lines | ~412 |
+| 17:38 | Edited ../../../.claude/plans/memoized-purring-newt.md | playtesting() → workstream() | ~93 |
+| 17:40 | Session end: 59 writes across 18 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 172 reads | ~119380 tok |
+| 17:44 | Edited thirdparty/CMakeLists.txt | expanded (+11 lines) | ~204 |
+| 17:44 | Edited thirdparty/CMakeLists.txt | 4→5 lines | ~11 |
+| 17:46 | Created FM2/tests/shader_cache_test.cpp | — | ~298 |
+| 17:47 | Created FM2/tests/shader_cache_test.cpp | — | ~510 |
+| 17:47 | Edited FM2/tests/shader_cache_test.cpp | 3→3 lines | ~16 |
+| 17:47 | Created FM2/tests/CMakeLists.txt | — | ~138 |
+| 17:47 | Edited FM2/CMakeLists.txt | 1→4 lines | ~29 |
+| 17:47 | Session end: 66 writes across 19 files (CLAUDE.md, migration-from-plume.md, fm2_hooks.cpp, CMakeLists.txt, fm2_manifest.toml) | 175 reads | ~123694 tok |
+
+## Session: 2026-07-11 17:52
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 17:53 | Edited FM2/tests/shader_cache_test.cpp | added error handling | ~321 |
+| 17:53 | Edited FM2/tests/shader_cache_test.cpp | 4→7 lines | ~122 |
+| 17:54 | Edited FM2/CMakeLists.txt | 5→6 lines | ~26 |
+
+## Session: 2026-07-11 17:58
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 18:04 | Created FM2/cmake/EmbedBinaryHeader.cmake | — | ~402 |
+| 18:04 | Created FM2/src/render/guest_device.h | — | ~1432 |
+| 18:04 | Edited FM2/src/render/guest_device.h | modified SetActiveGuestDevice() | ~98 |
+| 18:05 | Created FM2/src/render/guest_resources.h | — | ~1579 |
+| 18:05 | Created FM2/src/render/render_internal.h | — | ~387 |
+| 18:05 | Created FM2/src/render/video.h | — | ~366 |
+| 18:05 | Session end: 6 writes across 5 files (EmbedBinaryHeader.cmake, guest_device.h, guest_resources.h, render_internal.h, video.h) | 14 reads | ~6062 tok |
+| 18:06 | Created FM2/src/render/video.cpp | — | ~4870 |
+| 18:06 | Created FM2/src/render/shaders/copy_vs.hlsl | — | ~89 |
+| 18:06 | Created FM2/src/render/shaders/copy_ps.hlsl | — | ~149 |
+| 18:07 | Created FM2/src/render/d3d_hooks.cpp | — | ~690 |
+| 18:07 | Edited FM2/src/render/d3d_hooks.cpp | 5→6 lines | ~109 |
+| 18:07 | Edited FM2/src/fm2_app.h | added 2 condition(s) | ~348 |
+| 18:09 | Edited FM2/CMakeLists.txt | added 4 condition(s) | ~1233 |
+| 18:12 | Edited FM2/src/fm2_app.h | 7→10 lines | ~35 |
+| 18:12 | Edited FM2/src/fm2_app.h | added 2 condition(s) | ~394 |
+| 18:18 | Session end: 15 writes across 11 files (EmbedBinaryHeader.cmake, guest_device.h, guest_resources.h, render_internal.h, video.h) | 21 reads | ~23475 tok |
+| 18:42 | Edited FM2/src/render/guest_resources.h | modified GuestBaseTexture() | ~178 |
+| 18:42 | Edited FM2/src/render/guest_device.h | expanded (+18 lines) | ~122 |
+| 18:42 | Edited FM2/src/render/render_internal.h | 4→3 lines | ~16 |
+| 18:42 | Edited FM2/src/render/render_internal.h | 3→5 lines | ~26 |
+| 18:43 | Edited FM2/src/render/render_internal.h | expanded (+6 lines) | ~122 |
+| 18:43 | Created FM2/src/render/d3d_resource_hooks.cpp | — | ~4238 |
+| 18:44 | Edited FM2/src/render/d3d_hooks.cpp | modified hook() | ~724 |
+| 18:45 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~847 |
+| 18:45 | Edited FM2/src/render/d3d_hooks.cpp | 3→4 lines | ~34 |
+| 18:45 | Edited FM2/src/render/d3d_hooks.cpp | modified CreateVertexBufferHook() | ~280 |
+| 18:45 | Edited FM2/CMakeLists.txt | 3→4 lines | ~33 |
+| 18:45 | Created FM2/src/render/guest_heap.h | — | ~472 |
+| 18:46 | Edited FM2/src/render/d3d_resource_hooks.cpp | 3→4 lines | ~36 |
+| 18:46 | Edited FM2/src/render/d3d_resource_hooks.cpp | modified UnlockGuestResource() | ~56 |
+| 18:46 | Edited FM2/src/render/d3d_hooks.cpp | UnlockResource() → UnlockGuestResource() | ~35 |
+| 18:46 | Edited FM2/src/render/d3d_hooks.cpp | UnlockResource() → UnlockGuestResource() | ~34 |
+| 18:57 | Edited FM2/src/render/d3d_resource_hooks.cpp | added 9 condition(s) | ~1976 |
+| 18:57 | Edited FM2/src/render/d3d_hooks.cpp | 2→3 lines | ~63 |
+| 18:57 | Edited FM2/src/render/d3d_hooks.cpp | added 3 condition(s) | ~587 |
+| 19:01 | Edited FM2/fm2_manifest.toml | 2→3 lines | ~42 |
+| 19:02 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~276 |
+| 19:02 | Edited FM2/src/render/d3d_hooks.cpp | 2→3 lines | ~47 |
+| 19:05 | Edited FM2/src/render/d3d_resource_hooks.cpp | 6→7 lines | ~36 |
+| 19:05 | Edited FM2/src/render/d3d_resource_hooks.cpp | added 1 condition(s) | ~271 |
+| 19:08 | Edited FM2/src/render/d3d_hooks.cpp | added 6 condition(s) | ~1112 |
+| 19:10 | Session end: 40 writes across 14 files (EmbedBinaryHeader.cmake, guest_device.h, guest_resources.h, render_internal.h, video.h) | 36 reads | ~55112 tok |
+| 19:41 | Created FM2/src/render/render_state.h | — | ~657 |
+| 19:42 | Edited FM2/CMakeLists.txt | 4→5 lines | ~40 |
+| 19:42 | Edited FM2/CMakeLists.txt | added 1 condition(s) | ~92 |
+| 19:43 | Created FM2/src/render/pipeline.cpp | — | ~3741 |
+| 19:49 | Edited FM2/src/render/d3d_resource_hooks.cpp | added 19 condition(s) | ~1986 |
+| 19:50 | Edited FM2/fm2_manifest.toml | 2→2 lines | ~33 |
+| 19:55 | Created FM2/src/render/render_state.cpp | — | ~6006 |
+| 19:55 | Edited FM2/src/render/render_state.cpp | 2→3 lines | ~34 |
+| 19:56 | Edited FM2/src/render/render_state.cpp | added 12 condition(s) | ~2161 |
+| 19:56 | Edited FM2/CMakeLists.txt | 3→4 lines | ~35 |
+| 19:57 | Edited FM2/src/render/render_state.cpp | inline fix | ~20 |
+| 19:57 | Edited FM2/src/render/render_state.cpp | 5→5 lines | ~72 |
+| 19:57 | Edited FM2/src/render/render_state.cpp | 4→4 lines | ~88 |
+| 19:57 | Edited FM2/src/render/d3d_resource_hooks.cpp | 14→18 lines | ~110 |
+| 19:58 | Edited FM2/CMakeLists.txt | 5→6 lines | ~94 |
+| 20:00 | Edited FM2/src/render/d3d_hooks.cpp | 34→36 lines | ~416 |
+| 20:01 | Edited FM2/src/render/d3d_hooks.cpp | added 16 condition(s) | ~4089 |
+| 20:02 | Edited FM2/src/render/d3d_hooks.cpp | modified REX_HOOK_RAW() | ~302 |
+| 20:02 | Edited FM2/src/render/d3d_hooks.cpp | modified REX_HOOK_RAW() | ~130 |
+| 20:02 | Edited FM2/src/render/d3d_hooks.cpp | 3→4 lines | ~15 |
+| 20:06 | Session end: 60 writes across 17 files (EmbedBinaryHeader.cmake, guest_device.h, guest_resources.h, render_internal.h, video.h) | 43 reads | ~96708 tok |

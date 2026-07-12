@@ -1,0 +1,603 @@
+// render/d3d_hooks.cpp
+//
+// Phase 1 (device + present bring-up): hooks D3DDevice_ClearF and
+// D3DDevice_Swap as full plume replacements, and lets
+// FM2_D3D_TryPresentAndUpdateStatus's original guest body keep running
+// (status/bookkeeping, not a GPU call) with Video::Present() layered on top.
+//
+// Video::Init/Shutdown are driven from Fm2App::OnPreLaunchModule/OnShutdown
+// (see fm2_app.h), not from a guest-function hook: FM2_D3D_InitGlobalDeviceSingleton
+// does not need to run under the native renderer, and the app-lifecycle hook is
+// the same window/device-creation order the guest function would have driven.
+//
+// Phase 2 (resource hooks): buffer/texture/surface/vertex-declaration
+// creation and lock/unlock. Every guest-facing D3D9 wrapper function that
+// calls one of these primitives (e.g. FM2_D3D_CreateTextureWrapper calling
+// D3DDevice_CreateTexture) is a thin, unhooked call-through -- hooking the
+// primitive here is enough; the linker's strong-symbol replacement covers
+// every caller automatically, no separate wrapper hooks needed. Same reason
+// FM2_Image_ParseDDSFromMemory and the D3DX texture-from-memory pipeline
+// need no hooks at all: that whole (fairly involved) original algorithm
+// keeps running unmodified and transparently calls through these hooked
+// primitives for the actual create/lock/unlock work.
+
+#include <algorithm>
+#include <bit>
+#include <cstdint>
+
+#include <rex/hook.h>
+
+#include "render/guest_device.h"
+#include "render/guest_heap.h"
+#include "render/guest_resources.h"
+#include "render/render_state.h"
+#include "render/video.h"
+
+using fm2::render::GuestBuffer;
+using fm2::render::GuestDevice;
+using fm2::render::GuestLockedRect;
+using fm2::render::GuestResource;
+using fm2::render::GuestSurface;
+using fm2::render::GuestSurfaceDesc;
+using fm2::render::GuestVertexElement;
+
+namespace fm2::render {
+GuestBuffer* CreateVertexBuffer(uint32_t length);
+GuestBuffer* CreateIndexBuffer(uint32_t length, uint32_t format);
+uint32_t LockVertexBuffer(GuestBuffer* buffer, uint32_t flags);
+void UnlockVertexBuffer(GuestBuffer* buffer);
+uint32_t LockIndexBuffer(GuestBuffer* buffer, uint32_t flags);
+void UnlockIndexBuffer(GuestBuffer* buffer);
+GuestTexture* CreateTexture(uint32_t width, uint32_t height, uint32_t depth, uint32_t levels,
+                            uint32_t usage, uint32_t format, uint32_t pool, uint32_t type);
+GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format, uint32_t multiSample);
+void LockRect(GuestBaseTexture* texture, uint32_t* outPitch, uint32_t* outBits);
+void UnlockGuestResource(GuestResource* resource);
+GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestElements);
+void GetSurfaceDesc(const GuestSurface* surface, GuestSurfaceDesc* desc);
+GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size);
+GuestShader* LookupShaderAlias(uint32_t guestAddress);
+}  // namespace fm2::render
+
+namespace {
+
+// D3DDevice_ClearF(device, flags, rect, D3DVECTOR4* color, z, d3dColor).
+// color is 4 big-endian floats in guest memory; flags/rect/d3dColor are not
+// needed yet (no render-target tracking until the Phase 2 resource hooks).
+void ClearF(GuestDevice* /*device*/, uint32_t /*flags*/, void* /*rect*/,
+            const uint32_t* color, float /*z*/, uint32_t /*d3dColor*/) {
+  float rgba[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+  if (color != nullptr) {
+    for (int i = 0; i < 4; ++i) {
+      rgba[i] = std::bit_cast<float>(std::byteswap(color[i]));
+    }
+  }
+  Video::SetFallbackClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+}
+
+// D3DDevice_Swap: the real per-frame present trigger for FM2 (confirmed
+// against this same guest binary by the reference repo's own investigation;
+// FM2_D3D_TryPresentAndUpdateStatus never actually fires on the live present
+// path). The original guest body kicks the real Xenos GPU ring buffer, which
+// does not exist under the native renderer, so it must not run here; this
+// hook fully replaces it.
+void Swap(uint32_t /*commandBuffer*/, uint32_t /*arg4*/, uint32_t /*arg5*/) {
+  Video::ClaimPresentOwner();
+  Video::Present();
+}
+
+}  // namespace
+
+REX_IMPORT(__imp__FM2_D3D_TryPresentAndUpdateStatus,
+           g_origTryPresentAndUpdateStatus, void(uint32_t));
+
+namespace {
+
+// Kept as a passthrough: unlike D3DDevice_Swap this is guest status
+// bookkeeping, not a GPU-ring call, so the original body still needs to run.
+// Also drives Present() defensively in case this ever becomes the real
+// present trigger for some code path Swap doesn't cover.
+void PresentAndUpdateStatus(uint32_t presentChain) {
+  g_origTryPresentAndUpdateStatus(presentChain);
+  Video::Present();
+}
+
+}  // namespace
+
+REX_HOOK(D3DDevice_ClearF, ClearF);
+REX_HOOK(D3DDevice_Swap, Swap);
+REX_HOOK(FM2_D3D_TryPresentAndUpdateStatus, PresentAndUpdateStatus);
+
+// ---------------------------------------------------------------------------
+// Phase 2: resource creation / lock / unlock. Pure replacements -- the
+// returned guest address is the native object's own address (GuestNew places
+// it inside guest memory), no XDK shadow object, no alias table.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+namespace rr = fm2::render;
+namespace ghp = fm2::ghp;
+
+uint32_t CreateVertexBufferHook(uint32_t length, uint32_t /*usage*/, uint32_t /*pool*/) {
+  return ghp::ToGuest(rr::CreateVertexBuffer(length));
+}
+
+uint32_t CreateIndexBufferHook(uint32_t length, uint32_t /*usage*/, uint32_t format, uint32_t /*pool*/) {
+  return ghp::ToGuest(rr::CreateIndexBuffer(length, format));
+}
+
+uint32_t CreateTextureHook(uint32_t width, uint32_t height, uint32_t depth, uint32_t levels, uint32_t usage,
+                           uint32_t format, uint32_t pool, uint32_t type) {
+  return ghp::ToGuest(rr::CreateTexture(width, height, depth, levels, usage, format, pool, type));
+}
+
+uint32_t CreateSurfaceHook(uint32_t width, uint32_t height, uint32_t format, uint32_t multiSample,
+                           const void* /*parameters*/) {
+  return ghp::ToGuest(rr::CreateSurface(width, height, format, multiSample));
+}
+
+uint32_t CreateVertexDeclarationHook(const GuestVertexElement* elements) {
+  return ghp::ToGuest(rr::CreateVertexDeclaration(elements));
+}
+
+}  // namespace
+
+// Not everything that reaches Lock/Unlock/GetDesc was created through our
+// hooked Create* functions -- FM2 also builds texture-shaped D3DResources
+// manually via the low-level XG* XDK API (XGSetTextureHeader +
+// XGOffsetResourceAddress), bypassing D3DDevice_CreateTexture entirely
+// (confirmed via decompile of one such caller). Those raw XDK objects don't
+// have our GuestResource magic header, so IsFm2Resource() distinguishes them
+// and the original guest body still runs for anything we didn't create.
+REX_IMPORT(__imp__FM2_D3DVertexBuffer_Lock, g_origVertexBufferLock,
+           uint32_t(uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3D_LockGpuBufferRaw, g_origIndexBufferLock,
+           uint32_t(uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3DSurface_LockRect, g_origSurfaceLockRect,
+           void(uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3DTexture_LockRect, g_origTextureLockRect,
+           void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3DResource_UnlockResource, g_origUnlockResource,
+           void(uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3DSurface_GetDesc, g_origSurfaceGetDesc, void(uint32_t, uint32_t));
+
+namespace {
+
+uint32_t VertexBufferLockHook(uint32_t bufferAddr, uint32_t offsetToLock, uint32_t sizeToLock, uint32_t flags) {
+  auto* buffer = ghp::ToHost<GuestBuffer>(bufferAddr);
+  if (!rr::IsFm2Resource(buffer)) return g_origVertexBufferLock(bufferAddr, offsetToLock, sizeToLock, flags);
+  return rr::LockVertexBuffer(buffer, flags);
+}
+
+uint32_t IndexBufferLockHook(uint32_t bufferAddr, uint32_t offsetToLock, uint32_t sizeToLock, uint32_t flags) {
+  auto* buffer = ghp::ToHost<GuestBuffer>(bufferAddr);
+  if (!rr::IsFm2Resource(buffer)) return g_origIndexBufferLock(bufferAddr, offsetToLock, sizeToLock, flags);
+  return rr::LockIndexBuffer(buffer, flags);
+}
+
+void SurfaceLockRectHook(uint32_t textureAddr, uint32_t lockedRectAddr, uint32_t rectAddr, uint32_t flags) {
+  auto* texture = ghp::ToHost<rr::GuestBaseTexture>(textureAddr);
+  if (!rr::IsFm2Resource(texture)) {
+    g_origSurfaceLockRect(textureAddr, lockedRectAddr, rectAddr, flags);
+    return;
+  }
+  uint32_t pitch = 0, bits = 0;
+  rr::LockRect(texture, &pitch, &bits);
+  if (auto* lockedRect = ghp::ToHost<GuestLockedRect>(lockedRectAddr)) {
+    lockedRect->pitch = static_cast<int32_t>(pitch);
+    lockedRect->bits = bits;
+  }
+}
+
+// D3D9 textures lock through a *different* entry point than surfaces
+// (IDirect3DTexture9::LockRect takes a mip Level; IDirect3DSurface9 doesn't).
+// This guest function was previously misnamed FM2_AudioRender_SubmitFrontBufferPath
+// in the manifest/IDA -- confirmed via decompile to be the real texture-lock
+// leaf (renamed to FM2_D3DTexture_LockRect). Missing this hook left the
+// original body running against our GuestTexture's non-XDK layout, producing
+// a garbage lock pointer that crashed later in TileSurface/FM2_MemcpyAligned.
+void TextureLockRectHook(uint32_t textureAddr, uint32_t level, uint32_t lockedRectAddr, uint32_t rectAddr,
+                         uint32_t flags) {
+  auto* texture = ghp::ToHost<rr::GuestBaseTexture>(textureAddr);
+  if (!rr::IsFm2Resource(texture)) {
+    g_origTextureLockRect(textureAddr, level, lockedRectAddr, rectAddr, flags);
+    return;
+  }
+  uint32_t pitch = 0, bits = 0;
+  rr::LockRect(texture, &pitch, &bits);
+  if (auto* lockedRect = ghp::ToHost<GuestLockedRect>(lockedRectAddr)) {
+    lockedRect->pitch = static_cast<int32_t>(pitch);
+    lockedRect->bits = bits;
+  }
+}
+
+void UnlockResourceHook(uint32_t resourceAddr, uint32_t base, uint32_t mip) {
+  auto* resource = ghp::ToHost<GuestResource>(resourceAddr);
+  if (!rr::IsFm2Resource(resource)) {
+    g_origUnlockResource(resourceAddr, base, mip);
+    return;
+  }
+  rr::UnlockGuestResource(resource);
+}
+
+void SurfaceGetDescHook(uint32_t surfaceAddr, uint32_t descAddr) {
+  auto* surface = ghp::ToHost<GuestSurface>(surfaceAddr);
+  if (!rr::IsFm2Resource(surface)) {
+    g_origSurfaceGetDesc(surfaceAddr, descAddr);
+    return;
+  }
+  rr::GetSurfaceDesc(surface, ghp::ToHost<GuestSurfaceDesc>(descAddr));
+}
+
+// FM2_D3D_CreateTextureFromMemoryBuffer(textureHolder, data, size): the
+// original guest body hands off to the D3DX texture-from-memory pipeline,
+// whose internal tiling step (TileSurface) reads a raw GPU-memory-address
+// field out of the D3D9 texture object it creates -- our GuestTexture has no
+// such field, so letting that pipeline run corrupts memory (confirmed via a
+// crash in FM2_MemcpyAligned during boot). This hook bypasses it completely:
+// parse+upload the DDS blob ourselves, then populate textureHolder's fields
+// directly (offsets match what the guest's own post-load step,
+// sub_825A2538, would have written: +4 texture handle, +12 loaded flag,
+// +24 width, +28 height, +32 mip count).
+void CreateTextureFromMemoryBufferHook(uint32_t textureHolder, const uint8_t* data, uint32_t size) {
+  rr::GuestTexture* texture = rr::LoadTextureFromMemory(data, size);
+
+  auto writeU32 = [&](uint32_t offset, uint32_t value) {
+    if (auto* p = ghp::ToHost<rex::be<uint32_t>>(textureHolder + offset)) p->set(value);
+  };
+  auto writeU8 = [&](uint32_t offset, uint8_t value) {
+    if (auto* p = ghp::ToHost<uint8_t>(textureHolder + offset)) *p = value;
+  };
+
+  writeU32(4, ghp::ToGuest(texture));
+  writeU8(12, 1);
+  if (texture != nullptr) {
+    writeU32(24, texture->width);
+    writeU32(28, texture->height);
+    writeU32(32, texture->levels);
+  }
+}
+
+}  // namespace
+
+REX_HOOK(FM2_D3DDevice_CreateVertexBuffer, CreateVertexBufferHook);
+REX_HOOK(FM2_D3DDevice_CreateIndexBuffer, CreateIndexBufferHook);
+REX_HOOK(FM2_D3DDevice_CreateTexture, CreateTextureHook);
+REX_HOOK(FM2_D3DDevice_CreateSurface, CreateSurfaceHook);
+REX_HOOK(FM2_D3DDevice_CreateVertexDeclaration, CreateVertexDeclarationHook);
+REX_HOOK(FM2_D3DVertexBuffer_Lock, VertexBufferLockHook);
+REX_HOOK(FM2_D3D_LockGpuBufferRaw, IndexBufferLockHook);
+REX_HOOK(FM2_D3DSurface_LockRect, SurfaceLockRectHook);
+REX_HOOK(FM2_D3DTexture_LockRect, TextureLockRectHook);
+REX_HOOK(FM2_D3DResource_UnlockResource, UnlockResourceHook);
+REX_HOOK(FM2_D3DSurface_GetDesc, SurfaceGetDescHook);
+REX_HOOK(FM2_D3D_CreateTextureFromMemoryBuffer, CreateTextureFromMemoryBufferHook);
+
+// ---------------------------------------------------------------------------
+// Phase 3: render state, clip planes, bool constants, vertex/index/surface
+// binding, shader state. All full replacements EXCEPT these state setters
+// still call their original guest body first: unlike D3DDevice_Swap (which
+// crashes if its original runs, since it kicks a nonexistent GPU ring),
+// these setters are ordinary struct bit-packing with no GPU/OS calls, so
+// calling the original keeps any *other*, still-unhooked guest code that
+// queries render state (GetRenderState-style reads) internally consistent.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+GuestDevice* DeviceForRenderContext(uint32_t renderContext) {
+  if (renderContext != 0) {
+    auto* device = ghp::ToHost<GuestDevice>(renderContext);
+    rr::SetActiveGuestDevice(device);
+    return device;
+  }
+  return rr::GetActiveGuestDevice();
+}
+
+}  // namespace
+
+#define FM2_RS_IMPORT(guestName, callableName) \
+  REX_IMPORT(__imp__##guestName, callableName, void(uint32_t, uint32_t))
+
+FM2_RS_IMPORT(D3DDevice_SetRenderState_AlphaBlendEnable, g_origRsAlphaBlendEnable);
+FM2_RS_IMPORT(D3DDevice_SetRenderState_AlphaTestEnable, g_origRsAlphaTestEnable);
+FM2_RS_IMPORT(D3DDevice_SetRenderState_AlphaRef, g_origRsAlphaRef);
+FM2_RS_IMPORT(D3DDevice_SetRenderState_ZEnable, g_origRsZEnable);
+FM2_RS_IMPORT(D3DDevice_SetRenderState_ZWriteEnable, g_origRsZWriteEnable);
+FM2_RS_IMPORT(D3DDevice_SetRenderState_ZFunc, g_origRsZFunc);
+FM2_RS_IMPORT(D3DDevice_SetRenderState_ColorWriteEnable, g_origRsColorWriteEnable);
+FM2_RS_IMPORT(D3DDevice_SetRenderState_BlendOp, g_origRsBlendOp);
+FM2_RS_IMPORT(D3DDevice_SetRenderState_SrcBlend, g_origRsSrcBlend);
+FM2_RS_IMPORT(D3DDevice_SetRenderState_DestBlend, g_origRsDestBlend);
+FM2_RS_IMPORT(D3DDevice_SetRenderState_SrcBlendAlpha, g_origRsSrcBlendAlpha);
+FM2_RS_IMPORT(D3DDevice_SetRenderState_DestBlendAlpha, g_origRsDestBlendAlpha);
+
+#undef FM2_RS_IMPORT
+
+namespace {
+
+void MirrorRenderState(uint32_t renderContext, uint32_t d3drs, uint32_t value) {
+  GuestDevice* device = DeviceForRenderContext(renderContext);
+  if (device == nullptr) return;
+  rr::SetRenderState(device, d3drs, value);
+}
+
+#define FM2_RS_HOOK(hookName, origCallable, d3drs)                     \
+  void hookName(uint32_t device, uint32_t value) {                     \
+    origCallable(device, value);                                      \
+    MirrorRenderState(device, d3drs, value);                           \
+  }
+
+FM2_RS_HOOK(Fm2RsAlphaBlendEnable, g_origRsAlphaBlendEnable, rr::D3DRS_ALPHABLENDENABLE)
+FM2_RS_HOOK(Fm2RsAlphaTestEnable, g_origRsAlphaTestEnable, rr::D3DRS_ALPHATESTENABLE)
+FM2_RS_HOOK(Fm2RsAlphaRef, g_origRsAlphaRef, rr::D3DRS_ALPHAREF)
+FM2_RS_HOOK(Fm2RsZEnable, g_origRsZEnable, rr::D3DRS_ZENABLE)
+FM2_RS_HOOK(Fm2RsZWriteEnable, g_origRsZWriteEnable, rr::D3DRS_ZWRITEENABLE)
+FM2_RS_HOOK(Fm2RsZFunc, g_origRsZFunc, rr::D3DRS_ZFUNC)
+FM2_RS_HOOK(Fm2RsColorWriteEnable, g_origRsColorWriteEnable, rr::D3DRS_COLORWRITEENABLE)
+FM2_RS_HOOK(Fm2RsBlendOp, g_origRsBlendOp, rr::D3DRS_BLENDOP)
+FM2_RS_HOOK(Fm2RsSrcBlend, g_origRsSrcBlend, rr::D3DRS_SRCBLEND)
+FM2_RS_HOOK(Fm2RsDestBlend, g_origRsDestBlend, rr::D3DRS_DESTBLEND)
+FM2_RS_HOOK(Fm2RsSrcBlendAlpha, g_origRsSrcBlendAlpha, rr::D3DRS_SRCBLENDALPHA)
+FM2_RS_HOOK(Fm2RsDestBlendAlpha, g_origRsDestBlendAlpha, rr::D3DRS_DESTBLENDALPHA)
+
+#undef FM2_RS_HOOK
+
+}  // namespace
+
+REX_HOOK(D3DDevice_SetRenderState_AlphaBlendEnable, Fm2RsAlphaBlendEnable);
+REX_HOOK(D3DDevice_SetRenderState_AlphaTestEnable, Fm2RsAlphaTestEnable);
+REX_HOOK(D3DDevice_SetRenderState_AlphaRef, Fm2RsAlphaRef);
+REX_HOOK(D3DDevice_SetRenderState_ZEnable, Fm2RsZEnable);
+REX_HOOK(D3DDevice_SetRenderState_ZWriteEnable, Fm2RsZWriteEnable);
+REX_HOOK(D3DDevice_SetRenderState_ZFunc, Fm2RsZFunc);
+REX_HOOK(D3DDevice_SetRenderState_ColorWriteEnable, Fm2RsColorWriteEnable);
+REX_HOOK(D3DDevice_SetRenderState_BlendOp, Fm2RsBlendOp);
+REX_HOOK(D3DDevice_SetRenderState_SrcBlend, Fm2RsSrcBlend);
+REX_HOOK(D3DDevice_SetRenderState_DestBlend, Fm2RsDestBlend);
+REX_HOOK(D3DDevice_SetRenderState_SrcBlendAlpha, Fm2RsSrcBlendAlpha);
+REX_HOOK(D3DDevice_SetRenderState_DestBlendAlpha, Fm2RsDestBlendAlpha);
+
+// ---------------------------------------------------------------------------
+// Clip planes.
+// ---------------------------------------------------------------------------
+
+REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane0Enable, g_origSetClipPlane0Enable, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane1Enable, g_origSetClipPlane1Enable, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane2Enable, g_origSetClipPlane2Enable, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetClipPlane3Enable, g_origSetClipPlane3Enable, void(uint32_t, uint32_t));
+
+namespace {
+
+void MirrorClipPlanes(uint32_t renderContext) {
+  GuestDevice* device = DeviceForRenderContext(renderContext);
+  if (device == nullptr) return;
+  rr::UpdateClipPlaneConstants(device);
+}
+
+void Fm2SetClipPlane0Enable(uint32_t renderContext, uint32_t value) {
+  g_origSetClipPlane0Enable(renderContext, value);
+  MirrorClipPlanes(renderContext);
+}
+void Fm2SetClipPlane1Enable(uint32_t renderContext, uint32_t value) {
+  g_origSetClipPlane1Enable(renderContext, value);
+  MirrorClipPlanes(renderContext);
+}
+void Fm2SetClipPlane2Enable(uint32_t renderContext, uint32_t value) {
+  g_origSetClipPlane2Enable(renderContext, value);
+  MirrorClipPlanes(renderContext);
+}
+void Fm2SetClipPlane3Enable(uint32_t renderContext, uint32_t value) {
+  g_origSetClipPlane3Enable(renderContext, value);
+  MirrorClipPlanes(renderContext);
+}
+
+}  // namespace
+
+REX_HOOK(FM2_RenderContext_SetClipPlane0Enable, Fm2SetClipPlane0Enable);
+REX_HOOK(FM2_RenderContext_SetClipPlane1Enable, Fm2SetClipPlane1Enable);
+REX_HOOK(FM2_RenderContext_SetClipPlane2Enable, Fm2SetClipPlane2Enable);
+REX_HOOK(FM2_RenderContext_SetClipPlane3Enable, Fm2SetClipPlane3Enable);
+
+// ---------------------------------------------------------------------------
+// Vertex/pixel shader bool constants (device->vertexShaderBoolConstants /
+// pixelShaderBoolConstants -- packed 32 bools/dword, guest data is
+// big-endian, 1 bool per dword, LSB tested). Distinct from the (deliberately
+// unhooked) float-constant setters.
+// ---------------------------------------------------------------------------
+
+REX_IMPORT(__imp__sub_8236DBC8, g_origSetPsBoolConst, void(uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236DB68, g_origSetVsBoolConst, void(uint32_t, uint32_t, uint32_t, uint32_t));
+
+namespace {
+
+void SetShaderConstantB(rex::be<uint32_t>* constants, uint32_t constantCount, uint32_t startRegister,
+                        const uint32_t* data, uint32_t boolCount) {
+  if (constants == nullptr || data == nullptr || startRegister >= constantCount * 32) return;
+  const uint32_t count = std::min(boolCount, constantCount * 32 - startRegister);
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t bit = startRegister + i;
+    uint32_t value = constants[bit / 32].get();
+    const uint32_t mask = 1u << (bit & 31);
+    if ((std::byteswap(data[i]) & 1u) != 0) {
+      value |= mask;
+    } else {
+      value &= ~mask;
+    }
+    constants[bit / 32] = value;
+  }
+}
+
+void Fm2SetPixelShaderConstantB(uint32_t device, uint32_t startRegister, uint32_t constantData,
+                                uint32_t boolCount) {
+  g_origSetPsBoolConst(device, startRegister, constantData, boolCount);
+  auto* dev = ghp::ToHost<GuestDevice>(device);
+  if (dev == nullptr || constantData == 0 || boolCount == 0) return;
+  SetShaderConstantB(dev->pixelShaderBoolConstants, uint32_t(std::size(dev->pixelShaderBoolConstants)),
+                     startRegister, ghp::ToHost<const uint32_t>(constantData), boolCount);
+}
+
+void Fm2SetVertexShaderConstantB(uint32_t device, uint32_t startRegister, uint32_t constantData,
+                                 uint32_t boolCount) {
+  g_origSetVsBoolConst(device, startRegister, constantData, boolCount);
+  auto* dev = ghp::ToHost<GuestDevice>(device);
+  if (dev == nullptr || constantData == 0 || boolCount == 0) return;
+  SetShaderConstantB(dev->vertexShaderBoolConstants, uint32_t(std::size(dev->vertexShaderBoolConstants)),
+                     startRegister, ghp::ToHost<const uint32_t>(constantData), boolCount);
+}
+
+}  // namespace
+
+REX_HOOK(sub_8236DBC8, Fm2SetPixelShaderConstantB);
+REX_HOOK(sub_8236DB68, Fm2SetVertexShaderConstantB);
+
+// ---------------------------------------------------------------------------
+// SetActivePassId: NOT a vertex declaration despite writing into the
+// device's vertexDeclaration field -- confirmed via decompile to be a
+// texture/shader-state pass token. Mirroring it there anyway is a deliberate
+// band-aid the reference repo found empirically load-bearing: it's the only
+// thing that gives the (Phase 4) declaration-matching path a non-zero handle
+// to resolve; dropping it made every draw fail to match a declaration and
+// skip, producing an all-black frame. Keep until a proper per-draw
+// declaration source replaces it.
+// ---------------------------------------------------------------------------
+
+REX_IMPORT(__imp__sub_8236E228, g_origSetActivePassId, void(uint32_t, uint32_t));
+
+namespace {
+
+void Fm2SetActivePassId(uint32_t renderContext, uint32_t passId) {
+  g_origSetActivePassId(renderContext, passId);
+  GuestDevice* device = DeviceForRenderContext(renderContext);
+  if (device == nullptr) return;
+  device->vertexDeclaration = passId;
+}
+
+}  // namespace
+
+REX_HOOK(sub_8236E228, Fm2SetActivePassId);
+
+// ---------------------------------------------------------------------------
+// Vertex/index stream + surface binding.
+// ---------------------------------------------------------------------------
+
+REX_IMPORT(__imp__FM2_RenderContext_BindIndexBuffer, g_origBindIndexBuffer, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetBoundSurface, g_origSetBoundSurface,
+           void(uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_823716F8, g_origBindSurfaceInternal, void(uint32_t, uint32_t, uint32_t));
+
+namespace {
+
+rr::GuestBaseTexture* TranslateSurfaceForBind(uint32_t surfaceAddr) {
+  auto* gs = ghp::ToHost<GuestSurface>(surfaceAddr);
+  return gs;  // pure-replace resources: the guest address always resolves directly.
+}
+
+void SetRenderTargetNative(GuestDevice* device, uint32_t index, uint32_t surfaceAddr) {
+  rr::SetRenderTarget(device, index, TranslateSurfaceForBind(surfaceAddr));
+}
+
+}  // namespace
+
+REX_IMPORT(__imp__FM2_RenderContext_BindVertexStream, g_origFm2BindVertexStream,
+           void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint64_t));
+
+// Carries a uint64_t dirty_mask split across r8:r9 in the 32-bit PPC ABI;
+// the standard auto-marshaling would only read the low half, so this hook
+// stays RAW to forward the full context, matching the reference's own
+// documented reasoning for the same guest function.
+REX_HOOK_RAW(FM2_RenderContext_BindVertexStream) {
+  const uint32_t renderContext = ctx.r3.u32;
+  const uint32_t slot = ctx.r4.u32;
+  const uint32_t resourceAddr = ctx.r5.u32;
+  const uint32_t byteOffset = ctx.r6.u32;
+  const uint32_t strideBytes = ctx.r7.u32;
+  const uint64_t dirtyMask = (uint64_t(ctx.r8.u32) << 32) | ctx.r9.u32;
+  g_origFm2BindVertexStream(ctx, base, renderContext, slot, resourceAddr, byteOffset, strideBytes,
+                            dirtyMask);
+  GuestDevice* device = DeviceForRenderContext(renderContext);
+  if (device == nullptr) return;
+  auto* buffer = ghp::ToHost<GuestBuffer>(resourceAddr);
+  rr::SetStreamSource(device, slot, buffer, byteOffset, strideBytes);
+}
+
+void Fm2BindIndexBuffer(uint32_t renderContext, uint32_t resourceAddr) {
+  g_origBindIndexBuffer(renderContext, resourceAddr);
+  GuestDevice* device = DeviceForRenderContext(renderContext);
+  if (device == nullptr) return;
+  rr::SetIndices(device, ghp::ToHost<GuestBuffer>(resourceAddr));
+}
+
+// FM2_RenderContext_SetBoundSurface is the guest equivalent of BOTH
+// SetRenderTarget and SetDepthStencilSurface: classify by resource type and
+// route depth surfaces to the depth slot instead of always binding color
+// index 0 (otherwise depth is never bound and every depth-tested draw
+// sanitizes to an unknown depth-stencil format).
+void Fm2SetBoundSurface(uint32_t renderContext, uint32_t surfaceAddr, uint32_t surfaceArg) {
+  g_origSetBoundSurface(renderContext, surfaceAddr, surfaceArg);
+  GuestDevice* device = DeviceForRenderContext(renderContext);
+  if (device == nullptr || surfaceAddr == 0) return;
+  auto* gs = ghp::ToHost<GuestSurface>(surfaceAddr);
+  if (gs != nullptr && gs->type == rr::ResourceType::DepthStencil) {
+    rr::SetDepthStencilSurface(device, gs);
+  } else {
+    SetRenderTargetNative(device, 0, surfaceAddr);
+  }
+}
+
+// Forza binds its COLOR render target(s) via this internal path (slot 0 =
+// primary color RT), not the standard D3DDevice_SetRenderTarget. Without
+// this, the native render target is never bound and the screen stays at
+// its clear color.
+void Fm2BindSurface(uint32_t renderContext, uint32_t slot, uint32_t surfaceAddr) {
+  g_origBindSurfaceInternal(renderContext, slot, surfaceAddr);
+  GuestDevice* device = DeviceForRenderContext(renderContext);
+  if (device == nullptr || surfaceAddr == 0) return;
+  SetRenderTargetNative(device, slot, surfaceAddr);
+}
+
+REX_HOOK(FM2_RenderContext_BindIndexBuffer, Fm2BindIndexBuffer);
+REX_HOOK(FM2_RenderContext_SetBoundSurface, Fm2SetBoundSurface);
+REX_HOOK(sub_823716F8, Fm2BindSurface);
+
+// ---------------------------------------------------------------------------
+// Shader state.
+// ---------------------------------------------------------------------------
+
+REX_IMPORT(__imp__FM2_RenderContext_SetPixelShaderState, g_origSetPixelShaderState,
+           void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetVertexShaderState, g_origSetVertexShaderState,
+           void(uint32_t, uint32_t));
+
+namespace {
+
+// Every shader we create is pure-replace (own guest address is the handle),
+// so resolving a guest shader reference is either "it already is one of
+// ours" or "look it up by alias" (registered when the container that owns
+// it gets loaded -- Phase 4 wires that registration to the actual draw-time
+// shader-load path).
+rr::GuestShader* ResolveShader(uint32_t shaderAddr) {
+  auto* shader = ghp::ToHost<rr::GuestShader>(shaderAddr);
+  if (rr::IsFm2Resource(shader)) return shader;
+  return rr::LookupShaderAlias(shaderAddr);
+}
+
+void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shaderAddr) {
+  g_origSetPixelShaderState(renderContext, shaderAddr);
+  GuestDevice* device = DeviceForRenderContext(renderContext);
+  if (device == nullptr || shaderAddr == 0) return;
+  rr::SetPixelShader(device, ResolveShader(shaderAddr));
+}
+
+void Fm2SetVertexShaderState(uint32_t renderContext, uint32_t shaderAddr) {
+  g_origSetVertexShaderState(renderContext, shaderAddr);
+  GuestDevice* device = DeviceForRenderContext(renderContext);
+  if (device == nullptr || shaderAddr == 0) return;
+  rr::SetVertexShader(device, ResolveShader(shaderAddr));
+}
+
+}  // namespace
+
+REX_HOOK(FM2_RenderContext_SetPixelShaderState, Fm2SetPixelShaderState);
+REX_HOOK(FM2_RenderContext_SetVertexShaderState, Fm2SetVertexShaderState);
