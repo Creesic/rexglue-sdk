@@ -8,17 +8,15 @@
 4. **SetTexture / SetTextureBase** + descriptor binds on render thread; sourceSurface/MSAA pending like Unleashed `ProcSetTexture`.
 5. **ExecuteUpload** runs on render thread (copy queue no longer raced from guest alone).
 
+## Also landed (continue pass 2)
+
+- IntermediaryUploadAllocator + async DrawUserPointerVertices via Enqueue
+- ScheduleResourceDestruction + DestructTempResources on OnRecordingFrameReady
+  (GPU objects freed only after frame fence; magic cleared immediately)
+
 ## Still next
 
-- Full typed `RenderCommand` POD enum + `Proc*` (vs `std::function` Enqueue)
-- Intermediary upload allocator for async DrawUP / constant patches
-- DestructResource on render thread
-- Shader MSAA resolve pipelines if hardware resolve insufficient
+- Hook guest D3D Release → ScheduleResourceDestruction (no call site yet)
+- Full typed `RenderCommand` POD enum + `Proc*`
 - Drop RecordingMutex once Enqueue covers all GPU mutations
-
-## Also landed (continue pass)
-
-- Per-frame `g_uploadAllocators[kNumFrames]`; reset in `OnRecordingFrameReady` after fence
-- `RenderQueue::Enqueue` fire-and-forget for SetTexture/RT/DS/viewport/scissor
-- Present source snapshot moved into `PresentImpl` (FIFO after Enqueue'd SetRT)
-- Removed `ClaimPresentOwner` / `fm2_plume_single_thread_present`; keep `g_presentBusy`
+- Shader MSAA resolve pipelines if hardware resolve insufficient
