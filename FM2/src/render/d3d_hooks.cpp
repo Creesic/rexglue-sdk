@@ -22,6 +22,7 @@
 // primitives for the actual create/lock/unlock work.
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cstdint>
 #include <unordered_set>
@@ -194,6 +195,10 @@ REX_IMPORT(__imp__FM2_D3DTexture_LockRect, g_origTextureLockRect,
 REX_IMPORT(__imp__FM2_D3DResource_UnlockResource, g_origUnlockResource,
            void(uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_D3DSurface_GetDesc, g_origSurfaceGetDesc, void(uint32_t, uint32_t));
+// Guest D3DResource_AddRef @ 0x82369D90 / Release @ 0x82369E08 -- BE atomics
+// on ReferenceCount (+4). FM2 GuestResource stores host-LE refCount there.
+REX_IMPORT(__imp__sub_82369D90, g_origD3DResourceAddRef, uint32_t(uint32_t));
+REX_IMPORT(__imp__sub_82369E08, g_origD3DResourceRelease, uint32_t(uint32_t));
 
 namespace {
 
@@ -268,6 +273,25 @@ void SurfaceGetDescHook(uint32_t surfaceAddr, uint32_t descAddr) {
   rr::GetSurfaceDesc(surface, ghp::ToHost<GuestSurfaceDesc>(descAddr));
 }
 
+uint32_t D3DResourceAddRefHook(uint32_t resourceAddr) {
+  auto* resource = ghp::ToHost<GuestResource>(resourceAddr);
+  if (!rr::IsFm2Resource(resource)) return g_origD3DResourceAddRef(resourceAddr);
+  return resource->refCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+}
+
+uint32_t D3DResourceReleaseHook(uint32_t resourceAddr) {
+  auto* resource = ghp::ToHost<GuestResource>(resourceAddr);
+  if (!rr::IsFm2Resource(resource)) return g_origD3DResourceRelease(resourceAddr);
+  const uint32_t remaining =
+      resource->refCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
+  if (remaining == 0) {
+    // Do not call guest free (sub_82369868): host Plume objects + guest
+    // allocation are retired after the recording-frame fence.
+    rr::ScheduleResourceDestruction(resource);
+  }
+  return remaining;
+}
+
 // FM2_D3D_CreateTextureFromMemoryBuffer(textureHolder, data, size): the
 // original guest body hands off to the D3DX texture-from-memory pipeline,
 // whose internal tiling step (TileSurface) reads a raw GPU-memory-address
@@ -315,6 +339,8 @@ REX_HOOK(FM2_D3DTexture_LockRect, TextureLockRectHook);
 REX_HOOK(FM2_D3DResource_UnlockResource, UnlockResourceHook);
 REX_HOOK(FM2_D3DSurface_GetDesc, SurfaceGetDescHook);
 REX_HOOK(FM2_D3D_CreateTextureFromMemoryBuffer, CreateTextureFromMemoryBufferHook);
+REX_HOOK(sub_82369D90, D3DResourceAddRefHook);   // D3DResource_AddRef
+REX_HOOK(sub_82369E08, D3DResourceReleaseHook);  // D3DResource_Release
 
 // ---------------------------------------------------------------------------
 // Phase 3: render state, clip planes, bool constants, vertex/index/surface

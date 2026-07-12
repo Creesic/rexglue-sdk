@@ -16,7 +16,8 @@
 
 ## Still next
 
-- Hook guest D3D Release → ScheduleResourceDestruction (no call site yet)
+- ~~Hook guest D3D Release → ScheduleResourceDestruction~~ (done: `sub_82369E08`/`sub_82369D90`)
 - Full typed `RenderCommand` POD enum + `Proc*`
 - Drop RecordingMutex once Enqueue covers all GPU mutations
 - Shader MSAA resolve pipelines if hardware resolve insufficient
+- After next `fm2_codegen`: rename hooks from `sub_*` to `D3DResource_AddRef`/`Release`

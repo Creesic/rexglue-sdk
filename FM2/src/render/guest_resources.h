@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -38,7 +39,10 @@ inline constexpr uint32_t kFm2ResourceMagic = 0x464D3252;  // 'FM2R'
 
 struct GuestResource {
   uint32_t magic = kFm2ResourceMagic;
-  uint32_t refCount = 1;
+  // Host LE atomic. Guest D3DResource_AddRef/Release use BE lwarx/stwcx on
+  // this same offset -- those paths must be fully hooked for FM2 objects
+  // (see sub_82369D90 / sub_82369E08) or refcount corruption / double-free.
+  std::atomic<uint32_t> refCount{1};
   ResourceType type;
 
   explicit GuestResource(ResourceType t) : type(t) {}

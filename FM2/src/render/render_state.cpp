@@ -925,15 +925,30 @@ void SetTextureBase(GuestDevice* /*device*/, uint32_t index, GuestBaseTexture* t
 // ---------------------------------------------------------------------------
 
 void SetVertexShader(GuestDevice* /*device*/, GuestShader* shader) {
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexShader, shader);
+  RenderQueue::Enqueue([shader] {
+    std::lock_guard lock(RecordingMutex());
+    GuestShader* live =
+        (shader != nullptr && IsFm2Resource(shader)) ? shader : nullptr;
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexShader, live);
+  });
 }
 
 void SetPixelShader(GuestDevice* /*device*/, GuestShader* shader) {
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.pixelShader, shader);
+  RenderQueue::Enqueue([shader] {
+    std::lock_guard lock(RecordingMutex());
+    GuestShader* live =
+        (shader != nullptr && IsFm2Resource(shader)) ? shader : nullptr;
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.pixelShader, live);
+  });
 }
 
 void SetVertexDeclaration(GuestDevice* /*device*/, GuestVertexDeclaration* declaration) {
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexDeclaration, declaration);
+  RenderQueue::Enqueue([declaration] {
+    std::lock_guard lock(RecordingMutex());
+    GuestVertexDeclaration* live =
+        (declaration != nullptr && IsFm2Resource(declaration)) ? declaration : nullptr;
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexDeclaration, live);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -942,28 +957,48 @@ void SetVertexDeclaration(GuestDevice* /*device*/, GuestVertexDeclaration* decla
 
 void SetStreamSource(GuestDevice* /*device*/, uint32_t index, GuestBuffer* buffer, uint32_t offset,
                      uint32_t stride) {
-  if (index >= 16u) return;
+  RenderQueue::Enqueue([index, buffer, offset, stride] {
+    std::lock_guard lock(RecordingMutex());
+    if (index >= 16u) return;
 
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexStrides[index],
-               uint8_t(buffer ? stride : 0));
+    GuestBuffer* live =
+        (buffer != nullptr && IsFm2Resource(buffer) && buffer->buffer != nullptr &&
+         offset <= buffer->dataSize)
+            ? buffer
+            : nullptr;
 
-  bool dirty = false;
-  SetDirtyValue(dirty, g_vertexBufferViews[index].buffer,
-               buffer ? buffer->buffer->at(offset) : RenderBufferReference{});
-  SetDirtyValue(dirty, g_vertexBufferViews[index].size, buffer ? (buffer->dataSize - offset) : 0u);
-  SetDirtyValue(dirty, g_inputSlots[index].stride, buffer ? stride : 0u);
-  if (dirty) {
-    g_dirtyStates.vertexStreamFirst = std::min<uint8_t>(g_dirtyStates.vertexStreamFirst, uint8_t(index));
-    g_dirtyStates.vertexStreamLast = std::max<uint8_t>(g_dirtyStates.vertexStreamLast, uint8_t(index));
-  }
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexStrides[index],
+                  uint8_t(live ? stride : 0));
+
+    bool dirty = false;
+    SetDirtyValue(dirty, g_vertexBufferViews[index].buffer,
+                  live ? live->buffer->at(offset) : RenderBufferReference{});
+    SetDirtyValue(dirty, g_vertexBufferViews[index].size,
+                  live ? (live->dataSize - offset) : 0u);
+    SetDirtyValue(dirty, g_inputSlots[index].stride, live ? stride : 0u);
+    if (dirty) {
+      g_dirtyStates.vertexStreamFirst =
+          std::min<uint8_t>(g_dirtyStates.vertexStreamFirst, uint8_t(index));
+      g_dirtyStates.vertexStreamLast =
+          std::max<uint8_t>(g_dirtyStates.vertexStreamLast, uint8_t(index));
+    }
+  });
 }
 
 void SetIndices(GuestDevice* /*device*/, GuestBuffer* buffer) {
-  SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.buffer,
-               buffer ? buffer->buffer->at(0) : RenderBufferReference{});
-  SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.format,
-               buffer ? buffer->format : RenderFormat::R16_UINT);
-  SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.size, buffer ? buffer->dataSize : 0u);
+  RenderQueue::Enqueue([buffer] {
+    std::lock_guard lock(RecordingMutex());
+    GuestBuffer* live =
+        (buffer != nullptr && IsFm2Resource(buffer) && buffer->buffer != nullptr)
+            ? buffer
+            : nullptr;
+    SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.buffer,
+                  live ? live->buffer->at(0) : RenderBufferReference{});
+    SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.format,
+                  live ? live->format : RenderFormat::R16_UINT);
+    SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.size,
+                  live ? live->dataSize : 0u);
+  });
 }
 
 // ---------------------------------------------------------------------------
