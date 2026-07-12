@@ -5,8 +5,6 @@
 
 #pragma once
 
-#include <functional>
-
 #include "render/render_commands.h"
 
 namespace fm2::render {
@@ -16,19 +14,9 @@ struct RenderQueue {
   static void Start();
   static void Stop();
 
-  // Run `fn` on the render thread and block until it finishes. Nested calls
-  // from the render thread itself execute inline (no deadlock). Prefer
-  // Run(RenderCommand) for typed POD work.
-  static void Run(std::function<void()> fn);
-
   // Sync POD: enqueue `cmd`, block until Dispatch finishes (Unleashed
   // ExecuteCommandList wait pattern for Present/creates/WaitForGPU).
   static void Run(const RenderCommand& cmd);
-
-  // Fire-and-forget: enqueue `fn` and return immediately. Preserves FIFO order
-  // with Run(). Nested calls from the render thread execute inline.
-  // Prefer Enqueue(RenderCommand) for state setters.
-  static void Enqueue(std::function<void()> fn);
 
   // Fire-and-forget POD command (Unleashed RenderCommand path).
   static void Enqueue(const RenderCommand& cmd);
