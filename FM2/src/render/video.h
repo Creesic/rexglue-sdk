@@ -24,13 +24,6 @@ struct Video {
   // hooks) lands.
   static void SetFallbackClearColor(float r, float g, float b, float a);
 
-  // Latch the calling thread as the sole present owner (first caller wins).
-  // FM2 drives present from a many-thread job-system pool, all racing on the
-  // single global command list; once an owner is claimed, Present() from any
-  // other thread is dropped. Call from the real GPU-submit path so the owner
-  // is the authoritative render thread.
-  static void ClaimPresentOwner();
-
   // Block until the GPU has finished all submitted work.
   static void WaitForGPU();
 

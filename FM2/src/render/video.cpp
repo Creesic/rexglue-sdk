@@ -14,7 +14,6 @@
 #include <plume_render_interface.h>
 #include <plume_render_interface_builders.h>
 #include <rex/chrono/clock.h>
-#include <rex/cvar.h>
 #include <rex/kernel/xboxkrnl/video.h>
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
@@ -22,6 +21,8 @@
 
 #include "render/guest_resources.h"
 #include "render/render_internal.h"
+#include "render/render_queue.h"
+#include "render/render_state.h"
 #include "render/shaders/copy_ps.hlsl.dxil.h"
 #include "render/shaders/copy_vs.hlsl.dxil.h"
 
@@ -34,17 +35,32 @@ extern std::unique_ptr<RenderInterface> CreateD3D12Interface();
 extern std::unique_ptr<RenderInterface> CreateVulkanInterface();
 }  // namespace plume
 
+namespace fm2::render {
+// Not part of render_internal.h's public surface (only used within this
+// TU); forward-declared here so PresentImpl (below) can call it ahead of
+// its definition further down this file.
+void EnsureFrameStarted();
+}  // namespace fm2::render
+
 namespace {
 
 constexpr RenderFormat kBackbufferFormat = RenderFormat::R8G8B8A8_UNORM;
 
+// 2-frame pipelining: while slot N's command list is submitted and the GPU
+// is chewing on it, slot N+1 is free to record the next frame. Present()
+// only blocks on a slot's fence right before reusing it, not right after
+// submitting it.
+constexpr uint32_t kNumFrames = fm2::render::kNumFrames;
+
 std::unique_ptr<RenderInterface> g_interface;
 std::unique_ptr<RenderDevice> g_device;
 std::unique_ptr<RenderCommandQueue> g_queue;
-std::unique_ptr<RenderCommandList> g_commandList;
-std::unique_ptr<RenderCommandFence> g_commandFence;
-std::unique_ptr<RenderCommandSemaphore> g_acquireSemaphore;
-std::unique_ptr<RenderCommandSemaphore> g_renderSemaphore;
+std::array<std::unique_ptr<RenderCommandList>, kNumFrames> g_commandLists;
+std::array<std::unique_ptr<RenderCommandFence>, kNumFrames> g_commandFences;
+std::array<std::unique_ptr<RenderCommandSemaphore>, kNumFrames>
+    g_acquireSemaphores;
+std::array<std::unique_ptr<RenderCommandSemaphore>, kNumFrames>
+    g_renderSemaphores;
 std::unique_ptr<RenderSwapChain> g_swapChain;
 
 // One framebuffer per swapchain backbuffer, keyed by texture index.
@@ -79,12 +95,30 @@ std::unordered_map<uint32_t, std::unique_ptr<RenderPipeline>> g_blitPipelines;
 bool g_initialized = false;
 bool g_swapChainValid = false;
 bool g_frameOpen = false;
-// Whether g_commandFence has a pending, unconsumed signal. The D3D12 fence
-// event is auto-reset: one executeCommandLists signal pairs with exactly one
-// waitForCommandFence. Waiting without a pending signal blocks forever.
-bool g_commandsInFlight = false;
+// Per-slot: whether that slot's command list has been submitted to the GPU
+// and not yet waited on. The D3D12 fence event is auto-reset: one
+// executeCommandLists signal pairs with exactly one waitForCommandFence.
+// Waiting on a slot without a pending signal blocks forever.
+std::array<bool, kNumFrames> g_commandListSubmitted{false, false};
+// Slot currently being recorded into, and the slot Present() will hand off
+// to next. Advanced once per Present() call (see PresentImpl).
+uint32_t g_frame = 0;
+uint32_t g_nextFrame = 1;
 uint32_t g_backBufferIndex = 0;
 RenderWindow g_window{};
+
+// One-shot GPU-lost latch (DEVICE_REMOVED / create failures observed
+// anywhere, e.g. resource creation on guest threads). Once set, Present()
+// and EnsureFrameStarted() bail out cheaply instead of continuing to poke a
+// dead device/swapchain. Reset on the next successful Video::Init(); left
+// set across Shutdown() otherwise.
+std::atomic<bool> g_deviceLost{false};
+
+// Present-storm coalescing: FM2's job-system pool can call Video::Present()
+// far faster than the GPU retires frames. If a Present is already
+// recording/submitting (on the render thread, via RenderQueue::Run), drop
+// this call instead of piling up work behind it.
+std::atomic<bool> g_presentBusy{false};
 
 // The guest's final front-buffer surface to blit this frame (D3DDevice_Swap).
 fm2::render::GuestBaseTexture* g_presentSource = nullptr;
@@ -92,23 +126,6 @@ fm2::render::GuestBaseTexture* g_presentSource = nullptr;
 // Guest's most recent D3DDevice_ClearF color, used when there is no real
 // present source yet (see Video::SetFallbackClearColor).
 RenderColor g_fallbackClearColor{0.0f, 0.0f, 0.0f, 1.0f};
-
-// Sole present owner thread (0 = unclaimed). FM2's job-system pool drives
-// present from many threads racing on the one global command list; once
-// claimed, Present() from any other thread is dropped. Stored as a hashed
-// thread id (portable, no <windows.h> dependency here).
-std::atomic<uint64_t> g_presentOwnerKey{0};
-
-inline uint64_t CurrentThreadKey() {
-  return static_cast<uint64_t>(
-      std::hash<std::thread::id>{}(std::this_thread::get_id()));
-}
-
-REXCVAR_DEFINE_BOOL(
-    fm2_plume_single_thread_present, true, "FM2",
-    "Pin Video::Present()/command-list submit to a single owner thread "
-    "(the real GPU-submit thread); drop present calls from FM2's other "
-    "job-system threads to stop them racing on the global command list.");
 
 void RebuildFramebuffers() {
   g_framebuffers.clear();
@@ -119,6 +136,144 @@ void RebuildFramebuffers() {
     RenderFramebufferDesc desc(&color, 1);
     g_framebuffers[i] = g_device->createFramebuffer(desc);
   }
+}
+
+// Records and submits one frame's blit/clear + present, then advances the
+// 2-frame pipeline. Only ever runs on the dedicated render thread (inline if
+// the caller already is that thread, otherwise dispatched via
+// RenderQueue::Run from Video::Present()).
+void PresentImpl() {
+  std::lock_guard lock(fm2::render::RecordingMutex());
+  if (fm2::render::IsDeviceLost()) return;
+
+  // The guest's draws/clears for this frame have already been recorded into
+  // the open command list (targeting the guest's own render-target
+  // surfaces). Make sure a frame is open even if the guest issued nothing.
+  fm2::render::EnsureFrameStarted();
+  if (!g_frameOpen) {
+    return;  // acquire failed this frame
+  }
+
+  // Unleashed: ExecutePendingStretchRectCommands before present blit.
+  fm2::render::FlushPendingStretchRectCommands();
+
+  // Present source is taken on the render thread after prior SetRT/enqueue
+  // work has drained into this Present job (guest PrepareFramePresent no
+  // longer races async RT binds).
+  {
+    static bool loggedFirstTarget = false;
+    static uint64_t presentSourceChecks = 0;
+    ++presentSourceChecks;
+    auto* rt = fm2::render::GetCurrentColorRenderTarget();
+    if (rt != nullptr && !loggedFirstTarget) {
+      loggedFirstTarget = true;
+      REXGPU_INFO("PresentImpl: first non-null render target after {} present(s)",
+                  presentSourceChecks);
+    } else if (rt == nullptr && presentSourceChecks % 300 == 0) {
+      REXGPU_WARN("PresentImpl: still no render target after {} present(s)", presentSourceChecks);
+    }
+    fm2::render::SetPresentSource(rt);
+  }
+
+  RenderCommandList* commandList = g_commandLists[g_frame].get();
+  RenderTexture* backBuffer = g_swapChain->getTexture(g_backBufferIndex);
+  RenderFramebuffer* framebuffer = g_framebuffers[g_backBufferIndex].get();
+
+  commandList->setFramebuffer(nullptr);
+  RenderPipeline* blitPipeline = fm2::render::GetBlitPipeline(kBackbufferFormat);
+  const bool blit = g_presentSource != nullptr &&
+                    g_presentSource->texture != nullptr &&
+                    blitPipeline != nullptr;
+  {
+    static uint64_t presentCallCount = 0;
+    ++presentCallCount;
+    if (presentCallCount % 300 == 1) {
+      if (blit) {
+        REXGPU_INFO(
+            "Video::Present: blitting present-source {}x{} format={} (present call {})",
+            g_presentSource->width, g_presentSource->height, int(g_presentSource->format),
+            presentCallCount);
+      } else {
+        REXGPU_WARN(
+            "Video::Present: no blit this call (source={} texture={} pipeline={}) -- clearing to "
+            "fallback color instead (present call {})",
+            g_presentSource != nullptr, g_presentSource != nullptr && g_presentSource->texture != nullptr,
+            blitPipeline != nullptr, presentCallCount);
+      }
+    }
+  }
+  if (blit) {
+    if (g_presentSource->descriptorIndex == 0) {
+      g_presentSource->descriptorIndex = fm2::render::AllocTextureDescriptor();
+    }
+    g_textureDescriptorSet->setTexture(
+        g_presentSource->descriptorIndex, g_presentSource->texture,
+        RenderTextureLayout::SHADER_READ, g_presentSource->textureView.get());
+
+    RenderTextureBarrier toBlit[] = {
+        RenderTextureBarrier(g_presentSource->texture,
+                             RenderTextureLayout::SHADER_READ),
+        RenderTextureBarrier(backBuffer, RenderTextureLayout::COLOR_WRITE),
+    };
+    commandList->barriers(RenderBarrierStage::GRAPHICS, toBlit, 2);
+    g_presentSource->layout = RenderTextureLayout::SHADER_READ;
+
+    const uint32_t descriptorIndex = g_presentSource->descriptorIndex;
+    commandList->setGraphicsPipelineLayout(g_pipelineLayout.get());
+    commandList->setPipeline(blitPipeline);
+    commandList->setGraphicsDescriptorSet(g_textureDescriptorSet.get(), 0);
+    commandList->setGraphicsDescriptorSet(g_samplerDescriptorSet.get(), 3);
+    commandList->setGraphicsPushConstants(0, &descriptorIndex, 0,
+                                          sizeof(descriptorIndex));
+    commandList->setFramebuffer(framebuffer);
+    commandList->setViewports(
+        RenderViewport(0.0f, 0.0f, float(g_swapChain->getWidth()),
+                       float(g_swapChain->getHeight())));
+    commandList->setScissors(
+        RenderRect(0, 0, g_swapChain->getWidth(), g_swapChain->getHeight()));
+    commandList->drawInstanced(3, 1, 0, 0);
+    commandList->barriers(
+        RenderBarrierStage::GRAPHICS,
+        RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
+  } else {
+    // No usable front buffer yet (resource hooks not wired up): clear to the
+    // guest's own most recent D3DDevice_ClearF color so we still present.
+    commandList->barriers(
+        RenderBarrierStage::GRAPHICS,
+        RenderTextureBarrier(backBuffer, RenderTextureLayout::COLOR_WRITE));
+    commandList->setFramebuffer(framebuffer);
+    commandList->clearColor(0, g_fallbackClearColor);
+    commandList->barriers(
+        RenderBarrierStage::GRAPHICS,
+        RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
+  }
+  commandList->end();
+  g_frameOpen = false;
+  g_presentSource = nullptr;
+
+  RenderCommandSemaphore* waitSemaphores[] = {g_acquireSemaphores[g_frame].get()};
+  RenderCommandSemaphore* signalSemaphores[] = {g_renderSemaphores[g_frame].get()};
+  const RenderCommandList* submittedLists[] = {commandList};
+  g_queue->executeCommandLists(submittedLists, 1, waitSemaphores, 1,
+                               signalSemaphores, 1, g_commandFences[g_frame].get());
+  g_commandListSubmitted[g_frame] = true;
+
+  g_swapChainValid = g_swapChain->present(g_backBufferIndex, signalSemaphores, 1);
+
+  // 2-frame pipelining: don't block on this slot's fence now. Advance to
+  // the other slot -- only wait there if it still has an unretired
+  // submission from two Presents ago. That's what actually overlaps GPU
+  // work with the next frame's recording instead of fully serializing every
+  // Present like the single-buffered path did.
+  g_frame = g_nextFrame;
+  g_nextFrame = (g_frame + 1) % kNumFrames;
+  if (g_commandListSubmitted[g_frame]) {
+    g_queue->waitForCommandFence(g_commandFences[g_frame].get());
+    g_commandListSubmitted[g_frame] = false;
+  }
+  // Safe to reuse this slot's upload scratch now that its prior GPU work
+  // has retired (Unleashed g_uploadAllocators[g_frame].reset()).
+  fm2::render::OnRecordingFrameReady(g_frame);
 }
 
 // FM2 runs in detached mode (no IGraphicsSystem/gpu_plugin), so
@@ -205,10 +360,15 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
               g_device->getDescription().name);
 
   g_queue = g_device->createCommandQueue(RenderCommandListType::DIRECT);
-  g_commandList = g_queue->createCommandList();
-  g_commandFence = g_device->createCommandFence();
-  g_acquireSemaphore = g_device->createCommandSemaphore();
-  g_renderSemaphore = g_device->createCommandSemaphore();
+  for (uint32_t i = 0; i < kNumFrames; ++i) {
+    g_commandLists[i] = g_queue->createCommandList();
+    g_commandFences[i] = g_device->createCommandFence();
+    g_acquireSemaphores[i] = g_device->createCommandSemaphore();
+    g_renderSemaphores[i] = g_device->createCommandSemaphore();
+  }
+  g_frame = 0;
+  g_nextFrame = 1;
+  g_commandListSubmitted.fill(false);
 
   RenderSwapChainDesc swapChainDesc(g_window, kBackbufferFormat, 2);
   g_swapChain = g_queue->createSwapChain(swapChainDesc);
@@ -311,6 +471,14 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
   REXGPU_INFO("Video::Init - swapchain {}x{} valid={}", g_swapChain->getWidth(),
               g_swapChain->getHeight(), g_swapChainValid);
 
+  // A fresh device is not lost; clear any latch left over from a prior
+  // Init/Shutdown cycle.
+  g_deviceLost.store(false, std::memory_order_release);
+
+  fm2::render::RenderQueue::Start();
+  for (uint32_t i = 0; i < kNumFrames; ++i) {
+    fm2::render::OnRecordingFrameReady(i);
+  }
   StartVsyncWorker();
   return true;
 }
@@ -326,33 +494,77 @@ namespace fm2::render {
 RenderInterface* Interface() { return g_interface.get(); }
 RenderDevice* Device() { return g_device.get(); }
 
+uint32_t CurrentRecordingFrame() { return g_frame; }
+
 void SetPresentSource(GuestBaseTexture* frontBuffer) {
   g_presentSource = frontBuffer;
 }
 
 void EnsureFrameStarted() {
-  if (g_frameOpen || !g_initialized) return;
+  if (g_frameOpen || !g_initialized || IsDeviceLost()) return;
 
-  if (!g_swapChainValid || g_swapChain->needsResize()) {
+  // After repeated ResizeBuffers failures (often DEVICE_REMOVED), stop
+  // retrying every Clear/Draw/Present — that path WaitForGPU-spins and feels
+  // like a startup hang.
+  static int s_resizeFailStreak = 0;
+  constexpr int kMaxResizeFails = 8;
+
+  if ((!g_swapChainValid || g_swapChain->needsResize()) && s_resizeFailStreak < kMaxResizeFails) {
     // Drain the GPU (and any pending presentation) before resizing. Must not
-    // wait on g_commandFence directly: Present() already consumed its signal.
+    // wait on a slot's fence directly: Present() already consumed its signal.
     Video::WaitForGPU();
     g_swapChainValid = g_swapChain->resize();
-    if (!g_swapChainValid) return;
+    if (!g_swapChainValid) {
+      ++s_resizeFailStreak;
+      return;
+    }
+    s_resizeFailStreak = 0;
     RebuildFramebuffers();
   }
-  if (!g_swapChain->acquireTexture(g_acquireSemaphore.get(),
+  if (!g_swapChainValid) return;
+  if (!g_swapChain->acquireTexture(g_acquireSemaphores[g_frame].get(),
                                    &g_backBufferIndex)) {
     g_swapChainValid = false;
     return;
   }
-  g_commandList->begin();
+  g_commandLists[g_frame]->begin();
+  // Present() ends the list and clears plume's active root signature. Any
+  // subsequent Clear/Draw that opens a frame via CommandList() must rebind
+  // layout + descriptor sets before setGraphicsRootDescriptor.
+  if (g_pipelineLayout != nullptr) {
+    g_commandLists[g_frame]->setGraphicsPipelineLayout(g_pipelineLayout.get());
+    if (g_textureDescriptorSet != nullptr) {
+      g_commandLists[g_frame]->setGraphicsDescriptorSet(g_textureDescriptorSet.get(), 0);
+      g_commandLists[g_frame]->setGraphicsDescriptorSet(g_textureDescriptorSet.get(), 1);
+      g_commandLists[g_frame]->setGraphicsDescriptorSet(g_textureDescriptorSet.get(), 2);
+    }
+    if (g_samplerDescriptorSet != nullptr) {
+      g_commandLists[g_frame]->setGraphicsDescriptorSet(g_samplerDescriptorSet.get(), 3);
+    }
+  }
   g_frameOpen = true;
+}
+
+std::recursive_mutex& RecordingMutex() {
+  static std::recursive_mutex mutex;
+  return mutex;
 }
 
 RenderCommandList* CommandList() {
   EnsureFrameStarted();
-  return g_commandList.get();
+  return g_commandLists[g_frame].get();
+}
+
+bool IsDeviceLost() { return g_deviceLost.load(std::memory_order_acquire); }
+
+void NoteDeviceLost(const char* why) {
+  if (!g_deviceLost.exchange(true, std::memory_order_acq_rel)) {
+    // Plume's D3D12 backend prints GetDeviceRemovedReason to stderr on the
+    // failing create/fence call; latch here so we stop create/present spam.
+    REXGPU_ERROR(
+        "GPU device lost latch set ({}); see prior GetDeviceRemovedReason in stderr",
+        why);
+  }
 }
 
 RenderDescriptorSet* TextureDescriptorSet() {
@@ -398,131 +610,79 @@ void FreeTextureDescriptor(uint32_t index) {
 }
 
 void ExecuteUpload(const std::function<void(RenderCommandList*)>& record) {
-  std::lock_guard lock(g_copyMutex);
-  g_copyCommandList->begin();
-  record(g_copyCommandList.get());
-  g_copyCommandList->end();
-  g_copyQueue->executeCommandLists(g_copyCommandList.get(), g_copyFence.get());
-  g_copyQueue->waitForCommandFence(g_copyFence.get());
+  // Copy-queue submits must not race guest threads against the render thread's
+  // graphics recording; run them on the render thread (Unleashed Unlock*).
+  RenderQueue::Run([&record] {
+    std::lock_guard lock(g_copyMutex);
+    g_copyCommandList->begin();
+    record(g_copyCommandList.get());
+    g_copyCommandList->end();
+    g_copyQueue->executeCommandLists(g_copyCommandList.get(), g_copyFence.get());
+    g_copyQueue->waitForCommandFence(g_copyFence.get());
+  });
 }
 
 }  // namespace fm2::render
 
-void Video::ClaimPresentOwner() {
-  uint64_t expected = 0;
-  g_presentOwnerKey.compare_exchange_strong(expected, CurrentThreadKey(),
-                                            std::memory_order_acq_rel);
-}
-
 void Video::Present() {
-  // Drop present calls from FM2's other job-system threads: only the latched
-  // owner (the real GPU-submit thread) may begin/end/submit the single global
-  // command list and drive the swapchain. Before an owner is claimed, allow
-  // the call (early boot). See fm2_plume_single_thread_present.
-  if (REXCVAR_GET(fm2_plume_single_thread_present)) {
-    const uint64_t owner = g_presentOwnerKey.load(std::memory_order_acquire);
-    if (owner != 0 && owner != CurrentThreadKey()) {
-      return;
-    }
-  }
-
-  if (!g_initialized) {
+  if (!g_initialized || fm2::render::IsDeviceLost()) {
     return;
   }
 
-  // The guest's draws/clears for this frame have already been recorded into
-  // the open command list (targeting the guest's own render-target
-  // surfaces). Make sure a frame is open even if the guest issued nothing.
-  fm2::render::EnsureFrameStarted();
-  if (!g_frameOpen) {
-    return;  // acquire failed this frame
-  }
-
-  RenderTexture* backBuffer = g_swapChain->getTexture(g_backBufferIndex);
-  RenderFramebuffer* framebuffer = g_framebuffers[g_backBufferIndex].get();
-
-  g_commandList->setFramebuffer(nullptr);
-  RenderPipeline* blitPipeline = fm2::render::GetBlitPipeline(kBackbufferFormat);
-  const bool blit = g_presentSource != nullptr &&
-                    g_presentSource->texture != nullptr &&
-                    blitPipeline != nullptr;
-  if (blit) {
-    if (g_presentSource->descriptorIndex == 0) {
-      g_presentSource->descriptorIndex = fm2::render::AllocTextureDescriptor();
+  // Present-storm coalescing: FM2's job-system pool can call this far
+  // faster than the GPU retires frames. If a Present is already recording/
+  // submitting (on the render thread, via RenderQueue::Run below), drop
+  // this call rather than piling up work behind it. Render thread + queue
+  // are the sole GPU owners; the old ClaimPresentOwner latch is gone.
+  bool expected = false;
+  if (!g_presentBusy.compare_exchange_strong(expected, true,
+                                             std::memory_order_acq_rel)) {
+    static uint64_t droppedBusyCount = 0;
+    ++droppedBusyCount;
+    if (droppedBusyCount % 300 == 1) {
+      REXGPU_WARN(
+          "Video::Present: dropped, previous present still in flight ({} dropped so far)",
+          droppedBusyCount);
     }
-    g_textureDescriptorSet->setTexture(
-        g_presentSource->descriptorIndex, g_presentSource->texture,
-        RenderTextureLayout::SHADER_READ, g_presentSource->textureView.get());
-
-    RenderTextureBarrier toBlit[] = {
-        RenderTextureBarrier(g_presentSource->texture,
-                             RenderTextureLayout::SHADER_READ),
-        RenderTextureBarrier(backBuffer, RenderTextureLayout::COLOR_WRITE),
-    };
-    g_commandList->barriers(RenderBarrierStage::GRAPHICS, toBlit, 2);
-    g_presentSource->layout = RenderTextureLayout::SHADER_READ;
-
-    const uint32_t descriptorIndex = g_presentSource->descriptorIndex;
-    g_commandList->setGraphicsPipelineLayout(g_pipelineLayout.get());
-    g_commandList->setPipeline(blitPipeline);
-    g_commandList->setGraphicsDescriptorSet(g_textureDescriptorSet.get(), 0);
-    g_commandList->setGraphicsDescriptorSet(g_samplerDescriptorSet.get(), 3);
-    g_commandList->setGraphicsPushConstants(0, &descriptorIndex, 0,
-                                            sizeof(descriptorIndex));
-    g_commandList->setFramebuffer(framebuffer);
-    g_commandList->setViewports(
-        RenderViewport(0.0f, 0.0f, float(g_swapChain->getWidth()),
-                       float(g_swapChain->getHeight())));
-    g_commandList->setScissors(
-        RenderRect(0, 0, g_swapChain->getWidth(), g_swapChain->getHeight()));
-    g_commandList->drawInstanced(3, 1, 0, 0);
-    g_commandList->barriers(
-        RenderBarrierStage::GRAPHICS,
-        RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
-  } else {
-    // No usable front buffer yet (resource hooks not wired up): clear to the
-    // guest's own most recent D3DDevice_ClearF color so we still present.
-    g_commandList->barriers(
-        RenderBarrierStage::GRAPHICS,
-        RenderTextureBarrier(backBuffer, RenderTextureLayout::COLOR_WRITE));
-    g_commandList->setFramebuffer(framebuffer);
-    g_commandList->clearColor(0, g_fallbackClearColor);
-    g_commandList->barriers(
-        RenderBarrierStage::GRAPHICS,
-        RenderTextureBarrier(backBuffer, RenderTextureLayout::PRESENT));
+    return;
   }
-  g_commandList->end();
-  g_frameOpen = false;
-  g_presentSource = nullptr;
 
-  RenderCommandSemaphore* waitSemaphores[] = {g_acquireSemaphore.get()};
-  RenderCommandSemaphore* signalSemaphores[] = {g_renderSemaphore.get()};
-  const RenderCommandList* commandLists[] = {g_commandList.get()};
-  g_queue->executeCommandLists(commandLists, 1, waitSemaphores, 1,
-                               signalSemaphores, 1, g_commandFence.get());
-  g_commandsInFlight = true;
+  // GPU submit happens on the dedicated render thread; RenderQueue::Run
+  // blocks this caller until PresentImpl() finishes (inline if this caller
+  // already is the render thread). FIFO with prior Enqueue'd SetRT/etc.
+  fm2::render::RenderQueue::Run([] { PresentImpl(); });
 
-  g_swapChainValid = g_swapChain->present(g_backBufferIndex, signalSemaphores, 1);
-
-  // Fully serialized for now; frame-in-flight pipelining comes later.
-  g_queue->waitForCommandFence(g_commandFence.get());
-  g_commandsInFlight = false;
+  g_presentBusy.store(false, std::memory_order_release);
 }
 
 void Video::WaitForGPU() {
   if (!g_initialized) {
     return;
   }
-  if (g_commandsInFlight) {
-    g_queue->waitForCommandFence(g_commandFence.get());
-    g_commandsInFlight = false;
-  }
+  // Hold RecordingMutex for the *whole* call, not just inside the lambda
+  // below: the lambda may run synchronously on the render thread while this
+  // thread blocks inside RenderQueue::Run, so re-locking a recursive_mutex
+  // from that other thread would deadlock against a caller that already
+  // holds it on this thread (e.g. EnsureFrameStarted's resize-fail path,
+  // reached from a guest thread that's already holding the lock via
+  // CommandList()).
+  std::lock_guard lock(fm2::render::RecordingMutex());
+  fm2::render::RenderQueue::Run([] {
+    for (uint32_t i = 0; i < kNumFrames; ++i) {
+      if (g_commandListSubmitted[i]) {
+        g_queue->waitForCommandFence(g_commandFences[i].get());
+        g_commandListSubmitted[i] = false;
+      }
+      fm2::render::OnRecordingFrameReady(i);
+    }
 
-  assert(!g_frameOpen);
-  g_commandList->begin();
-  g_commandList->end();
-  g_queue->executeCommandLists(g_commandList.get(), g_commandFence.get());
-  g_queue->waitForCommandFence(g_commandFence.get());
+    assert(!g_frameOpen);
+    g_commandLists[g_frame]->begin();
+    g_commandLists[g_frame]->end();
+    g_queue->executeCommandLists(g_commandLists[g_frame].get(),
+                                 g_commandFences[g_frame].get());
+    g_queue->waitForCommandFence(g_commandFences[g_frame].get());
+  });
 }
 
 void Video::Shutdown() {
@@ -530,6 +690,11 @@ void Video::Shutdown() {
     return;
   }
   StopVsyncWorker();
+  // Stop dispatching to (and drain/join) the render thread before the final
+  // full-GPU drain below, so WaitForGPU()'s RenderQueue::Run falls back to
+  // running inline once the queue is torn down (see its Init/Shutdown-edge
+  // comment in render_queue.cpp).
+  fm2::render::RenderQueue::Stop();
   WaitForGPU();
   g_blitPipelines.clear();
   g_blitPixelShader.reset();
@@ -543,10 +708,12 @@ void Video::Shutdown() {
   g_copyQueue.reset();
   g_framebuffers.clear();
   g_swapChain.reset();
-  g_renderSemaphore.reset();
-  g_acquireSemaphore.reset();
-  g_commandFence.reset();
-  g_commandList.reset();
+  for (uint32_t i = 0; i < kNumFrames; ++i) {
+    g_renderSemaphores[i].reset();
+    g_acquireSemaphores[i].reset();
+    g_commandFences[i].reset();
+    g_commandLists[i].reset();
+  }
   g_queue.reset();
   g_device.reset();
   g_interface.reset();

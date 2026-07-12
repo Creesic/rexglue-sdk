@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-12T04:15:57.517Z
-> Files: 566 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-12T15:54:19.433Z
+> Files: 568 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ../../../../../temp/
 
@@ -12,6 +12,11 @@
 ## ../../../.claude/plans/
 
 - `memoized-purring-newt.md` — FM2 Native Renderer — Implementation Plan (~5014 tok)
+
+## ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXFM2P/memory/
+
+- `feedback_public_repo_recompiled_code.md` (~338 tok)
+- `MEMORY.md` — Memory Index (~48 tok)
 
 ## ../rexglue-sdk/cmake/
 
@@ -91,7 +96,7 @@
 ## FM2/
 
 - `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~1538 tok)
-- `fm2_manifest.toml` (~5455 tok)
+- `fm2_manifest.toml` (~5480 tok)
 
 ## FM2/cmake/
 
@@ -109,16 +114,18 @@
 
 ## FM2/src/render/
 
-- `d3d_hooks.cpp` — render/d3d_hooks.cpp (~9606 tok)
+- `d3d_hooks.cpp` — render/d3d_hooks.cpp (~11058 tok)
 - `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~8571 tok)
 - `guest_device.h` — render/guest_device.h (~1570 tok)
 - `guest_heap.h` — pragma once (~472 tok)
-- `guest_resources.h` — render/guest_resources.h (~1607 tok)
-- `pipeline.cpp` — render/pipeline.cpp (~4476 tok)
+- `guest_resources.h` — render/guest_resources.h (~1800 tok); GuestTexture.sourceSurface + GuestSurface.destinationTextures for deferred StretchRect
+- `render_queue.h` — render/render_queue.h (~200 tok); sync Run + dedicated render thread
+- `render_queue.cpp` — render/render_queue.cpp (~400 tok)
+- `pipeline.cpp` — render/pipeline.cpp (~4631 tok)
 - `render_internal.h` — render/render_internal.h (~469 tok)
-- `render_state.cpp` — render/render_state.cpp (~16314 tok)
-- `render_state.h` — render/render_state.h (~1360 tok)
-- `video.cpp` — include "video.h" (~5499 tok)
+- `render_state.cpp` — render/render_state.cpp (~16893 tok)
+- `render_state.h` — render/render_state.h (~1471 tok)
+- `video.cpp` — include "video.h" (~5778 tok)
 - `video.h` — render/video.h (~366 tok)
 
 ## FM2/src/render/shaders/

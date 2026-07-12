@@ -291,3 +291,53 @@
 | 00:12 | Created ../../../../../temp/crash_investigate.cdbcmd | — | ~4 |
 | 00:15 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~151 |
 | 00:17 | Session end: 17 writes across 11 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 44 reads | ~74550 tok |
+| 00:22 | Session end: 17 writes across 11 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 44 reads | ~74550 tok |
+| 00:24 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXFM2P/memory/feedback_public_repo_recompiled_code.md | — | ~340 |
+| 00:24 | Created ../../../.claude/projects/C--Users-Tera-Documents-GitHub-ReXFM2P/memory/MEMORY.md | — | ~51 |
+| 00:24 | Edited FM2/src/render/video.cpp | added 2 condition(s) | ~273 |
+| 00:27 | Edited FM2/src/render/video.cpp | added 1 condition(s) | ~226 |
+| 00:27 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~86 |
+| 00:41 | Session end: 22 writes across 13 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 47 reads | ~76320 tok |
+| 01:24 | Session end: 22 writes across 13 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 47 reads | ~76320 tok |
+| 01:33 | Edited FM2/src/render/pipeline.cpp | 6→7 lines | ~37 |
+| 01:33 | Edited FM2/src/render/pipeline.cpp | modified if() | ~398 |
+| 01:33 | Edited FM2/src/render/render_state.cpp | expanded (+6 lines) | ~111 |
+| 01:34 | Edited FM2/src/render/render_state.cpp | 2→3 lines | ~16 |
+| 01:36 | Session end: 26 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 48 reads | ~77299 tok |
+| 04:24 | Session end: 26 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 48 reads | ~77299 tok |
+| 05:10 | Session end: 26 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 48 reads | ~77299 tok |
+| 10:39 | Session end: 26 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 48 reads | ~77299 tok |
+| 10:46 | Session end: 26 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 48 reads | ~77299 tok |
+| 10:47 | Session end: 26 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 48 reads | ~77299 tok |
+| 10:59 | Session end: 26 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 48 reads | ~77346 tok |
+| 11:06 | Session end: 26 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 48 reads | ~77346 tok |
+| 11:05 | Audited native_renderer transfer vs ReXGlue080plume | FM2/src/render/*, native_renderer (absent), docs/migration-from-plume.md | Intentional rebuild into render/; diagnostic overlay correctly dropped; accidental gaps: texture bind/viewport/Clear/Resolve/alt constants | ~40k |
+| 11:09 | Session end: 26 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 48 reads | ~77346 tok |
+| 11:14 | Session end: 26 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 49 reads | ~78953 tok |
+| 11:14 | Wrote native renderer transfer audit to docs | docs/FM2-native-renderer-transfer-audit.md, docs/migration-from-plume.md | Done | ~2k |
+| 11:16 | Session end: 26 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 50 reads | ~78953 tok |
+| 11:19 | Edited FM2/src/render/d3d_hooks.cpp | modified ResolveShader() | ~476 |
+| 11:28 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~290 |
+| 11:32 | Session end: 28 writes across 14 files (launch-fm2.bat, launch-fm2-shaderdump.bat, trace_signals.cdbcmd, xboxkrnl_video.cpp, video.h) | 57 reads | ~124206 tok |
+| 11:36 | Edited FM2/src/render/d3d_hooks.cpp | modified ClearF() | ~233 |
+| 11:38 | Edited FM2/fm2_manifest.toml | 3→5 lines | ~75 |
+
+## Session: 2026-07-12 11:44
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 11:46 | Edited FM2/src/render/d3d_hooks.cpp | modified SetScissorRectHook() | ~560 |
+| 11:47 | Edited FM2/src/render/d3d_hooks.cpp | modified SetScissorRectHook() | ~189 |
+| 11:52 | Edited FM2/src/render/render_state.h | expanded (+7 lines) | ~131 |
+| 11:53 | Edited FM2/src/render/render_state.cpp | added 3 condition(s) | ~394 |
+| 11:51 | Compared FM2 plume renderer vs UnleashedRecomp | UnleashedRecomp/gpu/video.cpp, FM2/src/render/* | Same Plume/XenosRecomp lineage; Unleashed has render-thread queue+SetTexture+StretchRect; FM2 missing texture bind+resolve, FM2-specific RenderContext hooks | ~25k |
+| 11:54 | Edited FM2/src/render/d3d_hooks.cpp | added 4 condition(s) | ~825 |
+| 12:00 | IDA37 verified FM2 texture/present/constants; updated audit vs Unleashed | docs/FM2-native-renderer-transfer-audit.md, FM2.xex.i64 | SetTexture is primary (65 xrefs); Swap bl VdSwap @0x8236CD74; SetVertexShaderConstantFN writes GuestDevice | ~30k |
+| 12:06 | Session end: 5 writes across 3 files (d3d_hooks.cpp, render_state.h, render_state.cpp) | 18 reads | ~80652 tok |
+| 12:03 | Wired D3DDevice_SetTexture hook (Unleashed pattern) + codegen | FM2/src/render/d3d_hooks.cpp, render_state.*, fm2_manifest.toml, generated/ | Built fm2.exe OK; XG-header textures still null | ~15k |
+
+## Session: 2026-07-12 14:55 (Unleashed-closer)
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 15:05 | Deferred StretchRect/MSAA + SetTexture/Create on RT | render_state.*, guest_resources.h, d3d_resource_hooks.cpp, video.cpp | fm2 build OK | ~40k |

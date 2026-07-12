@@ -1,6 +1,7 @@
 // render/pipeline.cpp
 // shader loading
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -441,9 +442,14 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
   }
 
   REXLOG_ERROR("PIPELINE-TRACE: calling LinkShaderLibrary");
+  auto linkStart = std::chrono::steady_clock::now();
   IDxcBlob* linkedBlob = GetDxcRuntime().LinkShaderLibrary(libraryBlob, entry->dxil_offset,
                                                            guestShader->type, specializedValue);
-  REXLOG_ERROR("PIPELINE-TRACE: LinkShaderLibrary returned {}", linkedBlob != nullptr ? "non-null" : "NULL");
+  auto linkMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - linkStart)
+                    .count();
+  REXLOG_ERROR("PIPELINE-TRACE: LinkShaderLibrary returned {} ({} ms)",
+              linkedBlob != nullptr ? "non-null" : "NULL", linkMs);
   libraryBlob->Release();
   if (linkedBlob == nullptr) {
     return nullptr;
@@ -452,7 +458,12 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
   // SEH-guarded: a malformed linker-output blob (some regenerated spec-mask
   // shaders) crashes dxcompiler.dll when its bytes are read. On crash, skip this
   // shader (the draw falls back to no host shader) instead of killing the process.
+  auto createStart = std::chrono::steady_clock::now();
   std::unique_ptr<RenderShader> shader(SafeCreateShaderFromDxcBlob(linkedBlob));
+  auto createMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - createStart)
+                      .count();
+  REXLOG_ERROR("PIPELINE-TRACE: SafeCreateShaderFromDxcBlob took {} ms", createMs);
   linkedBlob->Release();
   if (shader == nullptr) {
     REXLOG_ERROR("PIPELINE-TRACE: SafeCreateShaderFromDxcBlob returned NULL (path #3)");

@@ -51,6 +51,7 @@ inline bool IsFm2Resource(const void* p) {
 }
 
 struct GuestBaseTexture;
+struct GuestSurface;
 
 struct PendingResolve {
   GuestBaseTexture* destination = nullptr;
@@ -91,6 +92,9 @@ struct GuestTexture : GuestBaseTexture {
   plume::RenderTextureViewDimension viewDimension =
       plume::RenderTextureViewDimension::TEXTURE_2D;
   std::unique_ptr<plume::RenderFramebuffer> framebuffer;
+  // Unleashed StretchRect link: surface this texture will receive a resolve/
+  // copy from. Cleared when the pending copy executes.
+  GuestSurface* sourceSurface = nullptr;
 
   GuestTexture() : GuestBaseTexture(ResourceType::Texture) {}
 };
@@ -121,6 +125,9 @@ struct GuestSurface : GuestBaseTexture {
   std::unordered_map<const plume::RenderTexture*,
                      std::unique_ptr<plume::RenderFramebuffer>>
       framebuffers;
+  // Textures waiting for a StretchRect / Resolve copy from this surface
+  // (Unleashed destinationTextures). Drained by FlushPendingStretchRectCommands.
+  std::unordered_set<GuestTexture*> destinationTextures;
 
   explicit GuestSurface(ResourceType t) : GuestBaseTexture(t) {}
 };

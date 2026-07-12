@@ -40,6 +40,21 @@ struct GuestStencilState {
 void SetStencilState(const GuestStencilState& s);
 
 void SetTexture(GuestDevice* device, uint32_t index, GuestTexture* texture);
+// Bind a non-GuestTexture GuestBaseTexture (render-target / depth surface used
+// as a shader resource). Clears any stale GuestTexture alias at this slot.
+void SetTextureBase(GuestDevice* device, uint32_t index, GuestBaseTexture* texture);
+
+// Translates a raw XG-header guest texture object (created via the low-level
+// XGSetTextureHeader XDK API rather than D3DDevice_CreateTexture, so it has
+// no kFm2ResourceMagic tag) into a native GuestTexture by parsing its Xenos
+// fetch constant and, if requested, detiling/uploading its guest texture
+// data. Results are cached by guest base address. Returns nullptr if the
+// header's fetch constant can't be parsed (unsupported format, zero base,
+// etc.) or the texture could not be created.
+GuestTexture* TranslateGuestTexture(void* guestHeader, bool uploadGuestData);
+// Same translation, but starting directly from a GPUTEXTURE_FETCH_CONSTANT
+// (as bound by the PM4 command stream) rather than a full XG texture header.
+GuestTexture* TranslateGuestTextureFetch(const void* guestFetch, bool uploadGuestData);
 
 void SetVertexShader(GuestDevice* device, GuestShader* shader);
 void SetPixelShader(GuestDevice* device, GuestShader* shader);
@@ -63,7 +78,19 @@ GuestBaseTexture* GetCurrentColorRenderTarget();
 void PrepareFramePresent();
 void SetDepthStencilSurface(GuestDevice* device, GuestSurface* depthStencil);
 
+// Drain pending StretchRect / Resolve copies (and MSAA resolves) into their
+// destination textures. Must run on the render thread with RecordingMutex held
+// (or nested under RenderQueue::Run). Called before Present and before draws.
+void FlushPendingStretchRectCommands();
+
 void Clear(GuestDevice* device, uint32_t flags, const float* color, float z);
+
+// D3DDevice_Resolve's texture-copy half: copies the currently-bound color
+// render target into destTexture (Xbox 360's EDRAM-to-linear-texture
+// resolve). destPoint/sourceRect may be null (full-texture copy at 0,0),
+// matching the guest API's own optional-pointer semantics.
+void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint,
+                      const GuestRect* sourceRect);
 
 // ---------------------------------------------------------------------------
 // Phase 4: draw dispatch + constant transport.
@@ -81,6 +108,10 @@ bool HasBoundPipeline();
 
 void DrawInstanced(uint32_t vertexCount, uint32_t startVertex);
 void DrawIndexedInstanced(uint32_t indexCount, uint32_t startIndex, int32_t baseVertexIndex);
+
+// Non-indexed draw with QUADLIST/TRIANGLEFAN → indexed triangle-list conversion.
+void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
+                  uint32_t vertexCount);
 
 // D3DDevice_DrawVerticesUP: inline (non-buffer-backed) vertex data supplied
 // directly by the guest for this one draw. Uploads it to a scratch buffer

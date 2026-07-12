@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -24,6 +25,8 @@
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
 #include "render/render_internal.h"
+#include "render/render_queue.h"
+#include "render/render_state.h"
 
 using namespace plume;
 using namespace fm2::ghp;
@@ -100,7 +103,7 @@ uint32_t FormatBytes(RenderFormat format) {
 
 RenderHeapType BufferHeapType() {
   return Device()->getCapabilities().gpuUploadHeap ? RenderHeapType::GPU_UPLOAD
-                                                    : RenderHeapType::DEFAULT;
+                                                   : RenderHeapType::DEFAULT;
 }
 
 // D3D12 requires copy row pitch aligned to 256 bytes.
@@ -118,16 +121,15 @@ uint32_t ComputeTexturePitch(const GuestBaseTexture* texture) {
 
 GuestBuffer* CreateVertexBuffer(uint32_t length) {
   auto* buffer = GuestNew<GuestBuffer>(ResourceType::VertexBuffer);
-  buffer->buffer = Device()->createBuffer(RenderBufferDesc::VertexBuffer(
-      length, BufferHeapType(), RenderBufferFlag::INDEX));
+  buffer->buffer = Device()->createBuffer(
+      RenderBufferDesc::VertexBuffer(length, BufferHeapType(), RenderBufferFlag::INDEX));
   buffer->dataSize = length;
   return buffer;
 }
 
 GuestBuffer* CreateIndexBuffer(uint32_t length, uint32_t format) {
   auto* buffer = GuestNew<GuestBuffer>(ResourceType::IndexBuffer);
-  buffer->buffer =
-      Device()->createBuffer(RenderBufferDesc::IndexBuffer(length, BufferHeapType()));
+  buffer->buffer = Device()->createBuffer(RenderBufferDesc::IndexBuffer(length, BufferHeapType()));
   buffer->dataSize = length;
   buffer->guestFormat = format;
   // Index buffers MUST be a 16/32-bit index format -- never a color format.
@@ -151,38 +153,55 @@ static uint32_t LockBuffer(GuestBuffer* buffer, uint32_t flags) {
 // Byte-swap the guest staging contents into the host buffer.
 template <typename T>
 static void UploadBufferSwapped(GuestBuffer* buffer) {
-  if (buffer->lockedReadOnly || buffer->mappedMemory == nullptr) return;
-  if (!buffer->buffer) return;
+  if (buffer->lockedReadOnly || buffer->mappedMemory == nullptr)
+    return;
+  if (!buffer->buffer)
+    return;
 
   const T* src = reinterpret_cast<const T*>(buffer->mappedMemory);
   const size_t count = buffer->dataSize / sizeof(T);
 
   auto swapInto = [&](T* dest) {
-    for (size_t i = 0; i < count; ++i) dest[i] = std::byteswap(src[i]);
+    for (size_t i = 0; i < count; ++i)
+      dest[i] = std::byteswap(src[i]);
   };
 
   if (Device()->getCapabilities().gpuUploadHeap) {
     T* dest = reinterpret_cast<T*>(buffer->buffer->map());
-    if (dest == nullptr) return;
+    if (dest == nullptr)
+      return;
     swapInto(dest);
     buffer->buffer->unmap();
   } else {
     auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(buffer->dataSize));
+    if (!upload) {
+      REXGPU_ERROR("UploadBufferSwapped: failed to create staging upload buffer (size={})",
+                   buffer->dataSize);
+      return;
+    }
     T* dest = reinterpret_cast<T*>(upload->map());
-    if (dest == nullptr) return;
+    if (dest == nullptr)
+      return;
     swapInto(dest);
     upload->unmap();
     RenderBuffer* dst = buffer->buffer.get();
     RenderBuffer* srcBuf = upload.get();
     const uint64_t size = buffer->dataSize;
-    ExecuteUpload([&](RenderCommandList* cl) { cl->copyBufferRegion(dst->at(0), srcBuf->at(0), size); });
+    ExecuteUpload(
+        [&](RenderCommandList* cl) { cl->copyBufferRegion(dst->at(0), srcBuf->at(0), size); });
   }
 }
 
-uint32_t LockVertexBuffer(GuestBuffer* buffer, uint32_t flags) { return LockBuffer(buffer, flags); }
-void UnlockVertexBuffer(GuestBuffer* buffer) { UploadBufferSwapped<uint32_t>(buffer); }
+uint32_t LockVertexBuffer(GuestBuffer* buffer, uint32_t flags) {
+  return LockBuffer(buffer, flags);
+}
+void UnlockVertexBuffer(GuestBuffer* buffer) {
+  UploadBufferSwapped<uint32_t>(buffer);
+}
 
-uint32_t LockIndexBuffer(GuestBuffer* buffer, uint32_t flags) { return LockBuffer(buffer, flags); }
+uint32_t LockIndexBuffer(GuestBuffer* buffer, uint32_t flags) {
+  return LockBuffer(buffer, flags);
+}
 void UnlockIndexBuffer(GuestBuffer* buffer) {
   if (buffer->guestFormat == 6 /* D3DFMT_INDEX32 */)
     UploadBufferSwapped<uint32_t>(buffer);
@@ -195,7 +214,18 @@ void UnlockIndexBuffer(GuestBuffer* buffer) {
 // ---------------------------------------------------------------------------
 
 GuestTexture* CreateTexture(uint32_t width, uint32_t height, uint32_t depth, uint32_t levels,
-                            uint32_t /*usage*/, uint32_t format, uint32_t /*pool*/, uint32_t type) {
+                            uint32_t usage, uint32_t format, uint32_t /*pool*/, uint32_t type) {
+  if (IsDeviceLost()) {
+    auto* texture = GuestNew<GuestTexture>();
+    texture->type = (type == 17) ? ResourceType::VolumeTexture : ResourceType::Texture;
+    texture->width = width;
+    texture->height = height;
+    texture->depth = depth;
+    texture->levels = levels == 0 ? 1 : levels;
+    texture->format = ConvertFormat(format);
+    return texture;
+  }
+
   const bool volume = (type == 17 /* D3DRTYPE_VOLUMETEXTURE */);
   auto* texture = GuestNew<GuestTexture>();
   texture->type = volume ? ResourceType::VolumeTexture : ResourceType::Texture;
@@ -208,90 +238,150 @@ GuestTexture* CreateTexture(uint32_t width, uint32_t height, uint32_t depth, uin
     levels = maxDim > 0 ? static_cast<uint32_t>(std::bit_width(maxDim)) : 1;
   }
 
-  RenderTextureDesc desc;
-  desc.dimension = volume ? RenderTextureDimension::TEXTURE_3D : RenderTextureDimension::TEXTURE_2D;
-  desc.width = width;
-  desc.height = height;
-  desc.depth = depth;
-  desc.mipLevels = levels;
-  desc.arraySize = 1;
-  desc.format = ConvertFormat(format);
-  if (RenderFormatIsDepth(desc.format)) {
-    desc.flags = RenderTextureFlag::DEPTH_TARGET;
-  } else if (volume) {
-    desc.flags = RenderTextureFlag::NONE;
-  } else {
-    desc.flags = RenderTextureFlag::RENDER_TARGET;
-  }
+  // Plume create + descriptor write only on the render thread (Unleashed).
+  RenderQueue::Run([texture, width, height, depth, levels, usage, format, volume] {
+    if (IsDeviceLost()) return;
 
-  texture->textureHolder = Device()->createTexture(desc);
-  texture->texture = texture->textureHolder.get();
+    RenderTextureDesc desc;
+    desc.dimension = volume ? RenderTextureDimension::TEXTURE_3D : RenderTextureDimension::TEXTURE_2D;
+    desc.width = width;
+    desc.height = height;
+    desc.depth = depth;
+    desc.mipLevels = levels;
+    desc.arraySize = 1;
+    desc.format = ConvertFormat(format);
+    // Match Unleashed: only request RT when the guest usage asks for it.
+    if (RenderFormatIsDepth(desc.format)) {
+      desc.flags = RenderTextureFlag::DEPTH_TARGET;
+    } else if (usage != 0) {
+      desc.flags = RenderTextureFlag::RENDER_TARGET;
+    } else {
+      desc.flags = RenderTextureFlag::NONE;
+    }
 
-  RenderTextureViewDesc viewDesc;
-  viewDesc.format = desc.format;
-  viewDesc.dimension = volume ? RenderTextureViewDimension::TEXTURE_3D : RenderTextureViewDimension::TEXTURE_2D;
-  viewDesc.mipLevels = levels;
-  switch (format) {
-    case 0x1A220197:  // D3DFMT_D24FS8
-    case 0x2D200196:  // D3DFMT_D24S8
-    case 0x28000102:  // D3DFMT_L8
-    case 0x28000002:  // D3DFMT_L8_2
-      viewDesc.componentMapping =
-          RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R, RenderSwizzle::R, RenderSwizzle::ONE);
-      break;
-    case 0x28280086:  // D3DFMT_X8R8G8B8
-      viewDesc.componentMapping =
-          RenderComponentMapping(RenderSwizzle::G, RenderSwizzle::B, RenderSwizzle::A, RenderSwizzle::ONE);
-      break;
-    default:
-      break;
-  }
-  texture->textureView = texture->texture->createTextureView(viewDesc);
+    texture->textureHolder = Device()->createTexture(desc);
+    texture->texture = texture->textureHolder.get();
+    if (texture->texture == nullptr) {
+      NoteDeviceLost("CreateTexture");
+      REXGPU_ERROR(
+          "CreateTexture: Plume createTexture failed ({}x{}x{} levels={} fmt=0x{:08X} type={} usage={})",
+          width, height, depth, levels, format, volume ? 17 : 0, usage);
+      texture->width = width;
+      texture->height = height;
+      texture->depth = depth;
+      texture->levels = levels;
+      texture->format = desc.format;
+      return;
+    }
 
-  texture->width = width;
-  texture->height = height;
-  texture->depth = depth;
-  texture->levels = levels;
-  texture->format = desc.format;
-  texture->requiresHostInitialization =
-      desc.flags == RenderTextureFlag::RENDER_TARGET || desc.flags == RenderTextureFlag::DEPTH_TARGET;
-  texture->hostInitialized = !texture->requiresHostInitialization;
-  texture->viewDimension = viewDesc.dimension;
-  texture->descriptorIndex = AllocTextureDescriptor();
-  TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
-                                     RenderTextureLayout::SHADER_READ, texture->textureView.get());
+    RenderTextureViewDesc viewDesc;
+    viewDesc.format = desc.format;
+    viewDesc.dimension =
+        volume ? RenderTextureViewDimension::TEXTURE_3D : RenderTextureViewDimension::TEXTURE_2D;
+    viewDesc.mipLevels = levels;
+    switch (format) {
+      case 0x1A220197:  // D3DFMT_D24FS8
+      case 0x2D200196:  // D3DFMT_D24S8
+      case 0x28000102:  // D3DFMT_L8
+      case 0x28000002:  // D3DFMT_L8_2
+        viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R,
+                                                           RenderSwizzle::R, RenderSwizzle::ONE);
+        break;
+      case 0x28280086:  // D3DFMT_X8R8G8B8
+        viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::G, RenderSwizzle::B,
+                                                           RenderSwizzle::A, RenderSwizzle::ONE);
+        break;
+      default:
+        break;
+    }
+    texture->textureView = texture->texture->createTextureView(viewDesc);
+
+    texture->width = width;
+    texture->height = height;
+    texture->depth = depth;
+    texture->levels = levels;
+    texture->format = desc.format;
+    texture->requiresHostInitialization = desc.flags == RenderTextureFlag::RENDER_TARGET ||
+                                          desc.flags == RenderTextureFlag::DEPTH_TARGET;
+    texture->hostInitialized = !texture->requiresHostInitialization;
+    texture->viewDimension = viewDesc.dimension;
+    texture->descriptorIndex = AllocTextureDescriptor();
+    TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
+                                       RenderTextureLayout::SHADER_READ, texture->textureView.get());
+  });
   return texture;
 }
 
-GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format, uint32_t /*multiSample*/) {
-  RenderTextureDesc desc;
-  desc.dimension = RenderTextureDimension::TEXTURE_2D;
-  desc.width = width;
-  desc.height = height;
-  desc.depth = 1;
-  desc.mipLevels = 1;
-  desc.arraySize = 1;
-  desc.format = ConvertFormat(format);
-  const bool depth = RenderFormatIsDepth(desc.format);
-  desc.flags = depth ? RenderTextureFlag::DEPTH_TARGET : RenderTextureFlag::RENDER_TARGET;
+GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format,
+                            uint32_t multiSample) {
+  if (IsDeviceLost()) {
+    const bool depth = RenderFormatIsDepth(ConvertFormat(format));
+    auto* surface =
+        GuestNew<GuestSurface>(depth ? ResourceType::DepthStencil : ResourceType::RenderTarget);
+    surface->width = width;
+    surface->height = height;
+    surface->format = ConvertFormat(format);
+    surface->guestFormat = format;
+    return surface;
+  }
 
-  auto* surface = GuestNew<GuestSurface>(depth ? ResourceType::DepthStencil : ResourceType::RenderTarget);
-  surface->textureHolder = Device()->createTexture(desc);
-  surface->texture = surface->textureHolder.get();
-  RenderTextureViewDesc viewDesc;
-  viewDesc.format = desc.format;
-  viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
-  viewDesc.mipLevels = 1;
-  surface->textureView = surface->texture->createTextureView(viewDesc);
-  surface->width = width;
-  surface->height = height;
-  surface->format = desc.format;
-  surface->guestFormat = format;
-  surface->requiresHostInitialization = true;
-  surface->hostInitialized = false;
-  surface->descriptorIndex = AllocTextureDescriptor();
-  TextureDescriptorSet()->setTexture(surface->descriptorIndex, surface->texture,
-                                     RenderTextureLayout::SHADER_READ, surface->textureView.get());
+  // Xbox D3DMULTISAMPLE_TYPE: 0=NONE, 2=2x, 4=4x, ...
+  RenderSampleCounts sampleCount = RenderSampleCount::COUNT_1;
+  if (multiSample >= 8) {
+    sampleCount = RenderSampleCount::COUNT_8;
+  } else if (multiSample >= 4) {
+    sampleCount = RenderSampleCount::COUNT_4;
+  } else if (multiSample >= 2) {
+    sampleCount = RenderSampleCount::COUNT_2;
+  }
+
+  const bool depth = RenderFormatIsDepth(ConvertFormat(format));
+  auto* surface =
+      GuestNew<GuestSurface>(depth ? ResourceType::DepthStencil : ResourceType::RenderTarget);
+
+  RenderQueue::Run([surface, width, height, format, sampleCount, depth] {
+    if (IsDeviceLost()) return;
+
+    RenderTextureDesc desc;
+    desc.dimension = RenderTextureDimension::TEXTURE_2D;
+    desc.width = width;
+    desc.height = height;
+    desc.depth = 1;
+    desc.mipLevels = 1;
+    desc.arraySize = 1;
+    desc.format = ConvertFormat(format);
+    desc.flags = depth ? RenderTextureFlag::DEPTH_TARGET : RenderTextureFlag::RENDER_TARGET;
+    desc.multisampling.sampleCount = sampleCount;
+
+    surface->textureHolder = Device()->createTexture(desc);
+    surface->texture = surface->textureHolder.get();
+    if (surface->texture == nullptr) {
+      NoteDeviceLost("CreateSurface");
+      REXGPU_ERROR("CreateSurface: Plume createTexture failed ({}x{} fmt=0x{:08X} msaa={})", width,
+                   height, format, int(sampleCount));
+      surface->width = width;
+      surface->height = height;
+      surface->format = desc.format;
+      surface->guestFormat = format;
+      surface->sampleCount = sampleCount;
+      return;
+    }
+    RenderTextureViewDesc viewDesc;
+    viewDesc.format = desc.format;
+    viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
+    viewDesc.mipLevels = 1;
+    surface->textureView = surface->texture->createTextureView(viewDesc);
+    surface->width = width;
+    surface->height = height;
+    surface->format = desc.format;
+    surface->guestFormat = format;
+    surface->sampleCount = sampleCount;
+    surface->requiresHostInitialization = true;
+    surface->hostInitialized = false;
+    surface->descriptorIndex = AllocTextureDescriptor();
+    TextureDescriptorSet()->setTexture(surface->descriptorIndex, surface->texture,
+                                       RenderTextureLayout::SHADER_READ, surface->textureView.get());
+  });
   return surface;
 }
 
@@ -305,17 +395,27 @@ void LockRect(GuestBaseTexture* texture, uint32_t* outPitch, uint32_t* outBits) 
     uint32_t addr = GuestAllocRaw(slicePitch, 0x10);
     texture->mappedMemory = ToHost<void>(addr);
   }
-  if (outPitch) *outPitch = pitch;
-  if (outBits) *outBits = ToGuest(texture->mappedMemory);
+  if (outPitch)
+    *outPitch = pitch;
+  if (outBits)
+    *outBits = ToGuest(texture->mappedMemory);
 }
 
 void UnlockRect(GuestBaseTexture* texture) {
-  if (texture->mappedMemory == nullptr) return;
+  if (texture == nullptr || texture->mappedMemory == nullptr || texture->texture == nullptr)
+    return;
   uint32_t pitch = ComputeTexturePitch(texture);
   uint32_t slicePitch = pitch * texture->height;
 
   auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(slicePitch));
-  std::memcpy(upload->map(), texture->mappedMemory, slicePitch);
+  if (!upload) {
+    REXGPU_ERROR("UnlockRect: failed to create staging upload buffer (size={})", slicePitch);
+    return;
+  }
+  void* mapped = upload->map();
+  if (mapped == nullptr)
+    return;
+  std::memcpy(mapped, texture->mappedMemory, slicePitch);
   upload->unmap();
 
   RenderTexture* dst = texture->texture;
@@ -324,7 +424,8 @@ void UnlockRect(GuestBaseTexture* texture) {
   const uint32_t w = texture->width, h = texture->height;
   const uint32_t rowTexels = pitch / FormatBytes(fmt);
   ExecuteUpload([&](RenderCommandList* cl) {
-    cl->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(dst, RenderTextureLayout::COPY_DEST));
+    cl->barriers(RenderBarrierStage::COPY,
+                 RenderTextureBarrier(dst, RenderTextureLayout::COPY_DEST));
     cl->copyTextureRegion(RenderTextureCopyLocation::Subresource(dst, 0),
                           RenderTextureCopyLocation::PlacedFootprint(src, fmt, w, h, 1, rowTexels));
   });
@@ -340,7 +441,8 @@ void UnlockRect(GuestBaseTexture* texture) {
 // macro (winbase.h) that ends up visible transitively in this translation
 // unit.
 void UnlockGuestResource(GuestResource* resource) {
-  if (resource == nullptr) return;
+  if (resource == nullptr)
+    return;
   switch (resource->type) {
     case ResourceType::VertexBuffer:
       UnlockVertexBuffer(static_cast<GuestBuffer*>(resource));
@@ -357,6 +459,415 @@ void UnlockGuestResource(GuestResource* resource) {
     default:
       return;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Guest (XG-header) texture translation.
+//
+// FM2 also creates some textures via the low-level XG* XDK API
+// (XGSetTextureHeader + a raw Xenos fetch constant written directly into the
+// header) instead of always going through D3DDevice_CreateTexture. Those
+// objects carry no kFm2ResourceMagic tag, so D3DDevice_SetTexture can't bind
+// them the normal pure-replace way. This section parses the header's fetch
+// constant directly and materializes a native GuestTexture from the guest's
+// own (possibly tiled/packed) texture data, so SetTexture has something real
+// to bind instead of falling back to null -- the underlying black-screen
+// symptom this port fixes.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+uint32_t TiledOffset2D(uint32_t x, uint32_t y, uint32_t width, uint32_t bytesPerElement) {
+  uint32_t alignedWidth = (width + 31) & ~31u;
+  uint32_t logBpp = (bytesPerElement >> 2) + ((bytesPerElement >> 1) >> (bytesPerElement >> 2));
+  uint32_t macro = ((x >> 5) + (y >> 5) * (alignedWidth >> 5)) << (logBpp + 7);
+  uint32_t micro = ((x & 7) + ((y & 6) << 2)) << logBpp;
+  uint32_t offset =
+      macro + ((micro & ~15u) << 1) + (micro & 15u) + ((y & 8) << (3 + logBpp)) + ((y & 1) << 4);
+  return (((offset & ~511u) << 3) + ((offset & 448u) << 2) + (offset & 63u) + ((y & 16) << 7) +
+          (((((y & 8) >> 2) + (x >> 3)) & 3) << 6)) >>
+         logBpp;
+}
+
+struct XenosTextureInfo {
+  RenderFormat format = RenderFormat::UNKNOWN;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t baseAddress = 0;  // guest byte address of mip 0
+  uint32_t pitchTexels = 0;  // row pitch in texels
+  uint32_t blockDim = 1;     // 4 for BC formats
+  uint32_t bytesPerBlock = 4;
+  uint32_t endian = 0;  // 0 none, 1 = 8-in-16, 2 = 8-in-32
+  bool tiled = false;
+  bool packedMips = false;
+  bool valid = false;
+};
+
+void GetPackedBaseOffsetBlocks(const XenosTextureInfo& info, uint32_t& outX, uint32_t& outY) {
+  outX = 0;
+  outY = 0;
+  if (!info.packedMips)
+    return;
+  const uint32_t log2Width = uint32_t(std::bit_width(info.width - 1));
+  const uint32_t log2Height = uint32_t(std::bit_width(info.height - 1));
+  if (std::min(log2Width, log2Height) > 4)
+    return;  // min dimension > 16 texels: not packed
+  uint32_t xTexels = 0, yTexels = 0;
+  if (log2Width > log2Height)
+    yTexels = 16;  // wider than tall: laid out vertically
+  else
+    xTexels = 16;  // taller than wide (or square): laid out horizontally
+  outX = xTexels / info.blockDim;
+  outY = yTexels / info.blockDim;
+}
+
+// GPUTEXTURE_FETCH_CONSTANT: 6 dwords, big-endian.
+XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
+  XenosTextureInfo info;
+  const uint32_t fc0 = fc[0].get();
+  const uint32_t fc1 = fc[1].get();
+  const uint32_t fc2 = fc[2].get();
+
+  info.pitchTexels = ((fc0 >> 22) & 0x1FF) * 32;
+  info.tiled = (fc0 >> 31) != 0;
+  const uint32_t gpuFormat = fc1 & 0x3F;
+  info.endian = (fc1 >> 6) & 0x3;
+  info.baseAddress = ((fc1 >> 12) & 0xFFFFF) << 12;
+  info.width = (fc2 & 0x1FFF) + 1;
+  info.height = ((fc2 >> 13) & 0x1FFF) + 1;
+  info.packedMips = ((fc[5].get() >> 11) & 0x1) != 0;
+
+  switch (gpuFormat) {
+    case 2:  // k_8 (L8/A8)
+      info.format = RenderFormat::R8_UNORM;
+      info.bytesPerBlock = 1;
+      break;
+    case 6:  // k_8_8_8_8 (A8R8G8B8 cooked; 8-in-32 swap yields BGRA bytes)
+      info.format = RenderFormat::B8G8R8A8_UNORM;
+      info.bytesPerBlock = 4;
+      break;
+    case 18:  // k_DXT1
+      info.format = RenderFormat::BC1_UNORM;
+      info.blockDim = 4;
+      info.bytesPerBlock = 8;
+      break;
+    case 19:  // k_DXT2_3
+      info.format = RenderFormat::BC2_UNORM;
+      info.blockDim = 4;
+      info.bytesPerBlock = 16;
+      break;
+    case 20:  // k_DXT4_5
+      info.format = RenderFormat::BC3_UNORM;
+      info.blockDim = 4;
+      info.bytesPerBlock = 16;
+      break;
+    case 26:  // k_16_16_16_16
+      info.format = RenderFormat::R16G16B16A16_UNORM;
+      info.bytesPerBlock = 8;
+      break;
+    case 32:  // k_16_16_16_16_FLOAT (scene-color resolve targets)
+      info.format = RenderFormat::R16G16B16A16_FLOAT;
+      info.bytesPerBlock = 8;
+      break;
+    default: {
+      static std::unordered_set<uint32_t> s_warnedFormats;
+      if (s_warnedFormats.insert(gpuFormat).second) {
+        REXGPU_WARN("TranslateGuestTexture: unsupported Xenos format {} ({}x{})", gpuFormat,
+                    info.width, info.height);
+      }
+      return info;
+    }
+  }
+  if (info.pitchTexels == 0)
+    info.pitchTexels = info.width;
+  info.valid = info.width != 0 && info.height != 0 && info.baseAddress != 0;
+  return info;
+}
+
+void EndianSwapBuffer(uint8_t* data, size_t size, uint32_t endian) {
+  if (endian == 1) {
+    auto* p = reinterpret_cast<uint16_t*>(data);
+    for (size_t i = 0; i < size / 2; ++i)
+      p[i] = std::byteswap(p[i]);
+  } else if (endian == 2) {
+    auto* p = reinterpret_cast<uint32_t*>(data);
+    for (size_t i = 0; i < size / 4; ++i)
+      p[i] = std::byteswap(p[i]);
+  }
+}
+
+bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info) {
+  if (texture == nullptr || texture->texture == nullptr || !info.valid)
+    return false;
+  if (texture->width != info.width || texture->height != info.height ||
+      texture->format != info.format) {
+    return false;
+  }
+
+  const uint32_t wBlocks = (info.width + info.blockDim - 1) / info.blockDim;
+  const uint32_t hBlocks = (info.height + info.blockDim - 1) / info.blockDim;
+  const uint32_t pitchBlocks = std::max(wBlocks, info.pitchTexels / info.blockDim);
+
+  // Small textures live at a block offset inside their packed 32x32 tile.
+  uint32_t packedX = 0, packedY = 0;
+  GetPackedBaseOffsetBlocks(info, packedX, packedY);
+
+  // Guard against reading unmapped guest memory: textures bound from the PM4
+  // command stream point at raw GPU memory that may not be heap-backed. A
+  // tiled texture's footprint spans pitchBlocks * align(hBlocks,32) blocks;
+  // require the whole conservative footprint to be readable or we'd fault.
+  const uint32_t alignedHBlocks = (hBlocks + packedY + 31u) & ~31u;
+  const uint64_t footprint = uint64_t(pitchBlocks + packedX) * alignedHBlocks * info.bytesPerBlock;
+  // Fetch-constant bases are guest PHYSICAL addresses -- the game writes
+  // texture data through its physical-memory aliases, so gate readability on
+  // the physical heap's commit state, not the virtual one.
+  auto* mem = ghp::GuestMemory();
+  const uint32_t physBase = info.baseAddress & 0x1FFFFFFFu;
+  const bool sizeOk = footprint != 0 && footprint <= 0x4000000ull;
+  const bool readable =
+      sizeOk && (physBase + footprint) <= 0x20000000ull &&
+      mem->GetPhysicalHeap()->QueryRangeAccess(physBase, uint32_t(physBase + footprint - 1)) !=
+          rex::memory::PageAccess::kNoAccess;
+  if (!readable) {
+    static std::unordered_set<uint32_t> s_warned;
+    if (s_warned.insert(info.baseAddress).second) {
+      REXGPU_WARN(
+          "UploadGuestTextureData: base 0x{:08X} footprint {} not readable ({}x{} fmt={} "
+          "tiled={}) -- skipped",
+          info.baseAddress, footprint, info.width, info.height, int(info.format), info.tiled);
+    }
+    return false;
+  }
+
+  std::vector<uint8_t> linear(size_t(wBlocks) * hBlocks * info.bytesPerBlock);
+  const uint8_t* src = mem->TranslatePhysical<const uint8_t*>(info.baseAddress);
+
+  if (info.tiled) {
+    for (uint32_t by = 0; by < hBlocks; ++by) {
+      for (uint32_t bx = 0; bx < wBlocks; ++bx) {
+        const uint32_t element =
+            TiledOffset2D(bx + packedX, by + packedY, pitchBlocks, info.bytesPerBlock);
+        // Bounds guard: TiledOffset2D can overshoot the committed footprint
+        // for small/odd dims -> OOB read/crash. Skip if so.
+        if (uint64_t(element) * info.bytesPerBlock + info.bytesPerBlock > footprint)
+          continue;
+        std::memcpy(linear.data() + (size_t(by) * wBlocks + bx) * info.bytesPerBlock,
+                    src + size_t(element) * info.bytesPerBlock, info.bytesPerBlock);
+      }
+    }
+  } else {
+    for (uint32_t by = 0; by < hBlocks; ++by) {
+      std::memcpy(linear.data() + size_t(by) * wBlocks * info.bytesPerBlock,
+                  src + (size_t(by + packedY) * pitchBlocks + packedX) * info.bytesPerBlock,
+                  size_t(wBlocks) * info.bytesPerBlock);
+    }
+  }
+  EndianSwapBuffer(linear.data(), linear.size(), info.endian);
+
+  const uint32_t srcRowPitch = wBlocks * info.bytesPerBlock;
+  const uint32_t dstRowPitch = (srcRowPitch + 255u) & ~255u;
+  auto upload =
+      Device()->createBuffer(RenderBufferDesc::UploadBuffer(size_t(dstRowPitch) * hBlocks));
+  if (!upload) {
+    REXGPU_ERROR("UploadGuestTextureData: failed to create staging upload buffer (size={})",
+                 size_t(dstRowPitch) * hBlocks);
+    return false;
+  }
+  auto* mapped = reinterpret_cast<uint8_t*>(upload->map());
+  if (mapped == nullptr)
+    return false;
+  for (uint32_t by = 0; by < hBlocks; ++by) {
+    std::memcpy(mapped + size_t(by) * dstRowPitch, linear.data() + size_t(by) * srcRowPitch,
+                srcRowPitch);
+  }
+  upload->unmap();
+
+  RenderTexture* dst = texture->texture;
+  RenderBuffer* srcBuf = upload.get();
+  const uint32_t rowTexels = (dstRowPitch / info.bytesPerBlock) * info.blockDim;
+  ExecuteUpload([&](RenderCommandList* cl) {
+    cl->barriers(RenderBarrierStage::COPY,
+                 RenderTextureBarrier(dst, RenderTextureLayout::COPY_DEST));
+    cl->copyTextureRegion(RenderTextureCopyLocation::Subresource(dst, 0),
+                          RenderTextureCopyLocation::PlacedFootprint(
+                              srcBuf, info.format, info.width, info.height, 1, rowTexels));
+  });
+  texture->hostInitialized = true;
+  return true;
+}
+
+std::mutex g_guestTextureAliasMutex;
+std::unordered_map<uint32_t, GuestTexture*> g_guestTextureAliases;
+std::vector<std::unique_ptr<GuestTexture>> g_guestTextureStorage;
+// Avoid hammering CreateResource after DEVICE_REMOVED / permanent create fails.
+std::unordered_set<uint32_t> g_failedGuestTextureBases;
+
+// Shared by TranslateGuestTexture/TranslateGuestTextureFetch: builds a native
+// GuestTexture for a parsed Xenos fetch constant, uploads its guest data if
+// requested, and publishes it into the alias table under info.baseAddress.
+GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool uploadGuestData) {
+  if (g_failedGuestTextureBases.contains(info.baseAddress)) return nullptr;
+
+  auto textureStorage = std::make_unique<GuestTexture>();
+  GuestTexture* texture = textureStorage.get();
+  texture->type = ResourceType::Texture;
+
+  bool created = false;
+  RenderQueue::Run([&, texture] {
+    if (IsDeviceLost()) return;
+
+    RenderTextureDesc desc;
+    desc.dimension = RenderTextureDimension::TEXTURE_2D;
+    desc.width = info.width;
+    desc.height = info.height;
+    desc.depth = 1;
+    desc.mipLevels = 1;
+    desc.arraySize = 1;
+    desc.format = info.format;
+    desc.flags = RenderTextureFlag::NONE;
+    texture->textureHolder = Device()->createTexture(desc);
+    texture->texture = texture->textureHolder.get();
+    if (texture->texture == nullptr) {
+      g_failedGuestTextureBases.insert(info.baseAddress);
+      static std::unordered_set<uint32_t> s_warned;
+      if (s_warned.insert(info.baseAddress).second) {
+        NoteDeviceLost("TranslateGuestTexture");
+        REXGPU_WARN("TranslateGuestTexture: failed to create {}x{} fmt={} texture (base=0x{:08X})",
+                    info.width, info.height, int(info.format), info.baseAddress);
+      }
+      return;
+    }
+
+    RenderTextureViewDesc viewDesc;
+    viewDesc.format = info.format;
+    viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
+    viewDesc.mipLevels = 1;
+    if (info.format == RenderFormat::R8_UNORM) {
+      viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R,
+                                                         RenderSwizzle::R, RenderSwizzle::ONE);
+    }
+    texture->textureView = texture->texture->createTextureView(viewDesc);
+    texture->width = info.width;
+    texture->height = info.height;
+    texture->depth = 1;
+    texture->levels = 1;
+    texture->format = info.format;
+    texture->requiresHostInitialization = false;
+    texture->hostInitialized = true;
+    texture->viewDimension = RenderTextureViewDimension::TEXTURE_2D;
+    texture->descriptorIndex = AllocTextureDescriptor();
+    TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
+                                       RenderTextureLayout::SHADER_READ, texture->textureView.get());
+    created = true;
+  });
+
+  if (!created) return nullptr;
+
+  if (uploadGuestData) UploadGuestTextureData(texture, info);
+
+  REXGPU_INFO(
+      "TranslateGuestTexture: base=0x{:08X} {}x{} fmt={} tiled={} endian={} upload={} -> desc {}",
+      info.baseAddress, info.width, info.height, int(info.format), info.tiled, info.endian,
+      uploadGuestData, texture->descriptorIndex);
+
+  GuestTexture* result = texture;
+  std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
+  g_guestTextureStorage.push_back(std::move(textureStorage));
+  g_guestTextureAliases[info.baseAddress] = result;
+  return result;
+}
+
+}  // namespace
+
+// Translates a raw Xenos GPUTEXTURE_FETCH_CONSTANT (as written by the guest
+// PM4 command stream / XG* API, not a GuestTexture) into a native texture.
+// Re-uploads a cache hit's guest data at most once per frame rather than
+// once per draw -- many draws sample the same texture every frame, and
+// uploading per draw would flood the GPU with synchronous copies.
+GuestTexture* TranslateGuestTextureFetch(const void* guestFetch, bool uploadGuestData) {
+  if (guestFetch == nullptr || Device() == nullptr)
+    return nullptr;
+  const uint32_t guestAddress = ToGuest(guestFetch);
+
+  const auto* fetch = reinterpret_cast<const rex::be<uint32_t>*>(guestFetch);
+  XenosTextureInfo info = ParseTextureFetchConstant(fetch);
+  if (!info.valid) {
+    static std::unordered_set<uint32_t> s_warned;
+    if (s_warned.insert(guestAddress).second) {
+      REXGPU_WARN("TranslateGuestTextureFetch: 0x{:08X} invalid fetch ({}x{} fmt={} base=0x{:08X})",
+                  guestAddress, info.width, info.height, int(info.format), info.baseAddress);
+    }
+    return nullptr;
+  }
+
+  GuestTexture* cached = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
+    auto it = g_guestTextureAliases.find(info.baseAddress);
+    if (it != g_guestTextureAliases.end() && it->second != nullptr) {
+      cached = it->second;
+      if (cached->width != info.width || cached->height != info.height ||
+          cached->format != info.format) {
+        g_guestTextureAliases.erase(it);
+        cached = nullptr;
+      }
+    }
+  }
+  if (cached != nullptr) {
+    const uint64_t frame = CurrentFrameIndex();
+    if (uploadGuestData && cached->lastUploadFrame != frame) {
+      UploadGuestTextureData(cached, info);
+      cached->lastUploadFrame = frame;
+    }
+    return cached;
+  }
+
+  return CreateAndRegisterGuestTexture(info, uploadGuestData);
+}
+
+// Translates a raw XG-header guest texture object (see the section comment
+// above) into a native GuestTexture. The header's Common field (offset 0)
+// must tag it as a texture resource; the fetch constant lives 7 dwords in
+// (GPUTEXTURE_FETCH_CONSTANT at header +0x1C).
+GuestTexture* TranslateGuestTexture(void* guestHeader, bool uploadGuestData) {
+  const uint32_t guestAddress = ToGuest(guestHeader);
+
+  const auto* header = reinterpret_cast<const rex::be<uint32_t>*>(guestHeader);
+  if ((header[0].get() & 0xF) != 3) {
+    static std::unordered_set<uint32_t> s_warned;
+    if (s_warned.insert(guestAddress).second) {
+      REXGPU_WARN(
+          "TranslateGuestTexture: 0x{:08X} unhandled resource type nibble {} (common=0x{:08X})",
+          guestAddress, header[0].get() & 0xF, header[0].get());
+    }
+    return nullptr;
+  }
+  XenosTextureInfo info = ParseTextureFetchConstant(header + 7);
+  if (!info.valid) {
+    static std::unordered_set<uint32_t> s_warned;
+    if (s_warned.insert(guestAddress).second) {
+      REXGPU_WARN(
+          "TranslateGuestTexture: 0x{:08X} invalid fetch constant ({}x{} fmt={} base=0x{:08X})",
+          guestAddress, info.width, info.height, int(info.format), info.baseAddress);
+    }
+    return nullptr;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
+    auto it = g_guestTextureAliases.find(info.baseAddress);
+    if (it != g_guestTextureAliases.end() && it->second != nullptr) {
+      GuestTexture* cached = it->second;
+      // Same memory redescribed with a different shape: drop the stale entry.
+      if (cached->width == info.width && cached->height == info.height &&
+          cached->format == info.format) {
+        return cached;
+      }
+      g_guestTextureAliases.erase(it);
+    }
+  }
+
+  return CreateAndRegisterGuestTexture(info, uploadGuestData);
 }
 
 // ---------------------------------------------------------------------------
@@ -381,7 +892,8 @@ GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestE
   uint32_t count = 0;
   while (std::byteswap(guestElements[count].stream) != 0xFF) {
     ++count;
-    if (count > 64) break;  // safety
+    if (count > 64)
+      break;  // safety
   }
 
   auto* decl = GuestNew<GuestVertexDeclaration>();
@@ -407,7 +919,8 @@ GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestE
       d.usageIndex = s.usageIndex;
       d.padding = s.padding;
     }
-    if (i < count && d.stream < 16) decl->vertexStreams[d.stream] = true;
+    if (i < count && d.stream < 16)
+      decl->vertexStreams[d.stream] = true;
   }
   // RenderInputElement translation + hashing happens at pipeline-build time
   // (Phase 3).
@@ -423,14 +936,16 @@ GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestE
 // ---------------------------------------------------------------------------
 
 void GetSurfaceDesc(const GuestSurface* surface, GuestSurfaceDesc* desc) {
-  if (desc == nullptr) return;
+  if (desc == nullptr)
+    return;
   desc->format = surface->guestFormat;
   desc->type = 3 /* D3DRTYPE_SURFACE */;
   desc->usage = 0;
   desc->pool = 0;
-  desc->multiSampleType = static_cast<uint32_t>(surface->sampleCount == RenderSampleCount::COUNT_4  ? 2
-                                                : surface->sampleCount == RenderSampleCount::COUNT_2 ? 1
-                                                                                                     : 0);
+  desc->multiSampleType =
+      static_cast<uint32_t>(surface->sampleCount == RenderSampleCount::COUNT_4   ? 2
+                            : surface->sampleCount == RenderSampleCount::COUNT_2 ? 1
+                                                                                 : 0);
   desc->multiSampleQuality = 0;
   desc->width = surface->width;
   desc->height = surface->height;
@@ -469,7 +984,8 @@ struct DdsInfo {
 
 DdsInfo ParseDds(const uint8_t* data, uint32_t size) {
   DdsInfo info;
-  if (size < 128 || *reinterpret_cast<const uint32_t*>(data) != FourCC('D', 'D', 'S', ' ')) return info;
+  if (size < 128 || *reinterpret_cast<const uint32_t*>(data) != FourCC('D', 'D', 'S', ' '))
+    return info;
 
   auto rd = [&](uint32_t off) { return *reinterpret_cast<const uint32_t*>(data + off); };
   info.height = rd(12);
@@ -566,6 +1082,16 @@ GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size) {
 
   texture->textureHolder = Device()->createTexture(desc);
   texture->texture = texture->textureHolder.get();
+  if (texture->texture == nullptr) {
+    REXGPU_ERROR("LoadTextureFromMemory: Plume createTexture failed ({}x{})", dds.width,
+                 dds.height);
+    texture->width = dds.width;
+    texture->height = dds.height;
+    texture->depth = dds.depth;
+    texture->levels = dds.mipCount;
+    texture->format = dds.format;
+    return texture;
+  }
 
   RenderTextureViewDesc viewDesc;
   viewDesc.format = dds.format;
@@ -605,7 +1131,8 @@ GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size) {
     dstOff += (s.dstRowPitch * s.rowCount + kPlacementAlignment - 1) & ~(kPlacementAlignment - 1);
     slices.push_back(s);
   }
-  if (dds.headerSize + srcOff > size) return texture;  // truncated data; skip upload
+  if (dds.headerSize + srcOff > size)
+    return texture;  // truncated data; skip upload
 
   auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(dstOff));
   auto* mapped = reinterpret_cast<uint8_t*>(upload->map());
@@ -625,13 +1152,14 @@ GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size) {
   const RenderFormat fmt = dds.format;
   const uint32_t blockW = dds.blockWidth, bpb = dds.bytesPerBlock;
   ExecuteUpload([&](RenderCommandList* cl) {
-    cl->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(dstTex, RenderTextureLayout::COPY_DEST));
+    cl->barriers(RenderBarrierStage::COPY,
+                 RenderTextureBarrier(dstTex, RenderTextureLayout::COPY_DEST));
     for (uint32_t i = 0; i < slices.size(); ++i) {
       const Slice& s = slices[i];
       uint32_t rowTexels = (s.dstRowPitch / bpb) * blockW;
-      cl->copyTextureRegion(
-          RenderTextureCopyLocation::Subresource(dstTex, i),
-          RenderTextureCopyLocation::PlacedFootprint(srcBuf, fmt, s.width, s.height, 1, rowTexels, s.dstOffset));
+      cl->copyTextureRegion(RenderTextureCopyLocation::Subresource(dstTex, i),
+                            RenderTextureCopyLocation::PlacedFootprint(
+                                srcBuf, fmt, s.width, s.height, 1, rowTexels, s.dstOffset));
     }
   });
 
@@ -645,9 +1173,9 @@ GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size) {
 
 ShaderCacheEntry* FindShaderCacheEntry(uint64_t hash) {
   ShaderCacheEntry* end = g_shaderCacheEntries + g_shaderCacheEntryCount;
-  ShaderCacheEntry* it = std::lower_bound(
-      g_shaderCacheEntries, end, hash,
-      [](const ShaderCacheEntry& lhs, uint64_t rhs) { return lhs.hash < rhs; });
+  ShaderCacheEntry* it =
+      std::lower_bound(g_shaderCacheEntries, end, hash,
+                       [](const ShaderCacheEntry& lhs, uint64_t rhs) { return lhs.hash < rhs; });
   return (it != end && it->hash == hash) ? it : nullptr;
 }
 
@@ -668,37 +1196,44 @@ std::vector<UcodeContainerRec> g_ucodeContainers;
 std::unordered_map<uint64_t, GuestShader*> g_inlineUcodeCache;
 }  // namespace
 
-void RegisterShaderContainerForUcodeLookup(const uint32_t* function, uint32_t size, GuestShader* shader,
-                                           ResourceType type) {
-  if (function == nullptr || shader == nullptr || size == 0u || size > 0x40000u) return;
+void RegisterShaderContainerForUcodeLookup(const uint32_t* function, uint32_t size,
+                                           GuestShader* shader, ResourceType type) {
+  if (function == nullptr || shader == nullptr || size == 0u || size > 0x40000u)
+    return;
   std::lock_guard lock(g_ucodeIndexMutex);
   for (const auto& r : g_ucodeContainers) {
-    if (r.host == reinterpret_cast<const uint8_t*>(function)) return;
+    if (r.host == reinterpret_cast<const uint8_t*>(function))
+      return;
   }
-  g_ucodeContainers.push_back({reinterpret_cast<const uint8_t*>(function), ToGuest(function), size, shader,
-                               type == ResourceType::PixelShader});
+  g_ucodeContainers.push_back({reinterpret_cast<const uint8_t*>(function), ToGuest(function), size,
+                               shader, type == ResourceType::PixelShader});
 }
 
 GuestShader* FindShaderByInlineUcode(const void* ucode, uint32_t bytes, bool pixel) {
-  if (ucode == nullptr || bytes < 16u || bytes > 0x20000u) return nullptr;
+  if (ucode == nullptr || bytes < 16u || bytes > 0x20000u)
+    return nullptr;
   const uint64_t h = XXH3_64bits(ucode, bytes) ^ (pixel ? 1ull : 0ull);
   std::lock_guard lock(g_ucodeIndexMutex);
   auto it = g_inlineUcodeCache.find(h);
-  if (it != g_inlineUcodeCache.end()) return it->second;
+  if (it != g_inlineUcodeCache.end())
+    return it->second;
   GuestShader* found = nullptr;
   const uint8_t first = *static_cast<const uint8_t*>(ucode);
   for (const auto& r : g_ucodeContainers) {
-    if (r.pixel != pixel || r.size < bytes) continue;
+    if (r.pixel != pixel || r.size < bytes)
+      continue;
     const uint8_t* end = r.host + (r.size - bytes);
     for (const uint8_t* p = r.host; p <= end; ++p) {
       p = static_cast<const uint8_t*>(std::memchr(p, first, size_t(end - p) + 1u));
-      if (p == nullptr) break;
+      if (p == nullptr)
+        break;
       if (std::memcmp(p, ucode, bytes) == 0) {
         found = r.shader;
         break;
       }
     }
-    if (found != nullptr) break;
+    if (found != nullptr)
+      break;
   }
   g_inlineUcodeCache.emplace(h, found);  // cache negatives too
   return found;
@@ -709,7 +1244,8 @@ GuestShader* FindShaderByUcodeAddress(uint32_t guestAddr, bool pixel) {
   std::lock_guard lock(g_ucodeIndexMutex);
   for (const auto& r : g_ucodeContainers) {
     const uint32_t base = r.guest & 0x1FFFFFFFu;
-    if (r.pixel == pixel && guestAddr >= base && guestAddr < base + r.size) return r.shader;
+    if (r.pixel == pixel && guestAddr >= base && guestAddr < base + r.size)
+      return r.shader;
   }
   return nullptr;
 }
@@ -738,9 +1274,11 @@ GuestShader* CreateShaderFromFunction(const uint32_t* function, ResourceType typ
       const uint32_t veCount = std::byteswap(vs[7]);
       for (uint32_t i = 0; i < veCount && i < 32u; ++i) {
         const uint32_t idx = shaderOffset / 4u + 9u + field18 + i;
-        if (idx >= totalDw) break;
+        if (idx >= totalDw)
+          break;
         const uint32_t v = std::byteswap(function[idx]);
-        headerEls.push_back(ShaderHeaderElement{uint8_t((v >> 12) & 0xFu), uint8_t((v >> 16) & 0xFu)});
+        headerEls.push_back(
+            ShaderHeaderElement{uint8_t((v >> 12) & 0xFu), uint8_t((v >> 16) & 0xFu)});
       }
     }
   }
@@ -790,13 +1328,14 @@ GuestShader* CreateShaderFromFunction(const uint32_t* function, ResourceType typ
   if (s_dumped.insert(hash).second) {
     std::filesystem::create_directories("missed_shaders");
     char path[64];
-    std::snprintf(path, sizeof(path), "missed_shaders/%016llX.bin", static_cast<unsigned long long>(hash));
+    std::snprintf(path, sizeof(path), "missed_shaders/%016llX.bin",
+                  static_cast<unsigned long long>(hash));
     if (FILE* f = std::fopen(path, "wb")) {
       std::fwrite(function, 1, size, f);
       std::fclose(f);
     }
     REXGPU_WARN("Shader cache MISS: hash=0x{:016X} size={} type={} -- dumped to {}", hash, size,
-               int(type), path);
+                int(type), path);
   }
   return finish(GuestNew<GuestShader>(type));
 }
@@ -817,13 +1356,15 @@ std::unordered_map<uint32_t, GuestShader*> g_shaderAliases;
 }  // namespace
 
 void RegisterShaderAlias(uint32_t guestAddress, GuestShader* shader) {
-  if (!guestAddress || shader == nullptr) return;
+  if (!guestAddress || shader == nullptr)
+    return;
   std::lock_guard lock(g_shaderAliasMutex);
   g_shaderAliases[guestAddress] = shader;
 }
 
 GuestShader* LookupShaderAlias(uint32_t guestAddress) {
-  if (!guestAddress) return nullptr;
+  if (!guestAddress)
+    return nullptr;
   std::lock_guard lock(g_shaderAliasMutex);
   auto it = g_shaderAliases.find(guestAddress);
   return it != g_shaderAliases.end() ? it->second : nullptr;

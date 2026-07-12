@@ -15,6 +15,7 @@ set(FM2_SOURCES
     src/main.cpp
     src/fm2_hooks.cpp
     src/render/video.cpp
+    src/render/render_queue.cpp
     src/render/d3d_hooks.cpp
     src/render/d3d_resource_hooks.cpp
     src/render/pipeline.cpp

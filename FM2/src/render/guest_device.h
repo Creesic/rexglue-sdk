@@ -159,6 +159,7 @@ enum GuestPrimitiveType : uint32_t {
   D3DPT_TRIANGLELIST = 4,
   D3DPT_TRIANGLEFAN = 5,
   D3DPT_TRIANGLESTRIP = 6,
+  D3DPT_RECTLIST = 8,  // Xbox: 3 verts define an axis-aligned rect
   D3DPT_QUADLIST = 13,
 };
 

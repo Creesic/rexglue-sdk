@@ -88,28 +88,21 @@ Don't port these mechanically. The SDK grew a `gpu_plugin` runtime-loadable
 graphics architecture and other changes after this work was done — decide
 per-item whether to port as-is or re-home it in the new structure.
 
-- **Rendering.** `plume/` (vendored RHI submodule, D3D12/Vulkan/Metal, from
-  RT64) plus `FM2/src/render/*` (`d3d_hooks.cpp`, `d3d_resource_hooks.cpp`,
-  `fm2_device.cpp`, `pipeline.cpp`, `render_state.cpp`,
-  `shader_probe_window.cpp`, `video.cpp`) and `FM2/src/native_renderer/*`
-  (`fm2_native_renderer.cpp/h`, `fm2_native_state.cpp/h`,
-  `fm2_direct_draw_decode.h`). This is the actual hook-and-replace layer that
-  intercepts the game's D3D calls — it's wired in at the `FM2/CMakeLists.txt`
-  level (`add_subdirectory(../plume)`, `FM2_HAS_PLUME`), not through the SDK's
-  own graphics backend, so it bypassed the very system `gpu_plugin` now
-  formalizes.
-  - **Before porting**: figure out whether this should still live as an
-    FM2-local D3D hook layer, or whether the fix belongs behind the new
-    `gpu_plugin` plugin ABI instead. Porting it verbatim reintroduces a second,
-    competing graphics path.
-  - Read first: `docs/FM2-native-renderer-gap-analysis.md`,
+- **Rendering.** Decided (2026-07-11/12): keep as an FM2-local D3D hook layer
+  against vendored `thirdparty/plume`, not a `gpu_plugin` backend. Rebuilt into
+  cleaned `FM2/src/render/` (Phases 1–4); the old `native_renderer/` diagnostic
+  overlay was intentionally **not** ported. Transfer is incomplete for full
+  rendering — see the audit for remaining gaps (texture bind, viewport,
+  Clear/Resolve, alternate constant uploads).
+  - Read first: `docs/FM2-native-renderer-transfer-audit.md` (this repo),
+    then sibling-repo notes if needed: `docs/FM2-native-renderer-gap-analysis.md`,
     `docs/FM2-native-renderer-not-wired.md`,
     `docs/native-renderer-architecture-comparison.md`,
-    `docs/FM2-plume-native-black-investigation.md` — these explain what was
-    tried and what didn't work, which will save you from repeating dead ends.
-  - [ ] Decide: re-integrate plume as FM2-local hooks, or design a `gpu_plugin`
-        backend instead
-  - [ ] Only then port the relevant `render/` or `native_renderer/` sources
+    `docs/FM2-plume-native-black-investigation.md`.
+  - [x] Decide: FM2-local Plume hooks (not `gpu_plugin`)
+  - [x] Port cleaned production `render/` path (device/present/resources/state/draws)
+  - [x] Leave `native_renderer/` diagnostic overlay behind
+  - [ ] Finish load-bearing SOURCE `render/` gaps listed in the transfer audit
 
 - **Audio.** `src/audio/xaudio2/` (new backend), `src/audio/fm2_native/`
   (`codec`, `diag`, `runtime`, `scheduler`), `src/kernel/xboxkrnl/xboxkrnl_lzx.cpp`
