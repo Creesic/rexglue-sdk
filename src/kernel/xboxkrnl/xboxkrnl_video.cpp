@@ -16,6 +16,7 @@
 #include <atomic>
 #include <string>
 
+#include <rex/assert.h>
 #include <rex/cvar.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/register_file.h>
@@ -30,6 +31,7 @@
 #include <rex/runtime.h>
 #include <rex/system/export_resolver.h>
 #include <rex/system/kernel_state.h>
+#include <rex/system/xthread.h>
 #include <rex/system/xtypes.h>
 #include <rex/ui/flags.h>
 
@@ -83,6 +85,14 @@ void WarnNoGpuEmulation(const char* export_name, std::atomic<bool>& warned) {
     REXKRNL_WARN("{}: no GPU emulation loaded (gpu_plugin not set); call ignored", export_name);
   }
 }
+
+// Mirrors GraphicsSystem::interrupt_callback_/interrupt_callback_data_. Stored
+// independently of GraphicsSystem so a detached-mode renderer (no
+// IGraphicsSystem, e.g. a title-specific hook-based renderer) can still learn
+// what the guest registered via VdSetGraphicsInterruptCallback and simulate
+// vblank interrupts itself via DispatchGraphicsInterruptCallback below.
+std::atomic<uint32_t> g_detached_interrupt_callback{0};
+std::atomic<uint32_t> g_detached_interrupt_callback_data{0};
 }  // namespace
 
 namespace rex::kernel::xboxkrnl {
@@ -316,6 +326,9 @@ void VdSetGraphicsInterruptCallback_entry(u32 callback, mapped_void user_data) {
   // callback takes 2 params
   // r3 = bool 0/1 - 0 is normal interrupt, 1 is some acquire/lock mumble
   // r4 = user_data (r4 of VdSetGraphicsInterruptCallback)
+  g_detached_interrupt_callback.store(callback, std::memory_order_relaxed);
+  g_detached_interrupt_callback_data.store(user_data.guest_address(), std::memory_order_relaxed);
+
   auto* graphics_system = REX_KERNEL_STATE()->emulator()->graphics_system();
   if (!graphics_system) {
     static std::atomic<bool> warned{false};
@@ -323,6 +336,26 @@ void VdSetGraphicsInterruptCallback_entry(u32 callback, mapped_void user_data) {
     return;
   }
   graphics_system->SetInterruptCallback(callback, user_data.guest_address());
+}
+
+bool DispatchGraphicsInterruptCallback(uint32_t cpu) {
+  uint32_t callback = g_detached_interrupt_callback.load(std::memory_order_relaxed);
+  if (!callback) {
+    return false;
+  }
+
+  auto thread = system::XThread::GetCurrentThread();
+  assert_not_null(thread);
+
+  if (cpu == 0xFFFFFFFF) {
+    cpu = 2;
+  }
+  thread->SetActiveCpu(cpu);
+
+  uint64_t args[] = {0, g_detached_interrupt_callback_data.load(std::memory_order_relaxed)};
+  REX_KERNEL_STATE()->function_dispatcher()->ExecuteInterrupt(thread->thread_state(), callback,
+                                                              args, rex::countof(args));
+  return true;
 }
 
 void VdInitializeRingBuffer_entry(mapped_void ptr, i32 size_log2) {

@@ -519,13 +519,13 @@ u32 NtQueryFullAttributesFile_entry(ppc_ptr_t<X_OBJECT_ATTRIBUTES> obj_attribs,
   auto path_str = util::TranslateAnsiPath(REX_KERNEL_MEMORY(), object_name);
   REXKRNL_IMPORT_TRACE("NtQueryFullAttributesFile", "path={}", path_str);
 
-  object_ref<XFile> root_file;
+  rex::filesystem::Entry* root_entry = nullptr;
   if (obj_attribs->root_directory != 0xFFFFFFFD &&  // ObDosDevices
       obj_attribs->root_directory != 0) {
-    root_file = REX_KERNEL_OBJECTS()->LookupObject<XFile>(obj_attribs->root_directory);
+    auto root_file = REX_KERNEL_OBJECTS()->LookupObject<XFile>(obj_attribs->root_directory);
     assert_not_null(root_file);
     assert_true(root_file->type() == XObject::Type::File);
-    assert_always();
+    root_entry = root_file->entry();
   }
 
   auto target_path = util::TranslateAnsiPath(REX_KERNEL_MEMORY(), object_name);
@@ -535,8 +535,13 @@ u32 NtQueryFullAttributesFile_entry(ppc_ptr_t<X_OBJECT_ATTRIBUTES> obj_attribs,
     return X_STATUS_OBJECT_NAME_INVALID;
   }
 
-  // Resolve the file using the virtual file system.
-  auto entry = REX_KERNEL_FS()->ResolvePath(target_path);
+  // Resolve the file using the virtual file system, relative to root_directory
+  // when the guest supplied one (e.g. FMOD's own file-existence/size probes
+  // open a directory handle once, then query files by name relative to it --
+  // this previously always used the VFS's absolute-only resolver, ignoring
+  // root_directory entirely, so every such relative query failed with
+  // "device not found" no matter how valid the relative name was).
+  auto entry = root_entry ? root_entry->ResolvePath(target_path) : REX_KERNEL_FS()->ResolvePath(target_path);
   if (entry) {
     // Found.
     file_info->creation_time = entry->create_timestamp();

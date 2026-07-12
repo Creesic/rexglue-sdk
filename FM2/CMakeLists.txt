@@ -36,16 +36,20 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/plume/CMakeLists.
         add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/plume" "${CMAKE_CURRENT_BINARY_DIR}/plume")
     endif()
 
-    file(GLOB FM2_WINDOWS_KIT_DXC_DIRS
-        "C:/Program Files (x86)/Windows Kits/10/bin/*/x64")
-    list(SORT FM2_WINDOWS_KIT_DXC_DIRS)
-    list(REVERSE FM2_WINDOWS_KIT_DXC_DIRS)
-    find_program(FM2_DXC_EXECUTABLE
-        NAMES dxc.exe
-        PATHS
-            ${FM2_WINDOWS_KIT_DXC_DIRS}
-            "C:/Program Files (x86)/Windows Kits/10/Redist/D3D/x64"
-        DOC "DXC executable used for FM2 Plume blit shaders")
+    # Use the same pinned DXC build XenosRecomp itself vendors (thirdparty/dxc-bin,
+    # renderbag/dxc-bin), not whatever DXC happens to be installed with the local
+    # Windows SDK. DXC embeds a compiler-version tag in every DXIL library it
+    # produces and its linker refuses to link libraries built by different DXC
+    # versions -- a runtime-loaded system DXC that doesn't match the DXC XenosRecomp
+    # used to compile the shader cache means every spec-constant-specialized shader
+    # (via IDxcLinker::Link in pipeline.cpp) fails to link, silently and completely
+    # breaking rendering, since XenosRecomp's shader cache and this renderer's own
+    # runtime spec-constant-library compile+link step must produce mutually
+    # link-compatible DXIL modules.
+    set(FM2_DXC_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/dxc-bin/bin/x64/dxc.exe")
+    if(NOT EXISTS "${FM2_DXC_EXECUTABLE}")
+        set(FM2_DXC_EXECUTABLE "")
+    endif()
 
     set(FM2_GENERATED_SHADER_INCLUDE_DIR
         "${CMAKE_CURRENT_BINARY_DIR}/generated/include")
@@ -108,9 +112,11 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/plume/CMakeLists.
         target_include_directories(fm2 BEFORE PRIVATE
             "${FM2_GENERATED_SHADER_INCLUDE_DIR}")
 
-        # dxcompiler.dll/dxil.dll live alongside dxc.exe in the Windows Kits
-        # Redist dir; the runtime LoadLibraryW for DXC needs them reachable
-        # next to fm2.exe, not just on the dev-shell PATH.
+        # dxcompiler.dll/dxil.dll live alongside dxc.exe in thirdparty/dxc-bin;
+        # the runtime LoadLibraryW for DXC needs them reachable next to
+        # fm2.exe, not just on the dev-shell PATH -- and it's essential this
+        # is the SAME dxcompiler.dll as dxc.exe above, not a system one (see
+        # the version-mismatch comment on FM2_DXC_EXECUTABLE).
         get_filename_component(FM2_DXC_DIR "${FM2_DXC_EXECUTABLE}" DIRECTORY)
         foreach(dxc_runtime_dll dxcompiler.dll dxil.dll)
             if(EXISTS "${FM2_DXC_DIR}/${dxc_runtime_dll}")

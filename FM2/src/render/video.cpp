@@ -13,8 +13,12 @@
 
 #include <plume_render_interface.h>
 #include <plume_render_interface_builders.h>
+#include <rex/chrono/clock.h>
 #include <rex/cvar.h>
+#include <rex/kernel/xboxkrnl/video.h>
 #include <rex/logging.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xthread.h>
 
 #include "render/guest_resources.h"
 #include "render/render_internal.h"
@@ -115,6 +119,51 @@ void RebuildFramebuffers() {
     RenderFramebufferDesc desc(&color, 1);
     g_framebuffers[i] = g_device->createFramebuffer(desc);
   }
+}
+
+// FM2 runs in detached mode (no IGraphicsSystem/gpu_plugin), so
+// GraphicsSystem's own vsync worker -- which normally fires the guest's
+// registered graphics interrupt callback at the video mode's refresh rate --
+// never exists. The game's own per-frame pacing (and, per FM2's FMOD/XMA
+// signal-gate cadence, its audio mixer tick) waits on that interrupt, so
+// without a substitute the guest hangs forever after its first frame: black
+// screen, no audio, no forward progress. This mirrors GraphicsSystem's vsync
+// worker exactly, just driving rex::kernel::xboxkrnl::DispatchGraphicsInterruptCallback
+// directly instead of a GraphicsSystem instance.
+std::atomic<bool> g_vsyncWorkerRunning{false};
+rex::system::object_ref<rex::system::XHostThread> g_vsyncWorkerThread;
+
+void StartVsyncWorker() {
+  g_vsyncWorkerRunning = true;
+  g_vsyncWorkerThread = rex::system::object_ref<rex::system::XHostThread>(
+      new rex::system::XHostThread(REX_KERNEL_STATE(), 128 * 1024, 0, [] {
+        rex::system::X_VIDEO_MODE video_mode;
+        rex::kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+        double refresh_rate_hz =
+            std::max(1.0, double(float(video_mode.refresh_rate)));
+        uint64_t guest_tick_frequency = rex::chrono::Clock::guest_tick_frequency();
+        uint64_t vsync_interval_ticks = std::max(
+            uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
+        uint64_t last_frame_time = rex::chrono::Clock::QueryGuestTickCount();
+        while (g_vsyncWorkerRunning) {
+          uint64_t current_time = rex::chrono::Clock::QueryGuestTickCount();
+          while (current_time - last_frame_time >= vsync_interval_ticks) {
+            rex::kernel::xboxkrnl::DispatchGraphicsInterruptCallback();
+            last_frame_time += vsync_interval_ticks;
+          }
+          rex::thread::Sleep(std::chrono::milliseconds(1));
+        }
+        return 0;
+      }));
+  g_vsyncWorkerThread->set_name("FM2 Native VSync");
+  g_vsyncWorkerThread->Create();
+}
+
+void StopVsyncWorker() {
+  if (!g_vsyncWorkerThread) return;
+  g_vsyncWorkerRunning = false;
+  g_vsyncWorkerThread->Wait(0, 0, 0, nullptr);
+  g_vsyncWorkerThread.reset();
 }
 
 }  // namespace
@@ -261,6 +310,8 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
   g_initialized = true;
   REXGPU_INFO("Video::Init - swapchain {}x{} valid={}", g_swapChain->getWidth(),
               g_swapChain->getHeight(), g_swapChainValid);
+
+  StartVsyncWorker();
   return true;
 }
 
@@ -478,6 +529,7 @@ void Video::Shutdown() {
   if (!g_initialized) {
     return;
   }
+  StopVsyncWorker();
   WaitForGPU();
   g_blitPipelines.clear();
   g_blitPixelShader.reset();
