@@ -26,6 +26,7 @@
 #include <cstdint>
 
 #include <rex/hook.h>
+#include <rex/logging.h>
 
 #include "render/guest_device.h"
 #include "render/guest_heap.h"
@@ -56,6 +57,8 @@ void UnlockGuestResource(GuestResource* resource);
 GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestElements);
 void GetSurfaceDesc(const GuestSurface* surface, GuestSurfaceDesc* desc);
 GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size);
+GuestShader* CreateVertexShader(const uint32_t* function);
+GuestShader* CreatePixelShader(const uint32_t* function);
 GuestShader* LookupShaderAlias(uint32_t guestAddress);
 }  // namespace fm2::render
 
@@ -139,6 +142,21 @@ uint32_t CreateSurfaceHook(uint32_t width, uint32_t height, uint32_t format, uin
 
 uint32_t CreateVertexDeclarationHook(const GuestVertexElement* elements) {
   return ghp::ToGuest(rr::CreateVertexDeclaration(elements));
+}
+
+// D3DDevice_CreateVertexShader/CreatePixelShader take the raw ShaderContainer
+// microcode pointer directly -- these two addresses were mislabeled in the
+// manifest as unrelated GPU-memory-block allocators (FM2_Render_AllocGpuPassMemoryBlock
+// / FM2_D3D_CreateGpuMemoryBlock) despite already being correctly renamed in
+// IDA; fixed in fm2_manifest.toml. Without this fix no vertex/pixel shader
+// object is ever created, so SetVertexShaderState/SetPixelShaderState's
+// ResolveShader() would never find a real GuestShader to bind.
+uint32_t CreateVertexShaderHook(const uint32_t* function) {
+  return ghp::ToGuest(rr::CreateVertexShader(function));
+}
+
+uint32_t CreatePixelShaderHook(const uint32_t* function) {
+  return ghp::ToGuest(rr::CreatePixelShader(function));
 }
 
 }  // namespace
@@ -266,6 +284,8 @@ REX_HOOK(FM2_D3DDevice_CreateIndexBuffer, CreateIndexBufferHook);
 REX_HOOK(FM2_D3DDevice_CreateTexture, CreateTextureHook);
 REX_HOOK(FM2_D3DDevice_CreateSurface, CreateSurfaceHook);
 REX_HOOK(FM2_D3DDevice_CreateVertexDeclaration, CreateVertexDeclarationHook);
+REX_HOOK(D3DDevice_CreateVertexShader, CreateVertexShaderHook);
+REX_HOOK(D3DDevice_CreatePixelShader, CreatePixelShaderHook);
 REX_HOOK(FM2_D3DVertexBuffer_Lock, VertexBufferLockHook);
 REX_HOOK(FM2_D3D_LockGpuBufferRaw, IndexBufferLockHook);
 REX_HOOK(FM2_D3DSurface_LockRect, SurfaceLockRectHook);
@@ -601,3 +621,108 @@ void Fm2SetVertexShaderState(uint32_t renderContext, uint32_t shaderAddr) {
 
 REX_HOOK(FM2_RenderContext_SetPixelShaderState, Fm2SetPixelShaderState);
 REX_HOOK(FM2_RenderContext_SetVertexShaderState, Fm2SetVertexShaderState);
+
+// ---------------------------------------------------------------------------
+// Phase 4: draw dispatch. Full replacements -- the original bodies emit raw
+// PM4 packets into a ring buffer for a real Xenos GPU that does not exist
+// under this renderer (confirmed via decompile: both D3DDevice_DrawVertices
+// and D3DDevice_DrawIndexedVertices are PM4-packet emitters, not simple
+// state setters), so letting them run would be actively harmful, not just
+// redundant.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Rough measurement of what fraction of real draws go through this direct
+// dispatch path vs. only ever executing from inside a recorded command-buffer
+// batch (see IsInsideRecordedBatch) -- logged periodically so a real play
+// session (menu -> garage/showroom -> track) gives a concrete answer instead
+// of a guess.
+uint64_t g_directDrawCount = 0;
+uint64_t g_recordedBatchDrawCount = 0;
+uint64_t g_lastLoggedFrame = ~0ull;
+
+void TrackDrawForInstrumentation() {
+  if (rr::IsInsideRecordedBatch()) {
+    ++g_recordedBatchDrawCount;
+  } else {
+    ++g_directDrawCount;
+  }
+  const uint64_t frame = rr::CurrentFrameIndex();
+  if (frame != g_lastLoggedFrame && frame % 300 == 0) {
+    g_lastLoggedFrame = frame;
+    const uint64_t total = g_directDrawCount + g_recordedBatchDrawCount;
+    REXGPU_INFO("FM2 draw-path mix: direct={} recorded-batch={} ({:.1f}% recorded)", g_directDrawCount,
+               g_recordedBatchDrawCount, 100.0 * double(g_recordedBatchDrawCount) / double(std::max<uint64_t>(1, total)));
+  }
+}
+
+void DrawVerticesHook(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex, uint32_t vertexCount) {
+  TrackDrawForInstrumentation();
+  rr::FlushRenderState(device, primitiveType);
+  if (rr::HasBoundPipeline()) rr::DrawInstanced(vertexCount, startVertex);
+}
+
+void DrawIndexedVerticesHook(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
+                             uint32_t startIndex, uint32_t indexCount) {
+  TrackDrawForInstrumentation();
+  rr::FlushRenderState(device, primitiveType);
+  if (rr::HasBoundPipeline()) rr::DrawIndexedInstanced(indexCount, startIndex, baseVertexIndex);
+}
+
+void DrawVerticesUPHook(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
+                       const void* vertexStreamZeroData, uint32_t vertexStreamZeroStride) {
+  TrackDrawForInstrumentation();
+  rr::DrawUserPointerVertices(device, primitiveType, vertexCount, vertexStreamZeroData, vertexStreamZeroStride);
+}
+
+}  // namespace
+
+REX_HOOK(D3DDevice_DrawVertices, DrawVerticesHook);
+REX_HOOK(D3DDevice_DrawIndexedVertices, DrawIndexedVerticesHook);
+REX_HOOK(D3DDevice_DrawIndexedVertices_WithVertexFormatSetup, DrawIndexedVerticesHook);
+REX_HOOK(D3DDevice_DrawVerticesUP, DrawVerticesUPHook);
+
+// ---------------------------------------------------------------------------
+// Recorded command-buffer object-pass batch boundary (car/showroom
+// geometry). FM2_Render_ScopedBatchBegin/Finalize wrap a
+// FM2_D3D_BeginCommandBufferBatch/FinalizeCommandBufferBatch bracket that
+// switches the game onto a secondary device/context and (on real hardware)
+// records PM4 packets for later per-frame replay by the GPU. There is no
+// later replay here -- draws issued in this state only ever execute once,
+// immediately, as an ordinary call to the hooks above -- so this boundary is
+// tracked purely as a flag read by FlushRenderState to substitute a
+// placeholder pixel shader (see render_state.h's IsInsideRecordedBatch
+// comment) rather than trusting shader constants that won't reliably belong
+// to this draw by the time a real replay would have happened.
+//
+// Both guest functions carry a large, only-partially-reverse-engineered
+// parameter list (FM2_Render_ScopedBatchBegin alone takes 14), and none of
+// it is needed here -- REX_HOOK_RAW's untouched ctx/base passthrough avoids
+// having to model that signature at all.
+// ---------------------------------------------------------------------------
+
+REX_IMPORT(__imp__FM2_Render_ScopedBatchBegin, g_origScopedBatchBegin, void());
+REX_IMPORT(__imp__FM2_Render_ScopedBatchFinalize, g_origScopedBatchFinalize, void());
+
+namespace {
+bool g_warnedRecordedBatch = false;
+}  // namespace
+
+REX_HOOK_RAW(FM2_Render_ScopedBatchBegin) {
+  g_origScopedBatchBegin.fn(ctx, base);
+  rr::SetInsideRecordedBatch(true);
+  if (!g_warnedRecordedBatch) {
+    g_warnedRecordedBatch = true;
+    REXGPU_WARN(
+        "FM2 native renderer: entering a recorded command-buffer object-pass batch -- "
+        "draws in this state render with a flat placeholder pixel shader (real per-object "
+        "shader constants aren't reliably available at the time this renderer executes them; "
+        "see render_state.h's IsInsideRecordedBatch comment). Logged once.");
+  }
+}
+
+REX_HOOK_RAW(FM2_Render_ScopedBatchFinalize) {
+  rr::SetInsideRecordedBatch(false);
+  g_origScopedBatchFinalize.fn(ctx, base);
+}

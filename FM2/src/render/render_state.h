@@ -59,4 +59,42 @@ void SetDepthStencilSurface(GuestDevice* device, GuestSurface* depthStencil);
 
 void Clear(GuestDevice* device, uint32_t flags, const float* color, float z);
 
+// ---------------------------------------------------------------------------
+// Phase 4: draw dispatch + constant transport.
+// ---------------------------------------------------------------------------
+
+// Builds/looks up the PSO for the currently tracked state, uploads the
+// guest's own shader constant registers (untouched since Phase 3 deliberately
+// left the constant-setter functions unhooked) and the shared-constants
+// buffer, and binds vertex/index buffers + viewport/scissor/framebuffer.
+// Must be called immediately before every draw. Skips the draw-affecting
+// binds (but still flushes framebuffer/viewport) if no valid pipeline could
+// be built -- check HasBoundPipeline() before issuing the actual draw call.
+void FlushRenderState(GuestDevice* device, uint32_t primitiveType);
+bool HasBoundPipeline();
+
+void DrawInstanced(uint32_t vertexCount, uint32_t startVertex);
+void DrawIndexedInstanced(uint32_t indexCount, uint32_t startIndex, int32_t baseVertexIndex);
+
+// D3DDevice_DrawVerticesUP: inline (non-buffer-backed) vertex data supplied
+// directly by the guest for this one draw. Uploads it to a scratch buffer
+// and binds it at stream 0 for just this call -- callers must not rely on
+// stream 0's tracked GuestBuffer binding surviving a call to this function.
+void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
+                             const void* data, uint32_t stride);
+
+// True while inside a FM2_Render_ScopedBatchBegin/Finalize bracket -- FM2's
+// recorded-command-buffer object-pass path (car/showroom geometry). Draws
+// issued in this state only ever execute once, at record time (there is no
+// real PM4 ring for a later "replay" to execute against under this native
+// renderer), and the guest's shared constant register file is not reliably
+// this object's own by the time replay would have happened on real hardware.
+// FlushRenderState keeps normal vertex-shader/geometry handling but binds an
+// always-resident flat placeholder pixel shader instead of resolving the
+// real one, so these draws render as a correctly-positioned (best-effort)
+// but visibly-unshaded placeholder rather than silently vanishing or reusing
+// stale constants from an unrelated draw.
+void SetInsideRecordedBatch(bool inside);
+bool IsInsideRecordedBatch();
+
 }  // namespace fm2::render

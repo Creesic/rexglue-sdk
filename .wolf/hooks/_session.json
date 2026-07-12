@@ -1,607 +1,398 @@
 {
-  "session_id": "session-2026-07-11-1758",
-  "started": "2026-07-11T21:58:37.639Z",
+  "session_id": "session-2026-07-12-2016",
+  "started": "2026-07-12T00:16:16.043Z",
   "files_read": {
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp": {
-      "count": 37,
-      "tokens": 3316,
-      "first_read": "2026-07-11T21:58:39.384Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/fm2_app.h": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T21:58:52.110Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/main.cpp": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T21:58:52.243Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/fm2_app.h": {
-      "count": 2,
-      "tokens": 377,
-      "first_read": "2026-07-11T21:59:01.770Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/tests/shader_cache_test.cpp": {
-      "count": 1,
-      "tokens": 801,
-      "first_read": "2026-07-11T21:59:14.851Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/.claude/plans/memoized-purring-newt.md": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T21:59:44.941Z"
-    },
-    "C:/Users/Tera/.claude/plans/memoized-purring-newt.md": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:00:36.585Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/.gitmodules": {
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.h": {
       "count": 1,
       "tokens": 657,
-      "first_read": "2026-07-11T22:02:35.208Z"
+      "first_read": "2026-07-12T00:16:23.203Z"
     },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/graphics/pipeline/shader/shader.cpp": {
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp": {
+      "count": 4,
+      "tokens": 15429,
+      "first_read": "2026-07-12T00:16:23.571Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/guest_device.h": {
+      "count": 1,
+      "tokens": 1570,
+      "first_read": "2026-07-12T00:16:23.868Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp": {
+      "count": 1,
+      "tokens": 7428,
+      "first_read": "2026-07-12T00:16:28.613Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_internal.h": {
+      "count": 1,
+      "tokens": 469,
+      "first_read": "2026-07-12T00:16:29.021Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/guest_resources.h": {
+      "count": 1,
+      "tokens": 1607,
+      "first_read": "2026-07-12T00:16:29.451Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/pipeline.cpp": {
+      "count": 1,
+      "tokens": 3741,
+      "first_read": "2026-07-12T00:16:33.169Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_resource_hooks.cpp": {
+      "count": 1,
+      "tokens": 8339,
+      "first_read": "2026-07-12T00:16:33.546Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/video.h": {
+      "count": 1,
+      "tokens": 366,
+      "first_read": "2026-07-12T00:16:33.948Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/guest_heap.h": {
+      "count": 1,
+      "tokens": 472,
+      "first_read": "2026-07-12T00:16:34.317Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/video.cpp": {
+      "count": 1,
+      "tokens": 4870,
+      "first_read": "2026-07-12T00:16:38.341Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/include/rex/ppc/function.h": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-07-11T22:03:07.123Z"
+      "first_read": "2026-07-12T00:21:00.880Z"
     },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/graphics/d3d12/pipeline_cache.cpp": {
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/thirdparty/plume/plume_render_interface_types.h": {
+      "count": 3,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:21:25.875Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/XenosRecomp/XenosRecomp/shader_common.h": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-07-11T22:03:19.656Z"
+      "first_read": "2026-07-12T00:23:06.951Z"
     },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/cmake/EmbedBinaryHeader.cmake": {
+    "C:/Users/Tera/Documents/GitHub/XenosRecomp/XenosRecomp/shader_code.h": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-07-11T22:03:33.577Z"
+      "first_read": "2026-07-12T00:23:07.302Z"
     },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/out/build/win-amd64-relwithdebinfo/launch-fm2.bat": {
+    "C:/Users/Tera/Documents/GitHub/XenosRecomp/XenosRecomp/constant_table.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:23:07.521Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/XenosRecomp/XenosRecomp/shader_recompiler.cpp": {
+      "count": 6,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:23:16.767Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/XenosRecomp/XenosRecomp/shader.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:23:26.425Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/XenosRecomp/XenosRecomp/shader_recompiler.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:24:54.217Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/XenosRecomp/XenosRecomp/main.cpp": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:25:00.814Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/XenosRecomp/XenosRecomp/dxc_compiler.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:25:00.979Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/XenosRecomp/XenosRecomp/dxc_compiler.cpp": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:25:07.446Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_internal.h": {
+      "count": 1,
+      "tokens": 469,
+      "first_read": "2026-07-12T00:25:48.871Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/pipeline.cpp": {
       "count": 2,
-      "tokens": 36,
-      "first_read": "2026-07-11T22:03:36.427Z"
+      "tokens": 3741,
+      "first_read": "2026-07-12T00:25:59.276Z"
     },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/include/rex/cvar.h": {
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/video.cpp": {
+      "count": 4,
+      "tokens": 4870,
+      "first_read": "2026-07-12T00:26:18.705Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp": {
+      "count": 19,
+      "tokens": 8034,
+      "first_read": "2026-07-12T00:26:38.936Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/thirdparty/XenosRecomp/XenosRecomp/shader_common.h": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-07-11T22:03:43.616Z"
+      "first_read": "2026-07-12T00:27:18.036Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/thirdparty/XenosRecomp/XenosRecomp/shader_recompiler.cpp": {
+      "count": 3,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:27:42.971Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/guest_resources.h": {
+      "count": 1,
+      "tokens": 1607,
+      "first_read": "2026-07-12T00:33:54.689Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_resource_hooks.cpp": {
+      "count": 1,
+      "tokens": 8339,
+      "first_read": "2026-07-12T00:34:10.715Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/FM2-car-scopedbatch-constant-fix-plan-2026-07-07.md": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:34:35.083Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/FM2-car-draw-caller-probe-findings-2026-07-07.md": {
+      "count": 2,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:34:40.255Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/FM2-car-deferred-render-fix-plan-2026-07-06.md": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:34:40.544Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/FM2-car-survivor-vs-zero-sample-2026-07-11.md": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:34:51.341Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/FM2-car-eid7891-explode-2026-07-11.md": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:34:51.606Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/docs/FM2-car-seethrough-mirror-2026-07-11.md": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:34:58.375Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_hooks.cpp": {
+      "count": 10,
+      "tokens": 7428,
+      "first_read": "2026-07-12T00:35:08.761Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/include/rex/hook.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:35:49.552Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/include/rex/ppc/function.h": {
+      "count": 1,
+      "tokens": 0,
+      "first_read": "2026-07-12T00:35:53.258Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/guest_device.h": {
+      "count": 1,
+      "tokens": 1570,
+      "first_read": "2026-07-12T00:36:27.880Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/fm2_manifest.toml": {
+      "count": 1,
+      "tokens": 5462,
+      "first_read": "2026-07-12T00:47:16.484Z"
+    },
+    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/shaders/copy_ps.hlsl": {
+      "count": 1,
+      "tokens": 149,
+      "first_read": "2026-07-12T00:52:34.478Z"
     },
     "C:/Users/Tera/Documents/GitHub/ReXFM2P/include/rex/hook.h": {
       "count": 1,
       "tokens": 0,
-      "first_read": "2026-07-11T22:03:54.336Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/CMakeLists.txt": {
-      "count": 5,
-      "tokens": 3023,
-      "first_read": "2026-07-11T22:07:54.012Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/out/build/win-amd64-relwithdebinfo/logs/fm2_022.log": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:11:55.034Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/include/rex/rex_app.h": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:12:13.645Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/src/ui/rex_app.cpp": {
-      "count": 1,
-      "tokens": 5531,
-      "first_read": "2026-07-11T22:12:31.600Z"
-    },
-    "C:/Users/Tera/AppData/Local/Temp/claude/fm2_phase1_screenshot.png": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:14:38.760Z"
-    },
-    "C:/Users/Tera/AppData/Local/Temp/claude/fm2_phase1_screenshot2.png": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:15:40.392Z"
-    },
-    "C:/Users/Tera/AppData/Local/Temp/claude/fm2_phase1_screenshot3.png": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:16:27.558Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/guest_heap.h": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:24:02.400Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/d3d_resource_hooks.cpp": {
-      "count": 5,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:24:11.353Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/UnleashedRecomp/UnleashedRecomp/gpu/video.cpp": {
-      "count": 5,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:32:10.026Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/UnleashedRecomp/UnleashedRecomp/kernel/heap.h": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:32:20.756Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/UnleashedRecomp/UnleashedRecomp/kernel/memory.h": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:32:20.993Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/UnleashedRecomp/UnleashedRecomp/kernel/function.h": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:32:43.636Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/guest_resources.h": {
-      "count": 1,
-      "tokens": 1579,
-      "first_read": "2026-07-11T22:42:23.171Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/guest_device.h": {
-      "count": 1,
-      "tokens": 1467,
-      "first_read": "2026-07-11T22:42:35.541Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_internal.h": {
-      "count": 1,
-      "tokens": 387,
-      "first_read": "2026-07-11T22:42:46.692Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp": {
-      "count": 14,
-      "tokens": 7423,
-      "first_read": "2026-07-11T22:44:32.355Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_resource_hooks.cpp": {
-      "count": 10,
-      "tokens": 8311,
-      "first_read": "2026-07-11T22:46:27.942Z"
-    },
-    "C:/Users/Tera/AppData/Local/Temp/claude/cdb_output.txt": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:49:19.902Z"
-    },
-    "C:/Users/Tera/AppData/Local/Temp/claude/cdb_output2.txt": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T22:50:07.736Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/fm2_manifest.toml": {
-      "count": 2,
-      "tokens": 5463,
-      "first_read": "2026-07-11T23:01:17.549Z"
-    },
-    "C:/Users/Tera/AppData/Local/Temp/claude/fm2_phase2_screenshot.png": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T23:09:33.855Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.h": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T23:38:53.225Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/pipeline.cpp": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T23:39:27.373Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/cmake/rexglue_helpers.cmake": {
-      "count": 1,
-      "tokens": 3204,
-      "first_read": "2026-07-11T23:40:08.582Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/native_renderer/fm2_native_renderer.h": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-11T23:42:02.508Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXGlue080plume/FM2/src/render/render_state.cpp": {
-      "count": 16,
-      "tokens": 0,
-      "first_read": "2026-07-11T23:47:21.483Z"
-    },
-    "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp": {
-      "count": 2,
-      "tokens": 8030,
-      "first_read": "2026-07-11T23:55:42.042Z"
-    },
-    "C:/Users/Tera/AppData/Local/Temp/claude/fm2_phase3_screenshot.png": {
-      "count": 1,
-      "tokens": 0,
-      "first_read": "2026-07-12T00:05:20.834Z"
+      "first_read": "2026-07-12T00:52:58.568Z"
     }
   },
   "files_written": [
     {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/cmake/EmbedBinaryHeader.cmake",
-      "action": "create",
-      "tokens": 431,
-      "at": "2026-07-11T22:04:13.196Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/guest_device.h",
-      "action": "create",
-      "tokens": 1534,
-      "at": "2026-07-11T22:04:38.195Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/guest_device.h",
-      "action": "edit",
-      "tokens": 104,
-      "at": "2026-07-11T22:04:45.890Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/guest_resources.h",
-      "action": "create",
-      "tokens": 1692,
-      "at": "2026-07-11T22:05:07.790Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_internal.h",
-      "action": "create",
-      "tokens": 415,
-      "at": "2026-07-11T22:05:19.621Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/video.h",
-      "action": "create",
-      "tokens": 392,
-      "at": "2026-07-11T22:05:27.742Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/video.cpp",
-      "action": "create",
-      "tokens": 5218,
-      "at": "2026-07-11T22:06:30.261Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/shaders/copy_vs.hlsl",
-      "action": "create",
-      "tokens": 95,
-      "at": "2026-07-11T22:06:49.703Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/shaders/copy_ps.hlsl",
-      "action": "create",
-      "tokens": 159,
-      "at": "2026-07-11T22:06:54.108Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "create",
-      "tokens": 739,
-      "at": "2026-07-11T22:07:22.067Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 117,
-      "at": "2026-07-11T22:07:30.623Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/fm2_app.h",
-      "action": "edit",
-      "tokens": 373,
-      "at": "2026-07-11T22:07:41.725Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/CMakeLists.txt",
-      "action": "edit",
-      "tokens": 1321,
-      "at": "2026-07-11T22:09:35.106Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/fm2_app.h",
-      "action": "edit",
-      "tokens": 38,
-      "at": "2026-07-11T22:12:45.656Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/fm2_app.h",
-      "action": "edit",
-      "tokens": 422,
-      "at": "2026-07-11T22:12:54.841Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/guest_resources.h",
-      "action": "edit",
-      "tokens": 191,
-      "at": "2026-07-11T22:42:31.644Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/guest_device.h",
-      "action": "edit",
-      "tokens": 130,
-      "at": "2026-07-11T22:42:41.347Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_internal.h",
-      "action": "edit",
-      "tokens": 17,
-      "at": "2026-07-11T22:42:50.620Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_internal.h",
-      "action": "edit",
-      "tokens": 28,
-      "at": "2026-07-11T22:42:54.657Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_internal.h",
-      "action": "edit",
-      "tokens": 131,
-      "at": "2026-07-11T22:43:00.127Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_resource_hooks.cpp",
-      "action": "create",
-      "tokens": 4541,
-      "at": "2026-07-11T22:43:51.093Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 776,
-      "at": "2026-07-11T22:44:48.305Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 907,
-      "at": "2026-07-11T22:45:05.105Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 36,
-      "at": "2026-07-11T22:45:12.824Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 300,
-      "at": "2026-07-11T22:45:22.546Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/CMakeLists.txt",
-      "action": "edit",
-      "tokens": 35,
-      "at": "2026-07-11T22:45:36.324Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/guest_heap.h",
-      "action": "create",
-      "tokens": 506,
-      "at": "2026-07-11T22:45:59.766Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_resource_hooks.cpp",
-      "action": "edit",
-      "tokens": 39,
-      "at": "2026-07-11T22:46:32.375Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_resource_hooks.cpp",
-      "action": "edit",
-      "tokens": 60,
-      "at": "2026-07-11T22:46:39.418Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 38,
-      "at": "2026-07-11T22:46:47.951Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 36,
-      "at": "2026-07-11T22:46:57.249Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_resource_hooks.cpp",
-      "action": "edit",
-      "tokens": 2117,
-      "at": "2026-07-11T22:57:08.107Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 68,
-      "at": "2026-07-11T22:57:17.002Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 629,
-      "at": "2026-07-11T22:57:36.234Z"
-    },
-    {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/fm2_manifest.toml",
       "action": "edit",
-      "tokens": 45,
-      "at": "2026-07-11T23:01:22.779Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 296,
-      "at": "2026-07-11T23:02:44.758Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 50,
-      "at": "2026-07-11T23:02:50.935Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_resource_hooks.cpp",
-      "action": "edit",
-      "tokens": 38,
-      "at": "2026-07-11T23:05:18.290Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_resource_hooks.cpp",
-      "action": "edit",
-      "tokens": 290,
-      "at": "2026-07-11T23:05:30.085Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
-      "action": "edit",
-      "tokens": 1191,
-      "at": "2026-07-11T23:08:14.373Z"
+      "tokens": 31,
+      "at": "2026-07-12T00:47:20.971Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.h",
-      "action": "create",
-      "tokens": 704,
-      "at": "2026-07-11T23:41:51.390Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/CMakeLists.txt",
       "action": "edit",
-      "tokens": 43,
-      "at": "2026-07-11T23:42:10.250Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/CMakeLists.txt",
-      "action": "edit",
-      "tokens": 99,
-      "at": "2026-07-11T23:42:15.668Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/pipeline.cpp",
-      "action": "create",
-      "tokens": 4008,
-      "at": "2026-07-11T23:43:06.725Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_resource_hooks.cpp",
-      "action": "edit",
-      "tokens": 2128,
-      "at": "2026-07-11T23:49:20.334Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/fm2_manifest.toml",
-      "action": "edit",
-      "tokens": 35,
-      "at": "2026-07-11T23:50:25.728Z"
-    },
-    {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
-      "action": "create",
-      "tokens": 6435,
-      "at": "2026-07-11T23:55:36.033Z"
+      "tokens": 598,
+      "at": "2026-07-12T00:48:06.953Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
       "action": "edit",
-      "tokens": 36,
-      "at": "2026-07-11T23:55:47.834Z"
+      "tokens": 132,
+      "at": "2026-07-12T00:50:19.858Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
       "action": "edit",
-      "tokens": 2316,
-      "at": "2026-07-11T23:56:16.486Z"
+      "tokens": 52,
+      "at": "2026-07-12T00:50:24.260Z"
     },
     {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/CMakeLists.txt",
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
       "action": "edit",
-      "tokens": 37,
-      "at": "2026-07-11T23:56:28.943Z"
+      "tokens": 512,
+      "at": "2026-07-12T00:50:35.889Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
       "action": "edit",
       "tokens": 22,
-      "at": "2026-07-11T23:57:22.740Z"
+      "at": "2026-07-12T00:50:41.627Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
       "action": "edit",
-      "tokens": 77,
-      "at": "2026-07-11T23:57:27.964Z"
+      "tokens": 197,
+      "at": "2026-07-12T00:50:47.894Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
       "action": "edit",
-      "tokens": 94,
-      "at": "2026-07-11T23:57:37.686Z"
+      "tokens": 6526,
+      "at": "2026-07-12T00:52:14.635Z"
     },
     {
-      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_resource_hooks.cpp",
-      "action": "edit",
-      "tokens": 118,
-      "at": "2026-07-11T23:57:49.342Z"
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/shaders/placeholder_ps.hlsl",
+      "action": "create",
+      "tokens": 126,
+      "at": "2026-07-12T00:52:38.900Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/CMakeLists.txt",
       "action": "edit",
-      "tokens": 101,
-      "at": "2026-07-11T23:58:34.637Z"
+      "tokens": 125,
+      "at": "2026-07-12T00:52:44.133Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.h",
+      "action": "edit",
+      "tokens": 205,
+      "at": "2026-07-12T00:54:58.971Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
+      "action": "edit",
+      "tokens": 548,
+      "at": "2026-07-12T00:55:13.725Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
+      "action": "edit",
+      "tokens": 124,
+      "at": "2026-07-12T00:55:20.985Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
+      "action": "edit",
+      "tokens": 41,
+      "at": "2026-07-12T00:55:26.726Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
+      "action": "edit",
+      "tokens": 707,
+      "at": "2026-07-12T00:55:58.832Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
+      "action": "edit",
+      "tokens": 108,
+      "at": "2026-07-12T00:56:11.064Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
+      "action": "edit",
+      "tokens": 455,
+      "at": "2026-07-12T00:56:21.261Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
+      "action": "edit",
+      "tokens": 119,
+      "at": "2026-07-12T00:56:46.403Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 446,
-      "at": "2026-07-12T00:00:28.336Z"
+      "tokens": 125,
+      "at": "2026-07-12T00:57:07.229Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 4381,
-      "at": "2026-07-12T00:01:43.262Z"
+      "tokens": 266,
+      "at": "2026-07-12T00:57:14.598Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 323,
-      "at": "2026-07-12T00:02:08.238Z"
+      "tokens": 58,
+      "at": "2026-07-12T00:57:19.117Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 139,
-      "at": "2026-07-12T00:02:21.280Z"
+      "tokens": 1459,
+      "at": "2026-07-12T00:57:41.319Z"
     },
     {
       "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/d3d_hooks.cpp",
       "action": "edit",
-      "tokens": 16,
-      "at": "2026-07-12T00:02:36.360Z"
+      "tokens": 39,
+      "at": "2026-07-12T00:58:08.529Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
+      "action": "edit",
+      "tokens": 213,
+      "at": "2026-07-12T00:58:34.401Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
+      "action": "edit",
+      "tokens": 28,
+      "at": "2026-07-12T00:58:40.734Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
+      "action": "edit",
+      "tokens": 200,
+      "at": "2026-07-12T00:59:11.322Z"
+    },
+    {
+      "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/src/render/render_state.cpp",
+      "action": "edit",
+      "tokens": 31,
+      "at": "2026-07-12T00:59:21.337Z"
     }
   ],
   "edit_counts": {
-    "FM2/cmake/EmbedBinaryHeader.cmake": 1,
-    "FM2/src/render/guest_device.h": 3,
-    "FM2/src/render/guest_resources.h": 2,
-    "FM2/src/render/render_internal.h": 4,
-    "FM2/src/render/video.h": 1,
-    "FM2/src/render/video.cpp": 1,
-    "FM2/src/render/shaders/copy_vs.hlsl": 1,
-    "FM2/src/render/shaders/copy_ps.hlsl": 1,
-    "FM2/src/render/d3d_hooks.cpp": 18,
-    "FM2/src/fm2_app.h": 3,
-    "FM2/CMakeLists.txt": 6,
-    "FM2/src/render/d3d_resource_hooks.cpp": 8,
-    "FM2/src/render/guest_heap.h": 1,
-    "FM2/fm2_manifest.toml": 2,
-    "FM2/src/render/render_state.h": 1,
-    "FM2/src/render/pipeline.cpp": 1,
-    "FM2/src/render/render_state.cpp": 6
+    "FM2/fm2_manifest.toml": 1,
+    "FM2/src/render/render_state.h": 2,
+    "FM2/src/render/render_state.cpp": 17,
+    "FM2/src/render/shaders/placeholder_ps.hlsl": 1,
+    "FM2/CMakeLists.txt": 1,
+    "FM2/src/render/d3d_hooks.cpp": 5
   },
-  "anatomy_hits": 13,
-  "anatomy_misses": 30,
-  "repeated_reads_warned": 89,
+  "anatomy_hits": 21,
+  "anatomy_misses": 22,
+  "repeated_reads_warned": 44,
   "cerebrum_warnings": 0,
-  "stop_count": 5
+  "stop_count": 0
 }

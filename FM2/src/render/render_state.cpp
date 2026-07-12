@@ -22,17 +22,26 @@
 // layout happens when a PSO is actually built.
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <plume_render_interface.h>
 
+#include <rex/hash.h>  // XXH3_64bits
+#include <rex/logging.h>
+
 #include "render/guest_device.h"
+#include "render/guest_heap.h"
 #include "render/guest_resources.h"
 #include "render/render_internal.h"
 #include "render/render_state.h"
+#include "render/shaders/placeholder_ps.hlsl.dxil.h"
 
 // Spec-constant bits (XenosRecomp shared ABI -- must match the offline
 // shader-translation tool's bit layout exactly).
@@ -54,6 +63,7 @@ struct PipelineState {
   GuestShader* vertexShader = nullptr;
   GuestShader* pixelShader = nullptr;
   GuestVertexDeclaration* vertexDeclaration = nullptr;
+  RenderPrimitiveTopology primitiveTopology = RenderPrimitiveTopology::TRIANGLE_LIST;
   bool zEnable = true;
   bool zWriteEnable = true;
   RenderBlend srcBlend = RenderBlend::ONE;
@@ -86,15 +96,41 @@ struct PipelineState {
   RenderStencilOp stencilBackPass = RenderStencilOp::KEEP;
 };
 
-// The per-draw constant buffer contents Phase 4 will push to shaders.
+// Per-draw "SharedConstants" (root CBV b2) -- the fixed ABI contract shared
+// with XenosRecomp's shader translation (field order/sizes must match the
+// offline compiler's DEFINE_SHARED_CONSTANTS() layout exactly, not be
+// invented). Several fields (swappedNormals/Binormals/Tangents/BlendWeights,
+// conditionalSurveyIndex/conditionalRenderingIndex) are part of the ABI but
+// have no live producer in this renderer yet -- normal/tangent packing is
+// instead handled via the hasR11G11B10Normal/hasUByte4TangentBasis spec
+// constants below, and occlusion-query/predication is simply unimplemented;
+// they stay at 0. vteFlags is hardcoded to FM2's one observed
+// PA_CL_VTE_CNTL value rather than decoded from a PM4 register.
 struct SharedConstants {
   uint32_t texture2DIndices[16]{};
   uint32_t texture3DIndices[16]{};
   uint32_t textureCubeIndices[16]{};
+  uint32_t samplerIndices[16]{};  // always 0 (the single default sampler) -- see FlushSamplerStates note.
+  uint32_t booleans = 0;          // bits 0-15 = VS bool constants, bits 16-31 = PS bool constants.
+  uint32_t swappedTexcoords = 0;
+  uint32_t swappedNormals = 0;
+  uint32_t swappedBinormals = 0;
+  uint32_t swappedTangents = 0;
+  uint32_t swappedBlendWeights = 0;
+  float halfPixelOffsetX = 0.0f;
+  float halfPixelOffsetY = 0.0f;
   float clipPlane[4]{};
   uint32_t clipPlaneEnabled = 0;
   float alphaThreshold = 0.0f;
+  uint32_t conditionalSurveyIndex = 0;
+  uint32_t conditionalRenderingIndex = 0;
+  uint32_t vteFlags = 8;
 };
+static_assert(sizeof(SharedConstants) == 324);
+static_assert(offsetof(SharedConstants, booleans) == 256);
+static_assert(offsetof(SharedConstants, halfPixelOffsetX) == 280);
+static_assert(offsetof(SharedConstants, clipPlane) == 288);
+static_assert(offsetof(SharedConstants, vteFlags) == 320);
 
 struct DirtyStates {
   bool renderTargetAndDepthStencil;
@@ -140,6 +176,67 @@ RenderInputSlot g_inputSlots[16];
 RenderIndexBufferView g_indexBufferView{RenderBufferReference{}, 0, RenderFormat::R16_UINT};
 DirtyStates g_dirtyStates(true);
 uint64_t g_frameIndex = 0;
+
+// ---------------------------------------------------------------------------
+// Constant/vertex upload allocator (Phase 4). Present() fully drains the GPU
+// (waitForCommandFence) before the next frame's BeginRenderStateFrame(), so a
+// single persistently-mapped upload buffer reset once per frame is safe with
+// no extra fencing -- by the time it's reused, every draw that read from it
+// has long finished.
+// ---------------------------------------------------------------------------
+
+class UploadAllocator {
+ public:
+  void Reset() { offset_ = 0; }
+
+  // Copies `size` bytes from `src` into the next aligned region of the
+  // frame's upload buffer, returning a reference usable as a root CBV or a
+  // vertex/index buffer view. If `byteSwap`, treats src/size as an array of
+  // big-endian uint32_t (guest register file) and swaps into the buffer;
+  // otherwise does a plain copy (host-native structs, guest UP vertex data).
+  // Returns a null reference if the frame's upload budget is exhausted.
+  RenderBufferReference Upload(const void* src, uint64_t size, bool byteSwap) {
+    EnsureCreated();
+    offset_ = (offset_ + kAlignment - 1) & ~(kAlignment - 1);
+    if (offset_ + size > kBufferSize) return RenderBufferReference{};
+
+    uint8_t* dst = mapped_ + offset_;
+    if (byteSwap) {
+      const uint32_t* s = reinterpret_cast<const uint32_t*>(src);
+      uint32_t* d = reinterpret_cast<uint32_t*>(dst);
+      for (uint64_t i = 0; i < size / sizeof(uint32_t); ++i) d[i] = std::byteswap(s[i]);
+    } else {
+      std::memcpy(dst, src, size);
+    }
+    RenderBufferReference ref = buffer_->at(offset_);
+    offset_ += size;
+    return ref;
+  }
+
+  void UploadAndBindRootDescriptor(const void* src, uint64_t size, uint32_t rootIndex, bool byteSwap) {
+    RenderBufferReference ref = Upload(src, size, byteSwap);
+    if (ref.ref == nullptr) return;
+    CommandList()->setGraphicsRootDescriptor(ref, rootIndex);
+  }
+
+ private:
+  static constexpr uint64_t kBufferSize = 4 * 1024 * 1024;
+  static constexpr uint64_t kAlignment = 256;
+
+  void EnsureCreated() {
+    if (buffer_ != nullptr) return;
+    // Used both as a root CBV source (FlushRenderState) and as a scratch
+    // vertex buffer (DrawUserPointerVertices) -- flag for both usages.
+    buffer_ = Device()->createBuffer(
+        RenderBufferDesc::UploadBuffer(kBufferSize, RenderBufferFlag::CONSTANT | RenderBufferFlag::VERTEX));
+    mapped_ = reinterpret_cast<uint8_t*>(buffer_->map());
+  }
+
+  std::unique_ptr<RenderBuffer> buffer_;
+  uint8_t* mapped_ = nullptr;
+  uint64_t offset_ = 0;
+};
+UploadAllocator g_uploadAllocator;
 
 // Pending resource-layout transitions, flushed once per state-changing call.
 std::unordered_map<RenderTexture*, RenderTextureLayout> g_barrierMap;
@@ -297,6 +394,12 @@ bool ScissorTestEnabled(GuestDevice* device) {
 // predicated-tiling replay path; that's Phase 4/draw-dispatch territory, not
 // simple state tracking, so it's not here.
 void SetFramebuffer(GuestBaseTexture* colorTarget, GuestSurface* depthTarget, bool /*forClear*/) {
+  const GuestBaseTexture* dimensionSource = colorTarget != nullptr ? colorTarget : depthTarget;
+  if (dimensionSource != nullptr && dimensionSource->width != 0 && dimensionSource->height != 0) {
+    g_sharedConstants.halfPixelOffsetX = 1.0f / float(dimensionSource->width);
+    g_sharedConstants.halfPixelOffsetY = -1.0f / float(dimensionSource->height);
+  }
+
   const uint64_t key = (uint64_t(uintptr_t(colorTarget)) << 32) ^ uint64_t(uintptr_t(depthTarget));
   auto it = g_framebufferCache.find(key);
   if (it != g_framebufferCache.end()) {
@@ -323,6 +426,7 @@ void BeginRenderStateFrame() {
   ++g_frameIndex;
   g_framebuffer = nullptr;
   g_dirtyStates = DirtyStates(true);
+  g_uploadAllocator.Reset();
   if (!g_sharedConstantsInitialized) {
     for (uint32_t i = 0; i < std::size(g_sharedConstants.texture2DIndices); ++i) {
       g_sharedConstants.texture2DIndices[i] = kNullTexture2DDescriptor;
@@ -653,6 +757,527 @@ void Clear(GuestDevice* /*device*/, uint32_t flags, const float* color, float z)
     MarkAttachmentInitialized(g_depthStencil);
     g_implicitDepthStencil = g_depthStencil;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: draw dispatch + constant transport.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Vertex declaration -> plume input layout translation.
+//
+// FM2's D3DVERTEXELEMENT9.Type is not the classic small D3DDECLTYPE_* integer
+// space -- it's the raw Xbox 360 GPUVERTEXFETCHFORMAT dword, and the values in
+// guest_device.h's GuestDeclType enum are the exact dwords FM2 actually uses
+// (confirmed against the values' encoded k_* format field, not guessed).
+// ---------------------------------------------------------------------------
+
+RenderFormat ConvertDeclType(uint32_t type) {
+  switch (type) {
+    case D3DDECLTYPE_FLOAT1: return RenderFormat::R32_FLOAT;
+    case D3DDECLTYPE_FLOAT2: return RenderFormat::R32G32_FLOAT;
+    case D3DDECLTYPE_FLOAT3: return RenderFormat::R32G32B32_FLOAT;
+    case D3DDECLTYPE_FLOAT4: return RenderFormat::R32G32B32A32_FLOAT;
+    case D3DDECLTYPE_D3DCOLOR: return RenderFormat::B8G8R8A8_UNORM;
+    case D3DDECLTYPE_UBYTE4:
+    case D3DDECLTYPE_UBYTE4_2: return RenderFormat::R8G8B8A8_UINT;
+    case D3DDECLTYPE_SHORT2: return RenderFormat::R16G16_SINT;
+    case D3DDECLTYPE_SHORT4: return RenderFormat::R16G16B16A16_SINT;
+    case D3DDECLTYPE_UBYTE4N:
+    case D3DDECLTYPE_UBYTE4N_2: return RenderFormat::R8G8B8A8_UNORM;
+    case D3DDECLTYPE_SHORT2N: return RenderFormat::R16G16_SNORM;
+    case D3DDECLTYPE_SHORT4N: return RenderFormat::R16G16B16A16_SNORM;
+    case D3DDECLTYPE_USHORT2N: return RenderFormat::R16G16_UNORM;
+    case D3DDECLTYPE_USHORT4N: return RenderFormat::R16G16B16A16_UNORM;
+    case D3DDECLTYPE_UINT1: return RenderFormat::R32_UINT;
+    case D3DDECLTYPE_UDEC3:
+    case D3DDECLTYPE_DEC3N:
+    case D3DDECLTYPE_DEC3N_2:
+    case D3DDECLTYPE_DEC3N_3:
+      return RenderFormat::R32_UINT;  // packed 10/10/10/2; the shader bit-unpacks the raw value.
+    case D3DDECLTYPE_FLOAT16_2: return RenderFormat::R16G16_FLOAT;
+    case D3DDECLTYPE_FLOAT16_4: return RenderFormat::R16G16B16A16_FLOAT;
+    default: return RenderFormat::UNKNOWN;
+  }
+}
+
+// POSITION0 is fetched by the translated shader as a raw bit pattern
+// (reinterpreted, never converted) regardless of its declared type -- a
+// FLOAT16 position read as a plain bitcast instead of unpacked half-float
+// collapses to near-zero instead of the real value.
+RenderFormat ConvertPositionDeclType(uint32_t type, bool& outFloat16) {
+  outFloat16 = false;
+  switch (type) {
+    case D3DDECLTYPE_FLOAT1: return RenderFormat::R32_UINT;
+    case D3DDECLTYPE_FLOAT2: return RenderFormat::R32G32_UINT;
+    case D3DDECLTYPE_FLOAT3: return RenderFormat::R32G32B32_UINT;
+    case D3DDECLTYPE_FLOAT4: return RenderFormat::R32G32B32A32_UINT;
+    case D3DDECLTYPE_FLOAT16_2:
+      outFloat16 = true;
+      return RenderFormat::R16G16_UINT;
+    case D3DDECLTYPE_FLOAT16_4:
+      outFloat16 = true;
+      return RenderFormat::R16G16B16A16_UINT;
+    default: return ConvertDeclType(type);
+  }
+}
+
+const char* ConvertDeclUsage(uint8_t usage) {
+  switch (usage) {
+    case D3DDECLUSAGE_POSITION: return "POSITION";
+    case D3DDECLUSAGE_BLENDWEIGHT: return "BLENDWEIGHT";
+    case D3DDECLUSAGE_BLENDINDICES: return "BLENDINDICES";
+    case D3DDECLUSAGE_NORMAL: return "NORMAL";
+    case D3DDECLUSAGE_PSIZE: return "PSIZE";
+    case D3DDECLUSAGE_TEXCOORD: return "TEXCOORD";
+    case D3DDECLUSAGE_TANGENT: return "TANGENT";
+    case D3DDECLUSAGE_BINORMAL: return "BINORMAL";
+    case D3DDECLUSAGE_TESSFACTOR: return "TESSFACTOR";
+    case D3DDECLUSAGE_POSITIONT: return "POSITIONT";
+    case D3DDECLUSAGE_COLOR: return "COLOR";
+    case D3DDECLUSAGE_FOG: return "FOG";
+    case D3DDECLUSAGE_DEPTH: return "DEPTH";
+    case D3DDECLUSAGE_SAMPLE: return "SAMPLE";
+    default: return "TEXCOORD";
+  }
+}
+
+struct BuiltElement {
+  const char* semantic;
+  uint8_t usageIndex;
+  RenderFormat format;
+  uint32_t slot;
+  uint32_t offset;
+};
+
+// Resolves a declaration's raw D3DVERTEXELEMENT9 array into a plume input
+// layout, exactly once per declaration (cached on GuestVertexDeclaration).
+// Every standard attribute a shader might reference gets a fallback element
+// on an always-unbound slot (15) if this specific declaration doesn't supply
+// it, so PSO creation never fails just because one shader wants an attribute
+// a *different* shader's declaration happens to omit.
+void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
+  if (decl == nullptr || decl->inputElements != nullptr) return;
+
+  std::vector<BuiltElement> built;
+  built.reserve(size_t(decl->vertexElementCount) + 16);
+
+  for (uint32_t i = 0; i < decl->vertexElementCount; ++i) {
+    const GuestVertexElement& e = decl->vertexElements[i];
+    if (e.stream == 0xFFu) continue;
+
+    RenderFormat format = ConvertDeclType(e.type);
+    if (e.usage == D3DDECLUSAGE_POSITION && e.usageIndex == 0) {
+      bool isFloat16 = false;
+      format = ConvertPositionDeclType(e.type, isFloat16);
+      if (isFloat16) decl->hasFloat16Position = true;
+    } else if (e.usage == D3DDECLUSAGE_POSITION && e.usageIndex == 1) {
+      decl->indexVertexStream = e.stream;
+    } else if (e.usage == D3DDECLUSAGE_NORMAL || e.usage == D3DDECLUSAGE_TANGENT ||
+               e.usage == D3DDECLUSAGE_BINORMAL) {
+      if (e.type == D3DDECLTYPE_UBYTE4 || e.type == D3DDECLTYPE_UBYTE4_2) {
+        // Already hardware-UNORM-converted to a float4 by the input
+        // assembler -- NOT R11G11B10-packed, must not also set that flag.
+        format = RenderFormat::R8G8B8A8_UNORM;
+        decl->hasUByte4TangentBasis = true;
+      } else if (e.type != D3DDECLTYPE_FLOAT3 && e.type != D3DDECLTYPE_FLOAT4) {
+        format = RenderFormat::R32_UINT;  // packed DEC3N/UDEC3 family; shader bit-unpacks raw.
+        decl->hasR11G11B10Normal = true;
+      }
+    } else if (e.usage == D3DDECLUSAGE_TEXCOORD) {
+      switch (e.type) {
+        case D3DDECLTYPE_SHORT2:
+        case D3DDECLTYPE_SHORT4:
+        case D3DDECLTYPE_SHORT2N:
+        case D3DDECLTYPE_SHORT4N:
+        case D3DDECLTYPE_USHORT2N:
+        case D3DDECLTYPE_USHORT4N:
+        case D3DDECLTYPE_FLOAT16_2:
+        case D3DDECLTYPE_FLOAT16_4:
+          decl->swappedTexcoords |= 1u << e.usageIndex;
+          break;
+        default:
+          break;
+      }
+    }
+    if (format == RenderFormat::UNKNOWN) format = RenderFormat::R32_UINT;
+
+    built.push_back({ConvertDeclUsage(e.usage), e.usageIndex, format, e.stream, e.offset});
+    if (e.stream < 16) decl->vertexStreams[e.stream] = true;
+  }
+
+  auto has = [&](const char* semantic, uint8_t usageIndex) {
+    for (const BuiltElement& b : built) {
+      if (b.usageIndex == usageIndex && std::strcmp(b.semantic, semantic) == 0) return true;
+    }
+    return false;
+  };
+  auto addDummy = [&](const char* semantic, uint8_t usageIndex, RenderFormat format) {
+    if (!has(semantic, usageIndex)) built.push_back({semantic, usageIndex, format, 15, 0});
+  };
+  addDummy("POSITION", 0, RenderFormat::R32G32B32A32_UINT);
+  addDummy("NORMAL", 0, RenderFormat::R32_UINT);
+  addDummy("TANGENT", 0, RenderFormat::R32_UINT);
+  addDummy("BINORMAL", 0, RenderFormat::R32_UINT);
+  for (uint8_t i = 0; i < 8; ++i) addDummy("TEXCOORD", i, RenderFormat::R32_FLOAT);
+  addDummy("COLOR", 0, RenderFormat::R32_FLOAT);
+  addDummy("COLOR", 1, RenderFormat::R32_FLOAT);
+  addDummy("BLENDWEIGHT", 0, RenderFormat::R32_FLOAT);
+  addDummy("BLENDINDICES", 0, RenderFormat::R32_UINT);
+
+  decl->inputElementCount = uint32_t(built.size());
+  decl->inputElements = std::make_unique<RenderInputElement[]>(built.size());
+  for (uint32_t i = 0; i < built.size(); ++i) {
+    const BuiltElement& b = built[i];
+    decl->inputElements[i] = RenderInputElement(b.semantic, b.usageIndex, i, b.format, b.slot, b.offset);
+  }
+}
+
+// FM2 never binds a vertex declaration through the device field for real
+// (SetActivePassId's write there is a texture/shader pass token, not a
+// declaration address -- see d3d_hooks.cpp), so the real input layout has to
+// be recovered by matching the bound vertex shader's parsed header
+// usage/usageIndex set against every declaration FM2 has ever created,
+// picking the tightest-fitting exact-count match. Declarations must be a
+// superset of what the shader's header lists (order-independent); among
+// those, an exact element-count match wins decisively, with the most tightly
+// packed declaration that still fits the bound stream stride as a tiebreak.
+GuestVertexDeclaration* MatchDeclarationForShader(GuestShader* vs, uint32_t streamStride) {
+  if (vs == nullptr || vs->headerElements.empty()) return nullptr;
+
+  GuestVertexDeclaration* best = nullptr;
+  int bestScore = -1;
+  for (GuestVertexDeclaration* decl : SnapshotGameDeclarations()) {
+    if (decl == nullptr || decl->vertexElements == nullptr || decl->vertexElementCount == 0) continue;
+
+    bool covers = true;
+    for (const ShaderHeaderElement& he : vs->headerElements) {
+      bool found = false;
+      for (uint32_t i = 0; i < decl->vertexElementCount && !found; ++i) {
+        const GuestVertexElement& e = decl->vertexElements[i];
+        found = e.usage == he.usage && e.usageIndex == he.usageIndex;
+      }
+      if (!found) {
+        covers = false;
+        break;
+      }
+    }
+    if (!covers) continue;
+
+    uint32_t maxOffset = 0;
+    for (uint32_t i = 0; i < decl->vertexElementCount; ++i)
+      maxOffset = std::max(maxOffset, uint32_t(decl->vertexElements[i].offset));
+
+    int score = 0;
+    if (decl->vertexElementCount == uint32_t(vs->headerElements.size())) score += 100000;
+    if (streamStride != 0 && maxOffset < streamStride) score += int(maxOffset);
+    if (score > bestScore) {
+      bestScore = score;
+      best = decl;
+    }
+  }
+  return best;
+}
+
+GuestVertexDeclaration* ResolveVertexDeclaration(GuestDevice* device) {
+  const uint32_t declAddr = device->vertexDeclaration.get();
+  if (declAddr != 0) {
+    auto* decl = ghp::ToHost<GuestVertexDeclaration>(declAddr);
+    if (IsFm2Resource(decl) && decl->type == ResourceType::VertexDeclaration) return decl;
+  }
+  return MatchDeclarationForShader(g_pipelineState.vertexShader, g_pipelineState.vertexStrides[0]);
+}
+
+// ---------------------------------------------------------------------------
+// PSO cache.
+// ---------------------------------------------------------------------------
+
+std::unordered_map<uint64_t, std::unique_ptr<RenderPipeline>> g_pipelines;
+
+// Canonicalizes logically-equivalent states onto the same cache key: state
+// that can't affect the result when its owning enable bit is off must be
+// zeroed first, or two draws that only differ in "don't-care" bits would
+// wastefully build (and leak descriptor-table-consuming) separate PSOs.
+void SanitizePipelineState(PipelineState& ps) {
+  if (!ps.zEnable) {
+    ps.zFunc = RenderComparisonFunction::ALWAYS;
+    ps.depthBias = 0;
+    ps.slopeScaledDepthBias = 0.0f;
+  }
+  if (!ps.stencilEnable) {
+    ps.stencilFrontFunc = ps.stencilBackFunc = RenderComparisonFunction::ALWAYS;
+    ps.stencilFrontFail = ps.stencilFrontDepthFail = ps.stencilFrontPass = RenderStencilOp::KEEP;
+    ps.stencilBackFail = ps.stencilBackDepthFail = ps.stencilBackPass = RenderStencilOp::KEEP;
+    ps.stencilReadMask = ps.stencilWriteMask = 0xFF;
+    ps.stencilRef = 0;
+  }
+  if (!ps.zEnable && !ps.stencilEnable) ps.depthStencilFormat = RenderFormat::UNKNOWN;
+  if (!ps.alphaBlendEnable) {
+    ps.srcBlend = RenderBlend::ONE;
+    ps.destBlend = RenderBlend::ZERO;
+    ps.blendOp = RenderBlendOperation::ADD;
+    ps.srcBlendAlpha = RenderBlend::ONE;
+    ps.destBlendAlpha = RenderBlend::ZERO;
+    ps.blendOpAlpha = RenderBlendOperation::ADD;
+  }
+  if (ps.vertexDeclaration != nullptr) {
+    for (uint32_t i = 0; i < 16; ++i) {
+      if (!ps.vertexDeclaration->vertexStreams[i]) ps.vertexStrides[i] = 0;
+    }
+  }
+  uint32_t usableSpecMask = 0;
+  if (ps.vertexShader != nullptr && ps.vertexShader->shaderCacheEntry != nullptr)
+    usableSpecMask |= ps.vertexShader->shaderCacheEntry->spec_constants_mask;
+  if (ps.pixelShader != nullptr && ps.pixelShader->shaderCacheEntry != nullptr)
+    usableSpecMask |= ps.pixelShader->shaderCacheEntry->spec_constants_mask;
+  ps.specConstants &= usableSpecMask;
+}
+
+// Lazily created, always-resident flat/unlit shader used in place of the
+// real pixel shader for draws issued while IsInsideRecordedBatch() -- see
+// render_state.h's comment on that flag for why.
+RenderShader* GetPlaceholderPixelShader() {
+  static std::unique_ptr<RenderShader> shader =
+      Device()->createShader(g_placeholder_ps_dxil, sizeof(g_placeholder_ps_dxil), "main",
+                             RenderShaderFormat::DXIL);
+  return shader.get();
+}
+
+std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps, bool placeholderShader) {
+  RenderShader* vertexShader = LoadShader(ps.vertexShader, ps.specConstants);
+  if (vertexShader == nullptr) return nullptr;
+
+  RenderShader* pixelShader =
+      placeholderShader ? GetPlaceholderPixelShader() : LoadShader(ps.pixelShader, ps.specConstants);
+  if (!placeholderShader && ps.pixelShader != nullptr && pixelShader == nullptr) return nullptr;
+
+  GuestVertexDeclaration* decl = ps.vertexDeclaration;
+  if (decl == nullptr) return nullptr;
+  CompleteVertexDeclaration(decl);
+  if (decl->inputElements == nullptr) return nullptr;
+
+  RenderGraphicsPipelineDesc desc;
+  desc.pipelineLayout = PipelineLayout();
+  desc.vertexShader = vertexShader;
+  desc.pixelShader = pixelShader;
+  desc.depthFunction = ps.zFunc;
+  desc.depthEnabled = ps.zEnable;
+  desc.depthWriteEnabled = ps.zWriteEnable;
+  desc.depthBias = ps.depthBias;
+  desc.slopeScaledDepthBias = ps.slopeScaledDepthBias;
+  desc.depthClipEnabled = ps.depthClipEnabled;
+  desc.stencilEnabled = ps.stencilEnable;
+  desc.stencilReadMask = ps.stencilReadMask;
+  desc.stencilWriteMask = ps.stencilWriteMask;
+  desc.stencilReference = ps.stencilRef;
+  desc.stencilFrontFace = {ps.stencilFrontPass, ps.stencilFrontFail, ps.stencilFrontDepthFail,
+                           ps.stencilFrontFunc};
+  desc.stencilBackFace = {ps.stencilBackPass, ps.stencilBackFail, ps.stencilBackDepthFail,
+                          ps.stencilBackFunc};
+  desc.primitiveTopology = ps.primitiveTopology;
+  desc.cullMode = ps.cullMode;
+  desc.renderTargetCount = ps.renderTargetFormat != RenderFormat::UNKNOWN ? 1u : 0u;
+  desc.renderTargetFormat[0] = ps.renderTargetFormat;
+  if (desc.renderTargetCount != 0) {
+    RenderBlendDesc& blend = desc.renderTargetBlend[0];
+    blend.blendEnabled = ps.alphaBlendEnable;
+    blend.srcBlend = ps.srcBlend;
+    blend.dstBlend = ps.destBlend;
+    blend.blendOp = ps.blendOp;
+    blend.srcBlendAlpha = ps.srcBlendAlpha;
+    blend.dstBlendAlpha = ps.destBlendAlpha;
+    blend.blendOpAlpha = ps.blendOpAlpha;
+    blend.renderTargetWriteMask = uint8_t(ps.colorWriteEnable);
+  }
+  desc.depthTargetFormat = ps.depthStencilFormat;
+  desc.multisampling.sampleCount = ps.sampleCount;
+  desc.inputElements = decl->inputElements.get();
+  desc.inputElementsCount = decl->inputElementCount;
+
+  RenderInputSlot slots[16];
+  uint32_t slotCount = 0;
+  bool slotSeen[16]{};
+  for (uint32_t i = 0; i < decl->inputElementCount; ++i) {
+    const uint32_t slot = decl->inputElements[i].slotIndex;
+    if (slot >= 16 || slotSeen[slot]) continue;
+    slotSeen[slot] = true;
+    slots[slotCount++] =
+        RenderInputSlot(slot, ps.vertexStrides[slot], RenderInputSlotClassification::PER_VERTEX_DATA);
+  }
+  desc.inputSlots = slots;
+  desc.inputSlotsCount = slotCount;
+
+  RenderSpecConstant specConstant(0, ps.specConstants);
+  if (ps.specConstants != 0) {
+    desc.specConstants = &specConstant;
+    desc.specConstantsCount = 1;
+  }
+
+  return Device()->createGraphicsPipeline(desc);
+}
+
+RenderPipeline* GetPipeline(PipelineState ps, bool placeholderShader) {
+  SanitizePipelineState(ps);
+  if (ps.renderTargetFormat == RenderFormat::UNKNOWN && ps.depthStencilFormat == RenderFormat::UNKNOWN)
+    return nullptr;
+  if (ps.vertexDeclaration == nullptr) return nullptr;
+
+  uint64_t hash = XXH3_64bits(&ps, sizeof(ps));
+  if (placeholderShader) hash ^= 0x9E3779B97F4A7C15ull;
+  auto& pipeline = g_pipelines[hash];
+  if (pipeline == nullptr) pipeline = CreateGraphicsPipeline(ps, placeholderShader);
+  return pipeline.get();
+}
+
+// ---------------------------------------------------------------------------
+// Constant upload sizes. See UploadAllocator (declared near the other
+// per-frame tracking globals above) for the actual upload mechanics.
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t kVsFloatConstantBytes = 256 * 16;  // 256 float4 registers.
+// ps_3_0's guaranteed minimum (and FM2's actual usable range) is 224 float4
+// registers, not 256 -- the guest's storage array reserves 256 defensively,
+// but only the first 224 are part of the real constant-buffer ABI.
+constexpr uint32_t kPsFloatConstantBytes = 224 * 16;
+
+RenderPrimitiveTopology ConvertPrimitiveType(uint32_t type) {
+  switch (type) {
+    case D3DPT_POINTLIST: return RenderPrimitiveTopology::POINT_LIST;
+    case D3DPT_LINELIST: return RenderPrimitiveTopology::LINE_LIST;
+    case D3DPT_LINESTRIP: return RenderPrimitiveTopology::LINE_STRIP;
+    case D3DPT_TRIANGLELIST: return RenderPrimitiveTopology::TRIANGLE_LIST;
+    case D3DPT_TRIANGLEFAN: return RenderPrimitiveTopology::TRIANGLE_FAN;
+    case D3DPT_TRIANGLESTRIP: return RenderPrimitiveTopology::TRIANGLE_STRIP;
+    default: return RenderPrimitiveTopology::UNKNOWN;  // D3DPT_QUADLIST has no D3D12 equivalent.
+  }
+}
+
+bool g_insideRecordedBatch = false;
+bool g_hasBoundPipeline = false;
+
+}  // namespace
+
+void SetInsideRecordedBatch(bool inside) { g_insideRecordedBatch = inside; }
+bool IsInsideRecordedBatch() { return g_insideRecordedBatch; }
+
+bool HasBoundPipeline() { return g_hasBoundPipeline; }
+
+void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
+  g_hasBoundPipeline = false;
+
+  const RenderPrimitiveTopology topology = ConvertPrimitiveType(primitiveType);
+  if (topology == RenderPrimitiveTopology::UNKNOWN) {
+    static std::unordered_set<uint32_t> s_warnedPrimitiveTypes;
+    if (s_warnedPrimitiveTypes.insert(primitiveType).second) {
+      REXGPU_WARN("FlushRenderState: unsupported D3DPRIMITIVETYPE {} (e.g. D3DPT_QUADLIST has no D3D12 "
+                 "equivalent) -- skipping this draw",
+                 primitiveType);
+    }
+    return;
+  }
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.primitiveTopology, topology);
+
+  if (g_dirtyStates.renderTargetAndDepthStencil || g_framebuffer == nullptr) {
+    AddBarrier(g_renderTarget, RenderTextureLayout::COLOR_WRITE);
+    AddBarrier(g_depthStencil, RenderTextureLayout::DEPTH_WRITE);
+    FlushBarriers();
+    SetFramebuffer(g_renderTarget, g_depthStencil, false);
+    g_dirtyStates.renderTargetAndDepthStencil = false;
+  }
+  if (g_dirtyStates.viewport) {
+    CommandList()->setViewports(g_viewport);
+    g_dirtyStates.viewport = false;
+  }
+  if (g_dirtyStates.scissorRect) {
+    RenderRect scissor = g_scissorTestEnable
+                             ? g_scissorRect
+                             : RenderRect(0, 0, int32_t(g_viewport.x + g_viewport.width),
+                                         int32_t(g_viewport.y + g_viewport.height));
+    CommandList()->setScissors(scissor);
+    g_dirtyStates.scissorRect = false;
+  }
+
+  {
+    GuestVertexDeclaration* decl = ResolveVertexDeclaration(device);
+    if (decl != nullptr) CompleteVertexDeclaration(decl);
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexDeclaration, decl);
+  }
+
+  RenderPipeline* pipeline = GetPipeline(g_pipelineState, g_insideRecordedBatch);
+  if (pipeline == nullptr) return;
+  CommandList()->setPipeline(pipeline);
+  g_dirtyStates.pipelineState = false;
+
+  g_sharedConstants.booleans = (device->vertexShaderBoolConstants[0].get() & 0xFFFFu) |
+                               ((device->pixelShaderBoolConstants[0].get() & 0xFFFFu) << 16);
+  g_sharedConstants.swappedTexcoords =
+      g_pipelineState.vertexDeclaration != nullptr ? g_pipelineState.vertexDeclaration->swappedTexcoords : 0;
+
+  // Constants are byte-swapped straight out of guest memory every draw: the
+  // guest writes them directly into the real device struct via its own
+  // (deliberately unhooked) constant-setter functions, so there is no
+  // reliable CPU-side dirty signal to track here.
+  g_uploadAllocator.UploadAndBindRootDescriptor(device->vertexShaderFloatConstants, kVsFloatConstantBytes, 0,
+                                                true);
+  g_uploadAllocator.UploadAndBindRootDescriptor(device->pixelShaderFloatConstants, kPsFloatConstantBytes, 1,
+                                                true);
+  g_uploadAllocator.UploadAndBindRootDescriptor(&g_sharedConstants, sizeof(g_sharedConstants), 2, false);
+
+  if (g_dirtyStates.vertexStreamFirst <= g_dirtyStates.vertexStreamLast) {
+    const uint8_t first = g_dirtyStates.vertexStreamFirst;
+    const uint8_t count = g_dirtyStates.vertexStreamLast - first + 1;
+    CommandList()->setVertexBuffers(first, &g_vertexBufferViews[first], count, &g_inputSlots[first]);
+    g_dirtyStates.vertexStreamFirst = 15;
+    g_dirtyStates.vertexStreamLast = 0;
+  }
+  if (g_dirtyStates.indices) {
+    if (g_indexBufferView.buffer.ref != nullptr) CommandList()->setIndexBuffer(&g_indexBufferView);
+    g_dirtyStates.indices = false;
+  }
+
+  g_hasBoundPipeline = true;
+}
+
+void DrawInstanced(uint32_t vertexCount, uint32_t startVertex) {
+  CommandList()->drawInstanced(vertexCount, 1, startVertex, 0);
+}
+
+void DrawIndexedInstanced(uint32_t indexCount, uint32_t startIndex, int32_t baseVertexIndex) {
+  CommandList()->drawIndexedInstanced(indexCount, 1, startIndex, baseVertexIndex, 0);
+}
+
+void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
+                             const void* data, uint32_t stride) {
+  g_hasBoundPipeline = false;
+  if (data == nullptr || vertexCount == 0 || stride == 0) return;
+
+  // The PSO's stream-0 input-slot stride must reflect this draw's stride
+  // while the pipeline gets built/looked-up below, but stream 0's *tracked*
+  // stride (whatever the last real SetStreamSource bound there) must survive
+  // this call unchanged -- restore it immediately after, before this
+  // function's caller returns to ordinary real draws.
+  const uint8_t savedStride0 = g_pipelineState.vertexStrides[0];
+  g_pipelineState.vertexStrides[0] = uint8_t(stride);
+  FlushRenderState(device, primitiveType);
+  g_pipelineState.vertexStrides[0] = savedStride0;
+  if (!g_hasBoundPipeline) return;
+
+  RenderBufferReference ref = g_uploadAllocator.Upload(data, uint64_t(vertexCount) * stride, false);
+  if (ref.ref == nullptr) {
+    g_hasBoundPipeline = false;
+    return;
+  }
+  RenderVertexBufferView view(ref, vertexCount * stride);
+  RenderInputSlot slot(0, stride, RenderInputSlotClassification::PER_VERTEX_DATA);
+  CommandList()->setVertexBuffers(0, &view, 1, &slot);
+  CommandList()->drawInstanced(vertexCount, 1, 0, 0);
+
+  // This draw's stream-0 bind bypassed the tracked vertex-buffer state (it
+  // never went through SetStreamSource) -- force the next real draw to
+  // rebind its own buffer there instead of assuming this one is still valid.
+  g_dirtyStates.vertexStreamFirst = 0;
 }
 
 }  // namespace fm2::render

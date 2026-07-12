@@ -336,6 +336,86 @@
       "related_bugs": [],
       "occurrences": 2,
       "last_seen": "2026-07-12T00:02:21.283Z"
+    },
+    {
+      "id": "bug-022",
+      "timestamp": "2026-07-12T00:47:20.972Z",
+      "error_message": "Incorrect value in code",
+      "file": "FM2/fm2_manifest.toml",
+      "root_cause": "Had \"FM2_Render_AllocGpuPassMemoryBlock\"",
+      "fix": "Changed to \"D3DDevice_CreatePixelShader\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "toml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-12T00:47:20.972Z"
+    },
+    {
+      "id": "bug-023",
+      "timestamp": "2026-07-12T00:50:47.896Z",
+      "error_message": "Null/undefined access in ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Property access on potentially null/undefined value",
+      "fix": "Added null safety (optional chaining or null check) | Also: // ---------------------------------------------------------; // Phase 4: draw dispatch + constant transport. | Also: // ---------------------------------------------------------; // Constant/vertex upload allocator (Phase 4). Present() ful",
+      "tags": [
+        "auto-detected",
+        "null-safety",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 3,
+      "last_seen": "2026-07-12T00:55:58.835Z"
+    },
+    {
+      "id": "bug-024",
+      "timestamp": "2026-07-12T00:55:20.987Z",
+      "error_message": "Significant refactor of ",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "3 lines replaced/restructured",
+      "fix": "Rewrote 3→5 lines (3 removed) | Also: // Constant upload. Present() fully drains the GPU; // before the next frame's BeginRenderStateFrame() | Also: SetDirtyValue(g_dirtyStates.pipelineState, g_pipel; ConvertPrimitiveType(primitiveType));",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 3,
+      "last_seen": "2026-07-12T00:58:34.404Z"
+    },
+    {
+      "id": "bug-025",
+      "timestamp": "2026-07-12T00:56:21.263Z",
+      "error_message": "Missing guard clause",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "No early return/throw for edge case: data == nullptr || vertexCount == 0 || stride == 0",
+      "fix": "Added guard clause: if (data == nullptr || vertexCount == 0 || s)",
+      "tags": [
+        "auto-detected",
+        "guard-clause",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-12T00:56:21.263Z"
+    },
+    {
+      "id": "bug-026",
+      "timestamp": "2026-07-12T00:59:21.340Z",
+      "error_message": "Wrong condition in logic",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Condition was: if (decl->vertexElementCount == vs->headerElements.siz)",
+      "fix": "Changed to: if (decl->vertexElementCount == uint32_t(vs->headerEle)",
+      "tags": [
+        "auto-detected",
+        "logic-fix",
+        "cpp"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-12T00:59:21.340Z"
     }
   ]
 }
