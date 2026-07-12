@@ -238,78 +238,90 @@ GuestTexture* CreateTexture(uint32_t width, uint32_t height, uint32_t depth, uin
     levels = maxDim > 0 ? static_cast<uint32_t>(std::bit_width(maxDim)) : 1;
   }
 
-  // Plume create + descriptor write only on the render thread (Unleashed).
-  RenderQueue::Run([texture, width, height, depth, levels, usage, format, volume] {
-    if (IsDeviceLost()) return;
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::CreateTextureHost;
+  cmd.createTextureHost.texture = texture;
+  cmd.createTextureHost.width = width;
+  cmd.createTextureHost.height = height;
+  cmd.createTextureHost.depth = depth;
+  cmd.createTextureHost.levels = levels;
+  cmd.createTextureHost.usage = usage;
+  cmd.createTextureHost.format = format;
+  cmd.createTextureHost.volume = volume;
+  RenderQueue::Run(cmd);
+  return texture;
+}
 
-    RenderTextureDesc desc;
-    desc.dimension = volume ? RenderTextureDimension::TEXTURE_3D : RenderTextureDimension::TEXTURE_2D;
-    desc.width = width;
-    desc.height = height;
-    desc.depth = depth;
-    desc.mipLevels = levels;
-    desc.arraySize = 1;
-    desc.format = ConvertFormat(format);
-    // Match Unleashed: only request RT when the guest usage asks for it.
-    if (RenderFormatIsDepth(desc.format)) {
-      desc.flags = RenderTextureFlag::DEPTH_TARGET;
-    } else if (usage != 0) {
-      desc.flags = RenderTextureFlag::RENDER_TARGET;
-    } else {
-      desc.flags = RenderTextureFlag::NONE;
-    }
+void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t height, uint32_t depth,
+                           uint32_t levels, uint32_t usage, uint32_t format, bool volume) {
+  if (texture == nullptr || IsDeviceLost()) return;
 
-    texture->textureHolder = Device()->createTexture(desc);
-    texture->texture = texture->textureHolder.get();
-    if (texture->texture == nullptr) {
-      NoteDeviceLost("CreateTexture");
-      REXGPU_ERROR(
-          "CreateTexture: Plume createTexture failed ({}x{}x{} levels={} fmt=0x{:08X} type={} usage={})",
-          width, height, depth, levels, format, volume ? 17 : 0, usage);
-      texture->width = width;
-      texture->height = height;
-      texture->depth = depth;
-      texture->levels = levels;
-      texture->format = desc.format;
-      return;
-    }
+  RenderTextureDesc desc;
+  desc.dimension = volume ? RenderTextureDimension::TEXTURE_3D : RenderTextureDimension::TEXTURE_2D;
+  desc.width = width;
+  desc.height = height;
+  desc.depth = depth;
+  desc.mipLevels = levels;
+  desc.arraySize = 1;
+  desc.format = ConvertFormat(format);
+  // Match Unleashed: only request RT when the guest usage asks for it.
+  if (RenderFormatIsDepth(desc.format)) {
+    desc.flags = RenderTextureFlag::DEPTH_TARGET;
+  } else if (usage != 0) {
+    desc.flags = RenderTextureFlag::RENDER_TARGET;
+  } else {
+    desc.flags = RenderTextureFlag::NONE;
+  }
 
-    RenderTextureViewDesc viewDesc;
-    viewDesc.format = desc.format;
-    viewDesc.dimension =
-        volume ? RenderTextureViewDimension::TEXTURE_3D : RenderTextureViewDimension::TEXTURE_2D;
-    viewDesc.mipLevels = levels;
-    switch (format) {
-      case 0x1A220197:  // D3DFMT_D24FS8
-      case 0x2D200196:  // D3DFMT_D24S8
-      case 0x28000102:  // D3DFMT_L8
-      case 0x28000002:  // D3DFMT_L8_2
-        viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R,
-                                                           RenderSwizzle::R, RenderSwizzle::ONE);
-        break;
-      case 0x28280086:  // D3DFMT_X8R8G8B8
-        viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::G, RenderSwizzle::B,
-                                                           RenderSwizzle::A, RenderSwizzle::ONE);
-        break;
-      default:
-        break;
-    }
-    texture->textureView = texture->texture->createTextureView(viewDesc);
-
+  texture->textureHolder = Device()->createTexture(desc);
+  texture->texture = texture->textureHolder.get();
+  if (texture->texture == nullptr) {
+    NoteDeviceLost("CreateTexture");
+    REXGPU_ERROR(
+        "CreateTexture: Plume createTexture failed ({}x{}x{} levels={} fmt=0x{:08X} type={} usage={})",
+        width, height, depth, levels, format, volume ? 17 : 0, usage);
     texture->width = width;
     texture->height = height;
     texture->depth = depth;
     texture->levels = levels;
     texture->format = desc.format;
-    texture->requiresHostInitialization = desc.flags == RenderTextureFlag::RENDER_TARGET ||
-                                          desc.flags == RenderTextureFlag::DEPTH_TARGET;
-    texture->hostInitialized = !texture->requiresHostInitialization;
-    texture->viewDimension = viewDesc.dimension;
-    texture->descriptorIndex = AllocTextureDescriptor();
-    TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
-                                       RenderTextureLayout::SHADER_READ, texture->textureView.get());
-  });
-  return texture;
+    return;
+  }
+
+  RenderTextureViewDesc viewDesc;
+  viewDesc.format = desc.format;
+  viewDesc.dimension =
+      volume ? RenderTextureViewDimension::TEXTURE_3D : RenderTextureViewDimension::TEXTURE_2D;
+  viewDesc.mipLevels = levels;
+  switch (format) {
+    case 0x1A220197:  // D3DFMT_D24FS8
+    case 0x2D200196:  // D3DFMT_D24S8
+    case 0x28000102:  // D3DFMT_L8
+    case 0x28000002:  // D3DFMT_L8_2
+      viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R,
+                                                         RenderSwizzle::R, RenderSwizzle::ONE);
+      break;
+    case 0x28280086:  // D3DFMT_X8R8G8B8
+      viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::G, RenderSwizzle::B,
+                                                         RenderSwizzle::A, RenderSwizzle::ONE);
+      break;
+    default:
+      break;
+  }
+  texture->textureView = texture->texture->createTextureView(viewDesc);
+
+  texture->width = width;
+  texture->height = height;
+  texture->depth = depth;
+  texture->levels = levels;
+  texture->format = desc.format;
+  texture->requiresHostInitialization = desc.flags == RenderTextureFlag::RENDER_TARGET ||
+                                        desc.flags == RenderTextureFlag::DEPTH_TARGET;
+  texture->hostInitialized = !texture->requiresHostInitialization;
+  texture->viewDimension = viewDesc.dimension;
+  texture->descriptorIndex = AllocTextureDescriptor();
+  TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
+                                     RenderTextureLayout::SHADER_READ, texture->textureView.get());
 }
 
 GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format,
@@ -339,50 +351,61 @@ GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format,
   auto* surface =
       GuestNew<GuestSurface>(depth ? ResourceType::DepthStencil : ResourceType::RenderTarget);
 
-  RenderQueue::Run([surface, width, height, format, sampleCount, depth] {
-    if (IsDeviceLost()) return;
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::CreateSurfaceHost;
+  cmd.createSurfaceHost.surface = surface;
+  cmd.createSurfaceHost.width = width;
+  cmd.createSurfaceHost.height = height;
+  cmd.createSurfaceHost.format = format;
+  cmd.createSurfaceHost.sampleCount = sampleCount;
+  cmd.createSurfaceHost.depth = depth;
+  RenderQueue::Run(cmd);
+  return surface;
+}
 
-    RenderTextureDesc desc;
-    desc.dimension = RenderTextureDimension::TEXTURE_2D;
-    desc.width = width;
-    desc.height = height;
-    desc.depth = 1;
-    desc.mipLevels = 1;
-    desc.arraySize = 1;
-    desc.format = ConvertFormat(format);
-    desc.flags = depth ? RenderTextureFlag::DEPTH_TARGET : RenderTextureFlag::RENDER_TARGET;
-    desc.multisampling.sampleCount = sampleCount;
+void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t height, uint32_t format,
+                           uint32_t sampleCount, bool depth) {
+  if (surface == nullptr || IsDeviceLost()) return;
 
-    surface->textureHolder = Device()->createTexture(desc);
-    surface->texture = surface->textureHolder.get();
-    if (surface->texture == nullptr) {
-      NoteDeviceLost("CreateSurface");
-      REXGPU_ERROR("CreateSurface: Plume createTexture failed ({}x{} fmt=0x{:08X} msaa={})", width,
-                   height, format, int(sampleCount));
-      surface->width = width;
-      surface->height = height;
-      surface->format = desc.format;
-      surface->guestFormat = format;
-      surface->sampleCount = sampleCount;
-      return;
-    }
-    RenderTextureViewDesc viewDesc;
-    viewDesc.format = desc.format;
-    viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
-    viewDesc.mipLevels = 1;
-    surface->textureView = surface->texture->createTextureView(viewDesc);
+  RenderTextureDesc desc;
+  desc.dimension = RenderTextureDimension::TEXTURE_2D;
+  desc.width = width;
+  desc.height = height;
+  desc.depth = 1;
+  desc.mipLevels = 1;
+  desc.arraySize = 1;
+  desc.format = ConvertFormat(format);
+  desc.flags = depth ? RenderTextureFlag::DEPTH_TARGET : RenderTextureFlag::RENDER_TARGET;
+  desc.multisampling.sampleCount = sampleCount;
+
+  surface->textureHolder = Device()->createTexture(desc);
+  surface->texture = surface->textureHolder.get();
+  if (surface->texture == nullptr) {
+    NoteDeviceLost("CreateSurface");
+    REXGPU_ERROR("CreateSurface: Plume createTexture failed ({}x{} fmt=0x{:08X} msaa={})", width,
+                 height, format, int(sampleCount));
     surface->width = width;
     surface->height = height;
     surface->format = desc.format;
     surface->guestFormat = format;
     surface->sampleCount = sampleCount;
-    surface->requiresHostInitialization = true;
-    surface->hostInitialized = false;
-    surface->descriptorIndex = AllocTextureDescriptor();
-    TextureDescriptorSet()->setTexture(surface->descriptorIndex, surface->texture,
-                                       RenderTextureLayout::SHADER_READ, surface->textureView.get());
-  });
-  return surface;
+    return;
+  }
+  RenderTextureViewDesc viewDesc;
+  viewDesc.format = desc.format;
+  viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
+  viewDesc.mipLevels = 1;
+  surface->textureView = surface->texture->createTextureView(viewDesc);
+  surface->width = width;
+  surface->height = height;
+  surface->format = desc.format;
+  surface->guestFormat = format;
+  surface->sampleCount = sampleCount;
+  surface->requiresHostInitialization = true;
+  surface->hostInitialized = false;
+  surface->descriptorIndex = AllocTextureDescriptor();
+  TextureDescriptorSet()->setTexture(surface->descriptorIndex, surface->texture,
+                                     RenderTextureLayout::SHADER_READ, surface->textureView.get());
 }
 
 // LockRect returns pitch + a guest-visible staging pointer. Shared by

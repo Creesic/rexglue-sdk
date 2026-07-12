@@ -647,10 +647,11 @@ void Video::Present() {
     return;
   }
 
-  // GPU submit happens on the dedicated render thread; RenderQueue::Run
-  // blocks this caller until PresentImpl() finishes (inline if this caller
-  // already is the render thread). FIFO with prior Enqueue'd SetRT/etc.
-  fm2::render::RenderQueue::Run([] { PresentImpl(); });
+  // Sync POD present (Unleashed ExecuteCommandList wait). FIFO with prior
+  // Enqueue'd SetRT/draws; PresentImpl still owns blit+submit+swapchain for now.
+  fm2::render::RenderCommand cmd{};
+  cmd.type = fm2::render::RenderCommandType::ExecutePresent;
+  fm2::render::RenderQueue::Run(cmd);
 
   g_presentBusy.store(false, std::memory_order_release);
 }
@@ -667,23 +668,32 @@ void Video::WaitForGPU() {
   // reached from a guest thread that's already holding the lock via
   // CommandList()).
   std::lock_guard lock(fm2::render::RecordingMutex());
-  fm2::render::RenderQueue::Run([] {
-    for (uint32_t i = 0; i < kNumFrames; ++i) {
-      if (g_commandListSubmitted[i]) {
-        g_queue->waitForCommandFence(g_commandFences[i].get());
-        g_commandListSubmitted[i] = false;
-      }
-      fm2::render::OnRecordingFrameReady(i);
-    }
-
-    assert(!g_frameOpen);
-    g_commandLists[g_frame]->begin();
-    g_commandLists[g_frame]->end();
-    g_queue->executeCommandLists(g_commandLists[g_frame].get(),
-                                 g_commandFences[g_frame].get());
-    g_queue->waitForCommandFence(g_commandFences[g_frame].get());
-  });
+  fm2::render::RenderCommand cmd{};
+  cmd.type = fm2::render::RenderCommandType::WaitForGpu;
+  fm2::render::RenderQueue::Run(cmd);
 }
+
+namespace fm2::render {
+
+void ProcExecutePresent() { PresentImpl(); }
+
+void ProcWaitForGpu() {
+  for (uint32_t i = 0; i < kNumFrames; ++i) {
+    if (g_commandListSubmitted[i]) {
+      g_queue->waitForCommandFence(g_commandFences[i].get());
+      g_commandListSubmitted[i] = false;
+    }
+    OnRecordingFrameReady(i);
+  }
+
+  assert(!g_frameOpen);
+  g_commandLists[g_frame]->begin();
+  g_commandLists[g_frame]->end();
+  g_queue->executeCommandLists(g_commandLists[g_frame].get(), g_commandFences[g_frame].get());
+  g_queue->waitForCommandFence(g_commandFences[g_frame].get());
+}
+
+}  // namespace fm2::render
 
 void Video::Shutdown() {
   if (!g_initialized) {

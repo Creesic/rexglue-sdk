@@ -704,33 +704,40 @@ void FlushPendingStretchRectCommands() {
 // ---------------------------------------------------------------------------
 
 void BeginRenderStateFrame() {
-  RenderQueue::Run([] {
-    std::lock_guard lock(RecordingMutex());
-    if (IsDeviceLost()) return;
-    ++g_frameIndex;
-    g_framebuffer = nullptr;
-    g_dirtyStates = DirtyStates(true);
-    // Upload allocator reset happens in OnRecordingFrameReady after the
-    // slot's fence retires -- do not Reset() here (would clobber in-flight
-    // uploads from the other pipelined frame).
-    if (!g_sharedConstantsInitialized) {
-      for (uint32_t i = 0; i < std::size(g_sharedConstants.texture2DIndices); ++i) {
-        g_sharedConstants.texture2DIndices[i] = kNullTexture2DDescriptor;
-        g_sharedConstants.texture3DIndices[i] = kNullTexture3DDescriptor;
-        g_sharedConstants.textureCubeIndices[i] = kNullTextureCubeDescriptor;
-      }
-      g_sharedConstantsInitialized = true;
-    }
-
-    RenderCommandList* commandList = CommandList();
-    if (commandList == nullptr) return;
-    commandList->setGraphicsPipelineLayout(PipelineLayout());
-    commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 0);
-    commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 1);
-    commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 2);
-    commandList->setGraphicsDescriptorSet(SamplerDescriptorSet(), 3);
-  });
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::BeginRenderStateFrame;
+  RenderQueue::Run(cmd);
 }
+
+namespace {
+
+void ProcBeginRenderStateFrame() {
+  if (IsDeviceLost()) return;
+  ++g_frameIndex;
+  g_framebuffer = nullptr;
+  g_dirtyStates = DirtyStates(true);
+  // Upload allocator reset happens in OnRecordingFrameReady after the
+  // slot's fence retires -- do not Reset() here (would clobber in-flight
+  // uploads from the other pipelined frame).
+  if (!g_sharedConstantsInitialized) {
+    for (uint32_t i = 0; i < std::size(g_sharedConstants.texture2DIndices); ++i) {
+      g_sharedConstants.texture2DIndices[i] = kNullTexture2DDescriptor;
+      g_sharedConstants.texture3DIndices[i] = kNullTexture3DDescriptor;
+      g_sharedConstants.textureCubeIndices[i] = kNullTextureCubeDescriptor;
+    }
+    g_sharedConstantsInitialized = true;
+  }
+
+  RenderCommandList* commandList = CommandList();
+  if (commandList == nullptr) return;
+  commandList->setGraphicsPipelineLayout(PipelineLayout());
+  commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 0);
+  commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 1);
+  commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 2);
+  commandList->setGraphicsDescriptorSet(SamplerDescriptorSet(), 3);
+}
+
+}  // namespace
 
 uint64_t CurrentFrameIndex() { return g_frameIndex; }
 
@@ -2071,6 +2078,13 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
 }
 
 void DispatchRenderCommand(const RenderCommand& cmd) {
+  // WaitForGPU holds RecordingMutex on the guest thread across Run(); taking
+  // it again here on the render thread would deadlock.
+  if (cmd.type == RenderCommandType::WaitForGpu) {
+    ProcWaitForGpu();
+    return;
+  }
+
   std::lock_guard lock(RecordingMutex());
   switch (cmd.type) {
     case RenderCommandType::DestructResource:
@@ -2145,6 +2159,25 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
       ProcDrawPrimitiveUP(cmd.drawPrimitiveUP.device, cmd.drawPrimitiveUP.primitiveType,
                           cmd.drawPrimitiveUP.vertexCount, cmd.drawPrimitiveUP.vertexData,
                           cmd.drawPrimitiveUP.stride, cmd.drawPrimitiveUP.bytes);
+      break;
+    case RenderCommandType::ExecutePresent:
+      ProcExecutePresent();
+      break;
+    case RenderCommandType::WaitForGpu:
+      break;  // handled above
+    case RenderCommandType::BeginRenderStateFrame:
+      ProcBeginRenderStateFrame();
+      break;
+    case RenderCommandType::CreateTextureHost:
+      ProcCreateTextureHost(cmd.createTextureHost.texture, cmd.createTextureHost.width,
+                            cmd.createTextureHost.height, cmd.createTextureHost.depth,
+                            cmd.createTextureHost.levels, cmd.createTextureHost.usage,
+                            cmd.createTextureHost.format, cmd.createTextureHost.volume);
+      break;
+    case RenderCommandType::CreateSurfaceHost:
+      ProcCreateSurfaceHost(cmd.createSurfaceHost.surface, cmd.createSurfaceHost.width,
+                            cmd.createSurfaceHost.height, cmd.createSurfaceHost.format,
+                            cmd.createSurfaceHost.sampleCount, cmd.createSurfaceHost.depth);
       break;
   }
 }

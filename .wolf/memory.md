@@ -344,3 +344,4 @@
 | 15:31 | Hooked D3DResource AddRef/Release + Enqueue shader/stream/index | d3d_hooks.cpp, guest_resources.h, render_state.cpp, fm2_manifest.toml | build ok | ~8k |
 | 15:38 | POD RenderCommand + Proc* for state setters | render_commands.h, render_queue.*, render_state.cpp | build ok | ~12k |
 | 15:43 | POD Clear/Resolve/Draw/DrawUP/DrawIndexed | render_commands.h, render_state.*, d3d_hooks.cpp | build ok | ~10k |
+| 15:48 | POD Present/Wait/BeginFrame/CreateTexture/Surface + Run(cmd) | render_commands.h, render_queue.*, video.cpp, d3d_resource_hooks.cpp, render_state.cpp | build ok | ~9k |

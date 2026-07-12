@@ -1,8 +1,9 @@
 // render/render_commands.h
 //
 // Unleashed-style POD render commands. Guest threads enqueue these; the
-// dedicated render thread dispatches Proc* handlers. std::function Run()
-// remains for Present / WaitForGPU / resource create until those convert.
+// dedicated render thread dispatches Proc* handlers. std::function Run/Enqueue
+// remain only for ExecuteUpload (arbitrary copy-queue lambdas) until Unlock*
+// paths are specialized.
 
 #pragma once
 
@@ -17,6 +18,7 @@ struct GuestShader;
 struct GuestSurface;
 struct GuestTexture;
 struct GuestVertexDeclaration;
+struct GuestDevice;
 
 enum class RenderCommandType : uint32_t {
   DestructResource,
@@ -38,9 +40,12 @@ enum class RenderCommandType : uint32_t {
   DrawPrimitive,
   DrawIndexedPrimitive,
   DrawPrimitiveUP,
+  ExecutePresent,
+  WaitForGpu,
+  BeginRenderStateFrame,
+  CreateTextureHost,
+  CreateSurfaceHost,
 };
-
-struct GuestDevice;
 
 struct RenderCommand {
   RenderCommandType type{};
@@ -145,10 +150,40 @@ struct RenderCommand {
       uint32_t stride;
       uint32_t bytes;
     } drawPrimitiveUP;
+
+    // ExecutePresent / WaitForGpu / BeginRenderStateFrame: no payload.
+
+    struct {
+      GuestTexture* texture;
+      uint32_t width;
+      uint32_t height;
+      uint32_t depth;
+      uint32_t levels;
+      uint32_t usage;
+      uint32_t format;
+      bool volume;
+    } createTextureHost;
+
+    struct {
+      GuestSurface* surface;
+      uint32_t width;
+      uint32_t height;
+      uint32_t format;
+      uint32_t sampleCount;  // plume::RenderSampleCounts
+      bool depth;
+    } createSurfaceHost;
   };
 };
 
 // Called only on the render thread (or inline when queue is down / nested).
 void DispatchRenderCommand(const RenderCommand& cmd);
+
+// Implemented in video.cpp / d3d_resource_hooks.cpp; invoked from Dispatch.
+void ProcExecutePresent();
+void ProcWaitForGpu();
+void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t height, uint32_t depth,
+                           uint32_t levels, uint32_t usage, uint32_t format, bool volume);
+void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t height, uint32_t format,
+                           uint32_t sampleCount, bool depth);
 
 }  // namespace fm2::render

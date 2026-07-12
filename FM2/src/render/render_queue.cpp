@@ -108,6 +108,21 @@ void RenderQueue::Run(std::function<void()> fn) {
   done.wait(false, std::memory_order_acquire);
 }
 
+void RenderQueue::Run(const RenderCommand& cmd) {
+  if (!g_running.load(std::memory_order_acquire)) {
+    DispatchRenderCommand(cmd);
+    return;
+  }
+  if (IsOnRenderThread()) {
+    DispatchRenderCommand(cmd);
+    return;
+  }
+
+  std::atomic<bool> done{false};
+  PushJob(Job{Job::Kind::Cmd, {}, cmd, &done});
+  done.wait(false, std::memory_order_acquire);
+}
+
 void RenderQueue::Enqueue(std::function<void()> fn) {
   if (!fn) return;
   if (!g_running.load(std::memory_order_acquire)) {
