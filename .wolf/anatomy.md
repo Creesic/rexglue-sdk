@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-12T00:02:36.352Z
-> Files: 558 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-07-12T00:59:21.330Z
+> Files: 559 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ../../../.claude/plans/
 
@@ -84,8 +84,8 @@
 
 ## FM2/
 
-- `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~1318 tok)
-- `fm2_manifest.toml` (~5462 tok)
+- `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~1365 tok)
+- `fm2_manifest.toml` (~5460 tok)
 
 ## FM2/cmake/
 
@@ -102,15 +102,15 @@
 
 ## FM2/src/render/
 
-- `d3d_hooks.cpp` — render/d3d_hooks.cpp (~7428 tok)
+- `d3d_hooks.cpp` — render/d3d_hooks.cpp (~9028 tok)
 - `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~8339 tok)
 - `guest_device.h` — render/guest_device.h (~1570 tok)
 - `guest_heap.h` — pragma once (~472 tok)
 - `guest_resources.h` — render/guest_resources.h (~1607 tok)
 - `pipeline.cpp` — render/pipeline.cpp (~3741 tok)
 - `render_internal.h` — render/render_internal.h (~469 tok)
-- `render_state.cpp` — render/render_state.cpp (~8034 tok)
-- `render_state.h` — render/render_state.h (~657 tok)
+- `render_state.cpp` — render/render_state.cpp (~15523 tok)
+- `render_state.h` — render/render_state.h (~1278 tok)
 - `video.cpp` — include "video.h" (~4870 tok)
 - `video.h` — render/video.h (~366 tok)
 
@@ -118,6 +118,7 @@
 
 - `copy_ps.hlsl` (~149 tok)
 - `copy_vs.hlsl` — Fullscreen-triangle vertex shader for the present blit (~89 tok)
+- `placeholder_ps.hlsl` — Flat, unlit placeholder pixel shader for draws issued from FM2's recorded (~117 tok)
 
 ## FM2/tests/
 

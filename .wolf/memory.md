@@ -196,3 +196,35 @@
 | 20:02 | Edited FM2/src/render/d3d_hooks.cpp | modified REX_HOOK_RAW() | ~130 |
 | 20:02 | Edited FM2/src/render/d3d_hooks.cpp | 3→4 lines | ~15 |
 | 20:06 | Session end: 60 writes across 17 files (EmbedBinaryHeader.cmake, guest_device.h, guest_resources.h, render_internal.h, video.h) | 43 reads | ~96708 tok |
+
+## Session: 2026-07-12 20:16
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 20:47 | Edited FM2/fm2_manifest.toml | 2→2 lines | ~29 |
+| 20:48 | Edited FM2/src/render/render_state.h | expanded (+28 lines) | ~558 |
+| 20:50 | Edited FM2/src/render/render_state.cpp | expanded (+7 lines) | ~124 |
+| 20:50 | Edited FM2/src/render/render_state.cpp | 3→4 lines | ~48 |
+| 20:50 | Edited FM2/src/render/render_state.cpp | expanded (+26 lines) | ~478 |
+| 20:50 | Edited FM2/src/render/render_state.cpp | 3→4 lines | ~21 |
+| 20:50 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~184 |
+| 20:52 | Edited FM2/src/render/render_state.cpp | added 52 condition(s) | ~6091 |
+| 20:52 | Created FM2/src/render/shaders/placeholder_ps.hlsl | — | ~117 |
+| 20:52 | Edited FM2/CMakeLists.txt | 4→7 lines | ~116 |
+| 20:54 | Edited FM2/src/render/render_state.h | expanded (+10 lines) | ~192 |
+| 20:55 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~512 |
+| 20:55 | Edited FM2/src/render/render_state.cpp | UploadAndBind() → UploadAndBindRootDescriptor() | ~116 |
+| 20:55 | Edited FM2/src/render/render_state.cpp | modified BeginRenderStateFrame() | ~38 |
+| 20:55 | Edited FM2/src/render/render_state.cpp | added 4 condition(s) | ~660 |
+| 20:56 | Edited FM2/src/render/render_state.cpp | removed 58 lines | ~101 |
+| 20:56 | Edited FM2/src/render/render_state.cpp | added 3 condition(s) | ~425 |
+| 20:56 | Edited FM2/src/render/render_state.cpp | modified EnsureCreated() | ~111 |
+| 20:57 | Edited FM2/src/render/d3d_hooks.cpp | 5→7 lines | ~117 |
+| 20:57 | Edited FM2/src/render/d3d_hooks.cpp | modified CreateVertexDeclarationHook() | ~248 |
+| 20:57 | Edited FM2/src/render/d3d_hooks.cpp | 1→3 lines | ~55 |
+| 20:57 | Edited FM2/src/render/d3d_hooks.cpp | added 5 condition(s) | ~1362 |
+| 20:58 | Edited FM2/src/render/d3d_hooks.cpp | 7→8 lines | ~37 |
+| 20:58 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~199 |
+| 20:58 | Edited FM2/src/render/render_state.cpp | 3→4 lines | ~26 |
+| 20:59 | Edited FM2/src/render/render_state.cpp | 9→13 lines | ~187 |
+| 20:59 | Edited FM2/src/render/render_state.cpp | 2→2 lines | ~29 |

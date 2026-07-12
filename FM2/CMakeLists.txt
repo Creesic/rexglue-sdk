@@ -99,6 +99,9 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/plume/CMakeLists.
         fm2_compile_dxil_shader(FM2_BLIT_SHADER_HEADERS
             src/render/shaders/copy_ps.hlsl ps_6_0 main g_copy_ps_dxil
             render/shaders copy_ps.hlsl)
+        fm2_compile_dxil_shader(FM2_BLIT_SHADER_HEADERS
+            src/render/shaders/placeholder_ps.hlsl ps_6_0 main g_placeholder_ps_dxil
+            render/shaders placeholder_ps.hlsl)
         add_custom_target(fm2_blit_shaders DEPENDS ${FM2_BLIT_SHADER_HEADERS})
         add_dependencies(fm2 fm2_blit_shaders)
         target_sources(fm2 PRIVATE ${FM2_BLIT_SHADER_HEADERS})
