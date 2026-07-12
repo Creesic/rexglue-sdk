@@ -83,6 +83,10 @@ void SetDepthStencilSurface(GuestDevice* device, GuestSurface* depthStencil);
 // (or nested under RenderQueue::Run). Called before Present and before draws.
 void FlushPendingStretchRectCommands();
 
+// Unleashed DestructResource: queue destruction of an FM2 GuestResource until
+// the current recording frame's GPU fence retires (via OnRecordingFrameReady).
+void ScheduleResourceDestruction(GuestResource* resource);
+
 void Clear(GuestDevice* device, uint32_t flags, const float* color, float z);
 
 // D3DDevice_Resolve's texture-copy half: copies the currently-bound color

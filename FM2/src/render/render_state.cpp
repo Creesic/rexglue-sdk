@@ -253,6 +253,130 @@ UploadAllocator& CurrentUploadAllocator() {
   return g_uploadAllocators[CurrentRecordingFrame() % kNumFrames];
 }
 
+// CPU-side staging for guest→render-thread handoff (Unleashed
+// IntermediaryUploadAllocator). Guest threads copy DrawUP / similar payloads
+// here before Enqueue; render thread reads them while processing the job.
+// Reset only after the render queue has drained those jobs (Present / WaitForGPU).
+class IntermediaryUploadAllocator {
+ public:
+  uint8_t* Allocate(uint32_t size) {
+    std::lock_guard lock(mutex_);
+    constexpr uint32_t kChunk = 16 * 1024 * 1024;
+    if (size > kChunk) return nullptr;
+    if (offset_ + size > kChunk) {
+      ++index_;
+      offset_ = 0;
+    }
+    if (buffers_.size() <= index_) buffers_.resize(index_ + 1);
+    if (buffers_[index_] == nullptr) {
+      buffers_[index_] = std::make_unique<uint8_t[]>(kChunk);
+    }
+    uint8_t* result = buffers_[index_].get() + offset_;
+    offset_ += (size + 0xFu) & ~0xFu;
+    return result;
+  }
+
+  uint8_t* AllocateCopy(const void* src, uint32_t size) {
+    uint8_t* dst = Allocate(size);
+    if (dst != nullptr && src != nullptr && size != 0) std::memcpy(dst, src, size);
+    return dst;
+  }
+
+  void Reset() {
+    std::lock_guard lock(mutex_);
+    index_ = 0;
+    offset_ = 0;
+  }
+
+ private:
+  std::mutex mutex_;
+  std::vector<std::unique_ptr<uint8_t[]>> buffers_;
+  uint32_t index_ = 0;
+  uint32_t offset_ = 0;
+};
+IntermediaryUploadAllocator g_intermediaryUploadAllocator;
+
+std::array<std::vector<GuestResource*>, kNumFrames> g_tempResources;
+
+void DestructTempResources(uint32_t frame) {
+  auto& resources = g_tempResources[frame % kNumFrames];
+  for (GuestResource* resource : resources) {
+    if (resource == nullptr || !IsFm2Resource(resource)) continue;
+    switch (resource->type) {
+      case ResourceType::Texture:
+      case ResourceType::VolumeTexture: {
+        auto* texture = static_cast<GuestTexture*>(resource);
+        if (texture->sourceSurface != nullptr) {
+          texture->sourceSurface->destinationTextures.erase(texture);
+          texture->sourceSurface = nullptr;
+        }
+        for (uint32_t i = 0; i < std::size(g_textures); ++i) {
+          if (g_textures[i] == texture) g_textures[i] = nullptr;
+        }
+        if (texture->mappedMemory != nullptr) {
+          ghp::GuestFreeRaw(ghp::ToGuest(texture->mappedMemory));
+          texture->mappedMemory = nullptr;
+        }
+        FreeTextureDescriptor(texture->descriptorIndex);
+        texture->textureView.reset();
+        texture->textureHolder.reset();
+        texture->texture = nullptr;
+        texture->~GuestTexture();
+        ghp::GuestFreeRaw(ghp::ToGuest(texture));
+        break;
+      }
+      case ResourceType::VertexBuffer:
+      case ResourceType::IndexBuffer: {
+        auto* buffer = static_cast<GuestBuffer*>(resource);
+        if (buffer->mappedMemory != nullptr) {
+          ghp::GuestFreeRaw(ghp::ToGuest(buffer->mappedMemory));
+          buffer->mappedMemory = nullptr;
+        }
+        buffer->buffer.reset();
+        buffer->~GuestBuffer();
+        ghp::GuestFreeRaw(ghp::ToGuest(buffer));
+        break;
+      }
+      case ResourceType::RenderTarget:
+      case ResourceType::DepthStencil: {
+        auto* surface = static_cast<GuestSurface*>(resource);
+        for (GuestTexture* dest : surface->destinationTextures) {
+          if (dest != nullptr) dest->sourceSurface = nullptr;
+        }
+        surface->destinationTextures.clear();
+        if (surface->mappedMemory != nullptr) {
+          ghp::GuestFreeRaw(ghp::ToGuest(surface->mappedMemory));
+          surface->mappedMemory = nullptr;
+        }
+        FreeTextureDescriptor(surface->descriptorIndex);
+        surface->framebuffers.clear();
+        surface->textureView.reset();
+        surface->textureHolder.reset();
+        surface->texture = nullptr;
+        surface->~GuestSurface();
+        ghp::GuestFreeRaw(ghp::ToGuest(surface));
+        break;
+      }
+      case ResourceType::VertexDeclaration: {
+        auto* decl = static_cast<GuestVertexDeclaration*>(resource);
+        decl->~GuestVertexDeclaration();
+        ghp::GuestFreeRaw(ghp::ToGuest(decl));
+        break;
+      }
+      case ResourceType::VertexShader:
+      case ResourceType::PixelShader: {
+        auto* shader = static_cast<GuestShader*>(resource);
+        shader->~GuestShader();
+        ghp::GuestFreeRaw(ghp::ToGuest(shader));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  resources.clear();
+}
+
 // Pending resource-layout transitions, flushed once per state-changing call.
 // Key by GuestBaseTexture* (not RenderTexture*) so a destroyed/recreated host
 // texture cannot leave a dangling RenderTexture* in the map across Flush.
@@ -959,7 +1083,22 @@ void SetDepthStencilSurface(GuestDevice* /*device*/, GuestSurface* depthStencil)
 }
 
 void OnRecordingFrameReady(uint32_t frame) {
+  DestructTempResources(frame);
   g_uploadAllocators[frame % kNumFrames].Reset();
+  // Intermediary is shared; safe to reset once the queue has drained jobs that
+  // pointed into it (Present/WaitForGPU call this after sync Run).
+  g_intermediaryUploadAllocator.Reset();
+}
+
+void ScheduleResourceDestruction(GuestResource* resource) {
+  if (resource == nullptr || !IsFm2Resource(resource)) return;
+  // Invalidate magic immediately so guest re-uses of this address don't look
+  // like live FM2 resources while destruction is pending.
+  resource->magic = 0;
+  RenderQueue::Enqueue([resource] {
+    std::lock_guard lock(RecordingMutex());
+    g_tempResources[CurrentRecordingFrame() % kNumFrames].push_back(resource);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1750,18 +1889,20 @@ void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVer
 
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                              const void* data, uint32_t stride) {
-  // RenderQueue::Run is synchronous, so guest `data` stays live for the upload.
-  RenderQueue::Run([device, primitiveType, vertexCount, data, stride] {
+  if (data == nullptr || vertexCount == 0 || stride == 0) return;
+  const uint32_t bytes = vertexCount * stride;
+  // Copy on the guest thread so Enqueue can return before the guest reuses
+  // its stack/heap buffer (Unleashed intermediary upload pattern).
+  uint8_t* copy = g_intermediaryUploadAllocator.AllocateCopy(data, bytes);
+  if (copy == nullptr) {
+    REXGPU_WARN("DrawUserPointerVertices: intermediary upload exhausted ({} bytes)", bytes);
+    return;
+  }
+  RenderQueue::Enqueue([device, primitiveType, vertexCount, copy, stride, bytes] {
     std::lock_guard lock(RecordingMutex());
     if (IsDeviceLost()) return;
     g_hasBoundPipeline = false;
-    if (data == nullptr || vertexCount == 0 || stride == 0) return;
 
-    // The PSO's stream-0 input-slot stride must reflect this draw's stride
-    // while the pipeline gets built/looked-up below, but stream 0's *tracked*
-    // stride (whatever the last real SetStreamSource bound there) must survive
-    // this call unchanged -- restore it immediately after, before this
-    // function's caller returns to ordinary real draws.
     const uint8_t savedStride0 = g_pipelineState.vertexStrides[0];
     g_pipelineState.vertexStrides[0] = uint8_t(stride);
     const uint32_t convertedIndexCount = PrepareConvertedIndices(primitiveType, vertexCount);
@@ -1769,14 +1910,11 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
     g_pipelineState.vertexStrides[0] = savedStride0;
     if (!g_hasBoundPipeline) return;
 
-    RenderBufferReference ref = CurrentUploadAllocator().Upload(data, uint64_t(vertexCount) * stride, false);
+    RenderBufferReference ref = CurrentUploadAllocator().Upload(copy, bytes, false);
     if (ref.ref == nullptr) {
       g_hasBoundPipeline = false;
       return;
     }
-    // Re-bind layout/PSO on the current open list. FlushRenderState may have
-    // recorded into a list that was later drained/reopened (resize/Present),
-    // which clears plume's activeGraphicsPipeline.
     RenderPipelineLayout* layout = PipelineLayout();
     RenderCommandList* commandList = CommandList();
     RenderPipeline* pipeline = GetPipeline(g_pipelineState, g_insideRecordedBatch);
@@ -1786,7 +1924,7 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
     }
     commandList->setGraphicsPipelineLayout(layout);
     commandList->setPipeline(pipeline);
-    RenderVertexBufferView view(ref, vertexCount * stride);
+    RenderVertexBufferView view(ref, bytes);
     RenderInputSlot slot(0, stride, RenderInputSlotClassification::PER_VERTEX_DATA);
     commandList->setVertexBuffers(0, &view, 1, &slot);
     if (convertedIndexCount != 0) {
@@ -1794,10 +1932,6 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
     } else {
       commandList->drawInstanced(vertexCount, 1, 0, 0);
     }
-
-    // This draw's stream-0 bind bypassed the tracked vertex-buffer state (it
-    // never went through SetStreamSource) -- force the next real draw to
-    // rebind its own buffer there instead of assuming this one is still valid.
     g_dirtyStates.vertexStreamFirst = 0;
   });
 }
