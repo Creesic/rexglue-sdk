@@ -1,10 +1,9 @@
 ﻿# Black + intermittent startup (2026-07-12 evening)
 
 ## Black screen (still)
-Aperture present is correct (fbBase 0x096A7000) but the host texture is empty:
-tile RTs are 1280x256; FM2 records one pass that hardware would replay per band.
-Naive ResizeTileSurface mid-CL caused DXGI_ERROR_INVALID_CALL / crashes — needs
-safer port (discard-after-grow, retire-after-fence) from ReXGlue080plume.
+Aperture present is correct (fbBase 0x096A7000). Create-time tile grow landed
+(`7a119518`: host 1280x720). If still black, next is 080plume band srcRect
+rebasing + immediate band flush (not mid-CL ResizeTileSurface).
 
 ## Intermittent startup
 Often stalls ~2s after first Swap (resolve n~24, DebugOptions.ini). Sometimes

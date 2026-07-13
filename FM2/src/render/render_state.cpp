@@ -787,7 +787,21 @@ void FlushPendingStretchRectCommands() {
   }
 
   if (foundAny) {
+    // Unleashed StretchRect samples/copies the color surface after it leaves
+    // COLOR_WRITE. Leaving the RT bound as the active framebuffer blocks the
+    // 1x copyTextureRegion path (and would block a shader blit too).
+    if (g_framebuffer != nullptr) {
+      CommandList()->setFramebuffer(nullptr);
+      g_framebuffer = nullptr;
+      g_dirtyStates.renderTargetAndDepthStencil = true;
+    }
     FlushBarriers();
+    static uint64_t stretchFlush = 0;
+    ++stretchFlush;
+    if (stretchFlush <= 12 || stretchFlush % 300 == 1) {
+      REXGPU_INFO("FlushPendingStretchRect: draining {} surface(s) (n={})",
+                  g_pendingSurfaceCopies.size(), stretchFlush);
+    }
     for (GuestSurface* surface : g_pendingSurfaceCopies) {
       if (surface != nullptr && surface->type != ResourceType::DepthStencil) {
         ExecutePendingStretchRectCommands(surface, nullptr);
@@ -2125,8 +2139,21 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
                           bool hasSrc, const RenderRect& srcRect) {
   if (IsDeviceLost()) return;
   if (destTexture == nullptr || destTexture->texture == nullptr) return;
+  // Swap/Resolve often run after the guest unbound the color RT. Unleashed keeps
+  // using the live surface via pending StretchRect links; we fall back to the
+  // last full-frame presentable RT so aperture resolves are not no-ops.
   GuestBaseTexture* source = g_renderTarget;
-  if (source == nullptr || source->texture == nullptr || source == destTexture) return;
+  if (source == nullptr || source->texture == nullptr) {
+    source = g_lastPresentableRenderTarget;
+  }
+  if (source == nullptr || source->texture == nullptr || source == destTexture) {
+    static uint64_t resolveNoSrc = 0;
+    if (++resolveNoSrc <= 24) {
+      REXGPU_WARN("ResolveToTexture: no source RT (dest={}x{} n={})", destTexture->width,
+                  destTexture->height, resolveNoSrc);
+    }
+    return;
+  }
 
   GuestSurface* surface = AsSurface(source);
   auto* destAsTexture =
@@ -2136,7 +2163,19 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
 
   if (surface != nullptr && destAsTexture != nullptr && !hasSrc && destX == 0 && destY == 0) {
     RegisterStretchRect(destAsTexture, surface);
+    static uint64_t resolveDeferred = 0;
+    if (++resolveDeferred <= 24 || resolveDeferred % 300 == 1) {
+      REXGPU_INFO("ResolveToTexture: deferred StretchRect {}x{} -> {}x{} (n={})", surface->width,
+                  surface->height, destAsTexture->width, destAsTexture->height, resolveDeferred);
+    }
     return;
+  }
+
+  // Region / surface-dest path: must not copy while source is still bound.
+  if (g_framebuffer != nullptr) {
+    CommandList()->setFramebuffer(nullptr);
+    g_framebuffer = nullptr;
+    g_dirtyStates.renderTargetAndDepthStencil = true;
   }
 
   AddBarrier(source, RenderTextureLayout::RESOLVE_SOURCE);

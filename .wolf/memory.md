@@ -351,3 +351,4 @@
 | 19:25 | Triaged fm2_104.log | notes-2026-07-12-fm2-104-triage.md | DEVICE_REMOVED ~140ms after first blit; not empty-RT | ~8k |
 | 18:24 | Session end: 5 writes across 3 files (d3d_hooks.cpp, render_state.h, render_state.cpp) | 23 reads | ~81521 tok |
 | 21:35 | Create-time tile grow 1280x256->720 + VP expand; drop post-Swap BeginRenderStateFrame | d3d_resource_hooks, render_state, d3d_hooks | smoke ~3/8 Swap301; reverted Present-mutex/copy-exempt | ~|
+| 22:36 | Unleashed StretchRect: unbind FB before drain; resolve RT fallback | render_state.cpp | deferred 720->720 copies; Swap-1 still flaky | ~|

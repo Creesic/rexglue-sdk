@@ -7,6 +7,8 @@
 ## User Preferences
 
 <!-- How the user likes things done. Code style, tools, patterns, communication. -->
+- [2026-07-12] Prefer **UnleashedRecomp-clean** FM2 renderer patterns (deferred StretchRect, render-thread queue, Present split, SetTexture). Stay away from porting more **ReXGlue080plume** FM2-specific tiling machinery (`ResizeTileSurface`, band destY rebasing, `g_tileViewportOffsetY`, native_renderer overlay).
+- [2026-07-12] Unbind active framebuffer before draining deferred StretchRect (1x copy / shader blit); Resolve may need last-presentable RT when `g_renderTarget` is already null.
 
 ## Key Learnings
 
@@ -38,4 +40,5 @@
 
 <!-- Significant technical decisions with rationale. Why X was chosen over Y. -->
 - 2026-07-11/12: Native renderer transfer = architectural rebuild of plume integration into cleaned `FM2/src/render/`; diagnostic `native_renderer/` overlay left behind on purpose.
-- 2026-07-12: FM2 EDRAM 1280x256 tiles → host 1280x720 at create (not mid-CL), matching 080plume Fix #18 create-side without recreate.
+- 2026-07-12: User direction — stay on **Unleashed-clean** patterns; do not keep mining ReXGlue080plume for tiling/band machinery. FM2-only surface quirks (e.g. create-time 1280x256→720 host size) OK if minimal; no `g_tileViewportOffsetY` / band rebasing / mid-CL resize ports.
+- 2026-07-12: Create-time host grow for 1280x256 tiles is a one-shot size override (not a 080plume tiling state machine).
