@@ -684,7 +684,8 @@ void Video::Present() {
 
   {
     // Hold RecordingMutex so Dispatch cannot race g_frame / swapchain while
-    // we present and advance (draws queued during Run sit until we unlock).
+    // we present and advance. CreateTranslatedTextureHost dispatches without
+    // this mutex so Resolve→Translate cannot deadlock against the fence wait.
     std::lock_guard lock(fm2::render::RecordingMutex());
     PresentAndAdvanceFrame();
   }

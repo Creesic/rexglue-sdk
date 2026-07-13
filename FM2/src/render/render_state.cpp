@@ -674,10 +674,9 @@ bool ScissorTestEnabled(GuestDevice* device) {
 }
 
 // Simplified framebuffer cache: just caches one RenderFramebuffer per unique
-// (color, depth) attachment pair. The reference's version also had an
-// EDRAM-tile-resize heuristic bolted on for the still-unresolved
-// predicated-tiling replay path; that's Phase 4/draw-dispatch territory, not
-// simple state tracking, so it's not here.
+// (color, depth) attachment pair. EDRAM tile grow (1280x256→720) is deferred —
+// mid-CL recreate was DEVICE_REMOVED / crash-prone; needs a safer port from
+// ReXGlue080plume (retire-after-fence, discard-after-grow ordering).
 void SetFramebuffer(GuestBaseTexture* colorTarget, GuestSurface* depthTarget, bool /*forClear*/) {
   const GuestBaseTexture* dimensionSource = colorTarget != nullptr ? colorTarget : depthTarget;
   if (dimensionSource != nullptr && dimensionSource->width != 0 && dimensionSource->height != 0) {
@@ -1948,9 +1947,11 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
     AddBarrier(g_renderTarget, RenderTextureLayout::COLOR_WRITE);
     AddBarrier(g_depthStencil, RenderTextureLayout::DEPTH_WRITE);
     FlushBarriers();
+    // SetFramebuffer may ResizeTileSurface (new CREATE_NOT_ZEROED texture).
+    // Discard/init must run AFTER grow, not before.
+    SetFramebuffer(g_renderTarget, g_depthStencil, false);
     EnsureAttachmentInitialized(g_renderTarget);
     EnsureAttachmentInitialized(g_depthStencil);
-    SetFramebuffer(g_renderTarget, g_depthStencil, false);
     g_dirtyStates.renderTargetAndDepthStencil = false;
   }
   if (g_dirtyStates.viewport) {
@@ -2263,6 +2264,19 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
   // it again here on the render thread would deadlock.
   if (cmd.type == RenderCommandType::WaitForGpu) {
     ProcWaitForGpu();
+    return;
+  }
+  // Texture create is Device()-only (no command-list recording). Running it
+  // without RecordingMutex avoids deadlocking when Present holds that mutex
+  // across DXGI present / fence wait while Resolve→TranslateGuestTexture sync
+  // Runs on another guest thread.
+  if (cmd.type == RenderCommandType::CreateTranslatedTextureHost) {
+    ProcCreateTranslatedTextureHost(cmd.createTranslatedTextureHost.texture,
+                                    cmd.createTranslatedTextureHost.width,
+                                    cmd.createTranslatedTextureHost.height,
+                                    cmd.createTranslatedTextureHost.format,
+                                    cmd.createTranslatedTextureHost.baseAddress,
+                                    cmd.createTranslatedTextureHost.createdOut);
     return;
   }
 

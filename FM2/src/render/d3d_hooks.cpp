@@ -146,13 +146,11 @@ namespace {
 
 // Kept as a passthrough: unlike D3DDevice_Swap this is guest status
 // bookkeeping, not a GPU-ring call, so the original body still needs to run.
-// Also drives Present() defensively in case this ever becomes the real
-// present trigger for some code path Swap doesn't cover.
+// Do NOT call Video::Present here — Swap is the live present trigger; a second
+// Present races g_presentBusy and intermittently drops the real frame (boot
+// hang / black after first Swap).
 void PresentAndUpdateStatus(uint32_t presentChain) {
   g_origTryPresentAndUpdateStatus(presentChain);
-  fm2::render::PrepareFramePresent();
-  Video::Present();
-  fm2::render::BeginRenderStateFrame();
 }
 
 }  // namespace
