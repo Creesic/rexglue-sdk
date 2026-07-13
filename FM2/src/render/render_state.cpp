@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -58,6 +59,8 @@
 using namespace plume;
 
 namespace fm2::render {
+
+void ClearResolveSurfaceAperture(GuestBaseTexture* host);
 
 namespace {
 
@@ -314,6 +317,7 @@ void DestructTempResources(uint32_t frame) {
         if (g_renderTarget == texture) g_renderTarget = nullptr;
         if (g_lastPresentableRenderTarget == texture) g_lastPresentableRenderTarget = nullptr;
         if (g_implicitRenderTarget == texture) g_implicitRenderTarget = nullptr;
+        ClearResolveSurfaceAperture(texture);
         if (texture->sourceSurface != nullptr) {
           texture->sourceSurface->destinationTextures.erase(texture);
           texture->sourceSurface = nullptr;
@@ -353,6 +357,7 @@ void DestructTempResources(uint32_t frame) {
         if (g_implicitRenderTarget == surface) g_implicitRenderTarget = nullptr;
         if (g_depthStencil == surface) g_depthStencil = nullptr;
         if (g_implicitDepthStencil == surface) g_implicitDepthStencil = nullptr;
+        ClearResolveSurfaceAperture(surface);
         for (GuestTexture* dest : surface->destinationTextures) {
           if (dest != nullptr) dest->sourceSurface = nullptr;
         }
@@ -704,6 +709,61 @@ void SetFramebuffer(GuestBaseTexture* colorTarget, GuestSurface* depthTarget, bo
 }
 
 }  // namespace
+
+namespace {
+
+std::mutex g_surfaceApertureMutex;
+struct SurfaceApertureEntry {
+  GuestBaseTexture* tex = nullptr;
+  bool resolveDest = false;
+};
+std::unordered_map<uint32_t, SurfaceApertureEntry> g_surfaceAperture;
+std::atomic<GuestBaseTexture*> g_frontbufferPresentSource{nullptr};
+
+}  // namespace
+
+void RegisterResolveSurfaceAperture(uint32_t guestAddr, GuestBaseTexture* host) {
+  guestAddr &= 0x1FFFFFFFu;
+  if (host == nullptr || host->texture == nullptr || guestAddr < 0x08000000u ||
+      guestAddr >= 0x20000000u) {
+    return;
+  }
+  std::lock_guard<std::mutex> lk(g_surfaceApertureMutex);
+  SurfaceApertureEntry& e = g_surfaceAperture[guestAddr & ~0xFFFu];
+  e.tex = host;
+  e.resolveDest = true;
+}
+
+GuestBaseTexture* LookupResolveSurfaceAperture(uint32_t guestAddr) {
+  std::lock_guard<std::mutex> lk(g_surfaceApertureMutex);
+  auto it = g_surfaceAperture.find(guestAddr & 0x1FFFFFFFu & ~0xFFFu);
+  if (it == g_surfaceAperture.end()) return nullptr;
+  GuestBaseTexture* tex = it->second.tex;
+  if (tex == nullptr || tex->texture == nullptr) return nullptr;
+  return tex;
+}
+
+void ClearResolveSurfaceAperture(GuestBaseTexture* host) {
+  if (host == nullptr) return;
+  std::lock_guard<std::mutex> lk(g_surfaceApertureMutex);
+  for (auto it = g_surfaceAperture.begin(); it != g_surfaceAperture.end();) {
+    if (it->second.tex == host) {
+      it = g_surfaceAperture.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  GuestBaseTexture* expected = host;
+  g_frontbufferPresentSource.compare_exchange_strong(expected, nullptr, std::memory_order_relaxed);
+}
+
+void SetFrontbufferPresentSource(GuestBaseTexture* tex) {
+  g_frontbufferPresentSource.store(tex, std::memory_order_relaxed);
+}
+
+GuestBaseTexture* ConsumeFrontbufferPresentSource() {
+  return g_frontbufferPresentSource.load(std::memory_order_relaxed);
+}
 
 RenderBufferReference UploadFrameData(const void* src, uint64_t size, bool byteSwap) {
   return CurrentUploadAllocator().Upload(src, size, byteSwap);

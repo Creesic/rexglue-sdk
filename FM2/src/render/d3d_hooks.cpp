@@ -29,10 +29,12 @@
 
 #include <rex/hook.h>
 #include <rex/logging.h>
+#include <rex/types.h>
 
 #include "render/guest_device.h"
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
+#include "render/render_internal.h"
 #include "render/render_queue.h"
 #include "render/render_state.h"
 #include "render/video.h"
@@ -67,6 +69,16 @@ GuestShader* LookupShaderAlias(uint32_t guestAddress);
 
 namespace {
 
+uint32_t ReadGuestU32At(uint32_t guestAddress) {
+  if (guestAddress == 0) return 0;
+  auto* p = fm2::ghp::ToHost<const rex::be<uint32_t>>(guestAddress);
+  return p != nullptr ? p->get() : 0;
+}
+
+}  // namespace
+
+namespace {
+
 // D3DDevice_ClearF(device, flags, rect, D3DVECTOR4* color, z, d3dColor).
 // color is 4 big-endian floats in guest memory. Now that Phase 3/4 render
 // state (render target/viewport/scissor tracking) exists, this does a real
@@ -91,12 +103,35 @@ void ClearF(GuestDevice* device, uint32_t flags, void* /*rect*/, const uint32_t*
 // path). The original guest body kicks the real Xenos GPU ring buffer, which
 // does not exist under the native renderer, so it must not run here; this
 // hook fully replaces it.
-void Swap(uint32_t /*commandBuffer*/, uint32_t /*arg4*/, uint32_t /*arg5*/) {
+//
+// arg4 holds the VdSwap-style present descriptor: frontbuffer D3D9 fetch is
+// at arg4+28; dword1 & page mask is the frontbuffer base. Prefer a resolve
+// destination registered at that base (composited display) over sticky RTs.
+void Swap(uint32_t /*commandBuffer*/, uint32_t arg4, uint32_t /*arg5*/) {
   static uint64_t swapCallCount = 0;
   ++swapCallCount;
   if (swapCallCount % 300 == 1) {
     REXGPU_INFO("D3DDevice_Swap hook: called {} time(s) so far", swapCallCount);
   }
+
+  fm2::render::GuestBaseTexture* presentSource = nullptr;
+  const char* kind = "none";
+  if (arg4 != 0) {
+    const uint32_t fbBase = ReadGuestU32At(arg4 + 28u + 4u) & 0x1FFFFFFFu & ~0xFFFu;
+    presentSource = fm2::render::LookupResolveSurfaceAperture(fbBase);
+    if (presentSource != nullptr && presentSource->texture != nullptr) {
+      kind = "aperture";
+      fm2::render::SetFrontbufferPresentSource(presentSource);
+    } else {
+      presentSource = nullptr;
+    }
+    if (swapCallCount % 300 == 1) {
+      REXGPU_INFO("D3DDevice_Swap: fbBase=0x{:08X} presentKind={} src={}x{}", fbBase, kind,
+                  presentSource != nullptr ? presentSource->width : 0,
+                  presentSource != nullptr ? presentSource->height : 0);
+    }
+  }
+
   fm2::render::PrepareFramePresent();
   Video::Present();
   fm2::render::BeginRenderStateFrame();
@@ -848,15 +883,51 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
     rr::Clear(nullptr, rr::D3DCLEAR_ZBUFFER | rr::D3DCLEAR_STENCIL, nullptr, clearZ);
   }
 
-  // Pure-replace resources are pointer-validated (IsFm2Resource), never
-  // treated as an overlay of arbitrary guest memory -- pDestTexture may be a
-  // raw XDK-created texture our Create* hooks never saw (see the resource
-  // hooks above), and that memory has nothing to do with our GuestBaseTexture
-  // layout.
-  auto* destTexture = ghp::ToHost<rr::GuestBaseTexture>(destTextureAddr);
-  if (destTextureAddr != 0 && rr::IsFm2Resource(destTexture)) {
-    rr::ResolveToTexture(destTexture, destPoint, sourceRect);
+  if (destTextureAddr == 0) return;
+
+  void* destHost = ghp::ToHost<void>(destTextureAddr);
+  rr::GuestBaseTexture* reo = nullptr;
+  uint32_t dataBase = 0;
+
+  if (rr::IsFm2Resource(destHost)) {
+    reo = static_cast<rr::GuestBaseTexture*>(destHost);
+  } else {
+    // Raw XDK D3DBaseTexture: translate to a host texture and key aperture by
+    // the header's resolve copy-dest base (dword at +32) so Swap's frontbuffer
+    // fetch can find the composited frame.
+    reo = rr::TranslateGuestTexture(destHost, /*uploadGuestData=*/false);
+    dataBase = ReadGuestU32At(destTextureAddr + 32u) & 0x1FFFFFFFu & ~0xFFFu;
   }
+
+  if (reo == nullptr || reo->texture == nullptr) return;
+
+  const bool destIsBlockCompressed =
+      reo->format >= plume::RenderFormat::BC1_TYPELESS &&
+      reo->format <= plume::RenderFormat::BC7_UNORM_SRGB;
+  if (destIsBlockCompressed) {
+    static uint64_t bcSkip = 0;
+    if (++bcSkip <= 24) {
+      REXGPU_WARN("Resolve: skipping BC dest 0x{:08X} fmt={} (misidentified)", destTextureAddr,
+                  int(reo->format));
+    }
+    return;
+  }
+
+  if (dataBase != 0) {
+    rr::RegisterResolveSurfaceAperture(dataBase, reo);
+  }
+  // Do not SetFrontbufferPresentSource here — Swap owns that from the
+  // aperture lookup so intermediate FM2 resolves cannot steal the composite.
+
+  static uint64_t resolveApertureCount = 0;
+  ++resolveApertureCount;
+  if (resolveApertureCount <= 24 || resolveApertureCount % 300 == 1) {
+    REXGPU_INFO("Resolve: dest=0x{:08X} dataBase=0x{:08X} {}x{} fmt={} fm2={} (n={})",
+                destTextureAddr, dataBase, reo->width, reo->height, int(reo->format),
+                rr::IsFm2Resource(destHost), resolveApertureCount);
+  }
+
+  rr::ResolveToTexture(reo, destPoint, sourceRect);
 }
 
 }  // namespace

@@ -39,6 +39,15 @@ void OnRecordingFrameReady(uint32_t frame);
 struct GuestBaseTexture;
 void SetPresentSource(GuestBaseTexture* frontBuffer);
 
+// Resolve-destination aperture: guest page base -> host texture that received
+// D3DDevice_Resolve copies (FM2's composited frontbuffer). Swap looks this up
+// from the frontbuffer fetch; Present prefers it over sticky color RTs.
+void RegisterResolveSurfaceAperture(uint32_t guestAddr, GuestBaseTexture* host);
+GuestBaseTexture* LookupResolveSurfaceAperture(uint32_t guestAddr);
+void ClearResolveSurfaceAperture(GuestBaseTexture* host);
+void SetFrontbufferPresentSource(GuestBaseTexture* tex);
+GuestBaseTexture* ConsumeFrontbufferPresentSource();
+
 plume::RenderDescriptorSet* TextureDescriptorSet();
 
 plume::RenderDescriptorSet* SamplerDescriptorSet();

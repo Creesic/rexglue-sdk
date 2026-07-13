@@ -161,21 +161,29 @@ void ExecuteCommandListImpl() {
   // Unleashed: ExecutePendingStretchRectCommands before present blit.
   fm2::render::FlushPendingStretchRectCommands();
 
-  // Present source is taken on the render thread after prior SetRT/enqueue
-  // work has drained into this job (guest PrepareFramePresent no longer
-  // races async RT binds).
+  // Prefer resolve-assembled frontbuffer (Swap aperture lookup) over sticky
+  // color RTs — tile bands land on the resolve dest, not the last SetRT.
   {
     static bool loggedFirstTarget = false;
     static uint64_t presentSourceChecks = 0;
     ++presentSourceChecks;
-    auto* rt = fm2::render::GetCurrentColorRenderTarget();
+    fm2::render::GuestBaseTexture* rt = fm2::render::ConsumeFrontbufferPresentSource();
+    const char* kind = "aperture";
+    if (rt == nullptr || rt->texture == nullptr) {
+      rt = fm2::render::GetCurrentColorRenderTarget();
+      kind = "sticky-rt";
+    }
     if (rt != nullptr && !loggedFirstTarget) {
       loggedFirstTarget = true;
-      REXGPU_INFO("ExecuteCommandList: first non-null render target after {} present(s)",
-                  presentSourceChecks);
+      REXGPU_INFO("ExecuteCommandList: first non-null present source ({}) after {} present(s)",
+                  kind, presentSourceChecks);
     } else if (rt == nullptr && presentSourceChecks % 300 == 0) {
       REXGPU_WARN("ExecuteCommandList: still no render target after {} present(s)",
                   presentSourceChecks);
+    }
+    if (presentSourceChecks % 300 == 1 && rt != nullptr) {
+      REXGPU_INFO("ExecuteCommandList: present kind={} {}x{} fmt={}", kind, rt->width, rt->height,
+                  int(rt->format));
     }
     fm2::render::SetPresentSource(rt);
   }
