@@ -12,6 +12,7 @@
 
 ## Key Learnings
 
+- **Detached VBlank (2026-07-12):** FM2 GameLoop waits on `dword_829C24C0`; wake path is `GraphicsInterruptCallback(r3=0)` → `VerticalBlankInterrupt` only if GPU MMIO `0x7FC86544` bit0 set (reg `0x1951`). Without `GraphicsSystem`, that range was unmapped and `REX_MM_LOAD_U32` left `_v` uninitialized → intermittent Swap-1 hangs. Fix: stub MMIO returning `1` for `0x1951` + zero-init MM loads.
 - **Project:** ReXFM2P — "ReXGlue" static recompiler (Xbox 360 PPC → portable C++, Xenia/XenonRecomp-derived) plus `FM2/`, a downstream recompiled build of Forza Motorsport 2. Full architecture now documented in root `CLAUDE.md`.
 - `FM2/` is untracked in git (on-disk only, no commits) — `FM2/generated/**` is codegen build output, not hand-written source.
 - Build requires Clang >= 18, C++23, RelWithDebInfo-only (Debug/Release presets are disabled in CMakePresets.json). Day-to-day commands go through the `PSReX` PowerShell module (`rex-configure`/`rex-build`/`rex-test`/etc.), not raw cmake.
@@ -35,6 +36,7 @@
 - [2026-07-12] Do not Clear RT/DS with a scissor rect before Discard on CREATE_NOT_ZEROED heaps — debug layer DEVICE_REMOVED INVALID_CALL.
 - [2026-07-12] Do not mid-CL `ResizeTileSurface` for FM2 1280x256 tiles — DEVICE_REMOVED INVALID_CALL. Grow at `ProcCreateSurfaceHost` instead; expand VP/scissor on flush.
 - [2026-07-12] Do not release `RecordingMutex` across DXGI present/fence wait, and do not exempt `CopyTextureFromUpload` from that mutex / call it on the guest thread — both made Swap-1 hangs/crashes worse. Keep CreateTranslatedTextureHost mutex-exempt only.
+- [2026-07-12] Do not StretchRect/Resolve via raw `texture != nullptr` alone — use `IsLiveHostTexture` (holder match) and drop destroyed surfaces from `g_pendingSurfaceCopies` or plume `toD3D12` AVs on dangling `RenderTexture*`.
 
 ## Decision Log
 

@@ -204,7 +204,7 @@ extern PPCFuncMapping PPCFuncMappings[];
 
 #define REX_MM_LOAD_U8(addr)                                           \
   (REX_IS_MMIO_ADDR(addr) ? ({                                         \
-    u32 _v;                                                            \
+    u32 _v = 0;                                                        \
     rex::runtime::MMIOHandler::global_handler()->CheckLoad(addr, &_v); \
     static_cast<u8>(_v);                                               \
   })                                                                   \
@@ -213,7 +213,7 @@ extern PPCFuncMapping PPCFuncMappings[];
 #define REX_MM_LOAD_U16(addr)                                                 \
   (REX_IS_MMIO_ADDR(addr)                                                     \
        ? ({                                                                   \
-           u32 _v;                                                            \
+           u32 _v = 0;                                                        \
            rex::runtime::MMIOHandler::global_handler()->CheckLoad(addr, &_v); \
            static_cast<u16>(_v);                                              \
          })                                                                   \
@@ -222,7 +222,7 @@ extern PPCFuncMapping PPCFuncMappings[];
 #define REX_MM_LOAD_U32(addr)                                                 \
   (REX_IS_MMIO_ADDR(addr)                                                     \
        ? ({                                                                   \
-           u32 _v;                                                            \
+           u32 _v = 0;                                                        \
            rex::runtime::MMIOHandler::global_handler()->CheckLoad(addr, &_v); \
            _v;                                                                \
          })                                                                   \
@@ -231,7 +231,7 @@ extern PPCFuncMapping PPCFuncMappings[];
 #define REX_MM_LOAD_U64(addr)                                                        \
   (REX_IS_MMIO_ADDR(addr)                                                            \
        ? ({                                                                          \
-           u32 _hi, _lo;                                                             \
+           u32 _hi = 0, _lo = 0;                                                     \
            rex::runtime::MMIOHandler::global_handler()->CheckLoad(addr, &_hi);       \
            rex::runtime::MMIOHandler::global_handler()->CheckLoad((addr) + 4, &_lo); \
            (static_cast<u64>(_hi) << 32) | _lo;                                      \

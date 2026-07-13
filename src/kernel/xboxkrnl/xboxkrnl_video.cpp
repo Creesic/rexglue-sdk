@@ -31,6 +31,8 @@
 #include <rex/runtime.h>
 #include <rex/system/export_resolver.h>
 #include <rex/system/kernel_state.h>
+#include <rex/system/mmio_handler.h>
+#include <rex/system/xmemory.h>
 #include <rex/system/xthread.h>
 #include <rex/system/xtypes.h>
 #include <rex/ui/flags.h>
@@ -93,6 +95,56 @@ void WarnNoGpuEmulation(const char* export_name, std::atomic<bool>& warned) {
 // vblank interrupts itself via DispatchGraphicsInterruptCallback below.
 std::atomic<uint32_t> g_detached_interrupt_callback{0};
 std::atomic<uint32_t> g_detached_interrupt_callback_data{0};
+
+// Without a GraphicsSystem, GPU MMIO (0x7FC80000) is never registered.
+// Guest D3D::GraphicsInterruptCallback (source==0) reads interrupt status at
+// 0x7FC86544 (reg 0x1951) and skips VerticalBlankInterrupt unless bit0 is set.
+// REX_MM_LOAD_U32 leaves the load result uninitialized when CheckLoad misses,
+// so that gate was intermittent garbage — Swap-1 hangs when it reads as 0.
+// Mirror GraphicsSystem::ReadRegister for the few registers titles need.
+uint32_t DetachedGpuReadRegister(void* /*ppc_context*/, void* /*context*/, uint32_t addr) {
+  const uint32_t r = (addr & 0xFFFF) / 4;
+  switch (r) {
+    case 0x194C: {  // R500_D1MODE_V_COUNTER
+      rex::system::X_VIDEO_MODE video_mode;
+      rex::kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+      return std::min(uint32_t(video_mode.display_height), uint32_t(0x0FFF));
+    }
+    case 0x1951:  // interrupt status — vblank pending
+      return 1;
+    case 0x1961: {  // AVIVO_D1MODE_VIEWPORT_SIZE
+      rex::system::X_VIDEO_MODE video_mode;
+      rex::kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+      const uint32_t viewport_width =
+          std::min(uint32_t(video_mode.display_width), uint32_t(0x0FFF));
+      const uint32_t viewport_height =
+          std::min(uint32_t(video_mode.display_height), uint32_t(0x0FFF));
+      return (viewport_width << 16) | viewport_height;
+    }
+    default:
+      return 0;
+  }
+}
+
+void DetachedGpuWriteRegister(void* /*ppc_context*/, void* /*context*/, uint32_t /*addr*/,
+                              uint32_t /*value*/) {
+  // VerticalBlankInterrupt may poke display regs (e.g. 0x7FC86110); ignore.
+}
+
+void EnsureDetachedGpuMmio() {
+  static std::atomic<bool> registered{false};
+  if (registered.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+  auto* memory = REX_KERNEL_MEMORY();
+  if (!memory) {
+    registered.store(false, std::memory_order_release);
+    return;
+  }
+  // Same window GraphicsSystem maps: 0x7FC80000-0x7FC8FFFF.
+  memory->AddVirtualMappedRange(0x7FC80000, 0xFFFF0000, 0x0000FFFF, nullptr,
+                                DetachedGpuReadRegister, DetachedGpuWriteRegister);
+}
 }  // namespace
 
 namespace rex::kernel::xboxkrnl {
@@ -331,6 +383,7 @@ void VdSetGraphicsInterruptCallback_entry(u32 callback, mapped_void user_data) {
 
   auto* graphics_system = REX_KERNEL_STATE()->emulator()->graphics_system();
   if (!graphics_system) {
+    EnsureDetachedGpuMmio();
     static std::atomic<bool> warned{false};
     WarnNoGpuEmulation("VdSetGraphicsInterruptCallback", warned);
     return;
@@ -342,6 +395,11 @@ bool DispatchGraphicsInterruptCallback(uint32_t cpu) {
   uint32_t callback = g_detached_interrupt_callback.load(std::memory_order_relaxed);
   if (!callback) {
     return false;
+  }
+  // Detached vsync workers may start before the guest registers the callback;
+  // ensure MMIO is live before the interrupt handler reads 0x7FC86544.
+  if (!REX_KERNEL_STATE()->emulator()->graphics_system()) {
+    EnsureDetachedGpuMmio();
   }
 
   auto thread = system::XThread::GetCurrentThread();

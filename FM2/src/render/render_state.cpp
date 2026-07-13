@@ -358,6 +358,11 @@ void DestructTempResources(uint32_t frame) {
         if (g_depthStencil == surface) g_depthStencil = nullptr;
         if (g_implicitDepthStencil == surface) g_implicitDepthStencil = nullptr;
         ClearResolveSurfaceAperture(surface);
+        // Drop deferred StretchRect links before freeing — otherwise
+        // FlushPendingStretchRectCommands can UAF this surface (null
+        // plume::toD3D12 crash after VBlank unblocks more frames).
+        g_pendingSurfaceCopies.erase(surface);
+        g_pendingMsaaResolves.erase(surface);
         for (GuestTexture* dest : surface->destinationTextures) {
           if (dest != nullptr) dest->sourceSurface = nullptr;
         }
@@ -510,7 +515,9 @@ GuestSurface* AsSurface(GuestBaseTexture* texture) {
 bool PopulateBarriersForStretchRect(GuestSurface* renderTarget, GuestSurface* depthStencil) {
   bool addedAny = false;
   for (GuestSurface* surface : {renderTarget, depthStencil}) {
-    if (surface == nullptr || surface->destinationTextures.empty()) continue;
+    if (surface == nullptr || !IsLiveHostTexture(surface) || surface->destinationTextures.empty()) {
+      continue;
+    }
     const bool multiSampling = surface->sampleCount != RenderSampleCount::COUNT_1;
     const RenderTextureLayout srcLayout =
         multiSampling ? RenderTextureLayout::RESOLVE_SOURCE : RenderTextureLayout::COPY_SOURCE;
@@ -518,6 +525,7 @@ bool PopulateBarriersForStretchRect(GuestSurface* renderTarget, GuestSurface* de
         multiSampling ? RenderTextureLayout::RESOLVE_DEST : RenderTextureLayout::COPY_DEST;
     AddBarrier(surface, srcLayout);
     for (GuestTexture* texture : surface->destinationTextures) {
+      if (!IsLiveHostTexture(texture)) continue;
       AddBarrier(texture, dstLayout);
     }
     addedAny = true;
@@ -530,11 +538,22 @@ void ExecutePendingStretchRectCommands(GuestSurface* renderTarget, GuestSurface*
   if (commandList == nullptr) return;
 
   for (GuestSurface* surface : {renderTarget, depthStencil}) {
-    if (surface == nullptr || surface->destinationTextures.empty()) continue;
+    if (surface == nullptr || !IsFm2Resource(surface) || surface->destinationTextures.empty()) {
+      continue;
+    }
+    // Same live-host gate as AddBarrier: texture* can be non-null garbage after
+    // holder reset / device-removed / UAF, and plume::toD3D12 would AV.
+    if (!IsLiveHostTexture(surface)) {
+      for (GuestTexture* texture : surface->destinationTextures) {
+        if (texture != nullptr) texture->sourceSurface = nullptr;
+      }
+      surface->destinationTextures.clear();
+      continue;
+    }
     const bool multiSampling = surface->sampleCount != RenderSampleCount::COUNT_1;
 
     for (GuestTexture* texture : surface->destinationTextures) {
-      if (texture == nullptr || texture->texture == nullptr || surface->texture == nullptr) {
+      if (texture == nullptr || !IsLiveHostTexture(texture)) {
         if (texture != nullptr) texture->sourceSurface = nullptr;
         continue;
       }
@@ -2138,15 +2157,15 @@ void ProcClear(uint32_t flags, const float rgba[4], float z) {
 void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_t destY,
                           bool hasSrc, const RenderRect& srcRect) {
   if (IsDeviceLost()) return;
-  if (destTexture == nullptr || destTexture->texture == nullptr) return;
+  if (!IsLiveHostTexture(destTexture)) return;
   // Swap/Resolve often run after the guest unbound the color RT. Unleashed keeps
   // using the live surface via pending StretchRect links; we fall back to the
   // last full-frame presentable RT so aperture resolves are not no-ops.
   GuestBaseTexture* source = g_renderTarget;
-  if (source == nullptr || source->texture == nullptr) {
+  if (!IsLiveHostTexture(source)) {
     source = g_lastPresentableRenderTarget;
   }
-  if (source == nullptr || source->texture == nullptr || source == destTexture) {
+  if (!IsLiveHostTexture(source) || source == destTexture) {
     static uint64_t resolveNoSrc = 0;
     if (++resolveNoSrc <= 24) {
       REXGPU_WARN("ResolveToTexture: no source RT (dest={}x{} n={})", destTexture->width,
