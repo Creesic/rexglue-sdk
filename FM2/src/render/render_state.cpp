@@ -2119,6 +2119,13 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
         vp.height = float(g_renderTarget->height);
       }
     }
+    // Xbox reverse-Z viewports arrive as minZ>maxZ. D3D12 requires
+    // MinDepth<=MaxDepth; an inverted range depth-clips every sample
+    // (RenderDoc: SamplesPassed=0, RT 100% black). Keep the reverse-Z
+    // SPEC_CONSTANT from ProcSetViewport; only normalize the host viewport.
+    if (vp.minDepth > vp.maxDepth) {
+      std::swap(vp.minDepth, vp.maxDepth);
+    }
     CommandList()->setViewports(vp);
     g_dirtyStates.viewport = false;
   }
