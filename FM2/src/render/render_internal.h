@@ -47,6 +47,9 @@ GuestBaseTexture* LookupResolveSurfaceAperture(uint32_t guestAddr);
 void ClearResolveSurfaceAperture(GuestBaseTexture* host);
 void SetFrontbufferPresentSource(GuestBaseTexture* tex);
 GuestBaseTexture* ConsumeFrontbufferPresentSource();
+// When StretchRect skipped a format-mismatched resolve, Present prefers this
+// live scene RT over the empty aperture Swap registered.
+GuestBaseTexture* ConsumeStretchRectPresentOverride();
 
 plume::RenderDescriptorSet* TextureDescriptorSet();
 

@@ -172,6 +172,8 @@ GuestBaseTexture* g_implicitRenderTarget = nullptr;
 // Last live color RT bound for drawing. Present snapshots this when the guest
 // has already unbound g_renderTarget (common at Swap time).
 GuestBaseTexture* g_lastPresentableRenderTarget = nullptr;
+// StretchRect format-skip present override (survives Swap re-setting aperture).
+std::atomic<GuestBaseTexture*> g_stretchRectPresentOverride{nullptr};
 GuestSurface* g_depthStencil = nullptr;
 GuestSurface* g_implicitDepthStencil = nullptr;
 RenderFramebuffer* g_framebuffer = nullptr;
@@ -512,6 +514,25 @@ GuestSurface* AsSurface(GuestBaseTexture* texture) {
   return nullptr;
 }
 
+// D3D12 CopyTextureRegion / ResolveSubresource require matching formats.
+// FM2 Resolve→aperture often pairs R16G16B16A16 scene RTs with B8G8R8A8
+// frontbuffers; copying those removes the device (DXGI_ERROR_INVALID_CALL).
+bool FormatsCompatibleForGpuCopy(RenderFormat src, RenderFormat dst) {
+  return src != RenderFormat::UNKNOWN && src == dst;
+}
+
+// When StretchRect cannot land on the aperture dest, present the live scene
+// surface instead of an empty / stale frontbuffer. Swap may overwrite
+// g_frontbufferPresentSource afterward; the override survives until Present.
+void PreferStretchRectSourceForPresent(GuestBaseTexture* dest, GuestBaseTexture* source) {
+  if (!IsLiveHostTexture(source)) return;
+  g_stretchRectPresentOverride.store(source, std::memory_order_relaxed);
+  GuestBaseTexture* cur = ConsumeFrontbufferPresentSource();
+  if (cur == dest || cur == nullptr) {
+    SetFrontbufferPresentSource(source);
+  }
+}
+
 bool PopulateBarriersForStretchRect(GuestSurface* renderTarget, GuestSurface* depthStencil) {
   bool addedAny = false;
   for (GuestSurface* surface : {renderTarget, depthStencil}) {
@@ -523,11 +544,15 @@ bool PopulateBarriersForStretchRect(GuestSurface* renderTarget, GuestSurface* de
         multiSampling ? RenderTextureLayout::RESOLVE_SOURCE : RenderTextureLayout::COPY_SOURCE;
     const RenderTextureLayout dstLayout =
         multiSampling ? RenderTextureLayout::RESOLVE_DEST : RenderTextureLayout::COPY_DEST;
-    AddBarrier(surface, srcLayout);
+    bool anyCompatible = false;
     for (GuestTexture* texture : surface->destinationTextures) {
       if (!IsLiveHostTexture(texture)) continue;
+      if (!FormatsCompatibleForGpuCopy(surface->format, texture->format)) continue;
       AddBarrier(texture, dstLayout);
+      anyCompatible = true;
     }
+    if (!anyCompatible) continue;
+    AddBarrier(surface, srcLayout);
     addedAny = true;
   }
   return addedAny;
@@ -557,6 +582,18 @@ void ExecutePendingStretchRectCommands(GuestSurface* renderTarget, GuestSurface*
         if (texture != nullptr) texture->sourceSurface = nullptr;
         continue;
       }
+      if (!FormatsCompatibleForGpuCopy(surface->format, texture->format)) {
+        static uint64_t stretchFmtSkip = 0;
+        if (++stretchFmtSkip <= 24 || stretchFmtSkip % 300 == 1) {
+          REXGPU_WARN(
+              "StretchRect: skip incompatible copy {}x{} fmt={} -> {}x{} fmt={} (n={})",
+              surface->width, surface->height, int(surface->format), texture->width,
+              texture->height, int(texture->format), stretchFmtSkip);
+        }
+        PreferStretchRectSourceForPresent(texture, surface);
+        texture->sourceSurface = nullptr;
+        continue;
+      }
       if (multiSampling) {
         commandList->resolveTexture(texture->texture, surface->texture);
       } else {
@@ -565,6 +602,8 @@ void ExecutePendingStretchRectCommands(GuestSurface* renderTarget, GuestSurface*
                                        RenderTextureCopyLocation::Subresource(surface->texture, 0));
       }
       MarkAttachmentInitialized(texture);
+      // Compatible resolve landed — aperture is valid again.
+      g_stretchRectPresentOverride.store(nullptr, std::memory_order_relaxed);
       texture->sourceSurface = nullptr;
 
       // Any sampler slot that still points at this texture must rebind the
@@ -782,6 +821,17 @@ GuestBaseTexture* ConsumeFrontbufferPresentSource() {
   return g_frontbufferPresentSource.load(std::memory_order_relaxed);
 }
 
+GuestBaseTexture* ConsumeStretchRectPresentOverride() {
+  // Sticky until a format-compatible StretchRect succeeds (cleared there).
+  // Do not exchange here — Swap can land many frames between HDR resolves.
+  GuestBaseTexture* tex = g_stretchRectPresentOverride.load(std::memory_order_relaxed);
+  if (tex != nullptr && !IsLiveHostTexture(tex)) {
+    g_stretchRectPresentOverride.store(nullptr, std::memory_order_relaxed);
+    return nullptr;
+  }
+  return tex;
+}
+
 RenderBufferReference UploadFrameData(const void* src, uint64_t size, bool byteSwap) {
   return CurrentUploadAllocator().Upload(src, size, byteSwap);
 }
@@ -805,22 +855,26 @@ void FlushPendingStretchRectCommands() {
     foundAny |= PopulateBarriersForStretchRect(isDepth ? nullptr : surface, isDepth ? surface : nullptr);
   }
 
-  if (foundAny) {
+  const bool havePending =
+      !g_pendingSurfaceCopies.empty() || !g_pendingMsaaResolves.empty();
+  if (havePending) {
     // Unleashed StretchRect samples/copies the color surface after it leaves
     // COLOR_WRITE. Leaving the RT bound as the active framebuffer blocks the
     // 1x copyTextureRegion path (and would block a shader blit too).
-    if (g_framebuffer != nullptr) {
+    if (foundAny && g_framebuffer != nullptr) {
       CommandList()->setFramebuffer(nullptr);
       g_framebuffer = nullptr;
       g_dirtyStates.renderTargetAndDepthStencil = true;
     }
-    FlushBarriers();
+    if (foundAny) FlushBarriers();
     static uint64_t stretchFlush = 0;
     ++stretchFlush;
     if (stretchFlush <= 12 || stretchFlush % 300 == 1) {
       REXGPU_INFO("FlushPendingStretchRect: draining {} surface(s) (n={})",
                   g_pendingSurfaceCopies.size(), stretchFlush);
     }
+    // Always Execute: format-incompatible dests still need present-source
+    // rewrite even when no COPY barriers were populated.
     for (GuestSurface* surface : g_pendingSurfaceCopies) {
       if (surface != nullptr && surface->type != ResourceType::DepthStencil) {
         ExecutePendingStretchRectCommands(surface, nullptr);
@@ -2190,6 +2244,21 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
     return;
   }
 
+  // Immediate region copy/resolve: refuse format-mismatched GPU copies (device
+  // removal). Prefer presenting the live source RT when the dest is the
+  // aperture frontbuffer.
+  if (!FormatsCompatibleForGpuCopy(source->format, destTexture->format)) {
+    static uint64_t resolveFmtSkip = 0;
+    if (++resolveFmtSkip <= 24 || resolveFmtSkip % 300 == 1) {
+      REXGPU_WARN(
+          "ResolveToTexture: skip incompatible copy {}x{} fmt={} -> {}x{} fmt={} (n={})",
+          source->width, source->height, int(source->format), destTexture->width,
+          destTexture->height, int(destTexture->format), resolveFmtSkip);
+    }
+    PreferStretchRectSourceForPresent(destTexture, source);
+    return;
+  }
+
   // Region / surface-dest path: must not copy while source is still bound.
   if (g_framebuffer != nullptr) {
     CommandList()->setFramebuffer(nullptr);
@@ -2229,6 +2298,7 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
                                      destX, destY, 0, srcBoxPtr);
   }
   MarkAttachmentInitialized(destTexture);
+  g_stretchRectPresentOverride.store(nullptr, std::memory_order_relaxed);
 }
 
 void ProcDrawPrimitive(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,

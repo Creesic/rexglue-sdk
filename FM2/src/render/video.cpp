@@ -163,12 +163,18 @@ void ExecuteCommandListImpl() {
 
   // Prefer resolve-assembled frontbuffer (Swap aperture lookup) over sticky
   // color RTs — tile bands land on the resolve dest, not the last SetRT.
+  // Format-mismatched StretchRect leaves the aperture empty: prefer the
+  // override (live scene RT) recorded when the copy was skipped.
   {
     static bool loggedFirstTarget = false;
     static uint64_t presentSourceChecks = 0;
     ++presentSourceChecks;
-    fm2::render::GuestBaseTexture* rt = fm2::render::ConsumeFrontbufferPresentSource();
-    const char* kind = "aperture";
+    fm2::render::GuestBaseTexture* rt = fm2::render::ConsumeStretchRectPresentOverride();
+    const char* kind = "stretch-src";
+    if (rt == nullptr || rt->texture == nullptr) {
+      rt = fm2::render::ConsumeFrontbufferPresentSource();
+      kind = "aperture";
+    }
     if (rt == nullptr || rt->texture == nullptr) {
       rt = fm2::render::GetCurrentColorRenderTarget();
       kind = "sticky-rt";
@@ -386,8 +392,18 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
 
   RenderSwapChainDesc swapChainDesc(g_window, kBackbufferFormat, 2);
   g_swapChain = g_queue->createSwapChain(swapChainDesc);
-  g_swapChainValid = !g_swapChain->needsResize();
+  // createSwapChain sizes from the HWND client rect; Video::Init's width/height
+  // args are only the guest viewport hint. If they diverge, resize once now
+  // (no framebuffers hold buffer refs yet) so EnsureFrameStarted does not
+  // thrash ResizeBuffers every CommandList() open.
+  if (g_swapChain->needsResize()) {
+    g_swapChainValid = g_swapChain->resize();
+  } else {
+    g_swapChainValid = true;
+  }
   if (g_swapChainValid) {
+    Video::s_viewportWidth = g_swapChain->getWidth();
+    Video::s_viewportHeight = g_swapChain->getHeight();
     RebuildFramebuffers();
   }
 
@@ -527,12 +543,18 @@ void EnsureFrameStarted() {
     // Drain the GPU (and any pending presentation) before resizing. Must not
     // wait on a slot's fence directly: Present() already consumed its signal.
     Video::WaitForGPU();
+    // Drop framebuffer views that alias swapchain buffers *before* resize()
+    // Releases those ID3D12Resources — otherwise the next submit/present hits
+    // DXGI_ERROR_INVALID_CALL / DEVICE_REMOVED and the frame stays black.
+    g_framebuffers.clear();
     g_swapChainValid = g_swapChain->resize();
     if (!g_swapChainValid) {
       ++s_resizeFailStreak;
       return;
     }
     s_resizeFailStreak = 0;
+    Video::s_viewportWidth = g_swapChain->getWidth();
+    Video::s_viewportHeight = g_swapChain->getHeight();
     RebuildFramebuffers();
   }
   if (!g_swapChainValid) return;
