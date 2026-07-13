@@ -31,8 +31,11 @@
 - [2026-07-12] Never `resolveTextureRegion` for 1-sample→1-sample StretchRect — D3D12 requires MSAA source; use `copyTextureRegion` (or Unleashed shader blit).
 - [2026-07-12] `ProcWaitForGpu` must not `begin()` the currently open recording list (NDEBUG strips the assert) — close/submit first or use a closed slot.
 - [2026-07-12] Do not Clear RT/DS with a scissor rect before Discard on CREATE_NOT_ZEROED heaps — debug layer DEVICE_REMOVED INVALID_CALL.
+- [2026-07-12] Do not mid-CL `ResizeTileSurface` for FM2 1280x256 tiles — DEVICE_REMOVED INVALID_CALL. Grow at `ProcCreateSurfaceHost` instead; expand VP/scissor on flush.
+- [2026-07-12] Do not release `RecordingMutex` across DXGI present/fence wait, and do not exempt `CopyTextureFromUpload` from that mutex / call it on the guest thread — both made Swap-1 hangs/crashes worse. Keep CreateTranslatedTextureHost mutex-exempt only.
 
 ## Decision Log
 
 <!-- Significant technical decisions with rationale. Why X was chosen over Y. -->
 - 2026-07-11/12: Native renderer transfer = architectural rebuild of plume integration into cleaned `FM2/src/render/`; diagnostic `native_renderer/` overlay left behind on purpose.
+- 2026-07-12: FM2 EDRAM 1280x256 tiles → host 1280x720 at create (not mid-CL), matching 080plume Fix #18 create-side without recreate.

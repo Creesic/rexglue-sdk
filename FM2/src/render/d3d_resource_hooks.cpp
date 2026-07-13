@@ -441,10 +441,29 @@ void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t heigh
                            uint32_t sampleCount, bool depth) {
   if (surface == nullptr || IsDeviceLost()) return;
 
+  // FM2 EDRAM tile surfaces are created as 1280x256. Hardware would replay the
+  // recorded pass per band; we never see those replays, so allocate the host
+  // texture at full 720p up front (no mid-CL recreate / DEVICE_REMOVED).
+  constexpr uint32_t kFm2FrameWidth = 1280u;
+  constexpr uint32_t kFm2FrameHeight = 720u;
+  constexpr uint32_t kFm2TileHeight = 256u;
+  uint32_t hostWidth = width;
+  uint32_t hostHeight = height;
+  if (width == kFm2FrameWidth && height == kFm2TileHeight) {
+    surface->tileGrownFromHeight = height;
+    hostHeight = kFm2FrameHeight;
+    static uint64_t growAtCreate = 0;
+    ++growAtCreate;
+    if (growAtCreate <= 12 || growAtCreate % 300 == 1) {
+      REXGPU_INFO("CreateSurface: tile {}x{} -> host {}x{} depth={} (n={})", width, height,
+                  hostWidth, hostHeight, depth, growAtCreate);
+    }
+  }
+
   RenderTextureDesc desc;
   desc.dimension = RenderTextureDimension::TEXTURE_2D;
-  desc.width = width;
-  desc.height = height;
+  desc.width = hostWidth;
+  desc.height = hostHeight;
   desc.depth = 1;
   desc.mipLevels = 1;
   desc.arraySize = 1;
@@ -456,10 +475,10 @@ void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t heigh
   surface->texture = surface->textureHolder.get();
   if (surface->texture == nullptr) {
     NoteDeviceLost("CreateSurface");
-    REXGPU_ERROR("CreateSurface: Plume createTexture failed ({}x{} fmt=0x{:08X} msaa={})", width,
-                 height, format, int(sampleCount));
-    surface->width = width;
-    surface->height = height;
+    REXGPU_ERROR("CreateSurface: Plume createTexture failed ({}x{} fmt=0x{:08X} msaa={})", hostWidth,
+                 hostHeight, format, int(sampleCount));
+    surface->width = hostWidth;
+    surface->height = hostHeight;
     surface->format = desc.format;
     surface->guestFormat = format;
     surface->sampleCount = sampleCount;
@@ -470,8 +489,20 @@ void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t heigh
   viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
   viewDesc.mipLevels = 1;
   surface->textureView = surface->texture->createTextureView(viewDesc);
-  surface->width = width;
-  surface->height = height;
+  if (surface->textureView == nullptr) {
+    NoteDeviceLost("CreateSurface view");
+    REXGPU_ERROR("CreateSurface: createTextureView failed ({}x{})", hostWidth, hostHeight);
+    surface->textureHolder.reset();
+    surface->texture = nullptr;
+    surface->width = hostWidth;
+    surface->height = hostHeight;
+    surface->format = desc.format;
+    surface->guestFormat = format;
+    surface->sampleCount = sampleCount;
+    return;
+  }
+  surface->width = hostWidth;
+  surface->height = hostHeight;
   surface->format = desc.format;
   surface->guestFormat = format;
   surface->sampleCount = sampleCount;

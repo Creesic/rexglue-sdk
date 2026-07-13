@@ -674,9 +674,8 @@ bool ScissorTestEnabled(GuestDevice* device) {
 }
 
 // Simplified framebuffer cache: just caches one RenderFramebuffer per unique
-// (color, depth) attachment pair. EDRAM tile grow (1280x256→720) is deferred —
-// mid-CL recreate was DEVICE_REMOVED / crash-prone; needs a safer port from
-// ReXGlue080plume (retire-after-fence, discard-after-grow ordering).
+// (color, depth) attachment pair. Tile 1280x256 surfaces are allocated at
+// full 720p host size in ProcCreateSurfaceHost (safe create-time grow).
 void SetFramebuffer(GuestBaseTexture* colorTarget, GuestSurface* depthTarget, bool /*forClear*/) {
   const GuestBaseTexture* dimensionSource = colorTarget != nullptr ? colorTarget : depthTarget;
   if (dimensionSource != nullptr && dimensionSource->width != 0 && dimensionSource->height != 0) {
@@ -1955,7 +1954,19 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
     g_dirtyStates.renderTargetAndDepthStencil = false;
   }
   if (g_dirtyStates.viewport) {
-    CommandList()->setViewports(g_viewport);
+    // Tile surfaces are host-allocated at full frame height; guest still sets
+    // a 1280x256 viewport — expand so the single recorded pass fills 720p.
+    RenderViewport vp = g_viewport;
+    if (g_renderTarget != nullptr && g_renderTarget->type == ResourceType::RenderTarget) {
+      auto* surface = static_cast<GuestSurface*>(g_renderTarget);
+      if (surface->tileGrownFromHeight != 0 && vp.x == 0.0f && vp.y == 0.0f &&
+          uint32_t(vp.width) == g_renderTarget->width &&
+          uint32_t(vp.height) == surface->tileGrownFromHeight &&
+          g_renderTarget->height > surface->tileGrownFromHeight) {
+        vp.height = float(g_renderTarget->height);
+      }
+    }
+    CommandList()->setViewports(vp);
     g_dirtyStates.viewport = false;
   }
   if (g_dirtyStates.scissorRect) {
@@ -1963,6 +1974,15 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
                              ? g_scissorRect
                              : RenderRect(0, 0, int32_t(g_viewport.x + g_viewport.width),
                                          int32_t(g_viewport.y + g_viewport.height));
+    if (!g_scissorTestEnable && g_renderTarget != nullptr &&
+        g_renderTarget->type == ResourceType::RenderTarget) {
+      auto* surface = static_cast<GuestSurface*>(g_renderTarget);
+      if (surface->tileGrownFromHeight != 0 &&
+          scissor.bottom == int32_t(surface->tileGrownFromHeight) &&
+          g_renderTarget->height > surface->tileGrownFromHeight) {
+        scissor.bottom = int32_t(g_renderTarget->height);
+      }
+    }
     CommandList()->setScissors(scissor);
     g_dirtyStates.scissorRect = false;
   }
@@ -2413,12 +2433,7 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
           cmd.copyTextureFromUpload.mip, cmd.copyTextureFromUpload.srcOffset);
       break;
     case RenderCommandType::CreateTranslatedTextureHost:
-      ProcCreateTranslatedTextureHost(
-          cmd.createTranslatedTextureHost.texture, cmd.createTranslatedTextureHost.width,
-          cmd.createTranslatedTextureHost.height, cmd.createTranslatedTextureHost.format,
-          cmd.createTranslatedTextureHost.baseAddress,
-          cmd.createTranslatedTextureHost.createdOut);
-      break;
+      break;  // handled above
   }
 }
 

@@ -134,7 +134,9 @@ void Swap(uint32_t /*commandBuffer*/, uint32_t arg4, uint32_t /*arg5*/) {
 
   fm2::render::PrepareFramePresent();
   Video::Present();
-  fm2::render::BeginRenderStateFrame();
+  // Frame bookkeeping is covered by Present's BeginCommandList /
+  // OnRecordingFrameReady. An extra sync BeginRenderStateFrame Run here
+  // contended with TranslateGuestTexture and worsened post-Swap freezes.
 }
 
 }  // namespace
