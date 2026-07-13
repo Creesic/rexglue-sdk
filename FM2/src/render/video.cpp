@@ -743,6 +743,9 @@ void ProcBeginCommandList() {
   // Safe to reuse this slot's upload scratch now that its prior GPU work
   // has retired (Unleashed BeginCommandList / allocator reset).
   OnRecordingFrameReady(g_frame);
+  // Restore per-frame dirty/descriptor/frame-index bookkeeping that Swap used
+  // to drive via BeginRenderStateFrame (removed to avoid nested-Run freezes).
+  fm2::render::NotifyRenderFrameBegin();
 }
 
 void ProcWaitForGpu() {

@@ -24,6 +24,8 @@ void BeginRenderStateFrame();
 // Monotonic frame counter (incremented each BeginRenderStateFrame); used to
 // dedupe per-frame guest-memory uploads.
 uint64_t CurrentFrameIndex();
+// Render-thread: start-of-slot frame bookkeeping (call from ProcBeginCommandList).
+void NotifyRenderFrameBegin();
 
 void SetRenderState(GuestDevice* device, uint32_t state, uint32_t value);
 void SetViewportEnable(GuestDevice* device, uint32_t value);

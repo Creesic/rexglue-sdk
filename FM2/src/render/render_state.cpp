@@ -533,6 +533,58 @@ void PreferStretchRectSourceForPresent(GuestBaseTexture* dest, GuestBaseTexture*
   }
 }
 
+// Unleashed 1x StretchRect uses a fullscreen blit (format conversion). Dest
+// must be a color RT; src is sampled as a shader resource.
+bool StretchRectShaderBlit(GuestSurface* surface, GuestTexture* texture) {
+  if (!IsLiveHostTexture(surface) || !IsLiveHostTexture(texture)) return false;
+  if (RenderFormatIsDepth(texture->format) || RenderFormatIsDepth(surface->format)) return false;
+
+  RenderPipeline* pipeline = GetBlitPipeline(texture->format);
+  if (pipeline == nullptr || PipelineLayout() == nullptr) return false;
+
+  EnsureShaderResourceDescriptor(surface);
+  if (texture->framebuffer == nullptr) {
+    const RenderTexture* color = texture->texture;
+    RenderFramebufferDesc desc(&color, 1);
+    texture->framebuffer = Device()->createFramebuffer(desc);
+  }
+  if (texture->framebuffer == nullptr) return false;
+
+  RenderCommandList* commandList = CommandList();
+  if (commandList == nullptr) return false;
+
+  AddBarrier(surface, RenderTextureLayout::SHADER_READ);
+  AddBarrier(texture, RenderTextureLayout::COLOR_WRITE);
+  FlushBarriers();
+
+  if (g_framebuffer != texture->framebuffer.get()) {
+    commandList->setFramebuffer(texture->framebuffer.get());
+    g_framebuffer = texture->framebuffer.get();
+  }
+
+  TextureDescriptorSet()->setTexture(surface->descriptorIndex, surface->texture,
+                                     RenderTextureLayout::SHADER_READ, surface->textureView.get());
+
+  const uint32_t descriptorIndex = surface->descriptorIndex;
+  commandList->setGraphicsPipelineLayout(PipelineLayout());
+  commandList->setPipeline(pipeline);
+  commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 0);
+  commandList->setGraphicsDescriptorSet(SamplerDescriptorSet(), 3);
+  commandList->setGraphicsPushConstants(0, &descriptorIndex, 0, sizeof(descriptorIndex));
+  commandList->setViewports(
+      RenderViewport(0.0f, 0.0f, float(texture->width), float(texture->height), 0.0f, 1.0f));
+  commandList->setScissors(RenderRect(0, 0, texture->width, texture->height));
+  commandList->drawInstanced(3, 1, 0, 0);
+
+  MarkAttachmentInitialized(texture);
+  g_stretchRectPresentOverride.store(nullptr, std::memory_order_relaxed);
+  g_dirtyStates.renderTargetAndDepthStencil = true;
+  g_dirtyStates.viewport = true;
+  g_dirtyStates.pipelineState = true;
+  g_dirtyStates.scissorRect = true;
+  return true;
+}
+
 bool PopulateBarriersForStretchRect(GuestSurface* renderTarget, GuestSurface* depthStencil) {
   bool addedAny = false;
   for (GuestSurface* surface : {renderTarget, depthStencil}) {
@@ -586,11 +638,19 @@ void ExecutePendingStretchRectCommands(GuestSurface* renderTarget, GuestSurface*
         static uint64_t stretchFmtSkip = 0;
         if (++stretchFmtSkip <= 24 || stretchFmtSkip % 300 == 1) {
           REXGPU_WARN(
-              "StretchRect: skip incompatible copy {}x{} fmt={} -> {}x{} fmt={} (n={})",
+              "StretchRect: format mismatch {}x{} fmt={} -> {}x{} fmt={} (n={})",
               surface->width, surface->height, int(surface->format), texture->width,
               texture->height, int(texture->format), stretchFmtSkip);
         }
-        PreferStretchRectSourceForPresent(texture, surface);
+        if (!StretchRectShaderBlit(surface, texture)) {
+          PreferStretchRectSourceForPresent(texture, surface);
+        } else {
+          for (uint32_t i = 0; i < std::size(g_textures); ++i) {
+            if (g_textures[i] == texture) {
+              BindTextureDescriptor(i, texture, texture->viewDimension);
+            }
+          }
+        }
         texture->sourceSurface = nullptr;
         continue;
       }
@@ -937,6 +997,12 @@ void ProcBeginRenderStateFrame() {
 }
 
 }  // namespace
+
+// Render-thread entry: Video::ProcBeginCommandList calls this after the prior
+// slot's fence retires. Swap used to Run BeginRenderStateFrame; that nested
+// sync was removed to avoid freezes, which left g_frameIndex stuck at 0 and
+// starved once-per-frame guest texture uploads (lastUploadFrame == 0 forever).
+void NotifyRenderFrameBegin() { ProcBeginRenderStateFrame(); }
 
 uint64_t CurrentFrameIndex() { return g_frameIndex; }
 
@@ -2251,11 +2317,14 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
     static uint64_t resolveFmtSkip = 0;
     if (++resolveFmtSkip <= 24 || resolveFmtSkip % 300 == 1) {
       REXGPU_WARN(
-          "ResolveToTexture: skip incompatible copy {}x{} fmt={} -> {}x{} fmt={} (n={})",
+          "ResolveToTexture: format mismatch {}x{} fmt={} -> {}x{} fmt={} (n={})",
           source->width, source->height, int(source->format), destTexture->width,
           destTexture->height, int(destTexture->format), resolveFmtSkip);
     }
-    PreferStretchRectSourceForPresent(destTexture, source);
+    if (surface == nullptr || destAsTexture == nullptr ||
+        !StretchRectShaderBlit(surface, destAsTexture)) {
+      PreferStretchRectSourceForPresent(destTexture, source);
+    }
     return;
   }
 

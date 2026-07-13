@@ -362,7 +362,12 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   desc.mipLevels = 1;
   desc.arraySize = 1;
   desc.format = fmt;
-  desc.flags = RenderTextureFlag::NONE;
+  // Only request RT for formats that can actually be render targets. BC/etc.
+  // translated textures must stay COPY_DEST+SRV — marking them RT removes the
+  // device. Aperture/frontbuffer (BGRA8) needs RT for format-mismatch shader blit.
+  const bool colorRt = !RenderFormatIsDepth(fmt) && fmt != RenderFormat::UNKNOWN &&
+                       fmt < RenderFormat::BC1_TYPELESS;
+  desc.flags = colorRt ? RenderTextureFlag::RENDER_TARGET : RenderTextureFlag::NONE;
   texture->textureHolder = Device()->createTexture(desc);
   texture->texture = texture->textureHolder.get();
   if (texture->texture == nullptr) {
