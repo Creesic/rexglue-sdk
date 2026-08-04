@@ -609,15 +609,18 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
         context.Enable();
       }
     }
-    // Signal the decoder thread to start processing.
-    work_event_->Set();
-    // Block until the worker finishes, so the game sees updated context data.
+    // Decode inline. waiting on the worker sweep stalls the realtime
+    // audio thread 50-100ms during kick bursts.
     for (int i = 0; kicked_value && i < 32; ++i, kicked_value >>= 1) {
       if (kicked_value & 1) {
         uint32_t context_id = base_context_id + i;
-        contexts_[context_id].WaitForWorkDone();
+        auto& context = contexts_[context_id];
+        if (context.Work()) {
+          context.SignalWorkDone();
+        }
       }
     }
+    work_event_->Set();
   } else if (r >= XmaRegister::Context0Lock && r <= XmaRegister::Context9Lock) {
     // Context lock command.
     // This requests a lock by flagging the context.
@@ -744,7 +747,6 @@ XmaDecoder::DebugSnapshot XmaDecoder::GetDebugSnapshot() {
     out.sample_rate_id = static_cast<uint8_t>(data.sample_rate);
     out.loop_count = static_cast<uint8_t>(data.loop_count);
     out.output_buffer_padding = static_cast<uint8_t>(data.output_buffer_padding);
-    out.loop_subframe_start = static_cast<uint8_t>(data.loop_subframe_start);
     out.loop_subframe_end = static_cast<uint8_t>(data.loop_subframe_end);
     out.loop_subframe_skip = static_cast<uint8_t>(data.loop_subframe_skip);
     out.packet_metadata = static_cast<uint8_t>(data.packet_metadata);

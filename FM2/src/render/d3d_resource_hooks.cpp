@@ -18,7 +18,6 @@
 #include <rex/logging.h>
 
 #include "generated/shader_cache.h"
-#include "native_renderer/fm2_shader_analysis.h"
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
 #include "render/render_internal.h"
@@ -651,49 +650,6 @@ static GuestShader *CreateShaderFromFunction(const uint32_t *function,
         const uint32_t v = std::byteswap(function[idx]);
         headerEls.push_back(ShaderHeaderElement{
             uint8_t((v >> 12) & 0xFu), uint8_t((v >> 16) & 0xFu)});
-      }
-      // DIAG: disassemble the original Xenos microcode for 2D-HUD VS (no
-      // POSITION0) so we can diff its position math against the generated DXIL
-      // (which applies c[0]=1/640 with no screen-scale -> collapse). Capped.
-      bool hasPos = false;
-      for (const auto &he : headerEls)
-        if (he.usage == 0)
-          hasPos = true;
-      const bool is292 = (hash == 0x292FF29403B1DDF8ull);
-      if ((!hasPos || is292) && !headerEls.empty()) {
-        static std::atomic<uint32_t> s_dis{0};
-        static std::atomic<uint32_t> s_292{0};
-        const bool doIt =
-            is292 ? (s_292.fetch_add(1, std::memory_order_relaxed) < 1)
-                  : (s_dis.fetch_add(1, std::memory_order_relaxed) < 3);
-        if (doIt) {
-          const uint32_t physOff = std::byteswap(vs[0]);
-          const uint32_t ucodeBytes = std::byteswap(vs[1]);
-          const uint32_t virtualSize = std::byteswap(function[1]);
-          const uint32_t ucodeByteOff = virtualSize + physOff;
-          const uint32_t ucodeDwords = ucodeBytes / 4u;
-          if ((ucodeByteOff & 3u) == 0u && ucodeDwords > 0u &&
-              ucodeDwords < 0x10000u && ucodeByteOff + ucodeBytes <= size) {
-            std::vector<uint32_t> host(ucodeDwords);
-            const uint32_t *src = function + ucodeByteOff / 4u;
-            for (uint32_t i = 0; i < ucodeDwords; ++i)
-              host[i] = std::byteswap(src[i]);
-            rex::graphics::Shader sh(rex::graphics::xenos::ShaderType::kVertex,
-                                     hash, host.data(), ucodeDwords,
-                                     std::endian::native);
-            rex::string::StringBuffer dis;
-            sh.AnalyzeUcode(dis);
-            const std::string txt = dis.to_string();
-            if (FILE *f = std::fopen("C:\\temp\\fm2-clean.log", "a")) {
-              std::fprintf(f,
-                           "FM2_VSASM hash=0x%016llX dw=%u elems=%zu\n%s\n=====\n",
-                           (unsigned long long)hash, ucodeDwords, headerEls.size(),
-                           txt.c_str());
-              std::fflush(f);
-              std::fclose(f);
-            }
-          }
-        }
       }
     }
   }

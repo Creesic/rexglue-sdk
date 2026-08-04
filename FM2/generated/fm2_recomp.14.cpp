@@ -10900,7 +10900,6 @@ loc_8239E3DC:
 	simde_mm_store_si128((simde__m128i*)ctx.v0.u8, rex::ppc::simde_mm_perm_epi8_(simde_mm_load_si128((simde__m128i*)ctx.v0.u8), simde_mm_load_si128((simde__m128i*)ctx.v0.u8), simde_mm_load_si128((simde__m128i*)ctx.v7.u8)));
 	// vpkd3d128 v0,v0,5,2,2
 	ctx.fpscr.enableFlushModeUnconditional();
-	ctx.v0.u64[0] = 0;
 	temp.u32 = (ctx.v0.u32[3]&0x7FFFFFFF);
 	vTemp.u8[0] = (temp.f32 != temp.f32) || (temp.f32 > 65504.0f) ? 0xFF : ((ctx.v0.u32[3]&0x7f800000)>>23);
 	temp.u16 = vTemp.u8[0] != 0xFF ? ((ctx.v0.u32[3]&0x7FE000)>>13) : 0x0;
@@ -10991,7 +10990,6 @@ loc_8239E448:
 	simde_mm_store_si128((simde__m128i*)ctx.v0.u8, rex::ppc::simde_mm_perm_epi8_(simde_mm_load_si128((simde__m128i*)ctx.v0.u8), simde_mm_load_si128((simde__m128i*)ctx.v0.u8), simde_mm_load_si128((simde__m128i*)ctx.v7.u8)));
 	// vpkd3d128 v0,v0,5,2,2
 	ctx.fpscr.enableFlushModeUnconditional();
-	ctx.v0.u64[0] = 0;
 	temp.u32 = (ctx.v0.u32[3]&0x7FFFFFFF);
 	vTemp.u8[0] = (temp.f32 != temp.f32) || (temp.f32 > 65504.0f) ? 0xFF : ((ctx.v0.u32[3]&0x7f800000)>>23);
 	temp.u16 = vTemp.u8[0] != 0xFF ? ((ctx.v0.u32[3]&0x7FE000)>>13) : 0x0;

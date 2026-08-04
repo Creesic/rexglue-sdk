@@ -54,7 +54,7 @@ bool IsUnderGeneratedTree(const fs::path& project_root, const fs::path& target) 
   if (ec)
     return false;
   auto first = rel.begin();
-  return first != rel.end() && first->generic_string() == "generated";
+  return first != rel.end() && first->generic_string().starts_with("generated");
 }
 
 template <typename Accept, typename Visit>
@@ -94,7 +94,8 @@ bool ReplaceAllPathTokens(std::string& haystack, std::string_view needle,
   bool replaced = false;
   std::string::size_type pos = 0;
   while ((pos = haystack.find(needle, pos)) != std::string::npos) {
-    bool boundary_before = pos == 0 || !IsPathTokenChar(haystack[pos - 1]);
+    bool boundary_before = pos == 0 || !IsPathTokenChar(haystack[pos - 1]) ||
+                           haystack[pos - 1] == '/' || haystack[pos - 1] == '\\';
     bool boundary_after =
         pos + needle.size() >= haystack.size() || !IsPathTokenChar(haystack[pos + needle.size()]);
     if (!boundary_before || !boundary_after) {
@@ -332,6 +333,7 @@ std::vector<OverwriteEntry> ScanSdkTemplateDrift(const fs::path& project_root,
   fs::path rexglue_cmake = project_root / "generated" / "rexglue.cmake";
   std::string rendered = RenderRexglueCmake(project_name, sdk_version, entrypoint_out_dir);
   std::string on_disk = fs::exists(rexglue_cmake) ? read_file(rexglue_cmake) : std::string{};
+  on_disk.erase(std::remove(on_disk.begin(), on_disk.end(), '\r'), on_disk.end());
   if (rendered != on_disk) {
     plan.push_back({rexglue_cmake, std::move(rendered), OverwriteAction::Write, /*silent=*/true,
                     fmt::format("regenerate SDK helper for v{}", sdk_version)});
@@ -385,8 +387,11 @@ std::vector<OverwriteEntry> ScanSourceIncludeRewrites(const fs::path& project_ro
 
     std::vector<std::string> lines;
     std::string buf;
+    const bool uses_crlf = content.find("\r\n") != std::string::npos;
     for (char c : content) {
       if (c == '\n') {
+        if (!buf.empty() && buf.back() == '\r')
+          buf.pop_back();
         lines.push_back(std::move(buf));
         buf.clear();
       } else {
@@ -414,8 +419,11 @@ std::vector<OverwriteEntry> ScanSourceIncludeRewrites(const fs::path& project_ro
       auto target = extract_target(line);
       auto append_line = [&](std::string_view payload) {
         out.append(payload);
-        if (li + 1 < lines.size() || has_trailing_newline)
+        if (li + 1 < lines.size() || has_trailing_newline) {
+          if (uses_crlf)
+            out.push_back('\r');
           out.push_back('\n');
+        }
       };
 
       if (!target || ToLower(ExtractIncludeBasename(*target)) != old_basename_lc) {

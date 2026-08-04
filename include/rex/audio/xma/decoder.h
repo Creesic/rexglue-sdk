@@ -62,7 +62,6 @@ class XmaDecoder {
     uint8_t sample_rate_id = 0;
     uint8_t loop_count = 0;
     uint8_t output_buffer_padding = 0;
-    uint8_t loop_subframe_start = 0;
     uint8_t loop_subframe_end = 0;
     uint8_t loop_subframe_skip = 0;
     uint8_t packet_metadata = 0;

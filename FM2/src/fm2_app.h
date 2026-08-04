@@ -42,11 +42,18 @@ class Fm2App : public rex::ReXApp {
 #endif
 #if FM2_HAS_PLUME
     // ReOdyssey-style Plume ownership only applies to Plume-only mode.
-    // Shadow/xenos modes still need the legacy ReX graphics backend alive.
+    // Shadow/xenos modes still need the ReX Xenos GPU plugin alive.
     if (!fm2::native_renderer::WantsReXGraphics()) {
       config.graphics.reset();
+      config.gpu_plugin.clear();
+    } else if (!config.graphics && config.gpu_plugin.empty()) {
+      config.gpu_plugin = "xenos";
     }
     config.mount_cache_root = true;
+#else
+    if (!config.graphics && config.gpu_plugin.empty()) {
+      config.gpu_plugin = "xenos";
+    }
 #endif
   }
 

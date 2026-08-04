@@ -3416,7 +3416,6 @@ loc_8237D008:
 	ctx.r9.s64 = 4;
 	// vpkd3d128 v0,v1,5,2,2
 	ctx.fpscr.enableFlushMode();
-	ctx.v0.u64[0] = 0;
 	temp.u32 = (ctx.v1.u32[3]&0x7FFFFFFF);
 	vTemp.u8[0] = (temp.f32 != temp.f32) || (temp.f32 > 65504.0f) ? 0xFF : ((ctx.v1.u32[3]&0x7f800000)>>23);
 	temp.u16 = vTemp.u8[0] != 0xFF ? ((ctx.v1.u32[3]&0x7FE000)>>13) : 0x0;

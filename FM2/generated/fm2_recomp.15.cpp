@@ -52754,7 +52754,6 @@ loc_823CFD7C:
 	ctx.r5.u64 = ctx.r5.u64 | 1;
 	// vpkd3d128 v0,v0,5,2,2
 	ctx.fpscr.enableFlushModeUnconditional();
-	ctx.v0.u64[0] = 0;
 	temp.u32 = (ctx.v0.u32[3]&0x7FFFFFFF);
 	vTemp.u8[0] = (temp.f32 != temp.f32) || (temp.f32 > 65504.0f) ? 0xFF : ((ctx.v0.u32[3]&0x7f800000)>>23);
 	temp.u16 = vTemp.u8[0] != 0xFF ? ((ctx.v0.u32[3]&0x7FE000)>>13) : 0x0;
@@ -52878,7 +52877,6 @@ loc_823CFE24:
 	ctx.r5.u64 = ctx.r5.u64 | 1;
 	// vpkd3d128 v0,v0,5,2,2
 	ctx.fpscr.enableFlushModeUnconditional();
-	ctx.v0.u64[0] = 0;
 	temp.u32 = (ctx.v0.u32[3]&0x7FFFFFFF);
 	vTemp.u8[0] = (temp.f32 != temp.f32) || (temp.f32 > 65504.0f) ? 0xFF : ((ctx.v0.u32[3]&0x7f800000)>>23);
 	temp.u16 = vTemp.u8[0] != 0xFF ? ((ctx.v0.u32[3]&0x7FE000)>>13) : 0x0;

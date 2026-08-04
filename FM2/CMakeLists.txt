@@ -34,7 +34,7 @@ else()
     add_executable(fm2 ${FM2_SOURCES})
 endif()
 
-rexglue_setup_target(fm2)
+rexglue_setup_target(fm2 GPU_PLUGINS xenos)
 
 # pipeline.cpp wraps DXC/dxcompiler.dll calls in __try/__except to survive crashes
 # from malformed regenerated shader blobs. clang-cl's default /EHsc does NOT let

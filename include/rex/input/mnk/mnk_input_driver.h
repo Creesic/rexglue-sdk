@@ -11,6 +11,7 @@
 #pragma once
 
 #include <rex/input/input_driver.h>
+#include <rex/ui/window.h>
 #include <rex/ui/window_listener.h>
 
 #include <cstdint>

@@ -997,8 +997,7 @@ void AudioVoicesDialog::OnDraw([[maybe_unused]] ImGuiIO& io) {
                   kXmaSamplesPerFramePerChannel);
       ImGui::Text("Multipass Bin: %u  Mix: %s", static_cast<uint32_t>(detail->packet_metadata),
                   detail->consume_only ? "consume-only" : "decode");
-      ImGui::Text("Loop SF start/end/skip: %u / %u / %u  Output Padding: %u",
-                  static_cast<uint32_t>(detail->loop_subframe_start),
+      ImGui::Text("Loop SF end/skip: %u / %u  Output Padding: %u",
                   static_cast<uint32_t>(detail->loop_subframe_end),
                   static_cast<uint32_t>(detail->loop_subframe_skip),
                   static_cast<uint32_t>(detail->output_buffer_padding));

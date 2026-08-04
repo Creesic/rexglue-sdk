@@ -1,5 +1,8 @@
 set(REXSYSTEM_SOURCES
     runtime.cpp
+    embedded_metadata.cpp
+    achievement_manager.cpp
+    achievements.cpp
     kernel_state.cpp
     xmemory.cpp
     kernel_module.cpp
@@ -40,6 +43,7 @@ set(REXSYSTEM_SOURCES
     map_parser.cpp
     module.cpp
     function_dispatcher.cpp
+    gpu_plugin_loader.cpp
     thread.cpp
     thread_state.cpp
     xex_module.cpp
@@ -72,6 +76,7 @@ target_link_libraries(rexruntime
     PRIVATE
         aes128
         mspack
+        xxHash::xxhash
 )
 
 if(REXGLUE_ENABLE_TRACY)

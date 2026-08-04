@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -1044,11 +1045,12 @@ uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock, bool change_i
   uint32_t old_irql = change_irql ? xeKfRaiseIrql(ctx, IRQL_DISPATCH) : 0;
   auto* mem = rex::system::kernel_state()->memory();
   uint32_t pcr_addr = static_cast<uint32_t>(ctx->r13.u64);
-  assert_true(lock->prcb_of_owner != rex::byte_swap(pcr_addr));  // deadlock detection
+  const uint32_t self = rex::byte_swap(pcr_addr);
+  assert_true(lock->prcb_of_owner.value != self);  // self-deadlock detection
 
   auto* our_kpcr = mem->TranslateVirtual<X_KPCR*>(pcr_addr);
   uint8_t our_cpu = our_kpcr->prcb_data.current_cpu;
-  while (!rex::thread::atomic_cas(0u, rex::byte_swap(pcr_addr), &lock->prcb_of_owner.value)) {
+  while (!rex::thread::atomic_cas(0u, self, &lock->prcb_of_owner.value)) {
     // Match Xenia behavior: if spinner and owner are on the same guest CPU,
     // force a host context switch so the owner can make progress and release.
     uint32_t owner_pcr_be = lock->prcb_of_owner.value;

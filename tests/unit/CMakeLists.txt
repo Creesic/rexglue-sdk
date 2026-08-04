@@ -20,6 +20,7 @@ add_executable(unit_tests
     fm2/shader_cache_test.cpp
     fm2/native_state_test.cpp
     system/guest_path_test.cpp
+    system/achievement_manager_test.cpp
     system/function_dispatcher_test.cpp
     codegen/manifest_test.cpp
     rexglue/migration_scan_test.cpp
@@ -30,6 +31,11 @@ target_sources(unit_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src/rexglue/commands/migration_scan.cpp
     ${PROJECT_SOURCE_DIR}/src/rexglue/ui/ui.cpp
     ${PROJECT_SOURCE_DIR}/src/rexglue/ui/progress.cpp
+    ${PROJECT_SOURCE_DIR}/src/graphics/flags.cpp
+    ${PROJECT_SOURCE_DIR}/src/graphics/format/ucode.cpp
+    ${PROJECT_SOURCE_DIR}/src/graphics/pipeline/shader/shader.cpp
+    ${PROJECT_SOURCE_DIR}/src/graphics/pipeline/shader/translator.cpp
+    ${PROJECT_SOURCE_DIR}/src/graphics/pipeline/shader/translator_disasm.cpp
     ${PROJECT_SOURCE_DIR}/FM2/generated/shader_cache.cpp
     ${PROJECT_SOURCE_DIR}/FM2/src/native_renderer/fm2_native_state.cpp
 )
@@ -39,14 +45,28 @@ target_include_directories(unit_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/FM2
     ${PROJECT_SOURCE_DIR}/FM2/src
+    ${PROJECT_SOURCE_DIR}/thirdparty/renderdoc
 )
 
 target_link_libraries(unit_tests PRIVATE
-    rexcore
     rexcodegen
     rexruntime
     Catch2::Catch2WithMain
 )
+
+# ReXApp is shipped as source for recomp projects, rather than compiled into
+# rexui. Keep its SDK-consumer compilation path covered by the test build.
+add_library(rexapp_compile_test OBJECT
+    ${PROJECT_SOURCE_DIR}/src/ui/rex_app.cpp
+)
+target_link_libraries(rexapp_compile_test PRIVATE
+    rexruntime
+    rexui
+    rexinput
+    rexaudio
+    rexgraphics
+)
+add_dependencies(unit_tests rexapp_compile_test)
 
 # Strip Tracy/profiling instrumentation from test targets
 target_compile_options(unit_tests PRIVATE

@@ -50863,3 +50863,5 @@ void fm2_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {
   registrar->SetFunction(0x8295FBA0, sub_8295FBA0);
   registrar->SetFunction(0x829600C0, sub_829600C0);
 }
+
+
