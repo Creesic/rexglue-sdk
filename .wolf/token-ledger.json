@@ -2,13 +2,13 @@
   "version": 1,
   "created_at": "2026-07-06T14:16:32.530Z",
   "lifetime": {
-    "total_tokens_estimated": 5769456,
-    "total_reads": 6866,
-    "total_writes": 2373,
+    "total_tokens_estimated": 5770445,
+    "total_reads": 6870,
+    "total_writes": 2375,
     "total_sessions": 7,
     "anatomy_hits": 1419,
-    "anatomy_misses": 5447,
-    "repeated_reads_blocked": 3907,
+    "anatomy_misses": 5451,
+    "repeated_reads_blocked": 3909,
     "estimated_savings_vs_bare_cli": 9622282
   },
   "sessions": [
@@ -54412,6 +54412,57 @@
         "writes_count": 5,
         "repeated_reads_blocked": 35,
         "anatomy_lookups": 14
+      }
+    },
+    {
+      "id": "session-2026-08-16-1841",
+      "started": "2026-08-16T22:41:52.694Z",
+      "ended": "2026-08-16T22:54:48.185Z",
+      "reads": [
+        {
+          "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/diff_small.txt",
+          "tokens_estimated": 0,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/diff_d3d_hooks.txt",
+          "tokens_estimated": 0,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/diff_render_state.txt",
+          "tokens_estimated": 0,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "C:/Users/Tera/Documents/GitHub/ReXFM2P/FM2/tests/render_snapshot_test.cpp",
+          "tokens_estimated": 0,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        }
+      ],
+      "writes": [
+        {
+          "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/split_patch.py",
+          "tokens_estimated": 656,
+          "action": "create"
+        },
+        {
+          "file": "C:/Users/Tera/AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/spec.json",
+          "tokens_estimated": 333,
+          "action": "create"
+        }
+      ],
+      "totals": {
+        "input_tokens_estimated": 0,
+        "output_tokens_estimated": 989,
+        "reads_count": 4,
+        "writes_count": 2,
+        "repeated_reads_blocked": 2,
+        "anatomy_lookups": 0
       }
     }
   ],

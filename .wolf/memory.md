@@ -389,3 +389,5 @@
 |------|--------|---------|---------|--------|
 | 18:52 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/split_patch.py | — | ~656 |
 | 18:52 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/spec.json | — | ~333 |
+| 19:05 | Split uncommitted render work into 7 topic commits (docs, wolf, style, device layout, decl stride, obj replay, draw snapshots) | FM2/src/render/**, .wolf/**, AGENTS.md | worktree clean; reconstructed tree byte-identical | ~85k |
+| 18:54 | Session end: 2 writes across 2 files (split_patch.py, spec.json) | 4 reads | ~989 tok |
