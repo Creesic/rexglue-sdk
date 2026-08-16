@@ -39,25 +39,3 @@ target_link_libraries(rexaudio
     PUBLIC rexcore SDL3::SDL3
     PRIVATE libavcodec libavutil
 )
-
-# XAudio2 backend (Windows-only). Opt-in via AUDIO_BACKENDS xaudio2 in
-# rexglue_setup_target()/rexglue_configure_target() -- not part of the core
-# rexaudio object library, so consumers that don't request it never compile
-# or link it.
-if(WIN32)
-    add_library(rexaudio-xaudio2 STATIC
-        xaudio2/xaudio2_audio_system.cpp
-        xaudio2/xaudio2_audio_driver.cpp
-    )
-    add_library(rex::audio-xaudio2 ALIAS rexaudio-xaudio2)
-    set_target_properties(rexaudio-xaudio2 PROPERTIES EXCLUDE_FROM_ALL ON)
-
-    target_include_directories(rexaudio-xaudio2 PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-    )
-    # rexaudio is an OBJECT library that rexruntime absorbs and the SDK does not
-    # install, so the dependency must not survive into rexglueTargets: consumers
-    # of an installed SDK already get its objects via rexruntime.
-    target_link_libraries(rexaudio-xaudio2 PUBLIC $<BUILD_INTERFACE:rex::audio> PRIVATE ole32)
-endif()

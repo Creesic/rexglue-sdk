@@ -29,7 +29,7 @@ else()
     add_executable(fm2 ${FM2_SOURCES})
 endif()
 
-rexglue_setup_target(fm2 AUDIO_BACKENDS xaudio2)
+rexglue_setup_target(fm2)
 
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/plume/CMakeLists.txt")
     set(PLUME_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
