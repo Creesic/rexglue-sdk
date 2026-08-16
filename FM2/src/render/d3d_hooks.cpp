@@ -70,7 +70,8 @@ GuestShader* LookupShaderAlias(uint32_t guestAddress);
 namespace {
 
 uint32_t ReadGuestU32At(uint32_t guestAddress) {
-  if (guestAddress == 0) return 0;
+  if (guestAddress == 0)
+    return 0;
   auto* p = fm2::ghp::ToHost<const rex::be<uint32_t>>(guestAddress);
   return p != nullptr ? p->get() : 0;
 }
@@ -310,15 +311,16 @@ void SurfaceGetDescHook(uint32_t surfaceAddr, uint32_t descAddr) {
 
 uint32_t D3DResourceAddRefHook(uint32_t resourceAddr) {
   auto* resource = ghp::ToHost<GuestResource>(resourceAddr);
-  if (!rr::IsFm2Resource(resource)) return g_origD3DResourceAddRef(resourceAddr);
+  if (!rr::IsFm2Resource(resource))
+    return g_origD3DResourceAddRef(resourceAddr);
   return resource->refCount.fetch_add(1, std::memory_order_acq_rel) + 1;
 }
 
 uint32_t D3DResourceReleaseHook(uint32_t resourceAddr) {
   auto* resource = ghp::ToHost<GuestResource>(resourceAddr);
-  if (!rr::IsFm2Resource(resource)) return g_origD3DResourceRelease(resourceAddr);
-  const uint32_t remaining =
-      resource->refCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
+  if (!rr::IsFm2Resource(resource))
+    return g_origD3DResourceRelease(resourceAddr);
+  const uint32_t remaining = resource->refCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
   if (remaining == 0) {
     // Do not call guest free (sub_82369868): host Plume objects + guest
     // allocation are retired after the recording-frame fence.
@@ -883,7 +885,8 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
     rr::Clear(nullptr, rr::D3DCLEAR_ZBUFFER | rr::D3DCLEAR_STENCIL, nullptr, clearZ);
   }
 
-  if (destTextureAddr == 0) return;
+  if (destTextureAddr == 0)
+    return;
 
   void* destHost = ghp::ToHost<void>(destTextureAddr);
   rr::GuestBaseTexture* reo = nullptr;
@@ -899,11 +902,11 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
     dataBase = ReadGuestU32At(destTextureAddr + 32u) & 0x1FFFFFFFu & ~0xFFFu;
   }
 
-  if (reo == nullptr || reo->texture == nullptr) return;
+  if (reo == nullptr || reo->texture == nullptr)
+    return;
 
-  const bool destIsBlockCompressed =
-      reo->format >= plume::RenderFormat::BC1_TYPELESS &&
-      reo->format <= plume::RenderFormat::BC7_UNORM_SRGB;
+  const bool destIsBlockCompressed = reo->format >= plume::RenderFormat::BC1_TYPELESS &&
+                                     reo->format <= plume::RenderFormat::BC7_UNORM_SRGB;
   if (destIsBlockCompressed) {
     static uint64_t bcSkip = 0;
     if (++bcSkip <= 24) {
