@@ -113,4 +113,21 @@ void RenderQueue::Enqueue(const RenderCommand& cmd) {
   PushJob(Job{cmd, nullptr});
 }
 
+void RenderQueue::EnqueueBulk(const RenderCommand* commands, size_t count) {
+  if (commands == nullptr || count == 0)
+    return;
+  if (!g_running.load(std::memory_order_acquire) || IsOnRenderThread()) {
+    for (size_t i = 0; i < count; ++i)
+      DispatchRenderCommand(commands[i]);
+    return;
+  }
+
+  {
+    std::lock_guard lock(g_mutex);
+    for (size_t i = 0; i < count; ++i)
+      g_jobs.push_back(Job{commands[i], nullptr});
+  }
+  g_cv.notify_one();
+}
+
 }  // namespace fm2::render

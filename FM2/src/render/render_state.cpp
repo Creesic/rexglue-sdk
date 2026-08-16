@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -122,7 +124,7 @@ struct SharedConstants {
   uint32_t texture2DIndices[16]{};
   uint32_t texture3DIndices[16]{};
   uint32_t textureCubeIndices[16]{};
-  uint32_t samplerIndices[16]{};  // always 0 (the single default sampler) -- see FlushSamplerStates note.
+  uint32_t samplerIndices[16]{};  // Bindless indices populated from GuestSamplerState each draw.
   uint32_t booleans = 0;          // bits 0-15 = VS bool constants, bits 16-31 = PS bool constants.
   uint32_t swappedTexcoords = 0;
   uint32_t swappedNormals = 0;
@@ -137,12 +139,17 @@ struct SharedConstants {
   uint32_t conditionalSurveyIndex = 0;
   uint32_t conditionalRenderingIndex = 0;
   uint32_t vteFlags = 8;
+  // g_VteAndLoopConstants is a uint4 array beginning at c20. The remaining
+  // three components of c20 are padding; packed loop constants begin at c21.
+  uint32_t loopConstantPadding[3]{};
+  uint32_t loopConstants[32]{};  // VS 0-15, PS 16-31; Xenos packed count/start/step.
 };
-static_assert(sizeof(SharedConstants) == 324);
+static_assert(sizeof(SharedConstants) == 464);
 static_assert(offsetof(SharedConstants, booleans) == 256);
 static_assert(offsetof(SharedConstants, halfPixelOffsetX) == 280);
 static_assert(offsetof(SharedConstants, clipPlane) == 288);
 static_assert(offsetof(SharedConstants, vteFlags) == 320);
+static_assert(offsetof(SharedConstants, loopConstants) == 336);
 
 struct DirtyStates {
   bool renderTargetAndDepthStencil;
@@ -181,11 +188,14 @@ GuestSurface* g_depthStencil = nullptr;
 GuestSurface* g_implicitDepthStencil = nullptr;
 RenderFramebuffer* g_framebuffer = nullptr;
 std::unordered_map<uint64_t, std::unique_ptr<RenderFramebuffer>> g_framebufferCache;
+std::unordered_map<uint64_t, std::pair<uint32_t, std::unique_ptr<RenderSampler>>> g_samplerStates;
 RenderViewport g_viewport{0.0f, 0.0f, 1280.0f, 720.0f, 0.0f, 1.0f};
 PipelineState g_pipelineState;
 SharedConstants g_sharedConstants;
 bool g_sharedConstantsInitialized = false;
 GuestTexture* g_textures[16]{};
+alignas(16) uint32_t g_vertexShaderConstants[0x400]{};
+alignas(16) uint32_t g_pixelShaderConstants[0x380]{};
 bool g_scissorTestEnable = false;
 RenderRect g_scissorRect;
 RenderVertexBufferView g_vertexBufferViews[16];
@@ -834,21 +844,67 @@ RenderBlendOperation ConvertBlendOp(uint32_t v) {
 // 6=incr,7=decr), matching real D3DSTENCILOP ordinal layout.
 RenderStencilOp ConvertStencilOp(uint32_t v) {
   switch (v) {
-    case 0: return RenderStencilOp::KEEP;
-    case 1: return RenderStencilOp::ZERO;
-    case 2: return RenderStencilOp::REPLACE;
-    case 3: return RenderStencilOp::INCREMENT_AND_CLAMP;
-    case 4: return RenderStencilOp::DECREMENT_AND_CLAMP;
-    case 5: return RenderStencilOp::INVERT;
-    case 6: return RenderStencilOp::INCREMENT_AND_WRAP;
-    case 7: return RenderStencilOp::DECREMENT_AND_WRAP;
-    default: return RenderStencilOp::KEEP;
+    case 0:
+      return RenderStencilOp::KEEP;
+    case 1:
+      return RenderStencilOp::ZERO;
+    case 2:
+      return RenderStencilOp::REPLACE;
+    case 3:
+      return RenderStencilOp::INCREMENT_AND_CLAMP;
+    case 4:
+      return RenderStencilOp::DECREMENT_AND_CLAMP;
+    case 5:
+      return RenderStencilOp::INVERT;
+    case 6:
+      return RenderStencilOp::INCREMENT_AND_WRAP;
+    case 7:
+      return RenderStencilOp::DECREMENT_AND_WRAP;
+    default:
+      return RenderStencilOp::KEEP;
   }
+}
+
+RenderTextureAddressMode ConvertAddressMode(uint32_t v) {
+  switch (v) {
+    case D3DTADDRESS_WRAP:
+      return RenderTextureAddressMode::WRAP;
+    case D3DTADDRESS_MIRROR:
+      return RenderTextureAddressMode::MIRROR;
+    case D3DTADDRESS_CLAMP:
+    case 4:
+      return RenderTextureAddressMode::CLAMP;
+    case D3DTADDRESS_MIRRORONCE:
+    case 5:
+    case 7:
+      return RenderTextureAddressMode::MIRROR_ONCE;
+    case D3DTADDRESS_BORDER:
+      return RenderTextureAddressMode::BORDER;
+    default:
+      return RenderTextureAddressMode::WRAP;
+  }
+}
+
+RenderFilter ConvertFilter(uint32_t v) {
+  switch (v) {
+    case D3DTEXF_POINT:
+    case D3DTEXF_NONE:
+      return RenderFilter::NEAREST;
+    case D3DTEXF_LINEAR:
+      return RenderFilter::LINEAR;
+    default:
+      return RenderFilter::NEAREST;
+  }
+}
+
+RenderBorderColor ConvertBorderColor(uint32_t v) {
+  return v == 1 ? RenderBorderColor::OPAQUE_WHITE : RenderBorderColor::TRANSPARENT_BLACK;
 }
 
 void SetAlphaTestMode(bool enable) {
   uint32_t specConstants = enable ? SPEC_CONSTANT_ALPHA_TEST : 0;
-  specConstants |= g_pipelineState.specConstants & ~uint32_t(SPEC_CONSTANT_ALPHA_TEST | SPEC_CONSTANT_ALPHA_TO_COVERAGE);
+  specConstants |= g_pipelineState.specConstants &
+                   ~uint32_t(SPEC_CONSTANT_ALPHA_TEST | SPEC_CONSTANT_ALPHA_TO_COVERAGE);
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.specConstants, specConstants);
 }
 
@@ -2370,21 +2426,186 @@ constexpr uint32_t kVsFloatConstantBytes = 256 * 16;  // 256 float4 registers.
 // but only the first 224 are part of the real constant-buffer ABI.
 constexpr uint32_t kPsFloatConstantBytes = 224 * 16;
 
+void ProcSetBooleans(uint32_t booleans) {
+  g_sharedConstants.booleans = booleans;
+}
+
+void ProcSetLoopConstants(const uint32_t* values) {
+  if (values != nullptr)
+    std::memcpy(g_sharedConstants.loopConstants, values, sizeof(g_sharedConstants.loopConstants));
+}
+
+void ProcSetSamplerState(uint32_t index, uint32_t data0, uint32_t data3, uint32_t data5) {
+  if (index >= 16 || Device() == nullptr || SamplerDescriptorSet() == nullptr)
+    return;
+
+  RenderSamplerDesc desc{};
+  desc.addressU = ConvertAddressMode((data0 >> 10) & 0x7);
+  desc.addressV = ConvertAddressMode((data0 >> 13) & 0x7);
+  desc.addressW = ConvertAddressMode((data0 >> 16) & 0x7);
+  desc.magFilter = ConvertFilter((data3 >> 19) & 0x3);
+  desc.minFilter = ConvertFilter((data3 >> 21) & 0x3);
+  desc.mipmapMode = RenderMipmapMode(ConvertFilter((data3 >> 23) & 0x3));
+  desc.maxAnisotropy = 16;
+  desc.anisotropyEnabled = false;
+  desc.borderColor = ConvertBorderColor(data5 & 0x3);
+
+  const uint64_t hash = XXH3_64bits(&desc, sizeof(desc));
+  auto [it, inserted] = g_samplerStates.try_emplace(hash);
+  auto& [descriptorIndex, sampler] = it->second;
+  if (inserted)
+    descriptorIndex = uint32_t(g_samplerStates.size());
+  if (descriptorIndex == 0 || descriptorIndex > kSamplerDescriptorSize) {
+    g_sharedConstants.samplerIndices[index] = 0;
+    return;
+  }
+  if (sampler == nullptr) {
+    sampler = Device()->createSampler(desc);
+    if (sampler != nullptr) {
+      SamplerDescriptorSet()->setSampler(descriptorIndex - 1, sampler.get());
+    }
+  }
+  g_sharedConstants.samplerIndices[index] = sampler != nullptr ? descriptorIndex - 1 : 0;
+}
+
+void ProcSetShaderConstants(bool vertex, const uint8_t* memory, uint32_t index, uint32_t size) {
+  uint32_t* destination = vertex ? g_vertexShaderConstants : g_pixelShaderConstants;
+  const uint32_t capacity = vertex ? uint32_t(std::size(g_vertexShaderConstants))
+                                   : uint32_t(std::size(g_pixelShaderConstants));
+  if (memory == nullptr || size == 0 || (size & 3u) != 0 || index > capacity ||
+      size / sizeof(uint32_t) > capacity - index) {
+    return;
+  }
+  std::memcpy(destination + index, memory, size);
+}
+
+struct LocalRenderCommandQueue {
+  std::array<RenderCommand, 24> commands{};
+  uint32_t count = 0;
+
+  RenderCommand& Enqueue() {
+    assert(count < commands.size());
+    return commands[count++];
+  }
+
+  void Submit() const { RenderQueue::EnqueueBulk(commands.data(), count); }
+};
+
+bool QueueConstantSnapshot(LocalRenderCommandQueue& queue, RenderCommandType type,
+                           const uint32_t* source, ConstantSnapshotRange range) {
+  if (source == nullptr || range.size == 0)
+    return false;
+  uint8_t* copy =
+      g_intermediaryUploadAllocator.AllocateCopy(source + range.index, range.size);
+  if (copy == nullptr) {
+    REXGPU_WARN("Shader constant snapshot allocation failed ({} bytes)", range.size);
+    return false;
+  }
+  RenderCommand& cmd = queue.Enqueue();
+  cmd.type = type;
+  cmd.setShaderConstants.memory = copy;
+  cmd.setShaderConstants.index = range.index;
+  cmd.setShaderConstants.size = range.size;
+  return true;
+}
+
+void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue) {
+  if (device == nullptr)
+    return;
+
+  thread_local GuestDevice* lastDevice = nullptr;
+  // Replay temporarily points at a restored per-draw context file. Its dirty
+  // masks were already consumed by the original EmitDirty path, so the live
+  // window must force booleans/samplers as well as float constants.
+  const bool forceFullSnapshot = lastDevice != device || g_liveVsFloatConstants != nullptr ||
+                                 g_livePsFloatConstants != nullptr;
+  lastDevice = device;
+
+  constexpr uint64_t kBooleanDirtyMask = uint64_t{1} << 56;
+  uint64_t booleanFlags = device->dirtyFlags[4].get();
+  if (forceFullSnapshot || (booleanFlags & kBooleanDirtyMask) != 0) {
+    RenderCommand& cmd = queue.Enqueue();
+    cmd.type = RenderCommandType::SetBooleans;
+    cmd.setBooleans.booleans = (device->vertexShaderBoolConstants[0].get() & 0xFFFFu) |
+                               ((device->pixelShaderBoolConstants[0].get() & 0xFFFFu) << 16);
+    device->dirtyFlags[4] = booleanFlags & ~kBooleanDirtyMask;
+  }
+
+  // The guest's 16 packed integer registers per stage are the Xenos loop
+  // constants (count/start/step). Snapshot every draw; their dirty-bit mapping
+  // is separate from the Boolean bit and was previously not mirrored at all.
+  {
+    RenderCommand& cmd = queue.Enqueue();
+    cmd.type = RenderCommandType::SetLoopConstants;
+    for (uint32_t i = 0; i < 16; ++i) {
+      cmd.setLoopConstants.values[i] = device->vertexShaderIntConstants[i].get();
+      cmd.setLoopConstants.values[16 + i] = device->pixelShaderIntConstants[i].get();
+    }
+  }
+
+  uint64_t samplerFlags = device->dirtyFlags[3].get();
+  for (uint32_t i = 0; i < 16; ++i) {
+    const uint64_t mask = uint64_t{1} << (31u - i);
+    if (!forceFullSnapshot && (samplerFlags & mask) == 0)
+      continue;
+    const GuestSamplerState& state = device->samplerStates[i];
+    RenderCommand& cmd = queue.Enqueue();
+    cmd.type = RenderCommandType::SetSamplerState;
+    cmd.setSamplerState.index = i;
+    cmd.setSamplerState.data0 = state.data[0].get();
+    cmd.setSamplerState.data3 = state.data[3].get();
+    cmd.setSamplerState.data5 = state.data[5].get();
+    samplerFlags &= ~mask;
+  }
+  device->dirtyFlags[3] = samplerFlags;
+
+  uint64_t vsFlags = device->dirtyFlags[0].get();
+  ConstantSnapshotRange vsRange =
+      (forceFullSnapshot || g_liveVsFloatConstants != nullptr)
+          ? ConstantSnapshotRange{0, kVsFloatConstantBytes}
+          : GetConstantSnapshotRange(vsFlags, 64);
+  const uint32_t* vsSource = g_liveVsFloatConstants != nullptr
+                                 ? g_liveVsFloatConstants
+                                 : reinterpret_cast<const uint32_t*>(device->vertexShaderFloatConstants);
+  if (QueueConstantSnapshot(queue, RenderCommandType::SetVertexShaderConstants, vsSource, vsRange) &&
+      g_liveVsFloatConstants == nullptr) {
+    device->dirtyFlags[0] = 0;
+  }
+
+  uint64_t psFlags = device->dirtyFlags[1].get();
+  ConstantSnapshotRange psRange =
+      (forceFullSnapshot || g_livePsFloatConstants != nullptr)
+          ? ConstantSnapshotRange{0, kPsFloatConstantBytes}
+          : GetConstantSnapshotRange(psFlags, 56);
+  const uint32_t* psSource = g_livePsFloatConstants != nullptr
+                                 ? g_livePsFloatConstants
+                                 : reinterpret_cast<const uint32_t*>(device->pixelShaderFloatConstants);
+  if (QueueConstantSnapshot(queue, RenderCommandType::SetPixelShaderConstants, psSource, psRange) &&
+      g_livePsFloatConstants == nullptr) {
+    device->dirtyFlags[1] = 0;
+  }
+}
+
 RenderPrimitiveTopology ConvertPrimitiveType(uint32_t type) {
   // Match SOURCE / Unleashed: unknown Xbox types (e.g. D3DPT_RECTLIST=8) still
   // attempt a triangle-list draw rather than skipping the entire draw (which
   // left UI/compositing black). QUADLIST/FAN use TRIANGLE_LIST + re-index.
   switch (type) {
-    case D3DPT_POINTLIST: return RenderPrimitiveTopology::POINT_LIST;
-    case D3DPT_LINELIST: return RenderPrimitiveTopology::LINE_LIST;
-    case D3DPT_LINESTRIP: return RenderPrimitiveTopology::LINE_STRIP;
+    case D3DPT_POINTLIST:
+      return RenderPrimitiveTopology::POINT_LIST;
+    case D3DPT_LINELIST:
+      return RenderPrimitiveTopology::LINE_LIST;
+    case D3DPT_LINESTRIP:
+      return RenderPrimitiveTopology::LINE_STRIP;
     case D3DPT_TRIANGLELIST:
     case D3DPT_QUADLIST:
     case D3DPT_TRIANGLEFAN:
     case D3DPT_RECTLIST:
       return RenderPrimitiveTopology::TRIANGLE_LIST;
-    case D3DPT_TRIANGLESTRIP: return RenderPrimitiveTopology::TRIANGLE_STRIP;
-    default: return RenderPrimitiveTopology::TRIANGLE_LIST;
+    case D3DPT_TRIANGLESTRIP:
+      return RenderPrimitiveTopology::TRIANGLE_STRIP;
+    default:
+      return RenderPrimitiveTopology::TRIANGLE_LIST;
   }
 }
 
@@ -2723,20 +2944,19 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   commandList->setPipeline(pipeline);
   g_dirtyStates.pipelineState = false;
 
-  g_sharedConstants.booleans = (device->vertexShaderBoolConstants[0].get() & 0xFFFFu) |
-                               ((device->pixelShaderBoolConstants[0].get() & 0xFFFFu) << 16);
   g_sharedConstants.swappedTexcoords =
-      g_pipelineState.vertexDeclaration != nullptr ? g_pipelineState.vertexDeclaration->swappedTexcoords : 0;
+      g_pipelineState.vertexDeclaration != nullptr ? g_pipelineState.vertexDeclaration->swappedTexcoords
+                                                   : 0;
 
-  // Constants are byte-swapped straight out of guest memory every draw: the
-  // guest writes them directly into the real device struct via its own
-  // (deliberately unhooked) constant-setter functions, so there is no
-  // reliable CPU-side dirty signal to track here.
-  CurrentUploadAllocator().UploadAndBindRootDescriptor(device->vertexShaderFloatConstants, kVsFloatConstantBytes, 0,
-                                                true);
-  CurrentUploadAllocator().UploadAndBindRootDescriptor(device->pixelShaderFloatConstants, kPsFloatConstantBytes, 1,
-                                                true);
-  CurrentUploadAllocator().UploadAndBindRootDescriptor(&g_sharedConstants, sizeof(g_sharedConstants), 2, false);
+  // Snapshot commands already copied the exact guest-thread state into these
+  // persistent render-thread files. Never dereference mutable guest state here:
+  // the producer may already be preparing the next draw.
+  CurrentUploadAllocator().UploadAndBindRootDescriptor(g_vertexShaderConstants,
+                                                       kVsFloatConstantBytes, 0, true);
+  CurrentUploadAllocator().UploadAndBindRootDescriptor(g_pixelShaderConstants,
+                                                       kPsFloatConstantBytes, 1, true);
+  CurrentUploadAllocator().UploadAndBindRootDescriptor(&g_sharedConstants,
+                                                       sizeof(g_sharedConstants), 2, false);
 
   if (g_dirtyStates.vertexStreamFirst <= g_dirtyStates.vertexStreamLast) {
     // [vertexStreamFirst, vertexStreamLast] is only the min/max index *ever*
@@ -3010,30 +3230,35 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
 
 void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
                   uint32_t vertexCount) {
-  RenderCommand cmd{};
+  LocalRenderCommandQueue queue;
+  QueueDrawStateSnapshots(device, queue);
+  RenderCommand& cmd = queue.Enqueue();
   cmd.type = RenderCommandType::DrawPrimitive;
   cmd.drawPrimitive.device = device;
   cmd.drawPrimitive.primitiveType = primitiveType;
   cmd.drawPrimitive.startVertex = startVertex;
   cmd.drawPrimitive.vertexCount = vertexCount;
-  RenderQueue::Enqueue(cmd);
+  queue.Submit();
 }
 
 void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
                          uint32_t startIndex, uint32_t indexCount) {
-  RenderCommand cmd{};
+  LocalRenderCommandQueue queue;
+  QueueDrawStateSnapshots(device, queue);
+  RenderCommand& cmd = queue.Enqueue();
   cmd.type = RenderCommandType::DrawIndexedPrimitive;
   cmd.drawIndexedPrimitive.device = device;
   cmd.drawIndexedPrimitive.primitiveType = primitiveType;
   cmd.drawIndexedPrimitive.baseVertexIndex = baseVertexIndex;
   cmd.drawIndexedPrimitive.startIndex = startIndex;
   cmd.drawIndexedPrimitive.indexCount = indexCount;
-  RenderQueue::Enqueue(cmd);
+  queue.Submit();
 }
 
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                              const void* data, uint32_t stride) {
-  if (data == nullptr || vertexCount == 0 || stride == 0) return;
+  if (data == nullptr || vertexCount == 0 || stride == 0)
+    return;
   const uint32_t bytes = vertexCount * stride;
   // Copy on the guest thread so Enqueue can return before the guest reuses
   // its stack/heap buffer (Unleashed intermediary upload pattern).
@@ -3042,7 +3267,9 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
     REXGPU_WARN("DrawUserPointerVertices: intermediary upload exhausted ({} bytes)", bytes);
     return;
   }
-  RenderCommand cmd{};
+  LocalRenderCommandQueue queue;
+  QueueDrawStateSnapshots(device, queue);
+  RenderCommand& cmd = queue.Enqueue();
   cmd.type = RenderCommandType::DrawPrimitiveUP;
   cmd.drawPrimitiveUP.device = device;
   cmd.drawPrimitiveUP.primitiveType = primitiveType;
@@ -3050,7 +3277,7 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
   cmd.drawPrimitiveUP.vertexData = copy;
   cmd.drawPrimitiveUP.stride = stride;
   cmd.drawPrimitiveUP.bytes = bytes;
-  RenderQueue::Enqueue(cmd);
+  queue.Submit();
 }
 
 void DispatchRenderCommand(const RenderCommand& cmd) {
@@ -3118,6 +3345,24 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
       break;
     case RenderCommandType::SetTextureBase:
       ProcSetTextureBase(cmd.setTextureBase.index, cmd.setTextureBase.texture);
+      break;
+    case RenderCommandType::SetSamplerState:
+      ProcSetSamplerState(cmd.setSamplerState.index, cmd.setSamplerState.data0,
+                          cmd.setSamplerState.data3, cmd.setSamplerState.data5);
+      break;
+    case RenderCommandType::SetBooleans:
+      ProcSetBooleans(cmd.setBooleans.booleans);
+      break;
+    case RenderCommandType::SetLoopConstants:
+      ProcSetLoopConstants(cmd.setLoopConstants.values);
+      break;
+    case RenderCommandType::SetVertexShaderConstants:
+      ProcSetShaderConstants(true, cmd.setShaderConstants.memory, cmd.setShaderConstants.index,
+                             cmd.setShaderConstants.size);
+      break;
+    case RenderCommandType::SetPixelShaderConstants:
+      ProcSetShaderConstants(false, cmd.setShaderConstants.memory, cmd.setShaderConstants.index,
+                             cmd.setShaderConstants.size);
       break;
     case RenderCommandType::SetVertexShader:
       ProcSetVertexShader(cmd.setVertexShader.shader);

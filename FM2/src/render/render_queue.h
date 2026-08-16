@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <cstddef>
+
 #include "render/render_commands.h"
 
 namespace fm2::render {
@@ -20,6 +22,11 @@ struct RenderQueue {
 
   // Fire-and-forget POD command (Unleashed RenderCommand path).
   static void Enqueue(const RenderCommand& cmd);
+
+  // Atomically append an ordered command batch. Draw-state snapshots and the
+  // draw that consumes them must not be interleaved with another guest
+  // thread's batch.
+  static void EnqueueBulk(const RenderCommand* commands, size_t count);
 
   // True when called on the dedicated render thread.
   static bool IsOnRenderThread();

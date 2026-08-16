@@ -5,9 +5,31 @@
 
 #pragma once
 
+#include <algorithm>
+#include <bit>
 #include <cstdint>
 
 namespace fm2::render {
+
+struct ConstantSnapshotRange {
+  uint32_t index{};  // uint32_t index into the stage's float-constant file.
+  uint32_t size{};   // byte count.
+};
+
+// Xenos tracks float constants in 64 MSB-first dirty groups, four float4
+// registers (16 dwords / 64 bytes) per group. Pixel shaders expose only the
+// first 56 groups (224 float4 registers).
+constexpr ConstantSnapshotRange GetConstantSnapshotRange(uint64_t dirtyFlags,
+                                                          uint32_t maxGroupCount) {
+  if (dirtyFlags == 0 || maxGroupCount == 0)
+    return {};
+  const uint32_t startGroup = std::countl_zero(dirtyFlags);
+  const uint32_t endGroup =
+      std::min(maxGroupCount, uint32_t(64 - std::countr_zero(dirtyFlags)));
+  if (startGroup >= endGroup)
+    return {};
+  return ConstantSnapshotRange{startGroup * 16u, (endGroup - startGroup) * 64u};
+}
 
 struct GuestBaseTexture;
 struct GuestBuffer;
@@ -31,6 +53,11 @@ enum class RenderCommandType : uint32_t {
   SetStencilState,
   SetTexture,
   SetTextureBase,
+  SetSamplerState,
+  SetBooleans,
+  SetLoopConstants,
+  SetVertexShaderConstants,
+  SetPixelShaderConstants,
   SetVertexShader,
   SetPixelShader,
   SetVertexDeclaration,
@@ -115,6 +142,27 @@ struct RenderCommand {
       uint32_t index;
       GuestBaseTexture* texture;
     } setTextureBase;
+
+    struct {
+      uint32_t index;
+      uint32_t data0;
+      uint32_t data3;
+      uint32_t data5;
+    } setSamplerState;
+
+    struct {
+      uint32_t booleans;
+    } setBooleans;
+
+    struct {
+      uint32_t values[32];
+    } setLoopConstants;
+
+    struct {
+      uint8_t* memory;
+      uint32_t index;
+      uint32_t size;
+    } setShaderConstants;
 
     struct {
       GuestShader* shader;
