@@ -52,9 +52,12 @@
 
 // Spec-constant bits (XenosRecomp shared ABI -- must match the offline
 // shader-translation tool's bit layout exactly).
+#define SPEC_CONSTANT_R11G11B10_NORMAL (1 << 0)
 #define SPEC_CONSTANT_ALPHA_TEST (1 << 1)
 #define SPEC_CONSTANT_ALPHA_TO_COVERAGE (1 << 3)
 #define SPEC_CONSTANT_REVERSE_Z (1 << 4)
+#define SPEC_CONSTANT_UNPACK_UBYTE4_BASIS (1 << 6)
+#define SPEC_CONSTANT_POSITION_F16 (1 << 7)
 
 using namespace plume;
 
@@ -1325,16 +1328,41 @@ void ProcSetTexture(uint32_t index, GuestTexture* texture) {
 }
 
 void ProcSetTextureBase(uint32_t index, GuestBaseTexture* texture) {
-  if (IsDeviceLost()) return;
+  if (IsDeviceLost())
+    return;
   if (texture == nullptr || texture->texture == nullptr) {
     BindTextureDescriptor(index, nullptr, RenderTextureViewDimension::UNKNOWN);
     g_textures[index] = nullptr;
     return;
   }
-  GuestBaseTexture* bound =
-      texture->sourceTexture != nullptr ? texture->sourceTexture : texture;
+  GuestBaseTexture* bound = texture->sourceTexture != nullptr ? texture->sourceTexture : texture;
   BindTextureDescriptor(index, bound, RenderTextureViewDimension::TEXTURE_2D);
   g_textures[index] = nullptr;
+}
+
+void CompleteVertexDeclaration(GuestVertexDeclaration* decl);
+
+void ApplyVertexDeclarationMetadata(GuestVertexDeclaration* declaration) {
+  if (declaration != nullptr)
+    CompleteVertexDeclaration(declaration);
+
+  g_sharedConstants.swappedTexcoords = declaration != nullptr ? declaration->swappedTexcoords : 0;
+  g_sharedConstants.swappedBlendWeights =
+      declaration != nullptr ? declaration->swappedBlendWeights : 0;
+
+  constexpr uint32_t kDeclarationSpecConstants = SPEC_CONSTANT_R11G11B10_NORMAL |
+                                                 SPEC_CONSTANT_UNPACK_UBYTE4_BASIS |
+                                                 SPEC_CONSTANT_POSITION_F16;
+  uint32_t specConstants = g_pipelineState.specConstants & ~kDeclarationSpecConstants;
+  if (declaration != nullptr) {
+    if (declaration->hasR11G11B10Normal)
+      specConstants |= SPEC_CONSTANT_R11G11B10_NORMAL;
+    if (declaration->hasUByte4TangentBasis)
+      specConstants |= SPEC_CONSTANT_UNPACK_UBYTE4_BASIS;
+    if (declaration->hasFloat16Position)
+      specConstants |= SPEC_CONSTANT_POSITION_F16;
+  }
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.specConstants, specConstants);
 }
 
 void ProcSetVertexShader(GuestShader* shader) {
@@ -1350,17 +1378,19 @@ void ProcSetPixelShader(GuestShader* shader) {
 void ProcSetVertexDeclaration(GuestVertexDeclaration* declaration) {
   GuestVertexDeclaration* live =
       (declaration != nullptr && IsFm2Resource(declaration)) ? declaration : nullptr;
+  // Tier A step 3: decl → swappedTexcoords / blendWeights + SPEC_CONSTANT_* bits.
+  ApplyVertexDeclarationMetadata(live);
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexDeclaration, live);
 }
 
 void ProcSetStreamSource(uint32_t index, GuestBuffer* buffer, uint32_t offset, uint32_t stride) {
-  if (index >= 16u) return;
+  if (index >= 16u)
+    return;
 
-  GuestBuffer* live =
-      (buffer != nullptr && IsFm2Resource(buffer) && buffer->buffer != nullptr &&
-       offset <= buffer->dataSize)
-          ? buffer
-          : nullptr;
+  GuestBuffer* live = (buffer != nullptr && IsFm2Resource(buffer) && buffer->buffer != nullptr &&
+                       offset <= buffer->dataSize)
+                          ? buffer
+                          : nullptr;
 
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexStrides[index],
                 uint8_t(live ? stride : 0));
@@ -1717,38 +1747,163 @@ RenderFormat ConvertDeclType(uint32_t type) {
 RenderFormat ConvertPositionDeclType(uint32_t type, bool& outFloat16) {
   outFloat16 = false;
   switch (type) {
-    case D3DDECLTYPE_FLOAT1: return RenderFormat::R32_UINT;
-    case D3DDECLTYPE_FLOAT2: return RenderFormat::R32G32_UINT;
-    case D3DDECLTYPE_FLOAT3: return RenderFormat::R32G32B32_UINT;
-    case D3DDECLTYPE_FLOAT4: return RenderFormat::R32G32B32A32_UINT;
+    case D3DDECLTYPE_FLOAT1:
+      return RenderFormat::R32_UINT;
+    case D3DDECLTYPE_FLOAT2:
+      return RenderFormat::R32G32_UINT;
+    case D3DDECLTYPE_FLOAT3:
+      return RenderFormat::R32G32B32_UINT;
+    case D3DDECLTYPE_FLOAT4:
+      return RenderFormat::R32G32B32A32_UINT;
     case D3DDECLTYPE_FLOAT16_2:
       outFloat16 = true;
       return RenderFormat::R16G16_UINT;
     case D3DDECLTYPE_FLOAT16_4:
       outFloat16 = true;
       return RenderFormat::R16G16B16A16_UINT;
-    default: return ConvertDeclType(type);
+    default:
+      return ConvertDeclType(type);
   }
 }
 
 const char* ConvertDeclUsage(uint8_t usage) {
   switch (usage) {
-    case D3DDECLUSAGE_POSITION: return "POSITION";
-    case D3DDECLUSAGE_BLENDWEIGHT: return "BLENDWEIGHT";
-    case D3DDECLUSAGE_BLENDINDICES: return "BLENDINDICES";
-    case D3DDECLUSAGE_NORMAL: return "NORMAL";
-    case D3DDECLUSAGE_PSIZE: return "PSIZE";
-    case D3DDECLUSAGE_TEXCOORD: return "TEXCOORD";
-    case D3DDECLUSAGE_TANGENT: return "TANGENT";
-    case D3DDECLUSAGE_BINORMAL: return "BINORMAL";
-    case D3DDECLUSAGE_TESSFACTOR: return "TESSFACTOR";
-    case D3DDECLUSAGE_POSITIONT: return "POSITIONT";
-    case D3DDECLUSAGE_COLOR: return "COLOR";
-    case D3DDECLUSAGE_FOG: return "FOG";
-    case D3DDECLUSAGE_DEPTH: return "DEPTH";
-    case D3DDECLUSAGE_SAMPLE: return "SAMPLE";
-    default: return "TEXCOORD";
+    case D3DDECLUSAGE_POSITION:
+      return "POSITION";
+    case D3DDECLUSAGE_BLENDWEIGHT:
+      return "BLENDWEIGHT";
+    case D3DDECLUSAGE_BLENDINDICES:
+      return "BLENDINDICES";
+    case D3DDECLUSAGE_NORMAL:
+      return "NORMAL";
+    case D3DDECLUSAGE_PSIZE:
+      return "PSIZE";
+    case D3DDECLUSAGE_TEXCOORD:
+      return "TEXCOORD";
+    case D3DDECLUSAGE_TANGENT:
+      return "TANGENT";
+    case D3DDECLUSAGE_BINORMAL:
+      return "BINORMAL";
+    case D3DDECLUSAGE_TESSFACTOR:
+      return "TESSFACTOR";
+    case D3DDECLUSAGE_POSITIONT:
+      return "POSITIONT";
+    case D3DDECLUSAGE_COLOR:
+      return "COLOR";
+    case D3DDECLUSAGE_FOG:
+      return "FOG";
+    case D3DDECLUSAGE_DEPTH:
+      return "DEPTH";
+    case D3DDECLUSAGE_SAMPLE:
+      return "SAMPLE";
+    default:
+      return "TEXCOORD";
   }
+}
+
+// Byte size of one GuestDeclType fetch. Used to reject vertex declarations
+// whose stream-0 footprint cannot fit the currently bound VB stride.
+uint32_t DeclTypeByteSize(uint32_t type) {
+  switch (type) {
+    case D3DDECLTYPE_FLOAT1:
+      return 4;
+    case D3DDECLTYPE_FLOAT2:
+      return 8;
+    case D3DDECLTYPE_FLOAT3:
+      return 12;
+    case D3DDECLTYPE_FLOAT4:
+      return 16;
+    case D3DDECLTYPE_D3DCOLOR:
+    case D3DDECLTYPE_UBYTE4:
+    case D3DDECLTYPE_UBYTE4_2:
+    case D3DDECLTYPE_UBYTE4N:
+    case D3DDECLTYPE_UBYTE4N_2:
+    case D3DDECLTYPE_SHORT2:
+    case D3DDECLTYPE_SHORT2N:
+    case D3DDECLTYPE_USHORT2N:
+    case D3DDECLTYPE_UINT1:
+    case D3DDECLTYPE_UDEC3:
+    case D3DDECLTYPE_DEC3N:
+    case D3DDECLTYPE_DEC3N_2:
+    case D3DDECLTYPE_DEC3N_3:
+    case D3DDECLTYPE_FLOAT16_2:
+      return 4;
+    case D3DDECLTYPE_SHORT4:
+    case D3DDECLTYPE_SHORT4N:
+    case D3DDECLTYPE_USHORT4N:
+    case D3DDECLTYPE_FLOAT16_4:
+      return 8;
+    default:
+      break;
+  }
+  // Fall back through ConvertDeclType for any Xbox fetch dword we recognize
+  // by format but forgot to list above.
+  switch (ConvertDeclType(type)) {
+    case RenderFormat::R32_FLOAT:
+    case RenderFormat::R32_UINT:
+    case RenderFormat::R8G8B8A8_UNORM:
+    case RenderFormat::R8G8B8A8_UINT:
+    case RenderFormat::B8G8R8A8_UNORM:
+    case RenderFormat::R16G16_FLOAT:
+    case RenderFormat::R16G16_UINT:
+    case RenderFormat::R16G16_SINT:
+    case RenderFormat::R16G16_UNORM:
+    case RenderFormat::R16G16_SNORM:
+      return 4;
+    case RenderFormat::R32G32_FLOAT:
+    case RenderFormat::R32G32_UINT:
+    case RenderFormat::R16G16B16A16_FLOAT:
+    case RenderFormat::R16G16B16A16_UINT:
+    case RenderFormat::R16G16B16A16_SINT:
+    case RenderFormat::R16G16B16A16_UNORM:
+    case RenderFormat::R16G16B16A16_SNORM:
+      return 8;
+    case RenderFormat::R32G32B32_FLOAT:
+    case RenderFormat::R32G32B32_UINT:
+      return 12;
+    case RenderFormat::R32G32B32A32_FLOAT:
+    case RenderFormat::R32G32B32A32_UINT:
+      return 16;
+    default:
+      return 0;
+  }
+}
+
+// True when every stream-0 element of decl fits inside streamStride bytes.
+bool DeclarationFitsStreamStride(const GuestVertexDeclaration* decl, uint32_t streamStride) {
+  if (decl == nullptr || decl->vertexElements == nullptr)
+    return false;
+  // Unknown stride must not vacuously accept every layout (fm2mmgrok10).
+  if (streamStride == 0)
+    return false;
+  for (uint32_t i = 0; i < decl->vertexElementCount; ++i) {
+    const GuestVertexElement& e = decl->vertexElements[i];
+    if (e.stream != 0)
+      continue;
+    // Offset alone past the stride is always illegal (even if type size unknown).
+    if (uint32_t(e.offset) >= streamStride)
+      return false;
+    const uint32_t size = DeclTypeByteSize(e.type);
+    if (size != 0 && uint32_t(e.offset) + size > streamStride)
+      return false;
+  }
+  return true;
+}
+
+uint32_t DeclarationStream0PackedEnd(const GuestVertexDeclaration* decl) {
+  if (decl == nullptr || decl->vertexElements == nullptr)
+    return 0;
+  uint32_t packedEnd = 0;
+  for (uint32_t i = 0; i < decl->vertexElementCount; ++i) {
+    const GuestVertexElement& e = decl->vertexElements[i];
+    if (e.stream != 0)
+      continue;
+    const uint32_t size = DeclTypeByteSize(e.type);
+    if (size == 0)
+      continue;
+    packedEnd = std::max(packedEnd, uint32_t(e.offset) + size);
+  }
+  return packedEnd;
 }
 
 struct BuiltElement {
@@ -1858,15 +2013,23 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
 // usage/usageIndex set against every declaration FM2 has ever created,
 // picking the tightest-fitting exact-count match. Declarations must be a
 // superset of what the shader's header lists (order-independent); among
-// those, an exact element-count match wins decisively, with the most tightly
-// packed declaration that still fits the bound stream stride as a tiebreak.
+// those, an exact element-count match wins decisively, then a stream-0
+// footprint that exactly equals the bound VB stride, with denser packs as a
+// tiebreak. Declarations whose stream-0 elements overflow the stride are
+// rejected outright.
 GuestVertexDeclaration* MatchDeclarationForShader(GuestShader* vs, uint32_t streamStride) {
-  if (vs == nullptr || vs->headerElements.empty()) return nullptr;
+  if (vs == nullptr || vs->headerElements.empty())
+    return nullptr;
+  // Unknown stride: refusing to guess prevents locking in a 32B FLOAT3 layout
+  // that later draws bind with an 8B VB (fm2mmgrok7/10).
+  if (streamStride == 0)
+    return nullptr;
 
   GuestVertexDeclaration* best = nullptr;
   int bestScore = -1;
   for (GuestVertexDeclaration* decl : SnapshotGameDeclarations()) {
-    if (decl == nullptr || decl->vertexElements == nullptr || decl->vertexElementCount == 0) continue;
+    if (decl == nullptr || decl->vertexElements == nullptr || decl->vertexElementCount == 0)
+      continue;
 
     bool covers = true;
     for (const ShaderHeaderElement& he : vs->headerElements) {
@@ -1880,15 +2043,36 @@ GuestVertexDeclaration* MatchDeclarationForShader(GuestShader* vs, uint32_t stre
         break;
       }
     }
-    if (!covers) continue;
+    if (!covers)
+      continue;
+    if (!DeclarationFitsStreamStride(decl, streamStride))
+      continue;
 
-    uint32_t maxOffset = 0;
-    for (uint32_t i = 0; i < decl->vertexElementCount; ++i)
-      maxOffset = std::max(maxOffset, uint32_t(decl->vertexElements[i].offset));
-
+    const uint32_t packedEnd = DeclarationStream0PackedEnd(decl);
     int score = 0;
-    if (decl->vertexElementCount == uint32_t(vs->headerElements.size())) score += 100000;
-    if (streamStride != 0 && maxOffset < streamStride) score += int(maxOffset);
+    if (decl->vertexElementCount == uint32_t(vs->headerElements.size()))
+      score += 100000;
+    if (packedEnd != 0) {
+      if (packedEnd == streamStride)
+        score += 10000;
+      // Prefer denser packs that still fit, but never reward overflow (already
+      // rejected above).
+      score += int(packedEnd);
+    }
+    // Stride-8 FM2 meshes pack POSITION as FLOAT16_4. A FLOAT2 POSITION decl
+    // also fits 8 bytes and can win the tie, but feeds R32G32_UINT into a
+    // shader that f16-unpacks a uint4 -- .zw stay (0,1) and reverse-Z depth
+    // collapses (fm2mmgrok8 draw 199).
+    for (uint32_t i = 0; i < decl->vertexElementCount; ++i) {
+      const GuestVertexElement& e = decl->vertexElements[i];
+      if (e.stream != 0 || e.usage != D3DDECLUSAGE_POSITION || e.usageIndex != 0)
+        continue;
+      if (e.type == D3DDECLTYPE_FLOAT16_4)
+        score += 5000;
+      else if (e.type == D3DDECLTYPE_FLOAT16_2)
+        score += 2500;
+      break;
+    }
     if (score > bestScore) {
       bestScore = score;
       best = decl;
@@ -1897,13 +2081,52 @@ GuestVertexDeclaration* MatchDeclarationForShader(GuestShader* vs, uint32_t stre
   return best;
 }
 
+// Live VB stride for stream 0. Prefer the input-slot stride (what SetVertexBuffers
+// will actually bind). Never take max() with a stale pipeline vertexStrides
+// value — that let a leftover 32B stride accept FLOAT3 decls while the bound
+// VB stayed at 8 (fm2mmgrok10 draw 200).
+uint32_t EffectiveStream0Stride(GuestDevice* device) {
+  uint32_t stride = g_inputSlots[0].stride;
+  if (stride == 0)
+    stride = g_pipelineState.vertexStrides[0];
+  if (stride == 0 && device != nullptr) {
+    // Xbox stores stride/4 as a byte at device+0x2FD8+stream (080plume).
+    const uint8_t dwords = reinterpret_cast<const uint8_t*>(device)[0x2FD8];
+    if (dwords != 0)
+      stride = uint32_t(dwords) * 4u;
+  }
+  return stride;
+}
+
 GuestVertexDeclaration* ResolveVertexDeclaration(GuestDevice* device) {
-  const uint32_t declAddr = device->vertexDeclaration.get();
+  const uint32_t streamStride = EffectiveStream0Stride(device);
+
+  // Keep host stride mirrors coherent when we recovered stride from guest
+  // memory (e.g. object-pass replay restored ctx+0x2FD8 but skipped Bind).
+  if (streamStride != 0 && g_inputSlots[0].stride == 0) {
+    g_inputSlots[0].stride = streamStride;
+    g_pipelineState.vertexStrides[0] =
+        uint8_t(streamStride > 255u ? 255u : streamStride);
+  }
+
+  // Always try shader-header matching first. SetActivePassId mirrors a pass
+  // token into device->vertexDeclaration; when that token happens to alias an
+  // FM2 GuestVertexDeclaration it short-circuits past the matcher and can lock
+  // in a stride-incompatible layout (fm2mmgrok6/7: 32B FLOAT3 decl + 8B VB).
+  GuestVertexDeclaration* matched =
+      MatchDeclarationForShader(g_pipelineState.vertexShader, streamStride);
+  if (matched != nullptr)
+    return matched;
+
+  const uint32_t declAddr = device != nullptr ? device->vertexDeclaration.get() : 0;
   if (declAddr != 0) {
     auto* decl = ghp::ToHost<GuestVertexDeclaration>(declAddr);
-    if (IsFm2Resource(decl) && decl->type == ResourceType::VertexDeclaration) return decl;
+    if (IsFm2Resource(decl) && decl->type == ResourceType::VertexDeclaration &&
+        DeclarationFitsStreamStride(decl, streamStride)) {
+      return decl;
+    }
   }
-  return MatchDeclarationForShader(g_pipelineState.vertexShader, g_pipelineState.vertexStrides[0]);
+  return nullptr;
 }
 
 // ---------------------------------------------------------------------------
