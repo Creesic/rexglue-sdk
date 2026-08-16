@@ -194,6 +194,18 @@ RenderIndexBufferView g_indexBufferView{RenderBufferReference{}, 0, RenderFormat
 DirtyStates g_dirtyStates(true);
 uint64_t g_frameIndex = 0;
 
+alignas(16) uint32_t g_passVsConstants[0x400]{};
+uint64_t g_passVsConstantsCoverage[4]{};
+std::atomic<bool> g_passVsConstantsValid{false};
+alignas(16) uint32_t g_objPassWvp[48]{};
+std::atomic<bool> g_objPassWvpValid{false};
+alignas(16) uint32_t g_scene3dVsConstants[0x400]{};
+uint64_t g_scene3dVsCoverage[4]{};
+std::atomic<bool> g_scene3dVsValid{false};
+const uint32_t* g_liveVsFloatConstants = nullptr;
+const uint32_t* g_livePsFloatConstants = nullptr;
+uint32_t g_lastDrawCallerLr = 0;
+
 // Unleashed-style deferred StretchRect / Resolve: surfaces accumulate
 // destination textures, drained by FlushPendingStretchRectCommands before
 // Present and before draws that need a fresh sample of the resolved content.
@@ -2437,21 +2449,187 @@ PrimitiveIndexData<D3DPT_QUADLIST> g_quadIndexData;
 
 // Returns non-zero index count when the draw must use generated indices.
 uint32_t PrepareConvertedIndices(uint32_t primitiveType, uint32_t vertexOrPrimCount) {
-  if (primitiveType == D3DPT_QUADLIST) return g_quadIndexData.prepare(vertexOrPrimCount);
-  if (primitiveType == D3DPT_TRIANGLEFAN) return g_triangleFanIndexData.prepare(vertexOrPrimCount);
+  if (primitiveType == D3DPT_QUADLIST)
+    return g_quadIndexData.prepare(vertexOrPrimCount);
+  if (primitiveType == D3DPT_TRIANGLEFAN)
+    return g_triangleFanIndexData.prepare(vertexOrPrimCount);
   return 0;
 }
 
 }  // namespace
 
-void SetInsideRecordedBatch(bool inside) { g_insideRecordedBatch = inside; }
-bool IsInsideRecordedBatch() { return g_insideRecordedBatch; }
+void MirrorPassVsConstants(uint32_t startRegister, const void* src, uint32_t vector4fCount) {
+  if (src == nullptr || startRegister >= 0x100u || vector4fCount == 0)
+    return;
+  const uint32_t count = std::min(vector4fCount, 0x100u - startRegister);
+  std::memcpy(g_passVsConstants + startRegister * 4u, src, count * 16u);
+  for (uint32_t reg = startRegister; reg < startRegister + count; ++reg) {
+    g_passVsConstantsCoverage[reg >> 6] |= uint64_t{1} << (reg & 63u);
+  }
+  g_passVsConstantsValid.store(true, std::memory_order_relaxed);
+}
 
-bool HasBoundPipeline() { return g_hasBoundPipeline; }
+void CaptureObjPassWvp(uint32_t startRegister, const void* src, uint32_t vector4fCount) {
+  if (src == nullptr || startRegister > 8u || vector4fCount == 0)
+    return;
+  const uint32_t count = std::min(vector4fCount, 12u - startRegister);
+  std::memcpy(g_objPassWvp + startRegister * 4u, src, count * 16u);
+  if (startRegister + count >= 12u) {
+    g_objPassWvpValid.store(true, std::memory_order_relaxed);
+  }
+}
+
+void SetLiveFloatConstantFiles(const void* vsFile, const void* psFile) {
+  g_liveVsFloatConstants = static_cast<const uint32_t*>(vsFile);
+  g_livePsFloatConstants = static_cast<const uint32_t*>(psFile);
+}
+
+void SetLastDrawCallerLr(uint32_t lr) {
+  g_lastDrawCallerLr = lr;
+}
+
+void SetScene3dVsOverlayFromDevice(const void* beDwords, uint32_t firstReg, uint32_t regCount) {
+  if (beDwords == nullptr || firstReg >= 0x100u || regCount == 0)
+    return;
+  regCount = std::min(regCount, 0x100u - firstReg);
+  std::memcpy(g_scene3dVsConstants + firstReg * 4u, beDwords, regCount * 16u);
+  for (uint32_t reg = firstReg; reg < firstReg + regCount; ++reg) {
+    g_scene3dVsCoverage[reg >> 6] |= uint64_t{1} << (reg & 63u);
+  }
+  g_scene3dVsValid.store(true, std::memory_order_relaxed);
+}
+
+GuestShader* GetPipelineVertexShader() {
+  return g_pipelineState.vertexShader;
+}
+GuestShader* GetPipelinePixelShader() {
+  return g_pipelineState.pixelShader;
+}
+GuestVertexDeclaration* GetPipelineVertexDeclaration() {
+  return g_pipelineState.vertexDeclaration;
+}
+
+void CaptureObjReplayRenderState(ObjReplayRenderState& out) {
+  const PipelineState& state = g_pipelineState;
+  out.zEnable = state.zEnable;
+  out.zWriteEnable = state.zWriteEnable;
+  out.zFunc = uint32_t(state.zFunc);
+  out.cullMode = uint32_t(state.cullMode);
+  out.alphaBlendEnable = state.alphaBlendEnable;
+  out.srcBlend = uint32_t(state.srcBlend);
+  out.destBlend = uint32_t(state.destBlend);
+  out.blendOp = uint32_t(state.blendOp);
+  out.srcBlendAlpha = uint32_t(state.srcBlendAlpha);
+  out.destBlendAlpha = uint32_t(state.destBlendAlpha);
+  out.blendOpAlpha = uint32_t(state.blendOpAlpha);
+  out.colorWriteEnable = state.colorWriteEnable;
+  out.stencilEnable = state.stencilEnable;
+  out.stencilReadMask = state.stencilReadMask;
+  out.stencilWriteMask = state.stencilWriteMask;
+  out.stencilRef = state.stencilRef;
+  out.stencilFrontFunc = uint32_t(state.stencilFrontFunc);
+  out.stencilFrontFail = uint32_t(state.stencilFrontFail);
+  out.stencilFrontDepthFail = uint32_t(state.stencilFrontDepthFail);
+  out.stencilFrontPass = uint32_t(state.stencilFrontPass);
+  out.stencilBackFunc = uint32_t(state.stencilBackFunc);
+  out.stencilBackFail = uint32_t(state.stencilBackFail);
+  out.stencilBackDepthFail = uint32_t(state.stencilBackDepthFail);
+  out.stencilBackPass = uint32_t(state.stencilBackPass);
+  out.slopeScaledDepthBias = state.slopeScaledDepthBias;
+  out.depthBias = state.depthBias;
+  out.depthClipEnabled = state.depthClipEnabled;
+  std::copy(std::begin(g_sharedConstants.clipPlane), std::end(g_sharedConstants.clipPlane),
+            std::begin(out.clipPlane));
+  out.clipPlaneEnabled = g_sharedConstants.clipPlaneEnabled;
+  out.alphaThreshold = g_sharedConstants.alphaThreshold;
+}
+
+void RestoreObjReplayRenderState(const ObjReplayRenderState& in) {
+  bool& dirty = g_dirtyStates.pipelineState;
+  SetDirtyValue(dirty, g_pipelineState.zEnable, in.zEnable);
+  SetDirtyValue(dirty, g_pipelineState.zWriteEnable, in.zWriteEnable);
+  SetDirtyValue(dirty, g_pipelineState.zFunc, static_cast<RenderComparisonFunction>(in.zFunc));
+  SetDirtyValue(dirty, g_pipelineState.cullMode, static_cast<RenderCullMode>(in.cullMode));
+  SetDirtyValue(dirty, g_pipelineState.alphaBlendEnable, in.alphaBlendEnable);
+  SetDirtyValue(dirty, g_pipelineState.srcBlend, static_cast<RenderBlend>(in.srcBlend));
+  SetDirtyValue(dirty, g_pipelineState.destBlend, static_cast<RenderBlend>(in.destBlend));
+  SetDirtyValue(dirty, g_pipelineState.blendOp, static_cast<RenderBlendOperation>(in.blendOp));
+  SetDirtyValue(dirty, g_pipelineState.srcBlendAlpha, static_cast<RenderBlend>(in.srcBlendAlpha));
+  SetDirtyValue(dirty, g_pipelineState.destBlendAlpha, static_cast<RenderBlend>(in.destBlendAlpha));
+  SetDirtyValue(dirty, g_pipelineState.blendOpAlpha,
+                static_cast<RenderBlendOperation>(in.blendOpAlpha));
+  SetDirtyValue(dirty, g_pipelineState.colorWriteEnable, in.colorWriteEnable);
+  SetDirtyValue(dirty, g_pipelineState.stencilEnable, in.stencilEnable);
+  SetDirtyValue(dirty, g_pipelineState.stencilReadMask, in.stencilReadMask);
+  SetDirtyValue(dirty, g_pipelineState.stencilWriteMask, in.stencilWriteMask);
+  SetDirtyValue(dirty, g_pipelineState.stencilRef, in.stencilRef);
+  SetDirtyValue(dirty, g_pipelineState.stencilFrontFunc,
+                static_cast<RenderComparisonFunction>(in.stencilFrontFunc));
+  SetDirtyValue(dirty, g_pipelineState.stencilFrontFail,
+                static_cast<RenderStencilOp>(in.stencilFrontFail));
+  SetDirtyValue(dirty, g_pipelineState.stencilFrontDepthFail,
+                static_cast<RenderStencilOp>(in.stencilFrontDepthFail));
+  SetDirtyValue(dirty, g_pipelineState.stencilFrontPass,
+                static_cast<RenderStencilOp>(in.stencilFrontPass));
+  SetDirtyValue(dirty, g_pipelineState.stencilBackFunc,
+                static_cast<RenderComparisonFunction>(in.stencilBackFunc));
+  SetDirtyValue(dirty, g_pipelineState.stencilBackFail,
+                static_cast<RenderStencilOp>(in.stencilBackFail));
+  SetDirtyValue(dirty, g_pipelineState.stencilBackDepthFail,
+                static_cast<RenderStencilOp>(in.stencilBackDepthFail));
+  SetDirtyValue(dirty, g_pipelineState.stencilBackPass,
+                static_cast<RenderStencilOp>(in.stencilBackPass));
+  SetDirtyValue(dirty, g_pipelineState.slopeScaledDepthBias, in.slopeScaledDepthBias);
+  SetDirtyValue(dirty, g_pipelineState.depthBias, in.depthBias);
+  SetDirtyValue(dirty, g_pipelineState.depthClipEnabled, in.depthClipEnabled);
+  std::copy(std::begin(in.clipPlane), std::end(in.clipPlane),
+            std::begin(g_sharedConstants.clipPlane));
+  g_sharedConstants.clipPlaneEnabled = in.clipPlaneEnabled;
+  g_sharedConstants.alphaThreshold = in.alphaThreshold;
+  g_dirtyStates.renderTargetAndDepthStencil = true;
+}
+
+void SetInsideRecordedBatch(bool inside) {
+  g_insideRecordedBatch = inside;
+}
+bool IsInsideRecordedBatch() {
+  return g_insideRecordedBatch;
+}
+
+bool HasBoundPipeline() {
+  return g_hasBoundPipeline;
+}
 
 void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   std::lock_guard lock(RecordingMutex());
   g_hasBoundPipeline = false;
+  if (device == nullptr)
+    return;
+
+  // Tier A steps 1–7: flush guards, samplers, decl SPEC, overlay merge,
+  // RAW feeders, and object-pass record/replay.
+
+  // FM2's deferred draw-list nodes carry color-write state that the direct
+  // D3D9 mirrors don't see. A bound pixel shader denotes a color pass; keep
+  // stale zero write masks from turning it into an accidental depth prepass.
+  if (g_pipelineState.pixelShader != nullptr && g_pipelineState.colorWriteEnable == 0 &&
+      g_renderTarget != nullptr) {
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.colorWriteEnable, 0xFu);
+    g_dirtyStates.renderTargetAndDepthStencil = true;
+  }
+
+  GuestBaseTexture* renderTarget = g_pipelineState.colorWriteEnable != 0 ? g_renderTarget : nullptr;
+  GuestSurface* depthStencil =
+      (g_pipelineState.zEnable || g_pipelineState.stencilEnable) ? g_depthStencil : nullptr;
+  if (depthStencil == nullptr && (g_pipelineState.zEnable || g_pipelineState.stencilEnable) &&
+      renderTarget != nullptr && g_implicitDepthStencil != nullptr &&
+      g_implicitDepthStencil->width == renderTarget->width &&
+      g_implicitDepthStencil->height == renderTarget->height) {
+    depthStencil = g_implicitDepthStencil;
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthStencilFormat,
+                  depthStencil->format);
+    g_dirtyStates.renderTargetAndDepthStencil = true;
+  }
 
   const RenderPrimitiveTopology topology = ConvertPrimitiveType(primitiveType);
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.primitiveTopology, topology);
@@ -2461,14 +2639,12 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   FlushPendingStretchRectCommands();
 
   if (g_dirtyStates.renderTargetAndDepthStencil || g_framebuffer == nullptr) {
-    AddBarrier(g_renderTarget, RenderTextureLayout::COLOR_WRITE);
-    AddBarrier(g_depthStencil, RenderTextureLayout::DEPTH_WRITE);
+    AddBarrier(renderTarget, RenderTextureLayout::COLOR_WRITE);
+    AddBarrier(depthStencil, RenderTextureLayout::DEPTH_WRITE);
     FlushBarriers();
-    // SetFramebuffer may ResizeTileSurface (new CREATE_NOT_ZEROED texture).
-    // Discard/init must run AFTER grow, not before.
-    SetFramebuffer(g_renderTarget, g_depthStencil, false);
-    EnsureAttachmentInitialized(g_renderTarget);
-    EnsureAttachmentInitialized(g_depthStencil);
+    SetFramebuffer(renderTarget, depthStencil, false);
+    EnsureAttachmentInitialized(renderTarget);
+    EnsureAttachmentInitialized(depthStencil);
     g_dirtyStates.renderTargetAndDepthStencil = false;
   }
   if (g_dirtyStates.viewport) {
@@ -2514,15 +2690,27 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
 
   {
     GuestVertexDeclaration* decl = ResolveVertexDeclaration(device);
-    if (decl != nullptr) CompleteVertexDeclaration(decl);
+    // Completes the decl and applies SPEC_CONSTANT_POSITION_F16 / R11G11B10 /
+    // UBYTE4 + shared swizzle metadata before PSO lookup.
+    ApplyVertexDeclarationMetadata(decl);
     SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexDeclaration, decl);
   }
 
-  RenderPipeline* pipeline = GetPipeline(g_pipelineState, g_insideRecordedBatch);
-  if (pipeline == nullptr) return;
+  PipelineState pipelineState = g_pipelineState;
+  pipelineState.sampleCount = RenderSampleCount::COUNT_1;
+  if (depthStencil == nullptr) {
+    pipelineState.zEnable = false;
+    pipelineState.zWriteEnable = false;
+    pipelineState.stencilEnable = false;
+    pipelineState.depthStencilFormat = RenderFormat::UNKNOWN;
+  }
+  RenderPipeline* pipeline = GetPipeline(pipelineState, g_insideRecordedBatch && !kObjPassRecordReplay);
+  if (pipeline == nullptr)
+    return;
   RenderPipelineLayout* layout = PipelineLayout();
   RenderCommandList* commandList = CommandList();
-  if (layout == nullptr || commandList == nullptr) return;
+  if (layout == nullptr || commandList == nullptr)
+    return;
   commandList->setGraphicsPipelineLayout(layout);
   if (TextureDescriptorSet() != nullptr) {
     commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 0);
@@ -2798,7 +2986,9 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
   }
   RenderPipelineLayout* layout = PipelineLayout();
   RenderCommandList* commandList = CommandList();
-  RenderPipeline* pipeline = GetPipeline(g_pipelineState, g_insideRecordedBatch);
+  PipelineState pipelineState = g_pipelineState;
+  pipelineState.sampleCount = RenderSampleCount::COUNT_1;
+  RenderPipeline* pipeline = GetPipeline(pipelineState, g_insideRecordedBatch && !kObjPassRecordReplay);
   if (layout == nullptr || commandList == nullptr || pipeline == nullptr) {
     g_hasBoundPipeline = false;
     return;

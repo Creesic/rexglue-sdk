@@ -86,7 +86,63 @@ plume::RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants
 // Every D3DVERTEXELEMENT9 declaration FM2 has created. Used to match a vertex
 // shader's header usage set to its real input layout (FM2 never binds the
 // declaration via the device field).
+struct GuestDevice;
 struct GuestVertexDeclaration;
 std::vector<GuestVertexDeclaration*> SnapshotGameDeclarations();
+
+// Constant transport from FM2's render contexts into the native draw path.
+// Inputs are raw big-endian register files and remain byte-swapped until the
+// per-draw upload.
+// Recorded command-buffer object-pass draws are captured and replayed from
+// EmitDirty. While this is true, do not substitute the placeholder PS during
+// the record bracket — replay submits with the real shaders.
+inline constexpr bool kObjPassRecordReplay = true;
+
+void MirrorPassVsConstants(uint32_t startRegister, const void* src, uint32_t vector4fCount);
+void CaptureObjPassWvp(uint32_t startRegister, const void* src, uint32_t vector4fCount);
+void SetLiveFloatConstantFiles(const void* vsFile, const void* psFile);
+void SetLastDrawCallerLr(uint32_t lr);
+void SetScene3dVsOverlayFromDevice(const void* beDwords, uint32_t firstReg, uint32_t regCount);
+
+GuestShader* GetPipelineVertexShader();
+GuestShader* GetPipelinePixelShader();
+GuestVertexDeclaration* GetPipelineVertexDeclaration();
+
+// Raster/output snapshot paired with a recorded object-pass draw.
+struct ObjReplayRenderState {
+  bool zEnable = true;
+  bool zWriteEnable = true;
+  uint32_t zFunc = 0;
+  uint32_t cullMode = 0;
+  bool alphaBlendEnable = false;
+  uint32_t srcBlend = 0;
+  uint32_t destBlend = 0;
+  uint32_t blendOp = 0;
+  uint32_t srcBlendAlpha = 0;
+  uint32_t destBlendAlpha = 0;
+  uint32_t blendOpAlpha = 0;
+  uint32_t colorWriteEnable = 0xFu;
+  bool stencilEnable = false;
+  uint8_t stencilReadMask = 0xFF;
+  uint8_t stencilWriteMask = 0xFF;
+  uint8_t stencilRef = 0;
+  uint32_t stencilFrontFunc = 0;
+  uint32_t stencilFrontFail = 0;
+  uint32_t stencilFrontDepthFail = 0;
+  uint32_t stencilFrontPass = 0;
+  uint32_t stencilBackFunc = 0;
+  uint32_t stencilBackFail = 0;
+  uint32_t stencilBackDepthFail = 0;
+  uint32_t stencilBackPass = 0;
+  float slopeScaledDepthBias = 0.0f;
+  int32_t depthBias = 0;
+  bool depthClipEnabled = true;
+  float clipPlane[4]{};
+  uint32_t clipPlaneEnabled = 0;
+  float alphaThreshold = 0.0f;
+};
+
+void CaptureObjReplayRenderState(ObjReplayRenderState& out);
+void RestoreObjReplayRenderState(const ObjReplayRenderState& in);
 
 }  // namespace fm2::render

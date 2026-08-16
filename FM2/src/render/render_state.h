@@ -130,17 +130,10 @@ void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t ba
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                              const void* data, uint32_t stride);
 
-// True while inside a FM2_Render_ScopedBatchBegin/Finalize bracket -- FM2's
-// recorded-command-buffer object-pass path (car/showroom geometry). Draws
-// issued in this state only ever execute once, at record time (there is no
-// real PM4 ring for a later "replay" to execute against under this native
-// renderer), and the guest's shared constant register file is not reliably
-// this object's own by the time replay would have happened on real hardware.
-// FlushRenderState keeps normal vertex-shader/geometry handling but binds an
-// always-resident flat placeholder pixel shader instead of resolving the
-// real one, so these draws render as a correctly-positioned (best-effort)
-// but visibly-unshaded placeholder rather than silently vanishing or reusing
-// stale constants from an unrelated draw.
+// True while inside a FM2_Render_ScopedBatchBegin/Finalize bracket. The lower
+// command-buffer batch hooks capture these object-pass draws and replay them
+// from their persistent clone with record-time state plus live traversal
+// constants; FlushRenderState therefore always resolves the real pixel shader.
 void SetInsideRecordedBatch(bool inside);
 bool IsInsideRecordedBatch();
 

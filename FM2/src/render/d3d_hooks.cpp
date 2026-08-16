@@ -22,10 +22,16 @@
 // primitives for the actual create/lock/unlock work.
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <mutex>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -946,7 +952,249 @@ REX_HOOK(D3DDevice_Resolve, ResolveHook);
 // redundant.
 // ---------------------------------------------------------------------------
 
+REX_IMPORT(__imp__sub_8236D958, g_origUploadMatrixConstants,
+           void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_82382CC8, g_origSetPendingAluConstants,
+           void(uint32_t, uint64_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3D_BeginCommandBufferBatch, g_origCbBatchBegin,
+           uint32_t(uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3D_FinalizeCommandBufferBatch, g_origCbBatchFinalize, uint32_t(uint32_t));
+REX_IMPORT(__imp__sub_823759A8, g_origCbCreateClone, uint32_t(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_D3D_EmitDirtyStateAndDrawList, g_origEmitDirtyStateAndDrawList,
+           void(uint32_t, uint32_t, uint32_t));
+
 namespace {
+
+bool CopyGuestRange(uint32_t guestAddress, uint8_t* destination, size_t length) {
+  const auto* source = ghp::ToHost<const uint8_t>(guestAddress);
+  if (source == nullptr)
+    return false;
+  std::memcpy(destination, source, length);
+  return true;
+}
+
+void RestoreGuestRange(uint32_t guestAddress, const uint8_t* source, size_t length) {
+  auto* destination = ghp::ToHost<uint8_t>(guestAddress);
+  if (destination != nullptr)
+    std::memcpy(destination, source, length);
+}
+
+struct CapturedObjPassDraw {
+  uint32_t ctx = 0;
+  uint32_t prim = 0;
+  int32_t baseVertexIndex = 0;
+  uint32_t startIndex = 0;
+  uint32_t indexCount = 0;
+  rr::GuestShader* vs = nullptr;
+  rr::GuestShader* ps = nullptr;
+  rr::GuestVertexDeclaration* decl = nullptr;
+  uint32_t declField = 0;
+  rr::ObjReplayRenderState rstate;
+  std::array<uint8_t, 0x1000> vsConsts{};
+  std::array<uint8_t, 0x1000> psConsts{};
+  std::array<uint8_t, 4> ibPtr{};
+  std::array<uint8_t, 32> vbPtrs{};
+  std::array<uint8_t, 8> vbStrides{};
+  std::array<uint8_t, 16> shaderPtrs{};
+  std::array<uint8_t, 4> colorWrite{};
+  std::array<uint8_t, 128> texTable{};
+  std::array<uint8_t, 16 * 24> texFetchConsts{};
+  std::array<uint8_t, 0x1000> mainVsConsts{};
+  std::array<uint8_t, 0x1000> mainPsConsts{};
+  bool mainValid = false;
+  uint32_t flushSeq = 0;
+};
+
+thread_local bool t_recordingBatch = false;
+thread_local std::vector<CapturedObjPassDraw> t_pendingBatchDraws;
+thread_local bool t_inObjReplay = false;
+thread_local uint32_t t_objTraversalCtx = 0;
+thread_local uint64_t t_travDirtyVs[4]{};
+thread_local std::array<uint8_t, 0x1000> t_flushedVsConsts{};
+thread_local std::array<uint8_t, 0x1000> t_flushedPsConsts{};
+thread_local bool t_flushedVsValid = false;
+thread_local bool t_flushedPsValid = false;
+thread_local uint32_t t_flushedSeq = 0;
+
+std::mutex g_objReplayMutex;
+std::unordered_map<uint32_t, std::vector<CapturedObjPassDraw>> g_objReplayCache;
+
+void CaptureBatchDrawPending(uint32_t context, uint32_t primitiveType, int32_t baseVertexIndex,
+                             uint32_t startIndex, uint32_t indexCount) {
+  if (context == 0 || t_pendingBatchDraws.size() >= 512u)
+    return;
+
+  CapturedObjPassDraw draw;
+  draw.ctx = context;
+  draw.prim = primitiveType;
+  draw.baseVertexIndex = baseVertexIndex;
+  draw.startIndex = startIndex;
+  draw.indexCount = indexCount;
+  draw.vs = rr::GetPipelineVertexShader();
+  draw.ps = rr::GetPipelinePixelShader();
+  draw.decl = rr::GetPipelineVertexDeclaration();
+  if (GuestDevice* device = rr::GetActiveGuestDevice()) {
+    draw.declField = device->vertexDeclaration.get();
+  }
+  rr::CaptureObjReplayRenderState(draw.rstate);
+
+  if (!CopyGuestRange(context + 0x700u, draw.vsConsts.data(), draw.vsConsts.size()) ||
+      !CopyGuestRange(context + 0x1700u, draw.psConsts.data(), draw.psConsts.size()) ||
+      !CopyGuestRange(context + 0x2F7Cu, draw.ibPtr.data(), draw.ibPtr.size()) ||
+      !CopyGuestRange(context + 0x2F94u, draw.vbPtrs.data(), draw.vbPtrs.size()) ||
+      !CopyGuestRange(context + 0x2FD8u, draw.vbStrides.data(), draw.vbStrides.size()) ||
+      !CopyGuestRange(context + 0x3070u, draw.shaderPtrs.data(), draw.shaderPtrs.size()) ||
+      !CopyGuestRange(context + 10420u, draw.colorWrite.data(), draw.colorWrite.size()) ||
+      !CopyGuestRange(context + 12264u, draw.texTable.data(), draw.texTable.size()) ||
+      !CopyGuestRange(context + 1024u, draw.texFetchConsts.data(), draw.texFetchConsts.size())) {
+    return;
+  }
+
+  if (t_flushedVsValid && t_flushedPsValid) {
+    draw.mainVsConsts = t_flushedVsConsts;
+    draw.mainPsConsts = t_flushedPsConsts;
+    draw.mainValid = true;
+    draw.flushSeq = t_flushedSeq;
+  }
+  t_pendingBatchDraws.push_back(std::move(draw));
+}
+
+void StartBatchDrawRecording() {
+  t_recordingBatch = true;
+  t_pendingBatchDraws.clear();
+}
+
+void StopBatchDrawRecording() {
+  t_recordingBatch = false;
+}
+
+void BindPendingBatchDrawsToClone(uint32_t clone) {
+  if (clone == 0 || t_pendingBatchDraws.empty()) {
+    t_pendingBatchDraws.clear();
+    return;
+  }
+  std::lock_guard lock(g_objReplayMutex);
+  if (g_objReplayCache.size() > 4096u)
+    g_objReplayCache.clear();
+  g_objReplayCache[clone] = std::move(t_pendingBatchDraws);
+  t_pendingBatchDraws.clear();
+}
+
+struct CtxReplayScribbleGuard {
+  uint32_t ctx = 0;
+  bool valid = false;
+  std::array<uint8_t, 0x1000> vsConsts{};
+  std::array<uint8_t, 0x1000> psConsts{};
+  std::array<uint8_t, 4> ibPtr{};
+  std::array<uint8_t, 32> vbPtrs{};
+  std::array<uint8_t, 8> vbStrides{};
+  std::array<uint8_t, 16> shaderPtrs{};
+  std::array<uint8_t, 4> colorWrite{};
+  std::array<uint8_t, 128> texTable{};
+  std::array<uint8_t, 16 * 24> texFetchConsts{};
+
+  explicit CtxReplayScribbleGuard(uint32_t context) : ctx(context) {
+    valid = CopyGuestRange(ctx + 0x700u, vsConsts.data(), vsConsts.size()) &&
+            CopyGuestRange(ctx + 0x1700u, psConsts.data(), psConsts.size()) &&
+            CopyGuestRange(ctx + 0x2F7Cu, ibPtr.data(), ibPtr.size()) &&
+            CopyGuestRange(ctx + 0x2F94u, vbPtrs.data(), vbPtrs.size()) &&
+            CopyGuestRange(ctx + 0x2FD8u, vbStrides.data(), vbStrides.size()) &&
+            CopyGuestRange(ctx + 0x3070u, shaderPtrs.data(), shaderPtrs.size()) &&
+            CopyGuestRange(ctx + 10420u, colorWrite.data(), colorWrite.size()) &&
+            CopyGuestRange(ctx + 12264u, texTable.data(), texTable.size()) &&
+            CopyGuestRange(ctx + 1024u, texFetchConsts.data(), texFetchConsts.size());
+  }
+
+  ~CtxReplayScribbleGuard() {
+    if (!valid)
+      return;
+    RestoreGuestRange(ctx + 0x700u, vsConsts.data(), vsConsts.size());
+    RestoreGuestRange(ctx + 0x1700u, psConsts.data(), psConsts.size());
+    RestoreGuestRange(ctx + 0x2F7Cu, ibPtr.data(), ibPtr.size());
+    RestoreGuestRange(ctx + 0x2F94u, vbPtrs.data(), vbPtrs.size());
+    RestoreGuestRange(ctx + 0x2FD8u, vbStrides.data(), vbStrides.size());
+    RestoreGuestRange(ctx + 0x3070u, shaderPtrs.data(), shaderPtrs.size());
+    RestoreGuestRange(ctx + 10420u, colorWrite.data(), colorWrite.size());
+    RestoreGuestRange(ctx + 12264u, texTable.data(), texTable.size());
+    RestoreGuestRange(ctx + 1024u, texFetchConsts.data(), texFetchConsts.size());
+  }
+};
+
+void ReplayObjPassDraw(const CapturedObjPassDraw& draw) {
+  RestoreGuestRange(draw.ctx + 0x700u, draw.vsConsts.data(), draw.vsConsts.size());
+  const uint32_t traversalContext = t_objTraversalCtx;
+  if (traversalContext != 0 && traversalContext != draw.ctx) {
+    const auto* traversalVs = ghp::ToHost<const uint8_t>(traversalContext + 0x700u);
+    auto* replayVs = ghp::ToHost<uint8_t>(draw.ctx + 0x700u);
+    if (traversalVs != nullptr && replayVs != nullptr) {
+      std::memcpy(replayVs, traversalVs, 12u * 16u);
+      for (uint32_t word = 0; word < 4u; ++word) {
+        uint64_t bits = t_travDirtyVs[word];
+        if (word == 0)
+          bits &= ~0xFFFull;
+        while (bits != 0) {
+          const uint32_t reg = word * 64u + uint32_t(std::countr_zero(bits));
+          bits &= bits - 1;
+          std::memcpy(replayVs + reg * 16u, traversalVs + reg * 16u, 16u);
+        }
+      }
+    }
+  }
+
+  RestoreGuestRange(draw.ctx + 0x1700u, draw.psConsts.data(), draw.psConsts.size());
+  if (draw.mainValid) {
+    if (auto* replayVs = ghp::ToHost<uint8_t>(draw.ctx + 0x700u)) {
+      std::memcpy(replayVs + 12u * 16u, draw.mainVsConsts.data() + 12u * 16u, (184u - 12u) * 16u);
+      std::memset(replayVs + 58u * 16u, 0, 16u);
+    }
+    if (auto* replayPs = ghp::ToHost<uint8_t>(draw.ctx + 0x1700u)) {
+      std::memcpy(replayPs, draw.mainPsConsts.data(), 180u * 16u);
+    }
+  }
+
+  RestoreGuestRange(draw.ctx + 0x2F7Cu, draw.ibPtr.data(), draw.ibPtr.size());
+  RestoreGuestRange(draw.ctx + 0x2F94u, draw.vbPtrs.data(), draw.vbPtrs.size());
+  RestoreGuestRange(draw.ctx + 0x2FD8u, draw.vbStrides.data(), draw.vbStrides.size());
+  RestoreGuestRange(draw.ctx + 0x3070u, draw.shaderPtrs.data(), draw.shaderPtrs.size());
+  RestoreGuestRange(draw.ctx + 10420u, draw.colorWrite.data(), draw.colorWrite.size());
+  RestoreGuestRange(draw.ctx + 12264u, draw.texTable.data(), draw.texTable.size());
+  RestoreGuestRange(draw.ctx + 1024u, draw.texFetchConsts.data(), draw.texFetchConsts.size());
+
+  rr::RestoreObjReplayRenderState(draw.rstate);
+  GuestDevice* device = rr::GetActiveGuestDevice();
+  if (device == nullptr)
+    return;
+  device->vertexDeclaration = draw.declField;
+  rr::SetVertexDeclaration(device, draw.decl);
+  rr::SetVertexShader(device, draw.vs);
+  rr::SetPixelShader(device, draw.ps);
+
+  // Guest VB/stride restore alone does not update host input slots. Without
+  // this, ResolveVertexDeclaration can keep a stale 32B stride while the
+  // restored guest ctx says 8 (fm2mmgrok10).
+  if (const auto* ibBe = ghp::ToHost<const rex::be<uint32_t>>(draw.ctx + 0x2F7Cu)) {
+    const uint32_t ibAddr = ibBe->get();
+    rr::SetIndices(device, ibAddr != 0 ? ghp::ToHost<GuestBuffer>(ibAddr) : nullptr);
+  }
+  for (uint32_t s = 0; s < 8u; ++s) {
+    const auto* vbBe = ghp::ToHost<const rex::be<uint32_t>>(draw.ctx + 0x2F94u + s * 4u);
+    const uint8_t* strideBytes = ghp::ToHost<const uint8_t>(draw.ctx + 0x2FD8u);
+    const uint32_t vbAddr = vbBe != nullptr ? vbBe->get() : 0;
+    const uint8_t strideDwords = strideBytes != nullptr ? strideBytes[s] : 0;
+    if (vbAddr == 0 || strideDwords == 0) {
+      rr::SetStreamSource(device, s, nullptr, 0, 0);
+      continue;
+    }
+    rr::SetStreamSource(device, s, ghp::ToHost<GuestBuffer>(vbAddr), 0,
+                        uint32_t(strideDwords) * 4u);
+  }
+
+  rr::SetLiveFloatConstantFiles(ghp::ToHost<const void>(draw.ctx + 0x700u),
+                                ghp::ToHost<const void>(draw.ctx + 0x1700u));
+  rr::DrawIndexedVertices(device, draw.prim, draw.baseVertexIndex, draw.startIndex,
+                          draw.indexCount);
+  rr::SetLiveFloatConstantFiles(nullptr, nullptr);
+}
 
 // Rough measurement of what fraction of real draws go through this direct
 // dispatch path vs. only ever executing from inside a recorded command-buffer
@@ -982,6 +1230,13 @@ void DrawVerticesHook(GuestDevice* device, uint32_t primitiveType, uint32_t star
 void DrawIndexedVerticesHook(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
                              uint32_t startIndex, uint32_t indexCount) {
   TrackDrawForInstrumentation();
+  // Object-pass record: snapshot guest context + pipeline before the native
+  // submit so EmitDirty can replay with real PS/state later.
+  if (t_recordingBatch && !t_inObjReplay && device != nullptr) {
+    const uint32_t context = ghp::ToGuest(device);
+    if (context != 0)
+      CaptureBatchDrawPending(context, primitiveType, baseVertexIndex, startIndex, indexCount);
+  }
   rr::DrawIndexedVertices(device, primitiveType, baseVertexIndex, startIndex, indexCount);
 }
 
@@ -994,10 +1249,192 @@ void DrawVerticesUPHook(GuestDevice* device, uint32_t primitiveType, uint32_t ve
 
 }  // namespace
 
-REX_HOOK(D3DDevice_DrawVertices, DrawVerticesHook);
-REX_HOOK(D3DDevice_DrawIndexedVertices, DrawIndexedVerticesHook);
-REX_HOOK(D3DDevice_DrawIndexedVertices_WithVertexFormatSetup, DrawIndexedVerticesHook);
-REX_HOOK(D3DDevice_DrawVerticesUP, DrawVerticesUPHook);
+// Capture draw-site LR so FlushRenderState can gate the object-pass WVP overlay
+// (g_lastDrawCallerLr == 0x82566A34). Still dispatch through HostToGuest for
+// the typed draw hooks.
+REX_HOOK_RAW(D3DDevice_DrawVertices) {
+  rr::SetLastDrawCallerLr(static_cast<uint32_t>(ctx.lr));
+  rex::ppc::HostToGuestFunction<DrawVerticesHook>(ctx, base);
+}
+
+REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
+  rr::SetLastDrawCallerLr(static_cast<uint32_t>(ctx.lr));
+  rex::ppc::HostToGuestFunction<DrawIndexedVerticesHook>(ctx, base);
+}
+
+REX_HOOK_RAW(D3DDevice_DrawIndexedVertices_WithVertexFormatSetup) {
+  rr::SetLastDrawCallerLr(static_cast<uint32_t>(ctx.lr));
+  rex::ppc::HostToGuestFunction<DrawIndexedVerticesHook>(ctx, base);
+}
+
+REX_HOOK_RAW(D3DDevice_DrawVerticesUP) {
+  rr::SetLastDrawCallerLr(static_cast<uint32_t>(ctx.lr));
+  rex::ppc::HostToGuestFunction<DrawVerticesUPHook>(ctx, base);
+}
+
+// Tier A step 5–7: REX_HOOK_RAW feeders + object-pass record/replay.
+// Never use HostToGuest marshalling on EmitDirty.
+REX_HOOK_RAW(sub_8236D958) {
+  // Capture before original — it clobbers r3–r6.
+  const uint32_t devCtx = ctx.r3.u32;
+  const uint32_t destReg = ctx.r4.u32;
+  const uint32_t srcAddr = ctx.r5.u32;
+  const uint32_t count = ctx.r6.u32;
+  const uint32_t lr = static_cast<uint32_t>(ctx.lr);
+  g_origUploadMatrixConstants.fn(ctx, base);
+
+  // Object-pass traversal staging context + dirty VS regs for replay overlays.
+  if (lr >= 0x8255BC00u && lr < 0x8255E800u) {
+    t_objTraversalCtx = devCtx;
+    const uint32_t lo = destReg < 256u ? destReg : 256u;
+    const uint32_t hi = std::min(destReg + count, 256u);
+    for (uint32_t r = lo; r < hi; ++r)
+      t_travDirtyVs[r >> 6] |= uint64_t{1} << (r & 63u);
+  }
+
+  const void* src = ghp::ToHost<const void>(srcAddr);
+  if (src == nullptr || count == 0)
+    return;
+
+  // Cross-context VS shadow for FlushRenderState when no live file is bound.
+  rr::MirrorPassVsConstants(destReg, src, count);
+
+  // Object-pass shared view-projection (c0–c11): arm on a large |c0.x| write at
+  // reg0 from the object-pass setup region; complete with reg4/reg8.
+  static std::atomic<bool> s_objWvpArmed{false};
+  if (lr >= 0x8255BC00u && lr < 0x8255E800u && count >= 4u) {
+    if (destReg == 0u) {
+      const float c0x =
+          std::bit_cast<float>(static_cast<const rex::be<uint32_t>*>(src)[0].get());
+      const float ac = std::fabs(c0x);
+      if (ac > 55.f && ac < 5000.f) {
+        s_objWvpArmed.store(true, std::memory_order_relaxed);
+        rr::CaptureObjPassWvp(0u, src, count);
+      }
+    } else if ((destReg == 4u || destReg == 8u) &&
+               s_objWvpArmed.load(std::memory_order_relaxed)) {
+      rr::CaptureObjPassWvp(destReg, src, count);
+      if (destReg == 8u)
+        s_objWvpArmed.store(false, std::memory_order_relaxed);
+    }
+  }
+}
+
+REX_HOOK_RAW(sub_82382CC8) {
+  // r5=constBase (0x4000 VS / 0x4400 PS), r6=registerFile guest ptr.
+  const uint32_t constBase = ctx.r5.u32;
+  const uint32_t regFile = ctx.r6.u32;
+  g_origSetPendingAluConstants.fn(ctx, base);
+
+  // Flush-time VS/PS snapshots for object-pass replay shared material bands.
+  if (regFile != 0 && (constBase == 0x4000u || constBase == 0x4400u)) {
+    if (const auto* rf = ghp::ToHost<const uint8_t>(regFile)) {
+      if (constBase == 0x4000u) {
+        std::memcpy(t_flushedVsConsts.data(), rf, t_flushedVsConsts.size());
+        t_flushedVsValid = true;
+      } else {
+        std::memcpy(t_flushedPsConsts.data(), rf, t_flushedPsConsts.size());
+        t_flushedPsValid = true;
+      }
+      ++t_flushedSeq;
+    }
+  }
+
+  // VS ALU flush → scene3d WVP overlay (regs 15..18).
+  if (constBase != 0x4000u || regFile == 0)
+    return;
+  const auto* wvp = ghp::ToHost<const uint32_t>(regFile + 15u * 16u);
+  if (wvp == nullptr)
+    return;
+
+  uint32_t significant = 0;
+  for (uint32_t i = 0; i < 16u; ++i) {
+    const float value = std::bit_cast<float>(std::byteswap(wvp[i]));
+    const float magnitude = std::fabs(value);
+    if (std::isfinite(value) && magnitude >= 0.25f && magnitude <= 1.0e6f)
+      ++significant;
+  }
+  if (significant >= 3u)
+    rr::SetScene3dVsOverlayFromDevice(wvp, 15u, 4u);
+}
+
+REX_HOOK_RAW(FM2_D3D_BeginCommandBufferBatch) {
+  if (rr::kObjPassRecordReplay)
+    StartBatchDrawRecording();
+  g_origCbBatchBegin.fn(ctx, base);
+}
+
+REX_HOOK_RAW(FM2_D3D_FinalizeCommandBufferBatch) {
+  g_origCbBatchFinalize.fn(ctx, base);
+  if (rr::kObjPassRecordReplay)
+    StopBatchDrawRecording();
+}
+
+REX_HOOK_RAW(sub_823759A8) {
+  g_origCbCreateClone.fn(ctx, base);
+  // Return value in r3 is the drawNode EmitDirty will pass later.
+  if (rr::kObjPassRecordReplay)
+    BindPendingBatchDrawsToClone(ctx.r3.u32);
+}
+
+REX_HOOK_RAW(FM2_D3D_EmitDirtyStateAndDrawList) {
+  // Snapshot args before the original — it clobbers guest registers.
+  const uint32_t context = ctx.r3.u32;
+  const uint32_t drawNode = ctx.r4.u32;
+  g_origEmitDirtyStateAndDrawList.fn(ctx, base);
+
+  // Scene3d WVP overlay (regs 15..18) — safe even without a matching clone.
+  const auto* wvp = ghp::ToHost<const uint32_t>(context + 0x700u + 15u * 16u);
+  if (wvp != nullptr) {
+    uint32_t significant = 0;
+    for (uint32_t i = 0; i < 16u; ++i) {
+      const float value = std::bit_cast<float>(std::byteswap(wvp[i]));
+      const float magnitude = std::fabs(value);
+      if (std::isfinite(value) && magnitude >= 0.25f && magnitude <= 1.0e6f)
+        ++significant;
+    }
+    if (significant >= 3u)
+      rr::SetScene3dVsOverlayFromDevice(wvp, 15u, 4u);
+  }
+
+  if (!rr::kObjPassRecordReplay || t_inObjReplay)
+    return;
+
+  std::unique_lock lock(g_objReplayMutex);
+  const auto it = g_objReplayCache.find(drawNode);
+  if (it == g_objReplayCache.end() || it->second.empty())
+    return;
+
+  const std::vector<CapturedObjPassDraw>& draws = it->second;
+  const uint32_t replayContext = draws.front().ctx;
+  CtxReplayScribbleGuard guard(replayContext);
+  if (!guard.valid)
+    return;
+
+  GuestDevice* device = rr::GetActiveGuestDevice();
+  rr::GuestShader* previousVs = rr::GetPipelineVertexShader();
+  rr::GuestShader* previousPs = rr::GetPipelinePixelShader();
+  rr::GuestVertexDeclaration* previousDecl = rr::GetPipelineVertexDeclaration();
+  const uint32_t previousDeclField = device != nullptr ? device->vertexDeclaration.get() : 0;
+  rr::ObjReplayRenderState previousRenderState;
+  rr::CaptureObjReplayRenderState(previousRenderState);
+
+  t_inObjReplay = true;
+  for (const CapturedObjPassDraw& draw : draws) {
+    if (draw.ctx == replayContext)
+      ReplayObjPassDraw(draw);
+  }
+  t_inObjReplay = false;
+
+  if (device != nullptr) {
+    device->vertexDeclaration = previousDeclField;
+    rr::SetVertexDeclaration(device, previousDecl);
+    rr::SetVertexShader(device, previousVs);
+    rr::SetPixelShader(device, previousPs);
+  }
+  rr::RestoreObjReplayRenderState(previousRenderState);
+  std::fill(std::begin(t_travDirtyVs), std::end(t_travDirtyVs), 0);
+}
 
 // ---------------------------------------------------------------------------
 // GPU-hang watchdog defusal. D3D_CommandWaitForCompletion (a still-running,
@@ -1034,39 +1471,16 @@ REX_HOOK(D3D_CBlocker_Check, CBlockerCheckHook);
 // Recorded command-buffer object-pass batch boundary (car/showroom
 // geometry). FM2_Render_ScopedBatchBegin/Finalize wrap a
 // FM2_D3D_BeginCommandBufferBatch/FinalizeCommandBufferBatch bracket that
-// switches the game onto a secondary device/context and (on real hardware)
-// records PM4 packets for later per-frame replay by the GPU. There is no
-// later replay here -- draws issued in this state only ever execute once,
-// immediately, as an ordinary call to the hooks above -- so this boundary is
-// tracked purely as a flag read by FlushRenderState to substitute a
-// placeholder pixel shader (see render_state.h's IsInsideRecordedBatch
-// comment) rather than trusting shader constants that won't reliably belong
-// to this draw by the time a real replay would have happened.
-//
-// Both guest functions carry a large, only-partially-reverse-engineered
-// parameter list (FM2_Render_ScopedBatchBegin alone takes 14), and none of
-// it is needed here -- REX_HOOK_RAW's untouched ctx/base passthrough avoids
-// having to model that signature at all.
+// switches the game onto a secondary device/context. Tracked as a flag for
+// placeholder PS substitution while object-pass replay is disabled.
 // ---------------------------------------------------------------------------
 
 REX_IMPORT(__imp__FM2_Render_ScopedBatchBegin, g_origScopedBatchBegin, void());
 REX_IMPORT(__imp__FM2_Render_ScopedBatchFinalize, g_origScopedBatchFinalize, void());
 
-namespace {
-bool g_warnedRecordedBatch = false;
-}  // namespace
-
 REX_HOOK_RAW(FM2_Render_ScopedBatchBegin) {
   g_origScopedBatchBegin.fn(ctx, base);
   rr::SetInsideRecordedBatch(true);
-  if (!g_warnedRecordedBatch) {
-    g_warnedRecordedBatch = true;
-    REXGPU_WARN(
-        "FM2 native renderer: entering a recorded command-buffer object-pass batch -- "
-        "draws in this state render with a flat placeholder pixel shader (real per-object "
-        "shader constants aren't reliably available at the time this renderer executes them; "
-        "see render_state.h's IsInsideRecordedBatch comment). Logged once.");
-  }
 }
 
 REX_HOOK_RAW(FM2_Render_ScopedBatchFinalize) {
