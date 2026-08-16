@@ -352,3 +352,40 @@
 | 18:24 | Session end: 5 writes across 3 files (d3d_hooks.cpp, render_state.h, render_state.cpp) | 23 reads | ~81521 tok |
 | 21:35 | Create-time tile grow 1280x256->720 + VP expand; drop post-Swap BeginRenderStateFrame | d3d_resource_hooks, render_state, d3d_hooks | smoke ~3/8 Swap301; reverted Present-mutex/copy-exempt | ~|
 | 22:36 | Unleashed StretchRect: unbind FB before drain; resolve RT fallback | render_state.cpp | deferred 720->720 copies; Swap-1 still flaky | ~|
+| 23:28 | Detached GPU MMIO vblank + StretchRect IsLiveHostTexture; commit 15e29494 | xboxkrnl_video.cpp, render_state.cpp, plume, init_h.inja | Swap-1 hang fixed (reach Swap 301); rare Resolve AV remains | ~25k |
+| 00:34 | Skip format-mismatched StretchRect + sticky present override; commit 682a44dc | render_state.cpp, video.cpp | no DEVICE_REMOVED from R16→BGRA copy | ~|
+| 00:44 | NotifyRenderFrameBegin + shader blit StretchRect (non-BC RT translate) | render_state.*, video.cpp, d3d_resource_hooks.cpp | draws 5k+/frame; mismatch blit keeps aperture; 0/3 lost | ~|
+| 10:47 | RDC fm2mmgrok5: swap inverted viewport min/max on flush | render_state.cpp | SamplesPassed was 0; RT 100% black | ~|
+| 11:15 | RDC fm2mmgrok6: reject stride-overflow vertex decls in MatchDeclarationForShader | render_state.cpp | VS w=0 from dummy TEXCOORDs; fm2 rebuilt | ~|
+| 11:20 | RDC fm2mmgrok7: still 32B layout — passId device decl bypassed Match; prefer Match+stride gate | render_state.cpp | fm2 rebuilt; need grok8 | ~|
+| 11:38 | Restructure gap audit vs 080plume + grok9 | .wolf/notes-2026-07-13-restructure-gap-audit.md | RT still black; Tier A gaps listed | ~|
+| 11:57 | Tier A constant transport + EmitDirty replay | render_state.cpp,d3d_hooks.cpp,render_internal.h | fm2 build OK | ~|
+| 12:21 | Hotfix startup crash: disable kObjPassRecordReplay | d3d_hooks.cpp,render_state.cpp | fm2 rebuilt | ~|
+| 13:32 | Tier A crash bisect rollback; user confirms runs | d3d_hooks.cpp,render_state.cpp | EmitDirty RAW-only; flush extras off | ~|
+| 13:34 | Tier A step 1: re-enable flush guards only | render_state.cpp | colorWrite/implicitDS/COUNT_1; rebuild | ~|
+| 13:38 | Tier A step 2: FlushSamplerStates | render_state.cpp | call restored in FlushRenderState; rebuild | ~|
+| 13:43 | Tier A step 3: decl→SPEC metadata | render_state.cpp | ApplyVertexDeclarationMetadata on bind+flush | ~|
+| 13:46 | Tier A step 4: constant overlay merge | render_state.cpp | live/pass/scene/obj merge; feeders still off | ~|
+| 13:49 | Tier A step 5: EmitDirty RAW scene3d overlay | d3d_hooks.cpp | post-orig WVP capture; no replay | ~|
+| 13:51 | Tier A step 6: UploadMatrix/SetPending feeders | d3d_hooks.cpp | MirrorPass+objWVP; SetPending scene3d; draw LR | ~|
+| 14:08 | Tier A step 7: object-pass record/replay ON | d3d_hooks.cpp,render_internal.h | kObjPassRecordReplay; await retest | ~|
+| 14:15 | RDC fm2mmgrok10: still black | notes-2026-07-13-fm2mmgrok10.md | RT100% black; stride8 vs 32B decl; no PS tex | ~|
+| 14:27 | Decl stride fix: prefer inputSlots; Fits(0)=false; replay SetStreamSource | render_state.cpp,d3d_hooks.cpp | fm2 rebuilt; await grok11 | ~|
+| 14:35 | RDC fm2mmgrok11: decl OK, still black | notes-2026-07-13-fm2mmgrok11.md | 8B FLOAT16 TEX; Samples=0; x≈y≈z collapse | ~|
+
+
+
+
+
+
+
+
+| 18:56 | Traced ReXGlue codegen architecture and inspected representative FM2 generated PPC C++ | README.md, CLAUDE.md, FM2/fm2_manifest.toml, FM2/generated/default/fm2_recomp.0.cpp | Confirmed offline phase pipeline, explicit PPCContext semantics, direct calls, indirect dispatch, flat guest memory, and runtime shim boundary | ~8k |
+| 19:09 | Compared ReXGlue's complete recompilation workflow with xrecomp at source level | src/codegen, include/rex/ppc, tests/ppc, FM2 generated output and manifest | Classified both as source-AOT CPU recompilers with emulator-derived console runtimes; recorded ReXGlue's structured-analysis and validation advantages plus FM2's manual integration caveat | ~6k |
+
+## Session: 2026-08-16 18:41
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 18:52 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/split_patch.py | — | ~656 |
+| 18:52 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/spec.json | — | ~333 |

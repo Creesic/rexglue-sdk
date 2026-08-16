@@ -19,7 +19,9 @@ RelWithDebInfo has `NDEBUG`).
 - `video.cpp`: clear framebuffers before swapchain resize; sync size at Init.
 
 ## Verify (2026-07-12/13 smoke)
-- 3/3: Swap 301, **no** `GPU device lost latch`.
-- When HDR resolve hits: `skip incompatible copy fmt=10 → fmt=24`, then
-  `present kind=stretch-src` (sticky override until a compatible copy lands).
-- Runs without HDR resolve still present `aperture` (same-format StretchRect OK).
+- 3/3: Swap 301, **no** `GPU device lost latch` (after non-BC RT translate).
+- Follow-up: `NotifyRenderFrameBegin` from `ProcBeginCommandList` — draws climb
+  to ~5k+ (was stuck logging `direct=1` with `g_frameIndex==0`).
+- Format mismatch: shader blit into aperture (stay `present kind=aperture`);
+  Prefer/stretch-src only if blit fails.
+- Do not mark BC translated textures as RENDER_TARGET (DEVICE_REMOVED).

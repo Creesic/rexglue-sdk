@@ -700,6 +700,54 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-07-12T23:45:00.000Z"
+    },
+    {
+      "id": "bug-fm2-decl-stride-mismatch-black",
+      "timestamp": "2026-07-13T15:15:00.000Z",
+      "error_message": "Still black after viewport fix (fm2mmgrok6.rdc); SamplesPassed=0; SV_Position.w=0",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "MatchDeclarationForShader preferred exact-count 32B FLOAT3 layouts over stride-8 FLOAT16 decls; VS TEXCOORDs bound to slot-15 dummies (0,0,0,1) → clip",
+      "fix": "Hard-reject decls whose stream-0 offset+DeclTypeByteSize exceeds bound VB stride; prefer packedEnd==stride",
+      "tags": ["fm2", "plume", "renderdoc", "vertex-declaration", "black-screen"],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-13T15:15:00.000Z"
+    },
+    {
+      "id": "bug-fm2-tier-a-startup-crash",
+      "timestamp": "2026-07-13T17:30:00.000Z",
+      "error_message": "FM2 crashes mid-startup after Tier A (fm2_313/314); silent exit after first PSO/StretchRect/texture uploads",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "Tier A REX_HOOK/HostToGuest on EmitDirty plus always-on FlushSamplerStates/overlays/flush guards; early-return flags were insufficient while marshalling still ran",
+      "fix": "All Tier A guest hooks → REX_HOOK_RAW orig-only; FlushRenderState reverted to pre-Tier-A (kept +0x700 upload). User confirmed startup runs.",
+      "tags": ["fm2", "plume", "tier-a", "startup-crash", "emit-dirty"],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-07-13T17:32:00.000Z"
+    },
+    {
+      "id": "bug-fm2-decl-max-stride-stale",
+      "timestamp": "2026-07-13T18:27:00.000Z",
+      "error_message": "fm2mmgrok10: stride-8 VB draws use 32B FLOAT3 IA; POSITION UInt garbage; SamplesPassed=0",
+      "file": "FM2/src/render/render_state.cpp",
+      "root_cause": "Resolve used max(vertexStrides,inputSlots); stale 32B pipeline stride won. Fits(stride==0)=true; obj-pass replay restored guest strides without SetStreamSource",
+      "fix": "EffectiveStream0Stride prefers inputSlots then guest 0x2FD8*4; Fits(0)=false; ReplayObjPassDraw rebinds streams/indices",
+      "tags": ["fm2", "plume", "renderdoc", "vertex-declaration", "black-screen"],
+      "related_bugs": ["bug-fm2-decl-stride-mismatch-black"],
+      "occurrences": 1,
+      "last_seen": "2026-07-13T18:27:00.000Z"
+    },
+    {
+      "id": "bug-tooling-inspection-20260731",
+      "timestamp": "2026-07-31T19:07:00-04:00",
+      "error_message": "FINDSTR: Write error; FIND: Parameter format not correct; apply_patch verification failed",
+      "file": ".wolf/anatomy.md",
+      "root_cause": "A prefix-only pipeline closed findstr early, nested cmd quoting malformed a find argument, and one multi-file metadata patch used an over-specific context line.",
+      "fix": "Used complete cmd output or Measure-Object and split the metadata edit into smaller exact patches.",
+      "tags": ["tooling", "powershell", "cmd", "openwolf"],
+      "related_bugs": [],
+      "occurrences": 3,
+      "last_seen": "2026-07-31T19:07:00-04:00"
     }
   ]
 }

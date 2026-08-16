@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-07-12T15:54:19.433Z
-> Files: 568 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-08-16T22:52:09.845Z
+> Files: 570 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ../../../../../temp/
 
@@ -17,6 +17,11 @@
 
 - `feedback_public_repo_recompiled_code.md` (~338 tok)
 - `MEMORY.md` — Memory Index (~48 tok)
+
+## ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/
+
+- `spec.json` (~333 tok)
+- `split_patch.py` — Split a git diff into per-topic patches by hunk old-start line. (~656 tok)
 
 ## ../rexglue-sdk/cmake/
 
@@ -102,6 +107,9 @@
 
 - `EmbedBinaryHeader.cmake` (~402 tok)
 
+## FM2/generated/default/
+
+
 ## FM2/out/build/win-amd64-relwithdebinfo/
 
 - `launch-fm2-shaderdump.bat` (~53 tok)
@@ -118,12 +126,9 @@
 - `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~8571 tok)
 - `guest_device.h` — render/guest_device.h (~1570 tok)
 - `guest_heap.h` — pragma once (~472 tok)
-- `guest_resources.h` — render/guest_resources.h (~1800 tok); GuestTexture.sourceSurface + GuestSurface.destinationTextures for deferred StretchRect
-- `render_queue.h` — render/render_queue.h (~280 tok); Run(fn) + Enqueue(fn|RenderCommand) + dedicated render thread
-- `render_commands.h` — render/render_commands.h (~450 tok); POD RenderCommand enum/union + DispatchRenderCommand
-- `render_queue.cpp` — render/render_queue.cpp (~400 tok)
 - `pipeline.cpp` — render/pipeline.cpp (~4631 tok)
 - `render_internal.h` — render/render_internal.h (~469 tok)
+- `render_queue.cpp` — render/render_queue.cpp (~400 tok)
 - `render_state.cpp` — render/render_state.cpp (~16893 tok)
 - `render_state.h` — render/render_state.h (~1471 tok)
 - `video.cpp` — include "video.h" (~5778 tok)
@@ -677,6 +682,9 @@
 
 - `video.h` — ***************************************************************************** (~440 tok)
 
+## include/rex/ppc/
+
+
 ## src/audio/
 
 - `CMakeLists.txt` — rexaudio - Audio subsystem library (~360 tok)
@@ -685,6 +693,12 @@
 
 - `xaudio2_audio_driver.cpp` — ***************************************************************************** (~3772 tok)
 - `xaudio2_audio_system.cpp` — ***************************************************************************** (~498 tok)
+
+## src/codegen/
+
+
+## src/codegen/builders/
+
 
 ## src/graphics/
 
@@ -713,9 +727,15 @@
 - `xboxkrnl_io.cpp` — ***************************************************************************** (~8323 tok)
 - `xboxkrnl_video.cpp` — ***************************************************************************** (~7010 tok)
 
+## src/system/
+
+
 ## src/ui/
 
 - `rex_app.cpp` — include <rex/rex_app.h> (~5531 tok)
+
+## tests/ppc/
+
 
 ## thirdparty/
 
