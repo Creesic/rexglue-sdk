@@ -21,19 +21,25 @@ struct GuestDevice {
 
   uint8_t padding224[0x25C];
 
-  GuestSamplerState samplerStates[0x20];
+  // Xenos exposes 16 unified sampler slots. Keeping 32 entries here shifted
+  // every shader constant file by 0x80 bytes, so direct draws uploaded c8 as
+  // c0 while object-pass replay (which used raw +0x700/+0x1700 pointers) did
+  // not. The two paths must describe the same guest-device layout.
+  GuestSamplerState samplerStates[0x10];
+  uint8_t padding600[0x100];
 
-  // Raw (big-endian) shader constant registers; byte-swapped at upload time.
-  uint32_t vertexShaderFloatConstants[0x400];  // device + 0x780
-  uint32_t pixelShaderFloatConstants[0x400];   // device + 0x1780
+  // Raw host-endian shader constant register files used by the Xbox D3D
+  // runtime. Boolean and loop files immediately follow the VS/PS float files.
+  uint32_t vertexShaderFloatConstants[0x400];  // device + 0x700
+  uint32_t pixelShaderFloatConstants[0x400];   // device + 0x1700
 
   rex::be<uint32_t> vertexShaderBoolConstants[0x4];
   rex::be<uint32_t> pixelShaderBoolConstants[0x4];
 
-  rex::be<uint32_t> vertexShaderIntConstants[0x10];  // device + 0x27A0
-  rex::be<uint32_t> pixelShaderIntConstants[0x10];   // device + 0x27E0
+  rex::be<uint32_t> vertexShaderIntConstants[0x10];  // device + 0x2720
+  rex::be<uint32_t> pixelShaderIntConstants[0x10];   // device + 0x2760
 
-  uint8_t padding2820[0x604];
+  uint8_t padding27A0[0x684];
   rex::be<uint32_t> vertexDeclaration;
   uint8_t padding2E28[0x340];
   struct {
@@ -48,10 +54,13 @@ struct GuestDevice {
 };
 
 static_assert(sizeof(GuestDevice) == 0x5E00);
-static_assert(offsetof(GuestDevice, vertexShaderBoolConstants) == 0x2780);
-static_assert(offsetof(GuestDevice, pixelShaderBoolConstants) == 0x2790);
-static_assert(offsetof(GuestDevice, vertexShaderIntConstants) == 0x27A0);
-static_assert(offsetof(GuestDevice, pixelShaderIntConstants) == 0x27E0);
+static_assert(offsetof(GuestDevice, samplerStates) == 0x480);
+static_assert(offsetof(GuestDevice, vertexShaderFloatConstants) == 0x700);
+static_assert(offsetof(GuestDevice, pixelShaderFloatConstants) == 0x1700);
+static_assert(offsetof(GuestDevice, vertexShaderBoolConstants) == 0x2700);
+static_assert(offsetof(GuestDevice, pixelShaderBoolConstants) == 0x2710);
+static_assert(offsetof(GuestDevice, vertexShaderIntConstants) == 0x2720);
+static_assert(offsetof(GuestDevice, pixelShaderIntConstants) == 0x2760);
 static_assert(offsetof(GuestDevice, vertexDeclaration) == 0x2E24);
 
 struct GuestViewport {
