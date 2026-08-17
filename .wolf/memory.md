@@ -405,3 +405,27 @@
 | 20:08 | Edited FM2/src/render/d3d_hooks.cpp | 2→2 lines | ~38 |
 | 20:08 | Edited FM2/src/render/guest_resources.h | 1→2 lines | ~32 |
 | 20:15 | Regenerated FM2 codegen + fixed D3DResource hook symbols; fm2.exe links | FM2/generated/**, FM2/src/render/d3d_hooks.cpp | fm2.exe 48.9 MB built, 2/2 tests pass | ~60k |
+| 20:10 | Session end: 9 writes across 7 files (split_patch.py, spec.json, CMakeLists.txt, migration-from-plume.md, FM2-native-renderer-transfer-audit.md) | 6 reads | ~1380 tok |
+| 20:20 | Edited FM2/src/render/render_state.cpp | added 5 condition(s) | ~280 |
+| 20:20 | Edited FM2/src/render/render_state.cpp | added 2 condition(s) | ~253 |
+| 20:20 | Edited FM2/src/render/d3d_hooks.cpp | added 1 condition(s) | ~136 |
+| 20:21 | Session end: 12 writes across 8 files (split_patch.py, spec.json, CMakeLists.txt, migration-from-plume.md, FM2-native-renderer-transfer-audit.md) | 6 reads | ~2097 tok |
+| 20:25 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/fm2_diff.py | — | ~361 |
+| 20:26 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/manifest_diff.py | — | ~536 |
+| 20:28 | Created ../../../AppData/Local/Temp/claude/C--Users-Tera-Documents-GitHub-ReXFM2P/e978b8f6-71db-48b8-87cb-5f4aa2f16b83/scratchpad/fm2_diff2.py | — | ~418 |
+| 20:30 | Session end: 15 writes across 11 files (split_patch.py, spec.json, CMakeLists.txt, migration-from-plume.md, FM2-native-renderer-transfer-audit.md) | 6 reads | ~3412 tok |
+| 20:36 | Edited FM2/src/render/render_state.cpp | added 1 condition(s) | ~194 |
+| 20:36 | Session end: 16 writes across 11 files (split_patch.py, spec.json, CMakeLists.txt, migration-from-plume.md, FM2-native-renderer-transfer-audit.md) | 6 reads | ~3620 tok |
+| 20:41 | Edited FM2/src/render/render_internal.h | expanded (+7 lines) | ~126 |
+| 20:41 | Edited FM2/src/render/d3d_resource_hooks.cpp | removed 4 lines | ~8 |
+| 20:41 | Edited FM2/src/render/render_state.cpp | modified IsFramebufferSizedPresentSource() | ~222 |
+| 20:44 | Edited FM2/src/render/render_state.cpp | modified SetRenderTargetInternal() | ~41 |
+| 20:44 | Edited FM2/src/render/render_state.cpp | modified if() | ~79 |
+| 20:44 | Edited FM2/src/render/render_state.cpp | removed 15 lines | ~9 |
+| 20:44 | Edited FM2/src/render/d3d_hooks.cpp | removed 8 lines | ~7 |
+| 20:46 | Edited FM2/src/render/render_state.cpp | added 5 condition(s) | ~209 |
+| 20:48 | Edited FM2/src/render/render_state.cpp | modified uint32_t() | ~193 |
+| 20:52 | Edited FM2/src/render/guest_resources.h | modified GuestBaseTexture() | ~92 |
+| 20:53 | Edited FM2/src/render/guest_resources.h | — | ~0 |
+| 20:53 | Edited FM2/src/render/render_state.cpp | removed 26 lines | ~59 |
+| 21:25 | Root-caused black output: viewport-vs-guest-frame fix committed; found guest-memory pointer corruption at +0x1C | FM2/src/render/render_state.cpp, render_internal.h | fix verified; 2nd cause unfixed (design call) | ~120k |
