@@ -239,8 +239,8 @@ REX_IMPORT(__imp__FM2_D3DResource_UnlockResource, g_origUnlockResource,
 REX_IMPORT(__imp__FM2_D3DSurface_GetDesc, g_origSurfaceGetDesc, void(uint32_t, uint32_t));
 // Guest D3DResource_AddRef @ 0x82369D90 / Release @ 0x82369E08 -- BE atomics
 // on ReferenceCount (+4). FM2 GuestResource stores host-LE refCount there.
-REX_IMPORT(__imp__sub_82369D90, g_origD3DResourceAddRef, uint32_t(uint32_t));
-REX_IMPORT(__imp__sub_82369E08, g_origD3DResourceRelease, uint32_t(uint32_t));
+REX_IMPORT(__imp__D3DResource_AddRef, g_origD3DResourceAddRef, uint32_t(uint32_t));
+REX_IMPORT(__imp__D3DResource_Release, g_origD3DResourceRelease, uint32_t(uint32_t));
 
 namespace {
 
@@ -382,8 +382,8 @@ REX_HOOK(FM2_D3DTexture_LockRect, TextureLockRectHook);
 REX_HOOK(FM2_D3DResource_UnlockResource, UnlockResourceHook);
 REX_HOOK(FM2_D3DSurface_GetDesc, SurfaceGetDescHook);
 REX_HOOK(FM2_D3D_CreateTextureFromMemoryBuffer, CreateTextureFromMemoryBufferHook);
-REX_HOOK(sub_82369D90, D3DResourceAddRefHook);   // D3DResource_AddRef
-REX_HOOK(sub_82369E08, D3DResourceReleaseHook);  // D3DResource_Release
+REX_HOOK(D3DResource_AddRef, D3DResourceAddRefHook);   // @ 0x82369D90
+REX_HOOK(D3DResource_Release, D3DResourceReleaseHook);  // @ 0x82369E08
 
 // ---------------------------------------------------------------------------
 // Phase 3: render state, clip planes, bool constants, vertex/index/surface

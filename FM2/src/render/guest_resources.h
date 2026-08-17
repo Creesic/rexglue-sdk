@@ -41,7 +41,8 @@ struct GuestResource {
   uint32_t magic = kFm2ResourceMagic;
   // Host LE atomic. Guest D3DResource_AddRef/Release use BE lwarx/stwcx on
   // this same offset -- those paths must be fully hooked for FM2 objects
-  // (see sub_82369D90 / sub_82369E08) or refcount corruption / double-free.
+  // (see D3DResource_AddRef @ 0x82369D90 / D3DResource_Release @ 0x82369E08)
+  // or refcount corruption / double-free.
   std::atomic<uint32_t> refCount{1};
   ResourceType type;
 
