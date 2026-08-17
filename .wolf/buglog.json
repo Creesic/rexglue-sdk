@@ -696,7 +696,12 @@
       "file": "FM2/src/render/render_state.cpp",
       "root_cause": "1x ResolveSubresourceRegion; WaitForGpu begin() on open recording CL; clearRect on CREATE_NOT_ZEROED RT/DS without prior Discard",
       "fix": "copyTextureRegion for 1x StretchRect/Resolve; ProcWaitForGpu closes open CL then uses slot 0; EnsureAttachmentInitialized discardTexture before first clear/draw; map 0x2D20014A to R8G8_UNORM",
-      "tags": ["fm2", "d3d12", "device-removed", "plume"],
+      "tags": [
+        "fm2",
+        "d3d12",
+        "device-removed",
+        "plume"
+      ],
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-07-12T23:45:00.000Z"
@@ -708,7 +713,13 @@
       "file": "FM2/src/render/render_state.cpp",
       "root_cause": "MatchDeclarationForShader preferred exact-count 32B FLOAT3 layouts over stride-8 FLOAT16 decls; VS TEXCOORDs bound to slot-15 dummies (0,0,0,1) → clip",
       "fix": "Hard-reject decls whose stream-0 offset+DeclTypeByteSize exceeds bound VB stride; prefer packedEnd==stride",
-      "tags": ["fm2", "plume", "renderdoc", "vertex-declaration", "black-screen"],
+      "tags": [
+        "fm2",
+        "plume",
+        "renderdoc",
+        "vertex-declaration",
+        "black-screen"
+      ],
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-07-13T15:15:00.000Z"
@@ -720,7 +731,13 @@
       "file": "FM2/src/render/d3d_hooks.cpp",
       "root_cause": "Tier A REX_HOOK/HostToGuest on EmitDirty plus always-on FlushSamplerStates/overlays/flush guards; early-return flags were insufficient while marshalling still ran",
       "fix": "All Tier A guest hooks → REX_HOOK_RAW orig-only; FlushRenderState reverted to pre-Tier-A (kept +0x700 upload). User confirmed startup runs.",
-      "tags": ["fm2", "plume", "tier-a", "startup-crash", "emit-dirty"],
+      "tags": [
+        "fm2",
+        "plume",
+        "tier-a",
+        "startup-crash",
+        "emit-dirty"
+      ],
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-07-13T17:32:00.000Z"
@@ -732,8 +749,16 @@
       "file": "FM2/src/render/render_state.cpp",
       "root_cause": "Resolve used max(vertexStrides,inputSlots); stale 32B pipeline stride won. Fits(stride==0)=true; obj-pass replay restored guest strides without SetStreamSource",
       "fix": "EffectiveStream0Stride prefers inputSlots then guest 0x2FD8*4; Fits(0)=false; ReplayObjPassDraw rebinds streams/indices",
-      "tags": ["fm2", "plume", "renderdoc", "vertex-declaration", "black-screen"],
-      "related_bugs": ["bug-fm2-decl-stride-mismatch-black"],
+      "tags": [
+        "fm2",
+        "plume",
+        "renderdoc",
+        "vertex-declaration",
+        "black-screen"
+      ],
+      "related_bugs": [
+        "bug-fm2-decl-stride-mismatch-black"
+      ],
       "occurrences": 1,
       "last_seen": "2026-07-13T18:27:00.000Z"
     },
@@ -744,10 +769,55 @@
       "file": ".wolf/anatomy.md",
       "root_cause": "A prefix-only pipeline closed findstr early, nested cmd quoting malformed a find argument, and one multi-file metadata patch used an over-specific context line.",
       "fix": "Used complete cmd output or Measure-Object and split the metadata edit into smaller exact patches.",
-      "tags": ["tooling", "powershell", "cmd", "openwolf"],
+      "tags": [
+        "tooling",
+        "powershell",
+        "cmd",
+        "openwolf"
+      ],
       "related_bugs": [],
       "occurrences": 3,
       "last_seen": "2026-07-31T19:07:00-04:00"
+    },
+    {
+      "id": "bug-049",
+      "timestamp": "2026-08-17T00:02:51.923Z",
+      "error_message": "Incorrect value in code",
+      "file": "docs/FM2-native-renderer-transfer-audit.md",
+      "root_cause": "Had `AUDIO_BACKENDS xaudio2`",
+      "fix": "Changed to `GPU_PLUGINS`",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-08-17T00:02:51.923Z"
+    },
+    {
+      "id": "bug-050",
+      "timestamp": "2026-08-16T20:00:00-04:00",
+      "error_message": "unknown type name 'REX_WEAK_FUNC'; definition 'sub_XXXX' cannot also be an alias (100 errors in FM2/generated/**)",
+      "file": "FM2/generated/default/fm2_recomp.*.cpp",
+      "root_cause": "FM2/generated was emitted by the pre-rebase codegen. Rebasing onto origin/development restructured the templates: init_h.inja became an 8-line include stub, the REX_MM_LOAD_*/REX_WEAK_FUNC macros moved to pch_h.inja, and the same-address sub_<addr> alias scheme was replaced by distinct weak thunks (alias is rejected on Darwin).",
+      "fix": "Regenerate: cmake --build FM2/out/build/<preset> --target fm2_codegen. Never hand-patch FM2/generated -- it is build output.",
+      "tags": ["fm2", "codegen", "rebase", "generated", "build"],
+      "related_bugs": ["bug-051"],
+      "occurrences": 1,
+      "last_seen": "2026-08-16T20:00:00-04:00"
+    },
+    {
+      "id": "bug-051",
+      "timestamp": "2026-08-16T20:10:00-04:00",
+      "error_message": "lld-link: error: undefined symbol: __declspec(dllimport) _sub_82369D90 / _sub_82369E08",
+      "file": "FM2/src/render/d3d_hooks.cpp",
+      "root_cause": "fm2_manifest.toml names 0x82369D90/0x82369E08, so codegen emits D3DResource_AddRef/D3DResource_Release. The old templates ALSO emitted a sub_<addr> alias for every function, which hand-written code referenced; development dropped those aliases.",
+      "fix": "Reference hooked guest functions by their manifest name, not sub_<addr>. REX_IMPORT(__imp__D3DResource_AddRef, ...) and REX_HOOK(D3DResource_AddRef, ...).",
+      "tags": ["fm2", "render", "hook", "link-error", "silent-failure", "refcount"],
+      "related_bugs": ["bug-050"],
+      "occurrences": 1,
+      "last_seen": "2026-08-16T20:10:00-04:00"
     }
   ]
 }

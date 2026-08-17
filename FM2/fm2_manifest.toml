@@ -2,7 +2,7 @@
 
 [project]
 name = "fm2"
-sdk_version = "0.8.1"
+sdk_version = "0.10.0"
 game_root = "../assets"
 
 [entrypoint]

@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-08-16T22:52:09.845Z
-> Files: 570 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-08-17T00:08:51.409Z
+> Files: 572 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ../../../../../temp/
 
@@ -100,7 +100,7 @@
 
 ## FM2/
 
-- `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~1538 tok)
+- `CMakeLists.txt` — fm2 - ReXGlue Recompiled Project (~1540 tok)
 - `fm2_manifest.toml` (~5480 tok)
 
 ## FM2/cmake/
@@ -122,10 +122,11 @@
 
 ## FM2/src/render/
 
-- `d3d_hooks.cpp` — render/d3d_hooks.cpp (~11058 tok)
+- `d3d_hooks.cpp` — render/d3d_hooks.cpp (~17257 tok)
 - `d3d_resource_hooks.cpp` — render/d3d_resource_hooks.cpp (~8571 tok)
 - `guest_device.h` — render/guest_device.h (~1570 tok)
 - `guest_heap.h` — pragma once (~472 tok)
+- `guest_resources.h` — render/guest_resources.h (~1796 tok)
 - `pipeline.cpp` — render/pipeline.cpp (~4631 tok)
 - `render_internal.h` — render/render_internal.h (~469 tok)
 - `render_queue.cpp` — render/render_queue.cpp (~400 tok)
@@ -666,7 +667,8 @@
 
 ## docs/
 
-- `migration-from-plume.md` — Migration from ReXGlue080plume (~3015 tok)
+- `FM2-native-renderer-transfer-audit.md` — FM2 Native Renderer Transfer Audit (~3538 tok)
+- `migration-from-plume.md` — Migration from ReXGlue080plume (~2933 tok)
 - `xaudio2-conversion-guide.md` — Adding the XAudio2 Audio Backend (~2461 tok)
 
 ## include/rex/

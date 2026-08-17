@@ -392,3 +392,16 @@
 | 19:05 | Split uncommitted render work into 7 topic commits (docs, wolf, style, device layout, decl stride, obj replay, draw snapshots) | FM2/src/render/**, .wolf/**, AGENTS.md | worktree clean; reconstructed tree byte-identical | ~85k |
 | 18:54 | Session end: 2 writes across 2 files (split_patch.py, spec.json) | 4 reads | ~989 tok |
 | 19:55 | Rebased plume (39 commits) onto origin/development; resolved 10 conflicted files | CMakeLists.txt, CMakePresets.json, cmake/*, resources/templates/*, src/kernel/xam/* | FM2 tree byte-identical; SDK+FM2 configure clean | ~180k |
+| 19:52 | Session end: 2 writes across 2 files (split_patch.py, spec.json) | 5 reads | ~989 tok |
+| 19:53 | Session end: 2 writes across 2 files (split_patch.py, spec.json) | 6 reads | ~989 tok |
+| 19:58 | Edited FM2/CMakeLists.txt | 2→1 lines | ~7 |
+| 19:58 | Edited FM2/CMakeLists.txt | 5→2 lines | ~11 |
+| 20:00 | Session end: 4 writes across 3 files (split_patch.py, spec.json, CMakeLists.txt) | 6 reads | ~1009 tok |
+| 20:02 | Edited docs/migration-from-plume.md | 11→11 lines | ~206 |
+| 20:02 | Edited docs/FM2-native-renderer-transfer-audit.md | inline fix | ~25 |
+| 20:03 | Session end: 6 writes across 5 files (split_patch.py, spec.json, CMakeLists.txt, migration-from-plume.md, FM2-native-renderer-transfer-audit.md) | 6 reads | ~1255 tok |
+| 20:05 | Session end: 6 writes across 5 files (split_patch.py, spec.json, CMakeLists.txt, migration-from-plume.md, FM2-native-renderer-transfer-audit.md) | 6 reads | ~1255 tok |
+| 20:08 | Edited FM2/src/render/d3d_hooks.cpp | 2→2 lines | ~46 |
+| 20:08 | Edited FM2/src/render/d3d_hooks.cpp | 2→2 lines | ~38 |
+| 20:08 | Edited FM2/src/render/guest_resources.h | 1→2 lines | ~32 |
+| 20:15 | Regenerated FM2 codegen + fixed D3DResource hook symbols; fm2.exe links | FM2/generated/**, FM2/src/render/d3d_hooks.cpp | fm2.exe 48.9 MB built, 2/2 tests pass | ~60k |
