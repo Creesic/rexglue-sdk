@@ -459,19 +459,18 @@ bool IsLiveHostTexture(GuestBaseTexture* texture) {
 
 // FM2 EDRAM predicated tiling binds 1280x256 color RTs near frame end. Those
 // are intermediates, not the composited frontbuffer — sticky Present must not
-// adopt them (would stretch a tile band to full swapchain). Prefer host
-// viewport-sized (or larger) color targets until resolve-aperture present
-// lands.
+// adopt them (would stretch a tile band to full swapchain).
+//
+// Measure against the guest frame, never Video::s_viewport*: that tracks the
+// host swapchain, so on any window larger than 720p every guest RT failed this
+// test, g_lastPresentableRenderTarget was never latched, and Resolve dropped
+// every frame the guest had already unbound the RT ("no source RT" -> black).
 bool IsFramebufferSizedPresentSource(GuestBaseTexture* texture) {
   if (!IsLiveHostTexture(texture))
     return false;
-  const uint32_t frameW = Video::s_viewportWidth;
-  const uint32_t frameH = Video::s_viewportHeight;
-  if (frameW == 0 || frameH == 0)
-    return true;
-  if (texture->width == frameW && texture->height < frameH)
+  if (texture->width == kFm2FrameWidth && texture->height < kFm2FrameHeight)
     return false;
-  return texture->width >= frameW && texture->height >= frameH;
+  return texture->width >= kFm2FrameWidth && texture->height >= kFm2FrameHeight;
 }
 
 void AddBarrier(GuestBaseTexture* texture, RenderTextureLayout layout) {

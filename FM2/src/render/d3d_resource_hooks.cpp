@@ -449,9 +449,6 @@ void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t heigh
   // FM2 EDRAM tile surfaces are created as 1280x256. Hardware would replay the
   // recorded pass per band; we never see those replays, so allocate the host
   // texture at full 720p up front (no mid-CL recreate / DEVICE_REMOVED).
-  constexpr uint32_t kFm2FrameWidth = 1280u;
-  constexpr uint32_t kFm2FrameHeight = 720u;
-  constexpr uint32_t kFm2TileHeight = 256u;
   uint32_t hostWidth = width;
   uint32_t hostHeight = height;
   if (width == kFm2FrameWidth && height == kFm2TileHeight) {

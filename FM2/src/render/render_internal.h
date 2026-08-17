@@ -24,6 +24,13 @@ inline constexpr uint32_t kNullTextureDescriptorCount = 3;
 // Matches Video's 2-frame command-list / upload pipelining.
 inline constexpr uint32_t kNumFrames = 2;
 
+// FM2's guest frame, and the EDRAM tile height it binds during predicated
+// tiling. These describe the *guest*: the host swapchain follows the window and
+// is unrelated, so never substitute Video::s_viewport* for them.
+inline constexpr uint32_t kFm2FrameWidth = 1280;
+inline constexpr uint32_t kFm2FrameHeight = 720;
+inline constexpr uint32_t kFm2TileHeight = 256;
+
 // The active Plume interface and device created by Video::Init(), or nullptr.
 plume::RenderInterface* Interface();
 plume::RenderDevice* Device();
