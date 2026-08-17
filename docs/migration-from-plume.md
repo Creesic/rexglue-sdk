@@ -104,16 +104,16 @@ per-item whether to port as-is or re-home it in the new structure.
   - [x] Leave `native_renderer/` diagnostic overlay behind
   - [ ] Finish load-bearing SOURCE `render/` gaps listed in the transfer audit
 
-- **Audio.** `src/audio/xaudio2/` (new backend), `src/audio/fm2_native/`
-  (`codec`, `diag`, `runtime`, `scheduler`), `src/kernel/xboxkrnl/xboxkrnl_lzx.cpp`
-  (LZX decompression), `xma_gap_diag*.h`.
+- **Audio.** `src/audio/fm2_native/` (`codec`, `diag`, `runtime`, `scheduler`),
+  `src/kernel/xboxkrnl/xboxkrnl_lzx.cpp` (LZX decompression), `xma_gap_diag*.h`.
   - Check whether `AudioSystem`/`AudioDriver` interfaces
     (`include/rex/audio/audio_system.h`, `audio_driver.h`) changed shape in
     this SDK snapshot before assuming these compile as-is.
   - Read first: `docs/FM2-audio-decode-throughput.md`,
-    `docs/FM2-audio-producer-gate-instrumentation-2026-05-30.md`,
-    `docs/FM2-xaudio2-conversion-guide.md`.
-  - [ ] Confirm audio interfaces are unchanged, then port `fm2_native/` + `xaudio2/`
+    `docs/FM2-audio-producer-gate-instrumentation-2026-05-30.md`.
+  - [x] Do NOT port SOURCE's `src/audio/xaudio2/` backend. It worked around an
+    audio problem rexglue fixed in 0.9.0; the SDL backend is the only path.
+  - [ ] Confirm audio interfaces are unchanged, then port `fm2_native/`
   - [ ] Port `xboxkrnl_lzx.cpp` if FM2 content decompression needs it
 
 - **Input automation.** `src/input/automation/automation_input_driver.cpp` +

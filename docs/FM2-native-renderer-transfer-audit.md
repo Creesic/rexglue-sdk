@@ -93,7 +93,7 @@ vendored `thirdparty/plume`. No `GPU_PLUGINS xenos`. Present is driven by
 | `native_renderer` sources | Compiled | Not compiled |
 | Shaders | `copy_*` + debug-replay HLSL | `copy_*` + `placeholder_ps.hlsl` |
 | DXC | Windows Kits glob | Pinned `thirdparty/dxc-bin` |
-| `rexglue_setup_target` | default | `AUDIO_BACKENDS xaudio2`, no `GPU_PLUGINS` |
+| `rexglue_setup_target` | default | default, no `GPU_PLUGINS` (FM2 hooks Plume directly) |
 | Midasm hooks | 126 incl. 18 PlumeTrace | 12 crash/QoL/FMOD only |
 
 No dangling `#include "native_renderer/..."` in DEST.
