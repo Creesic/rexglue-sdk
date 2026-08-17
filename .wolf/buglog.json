@@ -858,7 +858,7 @@
       "error_message": "Null/undefined access in ",
       "file": "FM2/src/render/render_state.cpp",
       "root_cause": "Property access on potentially null/undefined value",
-      "fix": "Added null safety (optional chaining or null check)",
+      "fix": "FIXED: reserve kGuestResourceHeaderBytes=0x40 at the head of GuestResource so host members start past the guest's header. Guest footprints from IDA (ida38, FM2.xex): CreateVertexBuffer 0x20, CreateSurface 0x30 (RMW +0x00/+0x1C/+0x20), CreateTexture 0x34 (fetch constant +0x18..+0x2F). Verified 0 failures across 6 runs vs ~57% of runs failing before.",
       "tags": [
         "auto-detected",
         "null-safety",
@@ -960,14 +960,13 @@
       "error_message": "sticky present-source RT rejected as holder-mismatch: texture != textureHolder.get()",
       "file": "FM2/src/render/guest_resources.h",
       "root_cause": "GuestBaseTexture is constructed INSIDE guest memory (ghp::GuestNew -> SystemHeapAlloc), so the game writes into it as its own D3D9 resource. Host pointers sit at offsets the guest also uses: textureHolder@0x10, texture@0x18, textureView@0x20 (confirmed by static_assert). Observed corruption is a read-modify-write that ORs bit 43 (0x800 into the dword at +0x1C) into the texture pointer, leaving the low bits intact - so IsLiveHostTexture rejects the RT and Resolve is dropped. Intermittent: depends on whether the guest performs that write before the resolve.",
-      "fix": "UNFIXED - needs a design decision: pad host fields past the guest object's field range, or move host state to a side table keyed by guest address. Do not mask the pointer (symptom fix).",
+      "fix": "FIXED: reserve kGuestResourceHeaderBytes=0x40 at the head of GuestResource so host members start past the guest's header. Guest footprints from IDA (ida38, FM2.xex): CreateVertexBuffer 0x20, CreateSurface 0x30 (RMW +0x00/+0x1C/+0x20), CreateTexture 0x34 (fetch constant +0x18..+0x2F). Verified 0 failures across 6 runs vs ~57% of runs failing before.",
       "tags": [
         "fm2",
         "render",
         "memory-corruption",
         "guest-memory",
         "layout",
-        "unfixed",
         "black-screen"
       ],
       "related_bugs": [
