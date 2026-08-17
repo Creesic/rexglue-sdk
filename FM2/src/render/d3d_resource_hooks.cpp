@@ -276,9 +276,26 @@ GuestTexture* CreateTexture(uint32_t width, uint32_t height, uint32_t depth, uin
   return texture;
 }
 
+// EXPERIMENT (bug-053 follow-up): the title reads its own D3D header back off
+// resources we allocate -- GetSurfaceLayout takes the GPU format from
+// fetch-constant dword1 and looks up bits-per-pixel from it, so a zeroed header
+// reads as format 0 -> 1bpp -> the AlignTextureDimensions divide-by-zero trap at
+// 0x8236A4D8. Publish format and dimensions (bit layout per
+// ParseTextureFetchConstant); base address is deliberately left 0.
+void PublishGuestFetchConstant(GuestBaseTexture* resource, uint32_t guestFormat, uint32_t width,
+                               uint32_t height) {
+  if (resource == nullptr) return;
+  auto* fc = reinterpret_cast<rex::be<uint32_t>*>(reinterpret_cast<uint8_t*>(resource) + 0x18);
+  const uint32_t pitchBlocks = ((width + 31u) / 32u) & 0x1FFu;
+  fc[0] = pitchBlocks << 22;
+  fc[1] = guestFormat & 0x3Fu;
+  fc[2] = ((width ? width - 1u : 0u) & 0x1FFFu) | (((height ? height - 1u : 0u) & 0x1FFFu) << 13);
+}
+
 void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t height, uint32_t depth,
                            uint32_t levels, uint32_t usage, uint32_t format, bool volume) {
   if (texture == nullptr || IsDeviceLost()) return;
+  PublishGuestFetchConstant(texture, format, width, height);
 
   RenderTextureDesc desc;
   desc.dimension = volume ? RenderTextureDimension::TEXTURE_3D : RenderTextureDimension::TEXTURE_2D;
@@ -445,6 +462,7 @@ GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format,
 void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t height, uint32_t format,
                            uint32_t sampleCount, bool depth) {
   if (surface == nullptr || IsDeviceLost()) return;
+  PublishGuestFetchConstant(surface, format, width, height);
 
   // FM2 EDRAM tile surfaces are created as 1280x256. Hardware would replay the
   // recorded pass per band; we never see those replays, so allocate the host
