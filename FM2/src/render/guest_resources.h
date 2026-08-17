@@ -37,17 +37,42 @@ enum class ResourceType {
 // created through paths we don't hook (e.g. XeInitD3DDevice internals).
 inline constexpr uint32_t kFm2ResourceMagic = 0x464D3252;  // 'FM2R'
 
+// These objects live in guest memory (ghp::GuestNew) and are handed to the
+// title as its own D3D resources, so FM2's D3D reads and writes their headers
+// in place. Footprints and offsets taken from FM2 itself:
+//   D3DDevice_CreateVertexBuffer @0x82369ED8 -> 0x20 bytes; writes Common,
+//       ReferenceCount, BaseFlush, Format.dword[0..1]
+//   D3DDevice_CreateSurface     @0x8236BFC0 -> 0x30 bytes; read-modify-writes
+//       +0x00, +0x1C and +0x20 (EDRAM tile address bits)
+//   D3DDevice_CreateTexture     @0x8236BEA0 -> 0x34 bytes; writes the 6-dword
+//       GPUTEXTURE_FETCH_CONSTANT spanning +0x18..+0x2F
+// The largest guest footprint is 0x34. Reserve 0x40 so no host-side member can
+// share storage with it: host pointers previously sat at +0x10/+0x18/+0x20 and
+// the guest's +0x1C read-modify-write silently corrupted the texture pointer
+// (IsLiveHostTexture then rejected the render target and Present went black).
+inline constexpr uint32_t kGuestResourceHeaderBytes = 0x40;
+
 struct GuestResource {
+  // Deliberately aliases the guest's D3DResource::Common; IsFm2Resource reads
+  // it through an arbitrary guest pointer to identify our objects.
   uint32_t magic = kFm2ResourceMagic;
   // Host LE atomic. Guest D3DResource_AddRef/Release use BE lwarx/stwcx on
   // this same offset -- those paths must be fully hooked for FM2 objects
   // (see D3DResource_AddRef @ 0x82369D90 / D3DResource_Release @ 0x82369E08)
   // or refcount corruption / double-free.
   std::atomic<uint32_t> refCount{1};
+  // Guest-owned bytes: fences, identifier, BaseFlush and the fetch constant.
+  // Never place a host member here.
+  uint8_t guestHeader[kGuestResourceHeaderBytes - 8]{};
   ResourceType type;
 
   explicit GuestResource(ResourceType t) : type(t) {}
 };
+
+static_assert(offsetof(GuestResource, refCount) == 4,
+              "refCount must alias the guest's D3DResource::ReferenceCount");
+static_assert(offsetof(GuestResource, type) == kGuestResourceHeaderBytes,
+              "host members must start past the guest-written resource header");
 
 // True only for pointers to our own guest-allocated Guest* objects.
 inline bool IsFm2Resource(const void* p) {
