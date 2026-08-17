@@ -286,7 +286,10 @@ inline std::unordered_map<u32, jmp_buf>& get_jmp_buf_map() {
 // Trap Handling
 //=============================================================================
 
-inline void ppc_trap(PPCContext& ctx, u8* base, u16 trap_type) {
+// guest_pc is the address of the trapping instruction; codegen stamps it in so
+// a firing trap can be traced back to a guest function. Defaulted to 0 so code
+// generated before this parameter existed still compiles.
+inline void ppc_trap(PPCContext& ctx, u8* base, u16 trap_type, u32 guest_pc = 0) {
   switch (trap_type) {
     case 20:
     case 26: {
@@ -296,7 +299,8 @@ inline void ppc_trap(PPCContext& ctx, u8* base, u16 trap_type) {
     }
     case 0:
     case 22:
-      REXCPU_WARN("tw/td trap hit (type {})", trap_type);
+      REXCPU_WARN("tw/td trap hit (type {}) at 0x{:08X} lr=0x{:08X}", trap_type, guest_pc,
+                  static_cast<u32>(ctx.lr));
       break;
     case 25:
       break;

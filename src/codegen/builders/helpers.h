@@ -456,7 +456,7 @@ inline void emitTrap(BuilderContext& ctx, uint32_t to, const std::string& aSigne
   if (to == 0)
     return;
   if (to == 0x1F) {
-    ctx.println("\tppc_trap(ctx, base, 0);");
+    ctx.println("\tppc_trap(ctx, base, 0, 0x{:X});", ctx.base);
     return;
   }
 
@@ -477,7 +477,7 @@ inline void emitTrap(BuilderContext& ctx, uint32_t to, const std::string& aSigne
   if (to & 0x01)
     add(fmt::format("{} > {}", aUnsigned, bUnsigned));
 
-  ctx.println("\tif ({}) ppc_trap(ctx, base, 0);", cond);
+  ctx.println("\tif ({}) ppc_trap(ctx, base, 0, 0x{:X});", cond, ctx.base);
 }
 
 }  // namespace rex::codegen
