@@ -96,7 +96,8 @@ void Clear(GuestDevice* device, uint32_t flags, const float* color, float z);
 // resolve). destPoint/sourceRect may be null (full-texture copy at 0,0),
 // matching the guest API's own optional-pointer semantics.
 void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint,
-                      const GuestRect* sourceRect);
+                      const GuestRect* sourceRect, uint32_t postClearFlags,
+                      const float* postClearColor, float postClearZ);
 
 // ---------------------------------------------------------------------------
 // Phase 4: draw dispatch + constant transport.
@@ -111,6 +112,12 @@ void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint
 // be built -- check HasBoundPipeline() before issuing the actual draw call.
 void FlushRenderState(GuestDevice* device, uint32_t primitiveType);
 bool HasBoundPipeline();
+
+// Guest thread: stage big-endian float4 registers emitted into a deferred
+// command-buffer payload. QueueDrawStateSnapshots overlays and consumes them
+// atomically with the next draw.
+void StageDrawShaderConstants(bool vertex, uint32_t startRegister, const void* beDwords,
+                              uint32_t registerCount);
 
 void DrawInstanced(uint32_t vertexCount, uint32_t startVertex);
 void DrawIndexedInstanced(uint32_t indexCount, uint32_t startIndex, int32_t baseVertexIndex);

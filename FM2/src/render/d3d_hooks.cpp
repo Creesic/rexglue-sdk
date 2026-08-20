@@ -382,7 +382,7 @@ REX_HOOK(FM2_D3DTexture_LockRect, TextureLockRectHook);
 REX_HOOK(FM2_D3DResource_UnlockResource, UnlockResourceHook);
 REX_HOOK(FM2_D3DSurface_GetDesc, SurfaceGetDescHook);
 REX_HOOK(FM2_D3D_CreateTextureFromMemoryBuffer, CreateTextureFromMemoryBufferHook);
-REX_HOOK(D3DResource_AddRef, D3DResourceAddRefHook);   // @ 0x82369D90
+REX_HOOK(D3DResource_AddRef, D3DResourceAddRefHook);    // @ 0x82369D90
 REX_HOOK(D3DResource_Release, D3DResourceReleaseHook);  // @ 0x82369E08
 
 // ---------------------------------------------------------------------------
@@ -879,20 +879,30 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
                  uint32_t destTextureAddr, rr::GuestPoint* destPoint, uint32_t /*destLevel*/,
                  uint32_t /*destSliceOrFace*/, const uint32_t* clearColor, float clearZ,
                  uint32_t /*clearStencil*/, const void* /*parameters*/) {
+  uint32_t postClearFlags = 0;
+  float postClearColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   if ((flags & kResolveClearColor) != 0) {
-    float rgba[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    postClearFlags |= rr::D3DCLEAR_TARGET;
     if (clearColor != nullptr) {
       for (int i = 0; i < 4; ++i)
-        rgba[i] = std::bit_cast<float>(std::byteswap(clearColor[i]));
+        postClearColor[i] = std::bit_cast<float>(std::byteswap(clearColor[i]));
     }
-    rr::Clear(nullptr, rr::D3DCLEAR_TARGET, rgba, 0.0f);
   }
   if ((flags & kResolveClearDepthStencil) != 0) {
-    rr::Clear(nullptr, rr::D3DCLEAR_ZBUFFER | rr::D3DCLEAR_STENCIL, nullptr, clearZ);
+    postClearFlags |= rr::D3DCLEAR_ZBUFFER | rr::D3DCLEAR_STENCIL;
   }
 
-  if (destTextureAddr == 0)
+  // Resolve-with-clear copies EDRAM first, then clears it for the next pass.
+  // Invalid/overloaded destinations still retain the clear half of that API.
+  const auto queueClearOnly = [&] {
+    if (postClearFlags != 0)
+      rr::Clear(nullptr, postClearFlags, postClearColor, clearZ);
+  };
+
+  if (destTextureAddr == 0) {
+    queueClearOnly();
     return;
+  }
 
   void* destHost = ghp::ToHost<void>(destTextureAddr);
   rr::GuestBaseTexture* reo = nullptr;
@@ -908,8 +918,10 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
     dataBase = ReadGuestU32At(destTextureAddr + 32u) & 0x1FFFFFFFu & ~0xFFFu;
   }
 
-  if (reo == nullptr || reo->texture == nullptr)
+  if (reo == nullptr || reo->texture == nullptr) {
+    queueClearOnly();
     return;
+  }
 
   const bool destIsBlockCompressed = reo->format >= plume::RenderFormat::BC1_TYPELESS &&
                                      reo->format <= plume::RenderFormat::BC7_UNORM_SRGB;
@@ -919,6 +931,7 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
       REXGPU_WARN("Resolve: skipping BC dest 0x{:08X} fmt={} (misidentified)", destTextureAddr,
                   int(reo->format));
     }
+    queueClearOnly();
     return;
   }
 
@@ -930,13 +943,27 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
 
   static uint64_t resolveApertureCount = 0;
   ++resolveApertureCount;
-  if (resolveApertureCount <= 24 || resolveApertureCount % 300 == 1) {
-    REXGPU_INFO("Resolve: dest=0x{:08X} dataBase=0x{:08X} {}x{} fmt={} fm2={} (n={})",
-                destTextureAddr, dataBase, reo->width, reo->height, int(reo->format),
-                rr::IsFm2Resource(destHost), resolveApertureCount);
+  // Band resolves (explicit srcRect/destPt) are the predicated-tiling composite:
+  // log the first 60 unconditionally — consecutive destPt/srcRect values are the
+  // evidence for the half-screen composite bug.
+  static uint64_t bandResolveCount = 0;
+  const bool isBandResolve = sourceRect != nullptr || destPoint != nullptr;
+  if (isBandResolve) ++bandResolveCount;
+  if ((isBandResolve && bandResolveCount <= 60) || resolveApertureCount <= 40 ||
+      resolveApertureCount % 300 == 1) {
+    REXGPU_INFO(
+        "Resolve: flags=0x{:X} dest=0x{:08X} dataBase=0x{:08X} {}x{} fmt={} fm2={} destPt=({},{}) "
+        "srcRect=({},{},{},{}) (n={})",
+        flags, destTextureAddr, dataBase, reo->width, reo->height, int(reo->format),
+        rr::IsFm2Resource(destHost), destPoint != nullptr ? destPoint->x.get() : -1,
+        destPoint != nullptr ? destPoint->y.get() : -1,
+        sourceRect != nullptr ? sourceRect->left.get() : -1,
+        sourceRect != nullptr ? sourceRect->top.get() : -1,
+        sourceRect != nullptr ? sourceRect->right.get() : -1,
+        sourceRect != nullptr ? sourceRect->bottom.get() : -1, resolveApertureCount);
   }
 
-  rr::ResolveToTexture(reo, destPoint, sourceRect);
+  rr::ResolveToTexture(reo, destPoint, sourceRect, postClearFlags, postClearColor, clearZ);
 }
 
 }  // namespace
@@ -954,6 +981,14 @@ REX_HOOK(D3DDevice_Resolve, ResolveHook);
 
 REX_IMPORT(__imp__sub_8236D958, g_origUploadMatrixConstants,
            void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+// Returns a guest-physical payload pointer that the caller fills after the
+// function returns. The completed values therefore never enter GuestDevice's
+// CPU constant files; record the payload here and consume it at the next draw.
+REX_IMPORT(__imp__sub_82803358, g_origGpuBeginShaderConstantF4,
+           uint32_t(uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_823767B8, g_origCbSetShaderConstantF, void(uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_823766E0, g_origCbCreateShaderConstantFFixup,
+           uint32_t(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__sub_82382CC8, g_origSetPendingAluConstants,
            void(uint32_t, uint64_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_D3D_BeginCommandBufferBatch, g_origCbBatchBegin,
@@ -964,6 +999,84 @@ REX_IMPORT(__imp__FM2_D3D_EmitDirtyStateAndDrawList, g_origEmitDirtyStateAndDraw
            void(uint32_t, uint32_t, uint32_t));
 
 namespace {
+
+struct DeferredShaderConstants {
+  uint32_t payloadGuest;
+  uint32_t startRegister;
+  uint32_t registerCount;
+  bool pixelShader;
+};
+
+std::mutex g_deferredShaderConstantsMutex;
+std::vector<DeferredShaderConstants> g_deferredShaderConstants;
+
+struct CommandBufferFixupRange {
+  uint16_t startRegister;
+  uint16_t registerCount;
+};
+
+struct DeferredCommandBufferConstants {
+  uint32_t startRegister;
+  uint32_t registerCount;
+  std::array<uint32_t, 64 * 4> values;
+};
+
+std::mutex g_commandBufferFixupMutex;
+std::unordered_map<uint32_t, CommandBufferFixupRange> g_commandBufferFixupRanges;
+std::vector<DeferredCommandBufferConstants> g_deferredCommandBufferConstants;
+
+void DrainDeferredShaderConstants() {
+  std::vector<DeferredShaderConstants> pending;
+  {
+    std::lock_guard lock(g_deferredShaderConstantsMutex);
+    if (g_deferredShaderConstants.empty())
+      return;
+    pending.swap(g_deferredShaderConstants);
+  }
+
+  auto* memory = fm2::ghp::GuestMemory();
+  if (memory == nullptr)
+    return;
+
+  for (const DeferredShaderConstants& constants : pending) {
+    const uint32_t physicalAddress = constants.payloadGuest & 0x1FFFFFFFu;
+    const uint64_t byteCount = uint64_t(constants.registerCount) * 16u;
+    if (byteCount == 0 || byteCount > 0x20000000u ||
+        uint64_t(physicalAddress) + byteCount > 0x20000000u) {
+      continue;
+    }
+    const uint32_t lastAddress = physicalAddress + uint32_t(byteCount) - 1u;
+    if (memory->GetPhysicalHeap()->QueryRangeAccess(physicalAddress, lastAddress) ==
+        rex::memory::PageAccess::kNoAccess) {
+      continue;
+    }
+    const auto* source = memory->TranslatePhysical<const uint32_t*>(physicalAddress);
+    if (source == nullptr)
+      continue;
+    fm2::render::StageDrawShaderConstants(!constants.pixelShader, constants.startRegister, source,
+                                          constants.registerCount);
+  }
+}
+
+void DrainDeferredCommandBufferConstants() {
+  std::vector<DeferredCommandBufferConstants> pending;
+  {
+    std::lock_guard lock(g_commandBufferFixupMutex);
+    if (g_deferredCommandBufferConstants.empty())
+      return;
+    pending.swap(g_deferredCommandBufferConstants);
+  }
+
+  for (const DeferredCommandBufferConstants& constants : pending) {
+    fm2::render::StageDrawShaderConstants(true, constants.startRegister, constants.values.data(),
+                                          constants.registerCount);
+  }
+}
+
+void DrainDeferredDrawShaderConstants() {
+  DrainDeferredShaderConstants();
+  DrainDeferredCommandBufferConstants();
+}
 
 bool CopyGuestRange(uint32_t guestAddress, uint8_t* destination, size_t length) {
   const auto* source = ghp::ToHost<const uint8_t>(guestAddress);
@@ -1223,12 +1336,14 @@ void TrackDrawForInstrumentation() {
 
 void DrawVerticesHook(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
                       uint32_t vertexCount) {
+  DrainDeferredDrawShaderConstants();
   TrackDrawForInstrumentation();
   rr::DrawVertices(device, primitiveType, startVertex, vertexCount);
 }
 
 void DrawIndexedVerticesHook(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
                              uint32_t startIndex, uint32_t indexCount) {
+  DrainDeferredDrawShaderConstants();
   TrackDrawForInstrumentation();
   // Object-pass record: snapshot guest context + pipeline before the native
   // submit so EmitDirty can replay with real PS/state later.
@@ -1242,12 +1357,98 @@ void DrawIndexedVerticesHook(GuestDevice* device, uint32_t primitiveType, int32_
 
 void DrawVerticesUPHook(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                         const void* vertexStreamZeroData, uint32_t vertexStreamZeroStride) {
+  DrainDeferredDrawShaderConstants();
   TrackDrawForInstrumentation();
   rr::DrawUserPointerVertices(device, primitiveType, vertexCount, vertexStreamZeroData,
                               vertexStreamZeroStride);
 }
 
 }  // namespace
+
+REX_HOOK_RAW(sub_82803358) {
+  const bool pixelShader = ctx.r4.u32 != 0;
+  const uint32_t startRegister = ctx.r5.u32;
+  const uint32_t registerCount = ctx.r6.u32;
+  g_origGpuBeginShaderConstantF4.fn(ctx, base);
+
+  const uint32_t payloadGuest = ctx.r3.u32;
+  if (payloadGuest == 0 || registerCount == 0 || registerCount > 256 || startRegister >= 256)
+    return;
+
+  std::lock_guard lock(g_deferredShaderConstantsMutex);
+  if (g_deferredShaderConstants.size() >= 2048) {
+    static std::atomic<bool> loggedOverflow{false};
+    if (!loggedOverflow.exchange(true, std::memory_order_relaxed)) {
+      REXGPU_WARN("GpuBegin shader-constant queue overflow; dropping later payloads");
+    }
+    return;
+  }
+  g_deferredShaderConstants.push_back({payloadGuest, startRegister, registerCount, pixelShader});
+  static std::atomic<bool> loggedActive{false};
+  if (!loggedActive.exchange(true, std::memory_order_relaxed)) {
+    REXGPU_INFO("Per-draw GpuBegin constants active: stage={} start={} count={}",
+                pixelShader ? "PS" : "VS", startRegister, registerCount);
+  }
+}
+
+// D3DCommandBuffer_CreateShaderConstantFFixup returns a handle describing the
+// VS register range that a later SetShaderConstantF call will populate. FM2
+// uses this path for per-object matrices that never enter GuestDevice's CPU
+// constant file.
+REX_HOOK_RAW(sub_823766E0) {
+  const uint32_t startRegister = ctx.r5.u32;
+  const uint32_t registerCount = ctx.r6.u32;
+  g_origCbCreateShaderConstantFFixup.fn(ctx, base);
+
+  if (registerCount == 0 || registerCount > 64 || startRegister >= 256)
+    return;
+
+  const uint32_t handle = ctx.r3.u32;
+  std::lock_guard lock(g_commandBufferFixupMutex);
+  g_commandBufferFixupRanges[handle] = {static_cast<uint16_t>(startRegister),
+                                        static_cast<uint16_t>(registerCount)};
+}
+
+// Copy the values while the guest source is valid, but consume them only at
+// the next draw so each draw receives the matrix/material values associated
+// with its own command-buffer fixup.
+REX_HOOK_RAW(sub_823767B8) {
+  const uint32_t handle = ctx.r4.u32;
+  const uint32_t sourceGuest = ctx.r5.u32;
+  g_origCbSetShaderConstantF.fn(ctx, base);
+
+  if (sourceGuest == 0)
+    return;
+
+  std::lock_guard lock(g_commandBufferFixupMutex);
+  const auto rangeIt = g_commandBufferFixupRanges.find(handle);
+  if (rangeIt == g_commandBufferFixupRanges.end())
+    return;
+
+  const CommandBufferFixupRange range = rangeIt->second;
+  const auto* source = ghp::ToHost<const uint32_t>(sourceGuest);
+  if (source == nullptr || range.registerCount == 0 || range.registerCount > 64)
+    return;
+
+  if (g_deferredCommandBufferConstants.size() >= 2048) {
+    static std::atomic<bool> loggedOverflow{false};
+    if (!loggedOverflow.exchange(true, std::memory_order_relaxed)) {
+      REXGPU_WARN("Command-buffer shader-constant queue overflow; dropping later payloads");
+    }
+    return;
+  }
+
+  DeferredCommandBufferConstants constants{};
+  constants.startRegister = range.startRegister;
+  constants.registerCount = range.registerCount;
+  std::memcpy(constants.values.data(), source, size_t(range.registerCount) * 16u);
+  g_deferredCommandBufferConstants.push_back(std::move(constants));
+  static std::atomic<bool> loggedActive{false};
+  if (!loggedActive.exchange(true, std::memory_order_relaxed)) {
+    REXGPU_INFO("Per-draw command-buffer constants active: start={} count={}", range.startRegister,
+                range.registerCount);
+  }
+}
 
 // Capture draw-site LR so FlushRenderState can gate the object-pass WVP overlay
 // (g_lastDrawCallerLr == 0x82566A34). Still dispatch through HostToGuest for
@@ -1304,15 +1505,13 @@ REX_HOOK_RAW(sub_8236D958) {
   static std::atomic<bool> s_objWvpArmed{false};
   if (lr >= 0x8255BC00u && lr < 0x8255E800u && count >= 4u) {
     if (destReg == 0u) {
-      const float c0x =
-          std::bit_cast<float>(static_cast<const rex::be<uint32_t>*>(src)[0].get());
+      const float c0x = std::bit_cast<float>(static_cast<const rex::be<uint32_t>*>(src)[0].get());
       const float ac = std::fabs(c0x);
       if (ac > 55.f && ac < 5000.f) {
         s_objWvpArmed.store(true, std::memory_order_relaxed);
         rr::CaptureObjPassWvp(0u, src, count);
       }
-    } else if ((destReg == 4u || destReg == 8u) &&
-               s_objWvpArmed.load(std::memory_order_relaxed)) {
+    } else if ((destReg == 4u || destReg == 8u) && s_objWvpArmed.load(std::memory_order_relaxed)) {
       rr::CaptureObjPassWvp(destReg, src, count);
       if (destReg == 8u)
         s_objWvpArmed.store(false, std::memory_order_relaxed);

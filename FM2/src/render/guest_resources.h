@@ -76,8 +76,7 @@ static_assert(offsetof(GuestResource, type) == kGuestResourceHeaderBytes,
 
 // True only for pointers to our own guest-allocated Guest* objects.
 inline bool IsFm2Resource(const void* p) {
-  return p != nullptr &&
-         *reinterpret_cast<const uint32_t*>(p) == kFm2ResourceMagic;
+  return p != nullptr && *reinterpret_cast<const uint32_t*>(p) == kFm2ResourceMagic;
 }
 
 struct GuestBaseTexture;
@@ -102,6 +101,10 @@ struct GuestBaseTexture : GuestResource {
   plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
   bool requiresHostInitialization = false;
   bool hostInitialized = true;
+  // True only when the host texture was created with RENDER_TARGET capability.
+  // StretchRectShaderBlit must fail closed on non-RT destinations: drawing into
+  // a NONE-flag resource makes D3D12 remove the device (invalid RTV).
+  bool hostRenderTargetCapable = false;
   // Frame index of the last guest-memory upload; lets us upload a sampled
   // texture at most once per frame instead of once per draw (huge perf win).
   uint64_t lastUploadFrame = ~0ull;
@@ -119,8 +122,7 @@ struct GuestBaseTexture : GuestResource {
 struct GuestTexture : GuestBaseTexture {
   uint32_t depth = 0;
   uint32_t levels = 1;
-  plume::RenderTextureViewDimension viewDimension =
-      plume::RenderTextureViewDimension::TEXTURE_2D;
+  plume::RenderTextureViewDimension viewDimension = plume::RenderTextureViewDimension::TEXTURE_2D;
   std::unique_ptr<plume::RenderFramebuffer> framebuffer;
   // Unleashed StretchRect link: surface this texture will receive a resolve/
   // copy from. Cleared when the pending copy executes.
@@ -152,8 +154,7 @@ struct GuestSurface : GuestBaseTexture {
   uint32_t tileGrownFromHeight = 0;
   // Framebuffers keyed by their (paired) color attachment; the backbuffer's
   // texture changes per frame, so the depth surface owns the cache.
-  std::unordered_map<const plume::RenderTexture*,
-                     std::unique_ptr<plume::RenderFramebuffer>>
+  std::unordered_map<const plume::RenderTexture*, std::unique_ptr<plume::RenderFramebuffer>>
       framebuffers;
   // Textures waiting for a StretchRect / Resolve copy from this surface
   // (Unleashed destinationTextures). Drained by FlushPendingStretchRectCommands.
@@ -205,8 +206,7 @@ struct ShaderHeaderElement {
 struct GuestShader : GuestResource {
   std::mutex mutex;
   std::unique_ptr<plume::RenderShader> shader;
-  std::unordered_map<uint32_t, std::unique_ptr<plume::RenderShader>>
-      specializedShaders;
+  std::unordered_map<uint32_t, std::unique_ptr<plume::RenderShader>> specializedShaders;
 #ifdef _WIN32
   IDxcBlobEncoding* dxilLibraryBlob = nullptr;
 #endif

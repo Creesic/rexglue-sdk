@@ -138,6 +138,8 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/plume/CMakeLists.
         target_include_directories(fm2 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/zstd/lib")
     endif()
     target_include_directories(fm2 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/xxHash")
+    # RenderDoc in-app capture API (header-only; runtime dll injected by renderdoccmd).
+    target_include_directories(fm2 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/renderdoc")
     target_compile_definitions(fm2 PRIVATE FM2_HAS_PLUME=1 NOMINMAX WIN32_LEAN_AND_MEAN)
 else()
     target_compile_definitions(fm2 PRIVATE FM2_HAS_PLUME=0)

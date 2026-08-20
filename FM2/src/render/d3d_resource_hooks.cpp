@@ -48,6 +48,8 @@ RenderFormat ConvertFormat(uint32_t d3dFormat) {
       return RenderFormat::R8G8B8A8_UNORM;
     case 0x18280186:  // D3DFMT_A8R8G8B8
     case 0x28280086:  // D3DFMT_X8R8G8B8
+    case 0x28280186:  // D3DFMT_X8R8G8B8 variant (gpu fmt 6 = k_8_8_8_8; only a
+                      // flag bit differs from 0x28280086 — same byte order)
       return RenderFormat::B8G8R8A8_UNORM;
     case 0x1A220197:  // D3DFMT_D24FS8
     case 0x2D200196:  // D3DFMT_D24S8
@@ -156,7 +158,9 @@ static uint32_t LockBuffer(GuestBuffer* buffer, uint32_t flags) {
   return ToGuest(buffer->mappedMemory);
 }
 
-// Byte-swap the guest staging contents into the host buffer.
+// Snapshot and byte-swap mutable guest lock memory before enqueueing. FIFO
+// orders the command, but does not make buffer->mappedMemory immutable while
+// the render thread catches up with the producer.
 template <typename T>
 static void UploadBufferSwapped(GuestBuffer* buffer) {
   if (buffer->lockedReadOnly || buffer->mappedMemory == nullptr)
@@ -164,57 +168,66 @@ static void UploadBufferSwapped(GuestBuffer* buffer) {
   if (!buffer->buffer)
     return;
 
+  uint8_t* snapshot = AllocateIntermediaryData(buffer->dataSize);
+  if (snapshot == nullptr) {
+    REXGPU_ERROR("UnlockBuffer: failed to snapshot guest buffer (size={})", buffer->dataSize);
+    return;
+  }
+  const auto* sourceBytes = static_cast<const uint8_t*>(buffer->mappedMemory);
+  const T* source = reinterpret_cast<const T*>(sourceBytes);
+  T* destination = reinterpret_cast<T*>(snapshot);
+  const size_t count = buffer->dataSize / sizeof(T);
+  for (size_t i = 0; i < count; ++i)
+    destination[i] = std::byteswap(source[i]);
+  const size_t swappedBytes = count * sizeof(T);
+  if (swappedBytes != buffer->dataSize) {
+    std::memcpy(snapshot + swappedBytes, sourceBytes + swappedBytes,
+                buffer->dataSize - swappedBytes);
+  }
+
   RenderCommand cmd{};
   cmd.type = (sizeof(T) == 2) ? RenderCommandType::UnlockBuffer16 : RenderCommandType::UnlockBuffer32;
   cmd.unlockBuffer.buffer = buffer;
-  // Async like Unleashed: FIFO with later draws/Present ensures the upload
-  // lands before the buffer is sampled.
+  cmd.unlockBuffer.data = snapshot;
+  cmd.unlockBuffer.size = buffer->dataSize;
   RenderQueue::Enqueue(cmd);
 }
 
-template <typename T>
-static void ProcUnlockBufferT(GuestBuffer* buffer) {
-  if (buffer == nullptr || buffer->mappedMemory == nullptr || buffer->buffer == nullptr) return;
-
-  const T* src = reinterpret_cast<const T*>(buffer->mappedMemory);
-  const size_t count = buffer->dataSize / sizeof(T);
-
-  auto swapInto = [&](T* dest) {
-    for (size_t i = 0; i < count; ++i) dest[i] = std::byteswap(src[i]);
-  };
+static void ProcUnlockBufferSnapshot(GuestBuffer* buffer, const uint8_t* data, uint32_t size) {
+  if (buffer == nullptr || data == nullptr || size == 0 || buffer->buffer == nullptr)
+    return;
+  size = std::min(size, buffer->dataSize);
 
   if (Device()->getCapabilities().gpuUploadHeap) {
-    T* dest = reinterpret_cast<T*>(buffer->buffer->map());
-    if (dest == nullptr) return;
-    swapInto(dest);
+    void* dest = buffer->buffer->map();
+    if (dest == nullptr)
+      return;
+    std::memcpy(dest, data, size);
     buffer->buffer->unmap();
     return;
   }
 
-  auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(buffer->dataSize));
-  if (!upload) {
-    REXGPU_ERROR("UnlockBuffer: failed to create staging upload buffer (size={})", buffer->dataSize);
+  const RenderBufferReference upload = UploadFrameData(data, size, false);
+  if (upload.ref == nullptr) {
+    REXGPU_ERROR("UnlockBuffer: failed to reserve frame upload space (size={})", size);
     return;
   }
-  T* dest = reinterpret_cast<T*>(upload->map());
-  if (dest == nullptr) return;
-  swapInto(dest);
-  upload->unmap();
 
   RenderBuffer* dst = buffer->buffer.get();
-  RenderBuffer* srcBuf = upload.get();
-  const uint64_t size = buffer->dataSize;
-  // Graphics CL path (Unleashed non-copy-queue): keep staging until frame fence.
   RenderCommandList* cl = CommandList();
-  if (cl == nullptr) return;
+  if (cl == nullptr)
+    return;
   cl->barriers(RenderBarrierStage::COPY, RenderBufferBarrier(dst, RenderBufferAccess::WRITE));
-  cl->copyBufferRegion(dst->at(0), srcBuf->at(0), size);
+  cl->copyBufferRegion(dst->at(0), upload, size);
   cl->barriers(RenderBarrierStage::GRAPHICS, RenderBufferBarrier(dst, RenderBufferAccess::READ));
-  RetainTempUploadBuffer(std::move(upload));
 }
 
-void ProcUnlockBuffer16(GuestBuffer* buffer) { ProcUnlockBufferT<uint16_t>(buffer); }
-void ProcUnlockBuffer32(GuestBuffer* buffer) { ProcUnlockBufferT<uint32_t>(buffer); }
+void ProcUnlockBuffer16(GuestBuffer* buffer, const uint8_t* data, uint32_t size) {
+  ProcUnlockBufferSnapshot(buffer, data, size);
+}
+void ProcUnlockBuffer32(GuestBuffer* buffer, const uint8_t* data, uint32_t size) {
+  ProcUnlockBufferSnapshot(buffer, data, size);
+}
 
 uint32_t LockVertexBuffer(GuestBuffer* buffer, uint32_t flags) {
   return LockBuffer(buffer, flags);
@@ -343,6 +356,7 @@ void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t heigh
                                                          RenderSwizzle::R, RenderSwizzle::ONE);
       break;
     case 0x28280086:  // D3DFMT_X8R8G8B8
+    case 0x28280186:  // D3DFMT_X8R8G8B8 variant (same layout, see ConvertFormat)
       viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::G, RenderSwizzle::B,
                                                          RenderSwizzle::A, RenderSwizzle::ONE);
       break;
@@ -359,6 +373,7 @@ void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t heigh
   texture->requiresHostInitialization = desc.flags == RenderTextureFlag::RENDER_TARGET ||
                                         desc.flags == RenderTextureFlag::DEPTH_TARGET;
   texture->hostInitialized = !texture->requiresHostInitialization;
+  texture->hostRenderTargetCapable = desc.flags == RenderTextureFlag::RENDER_TARGET;
   texture->viewDimension = viewDesc.dimension;
   texture->descriptorIndex = AllocTextureDescriptor();
   TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
@@ -413,6 +428,7 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   texture->format = fmt;
   texture->requiresHostInitialization = false;
   texture->hostInitialized = true;
+  texture->hostRenderTargetCapable = colorRt;
   texture->viewDimension = RenderTextureViewDimension::TEXTURE_2D;
   texture->descriptorIndex = AllocTextureDescriptor();
   TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
@@ -528,6 +544,7 @@ void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t heigh
   surface->sampleCount = sampleCount;
   surface->requiresHostInitialization = true;
   surface->hostInitialized = false;
+  surface->hostRenderTargetCapable = !depth;
   surface->descriptorIndex = AllocTextureDescriptor();
   TextureDescriptorSet()->setTexture(surface->descriptorIndex, surface->texture,
                                      RenderTextureLayout::SHADER_READ, surface->textureView.get());

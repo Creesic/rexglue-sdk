@@ -182,10 +182,27 @@ GuestBaseTexture* g_implicitRenderTarget = nullptr;
 // Last live color RT bound for drawing. Present snapshots this when the guest
 // has already unbound g_renderTarget (common at Swap time).
 GuestBaseTexture* g_lastPresentableRenderTarget = nullptr;
+// Last full-frame color RT an actual DRAW rendered into (latched at pipeline
+// bind in FlushRenderState, not at SetRenderTarget). Unleashed presents its
+// single g_backBuffer so it never needs this; FM2 draws the scene into one RT
+// and then binds a separate display buffer, so a bind-time latch presents the
+// empty display buffer (black). The reference repo learned this twice
+// (g_lastTouchedRenderTarget / g_scenePresentRT); this is the minimal port of
+// that lesson.
+GuestBaseTexture* g_lastDrawnRenderTarget = nullptr;
 // StretchRect format-skip present override (survives Swap re-setting aperture).
 std::atomic<GuestBaseTexture*> g_stretchRectPresentOverride{nullptr};
 GuestSurface* g_depthStencil = nullptr;
 GuestSurface* g_implicitDepthStencil = nullptr;
+// Last depth surface seen per exact (width, height, sampleCount) — FM2's
+// EDRAM model never re-binds depth when switching passes (720p scene ↔ 512
+// envmap), so the stale wrong-size depth must be swapped for the matching one
+// at draw time (see FlushRenderState rescue). Both directions occur.
+std::unordered_map<uint64_t, GuestSurface*> g_lastDepthBySize;
+
+uint64_t DepthSizeKey(uint32_t width, uint32_t height, RenderSampleCounts samples) {
+  return (uint64_t(width) << 32) | (uint64_t(height) << 8) | uint64_t(samples);
+}
 RenderFramebuffer* g_framebuffer = nullptr;
 std::unordered_map<uint64_t, std::unique_ptr<RenderFramebuffer>> g_framebufferCache;
 std::unordered_map<uint64_t, std::pair<uint32_t, std::unique_ptr<RenderSampler>>> g_samplerStates;
@@ -223,28 +240,37 @@ std::unordered_set<GuestSurface*> g_pendingSurfaceCopies;
 std::unordered_set<GuestSurface*> g_pendingMsaaResolves;
 
 // ---------------------------------------------------------------------------
-// Constant/vertex upload allocator (Phase 4). One buffer per GPU frame slot:
-// reset only after that slot's fence retires (OnRecordingFrameReady), so
-// 2-frame pipelining cannot overwrite in-flight CBVs/UP vertices.
+// Constant/vertex/buffer upload allocator (Phase 4). Chunks are owned per GPU
+// frame slot and reset only after that slot's fence retires
+// (OnRecordingFrameReady), so 2-frame pipelining cannot overwrite in-flight
+// CBVs, geometry, or buffer copies.
 // ---------------------------------------------------------------------------
 
 class UploadAllocator {
  public:
-  void Reset() { offset_ = 0; }
+  void Reset() {
+    currentChunk_ = 0;
+    for (Chunk& chunk : chunks_)
+      chunk.offset = 0;
+  }
 
   // Copies `size` bytes from `src` into the next aligned region of the
   // frame's upload buffer, returning a reference usable as a root CBV or a
   // vertex/index buffer view. If `byteSwap`, treats src/size as an array of
   // big-endian uint32_t (guest register file) and swaps into the buffer;
   // otherwise does a plain copy (host-native structs, guest UP vertex data).
-  // Returns a null reference if the frame's upload budget is exhausted.
+  // Grows in reusable chunks so large menu/resource upload bursts do not
+  // create and retain one D3D12 upload resource for every guest Unlock.
   RenderBufferReference Upload(const void* src, uint64_t size, bool byteSwap) {
-    EnsureCreated();
-    offset_ = (offset_ + kAlignment - 1) & ~(kAlignment - 1);
-    if (offset_ + size > kBufferSize)
+    if (src == nullptr || size == 0)
+      return RenderBufferReference{};
+    Chunk* chunk = AcquireChunk(size);
+    if (chunk == nullptr)
       return RenderBufferReference{};
 
-    uint8_t* dst = mapped_ + offset_;
+    chunk->offset = Align(chunk->offset);
+
+    uint8_t* dst = chunk->mapped + chunk->offset;
     if (byteSwap) {
       const uint32_t* s = reinterpret_cast<const uint32_t*>(src);
       uint32_t* d = reinterpret_cast<uint32_t*>(dst);
@@ -253,8 +279,8 @@ class UploadAllocator {
     } else {
       std::memcpy(dst, src, size);
     }
-    RenderBufferReference ref = buffer_->at(offset_);
-    offset_ += size;
+    RenderBufferReference ref = chunk->buffer->at(chunk->offset);
+    chunk->offset += size;
     return ref;
   }
 
@@ -267,23 +293,52 @@ class UploadAllocator {
   }
 
  private:
-  static constexpr uint64_t kBufferSize = 4 * 1024 * 1024;
+  struct Chunk {
+    std::unique_ptr<RenderBuffer> buffer;
+    uint8_t* mapped = nullptr;
+    uint64_t capacity = 0;
+    uint64_t offset = 0;
+  };
+
+  // A menu transition uploads many 2.2 MiB and 568 KiB buffers in one burst.
+  // A 64 MiB base chunk keeps that burst to one or two persistent resources
+  // per frame rather than dozens of short-lived committed resources.
+  static constexpr uint64_t kChunkSize = 64 * 1024 * 1024;
   static constexpr uint64_t kAlignment = 256;
 
-  void EnsureCreated() {
-    if (buffer_ != nullptr)
-      return;
-    // Used both as a root CBV source (FlushRenderState) and as a scratch
-    // vertex buffer (DrawUserPointerVertices) -- flag for both usages.
-    buffer_ = Device()->createBuffer(RenderBufferDesc::UploadBuffer(
-        kBufferSize,
-        RenderBufferFlag::CONSTANT | RenderBufferFlag::VERTEX | RenderBufferFlag::INDEX));
-    mapped_ = reinterpret_cast<uint8_t*>(buffer_->map());
+  static uint64_t Align(uint64_t value) {
+    return (value + kAlignment - 1) & ~(kAlignment - 1);
   }
 
-  std::unique_ptr<RenderBuffer> buffer_;
-  uint8_t* mapped_ = nullptr;
-  uint64_t offset_ = 0;
+  Chunk* AcquireChunk(uint64_t size) {
+    for (size_t i = currentChunk_; i < chunks_.size(); ++i) {
+      Chunk& chunk = chunks_[i];
+      if (Align(chunk.offset) + size <= chunk.capacity) {
+        currentChunk_ = i;
+        return &chunk;
+      }
+    }
+
+    const uint64_t capacity = std::max(kChunkSize, Align(size));
+    auto buffer = Device()->createBuffer(RenderBufferDesc::UploadBuffer(
+        capacity,
+        RenderBufferFlag::CONSTANT | RenderBufferFlag::VERTEX | RenderBufferFlag::INDEX));
+    if (buffer == nullptr) {
+      REXGPU_ERROR("UploadAllocator: failed to create {}-byte upload chunk", capacity);
+      return nullptr;
+    }
+    uint8_t* mapped = reinterpret_cast<uint8_t*>(buffer->map());
+    if (mapped == nullptr) {
+      REXGPU_ERROR("UploadAllocator: failed to map {}-byte upload chunk", capacity);
+      return nullptr;
+    }
+    chunks_.push_back(Chunk{std::move(buffer), mapped, capacity, 0});
+    currentChunk_ = chunks_.size() - 1;
+    return &chunks_.back();
+  }
+
+  std::vector<Chunk> chunks_;
+  size_t currentChunk_ = 0;
 };
 std::array<UploadAllocator, kNumFrames> g_uploadAllocators;
 std::array<std::vector<std::unique_ptr<RenderBuffer>>, kNumFrames> g_tempUploadBuffers;
@@ -300,20 +355,26 @@ class IntermediaryUploadAllocator {
  public:
   uint8_t* Allocate(uint32_t size) {
     std::lock_guard lock(mutex_);
-    constexpr uint32_t kChunk = 16 * 1024 * 1024;
-    if (size > kChunk)
+    if (size == 0)
       return nullptr;
-    if (offset_ + size > kChunk) {
+    constexpr uint64_t kChunkSize = 16 * 1024 * 1024;
+    const uint64_t alignedSize = (uint64_t(size) + 0xFu) & ~0xFull;
+    if (index_ < chunks_.size() && offset_ + alignedSize > chunks_[index_].capacity) {
       ++index_;
       offset_ = 0;
     }
-    if (buffers_.size() <= index_)
-      buffers_.resize(index_ + 1);
-    if (buffers_[index_] == nullptr) {
-      buffers_[index_] = std::make_unique<uint8_t[]>(kChunk);
+    if (chunks_.size() <= index_) {
+      const uint64_t capacity = std::max(kChunkSize, alignedSize);
+      chunks_.push_back(Chunk{std::make_unique<uint8_t[]>(capacity), capacity});
+    } else if (chunks_[index_].capacity < alignedSize) {
+      // This chunk is not in use in the current generation: Reset or the
+      // previous overflow advanced us here only after earlier queued users had
+      // drained, so replacing it cannot invalidate live command pointers.
+      const uint64_t capacity = std::max(kChunkSize, alignedSize);
+      chunks_[index_] = Chunk{std::make_unique<uint8_t[]>(capacity), capacity};
     }
-    uint8_t* result = buffers_[index_].get() + offset_;
-    offset_ += (size + 0xFu) & ~0xFu;
+    uint8_t* result = chunks_[index_].memory.get() + offset_;
+    offset_ += alignedSize;
     return result;
   }
 
@@ -331,10 +392,15 @@ class IntermediaryUploadAllocator {
   }
 
  private:
+  struct Chunk {
+    std::unique_ptr<uint8_t[]> memory;
+    uint64_t capacity = 0;
+  };
+
   std::mutex mutex_;
-  std::vector<std::unique_ptr<uint8_t[]>> buffers_;
-  uint32_t index_ = 0;
-  uint32_t offset_ = 0;
+  std::vector<Chunk> chunks_;
+  size_t index_ = 0;
+  uint64_t offset_ = 0;
 };
 IntermediaryUploadAllocator g_intermediaryUploadAllocator;
 
@@ -353,6 +419,8 @@ void DestructTempResources(uint32_t frame) {
           g_renderTarget = nullptr;
         if (g_lastPresentableRenderTarget == texture)
           g_lastPresentableRenderTarget = nullptr;
+        if (g_lastDrawnRenderTarget == texture)
+          g_lastDrawnRenderTarget = nullptr;
         if (g_implicitRenderTarget == texture)
           g_implicitRenderTarget = nullptr;
         ClearResolveSurfaceAperture(texture);
@@ -395,12 +463,17 @@ void DestructTempResources(uint32_t frame) {
           g_renderTarget = nullptr;
         if (g_lastPresentableRenderTarget == surface)
           g_lastPresentableRenderTarget = nullptr;
+        if (g_lastDrawnRenderTarget == surface)
+          g_lastDrawnRenderTarget = nullptr;
         if (g_implicitRenderTarget == surface)
           g_implicitRenderTarget = nullptr;
         if (g_depthStencil == surface)
           g_depthStencil = nullptr;
         if (g_implicitDepthStencil == surface)
           g_implicitDepthStencil = nullptr;
+        for (auto it = g_lastDepthBySize.begin(); it != g_lastDepthBySize.end();) {
+          it = it->second == surface ? g_lastDepthBySize.erase(it) : std::next(it);
+        }
         ClearResolveSurfaceAperture(surface);
         // Drop deferred StretchRect links before freeing — otherwise
         // FlushPendingStretchRectCommands can UAF this surface (null
@@ -537,6 +610,14 @@ RenderSampleCounts GetSampleCount(GuestBaseTexture* texture) {
   return RenderSampleCount::COUNT_1;
 }
 
+bool AttachmentsCompatible(GuestBaseTexture* colorTarget, GuestSurface* depthTarget) {
+  if (colorTarget == nullptr || depthTarget == nullptr)
+    return true;
+  return colorTarget->width == depthTarget->width &&
+         colorTarget->height == depthTarget->height &&
+         GetSampleCount(colorTarget) == GetSampleCount(depthTarget);
+}
+
 void EnsureShaderResourceDescriptor(GuestBaseTexture* texture) {
   if (texture == nullptr || texture->texture == nullptr)
     return;
@@ -580,6 +661,34 @@ bool FormatsCompatibleForGpuCopy(RenderFormat src, RenderFormat dst) {
   return src != RenderFormat::UNKNOWN && src == dst;
 }
 
+bool CanDirectStretchRectCopy(GuestSurface* surface, GuestTexture* texture) {
+  return IsLiveHostTexture(surface) && IsLiveHostTexture(texture) &&
+         FormatsCompatibleForGpuCopy(surface->format, texture->format) &&
+         surface->width == texture->width && surface->height == texture->height;
+}
+
+bool ClipResolveCopyRegion(GuestBaseTexture* source, GuestBaseTexture* destination,
+                           RenderRect& sourceRect, uint32_t destX, uint32_t destY) {
+  if (!IsLiveHostTexture(source) || !IsLiveHostTexture(destination) ||
+      destX >= destination->width || destY >= destination->height) {
+    return false;
+  }
+
+  sourceRect.left = std::clamp(sourceRect.left, 0, int32_t(source->width));
+  sourceRect.top = std::clamp(sourceRect.top, 0, int32_t(source->height));
+  sourceRect.right = std::clamp(sourceRect.right, sourceRect.left, int32_t(source->width));
+  sourceRect.bottom = std::clamp(sourceRect.bottom, sourceRect.top, int32_t(source->height));
+  const uint32_t copyWidth =
+      std::min(uint32_t(sourceRect.right - sourceRect.left), destination->width - destX);
+  const uint32_t copyHeight =
+      std::min(uint32_t(sourceRect.bottom - sourceRect.top), destination->height - destY);
+  if (copyWidth == 0 || copyHeight == 0)
+    return false;
+  sourceRect.right = sourceRect.left + int32_t(copyWidth);
+  sourceRect.bottom = sourceRect.top + int32_t(copyHeight);
+  return true;
+}
+
 // When StretchRect cannot land on the aperture dest, present the live scene
 // surface instead of an empty / stale frontbuffer. Swap may overwrite
 // g_frontbufferPresentSource afterward; the override survives until Present.
@@ -599,6 +708,11 @@ bool StretchRectShaderBlit(GuestSurface* surface, GuestTexture* texture) {
   if (!IsLiveHostTexture(surface) || !IsLiveHostTexture(texture))
     return false;
   if (RenderFormatIsDepth(texture->format) || RenderFormatIsDepth(surface->format))
+    return false;
+  // Fail closed on non-RT-capable destinations (e.g. sampled-only translated
+  // textures): CreateRenderTargetView on a FLAG_NONE resource removes the
+  // device (InfoQueue id=42 -> RemoveDevice INVALID_CALL).
+  if (!texture->hostRenderTargetCapable)
     return false;
 
   RenderPipeline* pipeline = GetBlitPipeline(texture->format);
@@ -665,7 +779,7 @@ bool PopulateBarriersForStretchRect(GuestSurface* renderTarget, GuestSurface* de
     for (GuestTexture* texture : surface->destinationTextures) {
       if (!IsLiveHostTexture(texture))
         continue;
-      if (!FormatsCompatibleForGpuCopy(surface->format, texture->format))
+      if (!CanDirectStretchRectCopy(surface, texture))
         continue;
       AddBarrier(texture, dstLayout);
       anyCompatible = true;
@@ -705,14 +819,19 @@ void ExecutePendingStretchRectCommands(GuestSurface* renderTarget, GuestSurface*
           texture->sourceSurface = nullptr;
         continue;
       }
-      if (!FormatsCompatibleForGpuCopy(surface->format, texture->format)) {
+      if (!CanDirectStretchRectCopy(surface, texture)) {
         static uint64_t stretchFmtSkip = 0;
         if (++stretchFmtSkip <= 24 || stretchFmtSkip % 300 == 1) {
-          REXGPU_WARN("StretchRect: format mismatch {}x{} fmt={} -> {}x{} fmt={} (n={})",
+          REXGPU_WARN("StretchRect: shader path {}x{} fmt={} -> {}x{} fmt={} samples={} (n={})",
                       surface->width, surface->height, int(surface->format), texture->width,
-                      texture->height, int(texture->format), stretchFmtSkip);
+                      texture->height, int(texture->format), surface->sampleCount, stretchFmtSkip);
         }
-        if (!StretchRectShaderBlit(surface, texture)) {
+        // A full-subresource D3D12 copy is invalid when the destination is
+        // smaller, and ResolveSubresource cannot scale. Single-sample paths
+        // use the existing fullscreen shader blit for both scaling and format
+        // conversion; MSAA falls back without submitting an invalid command.
+        if (surface->sampleCount != RenderSampleCount::COUNT_1 ||
+            !StretchRectShaderBlit(surface, texture)) {
           PreferStretchRectSourceForPresent(texture, surface);
         } else {
           for (uint32_t i = 0; i < std::size(g_textures); ++i) {
@@ -1043,6 +1162,10 @@ GuestBaseTexture* ConsumeStretchRectPresentOverride() {
 
 RenderBufferReference UploadFrameData(const void* src, uint64_t size, bool byteSwap) {
   return CurrentUploadAllocator().Upload(src, size, byteSwap);
+}
+
+uint8_t* AllocateIntermediaryData(uint32_t size) {
+  return g_intermediaryUploadAllocator.Allocate(size);
 }
 
 void RetainTempUploadBuffer(std::unique_ptr<RenderBuffer> buffer) {
@@ -1485,6 +1608,43 @@ void ProcSetIndices(GuestBuffer* buffer) {
   SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.size, live ? live->dataSize : 0u);
 }
 
+void ProcSetDrawGeometrySnapshot(const DrawGeometrySnapshot& snapshot) {
+  for (uint32_t index = 0; index < std::size(snapshot.streams); ++index) {
+    const DrawStreamSnapshot& stream = snapshot.streams[index];
+    if (stream.rawData == nullptr || stream.rawSize == 0 || stream.stride == 0) {
+      ProcSetStreamSource(index, stream.buffer, stream.offset, stream.stride);
+      continue;
+    }
+
+    const RenderBufferReference ref =
+        CurrentUploadAllocator().Upload(stream.rawData, stream.rawSize, false);
+    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexStrides[index],
+                  uint8_t(ref.ref != nullptr ? stream.stride : 0u));
+    bool dirty = false;
+    SetDirtyValue(dirty, g_vertexBufferViews[index].buffer, ref);
+    SetDirtyValue(dirty, g_vertexBufferViews[index].size, ref.ref != nullptr ? stream.rawSize : 0u);
+    SetDirtyValue(dirty, g_inputSlots[index].stride, ref.ref != nullptr ? stream.stride : 0u);
+    if (dirty) {
+      g_dirtyStates.vertexStreamFirst =
+          std::min<uint8_t>(g_dirtyStates.vertexStreamFirst, uint8_t(index));
+      g_dirtyStates.vertexStreamLast =
+          std::max<uint8_t>(g_dirtyStates.vertexStreamLast, uint8_t(index));
+    }
+  }
+  if (snapshot.rawIndexData != nullptr && snapshot.rawIndexSize != 0 &&
+      (snapshot.rawIndexStride == 2u || snapshot.rawIndexStride == 4u)) {
+    const RenderBufferReference ref =
+        CurrentUploadAllocator().Upload(snapshot.rawIndexData, snapshot.rawIndexSize, false);
+    SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.buffer, ref);
+    SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.format,
+                  snapshot.rawIndexStride == 4u ? RenderFormat::R32_UINT : RenderFormat::R16_UINT);
+    SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.size,
+                  ref.ref != nullptr ? snapshot.rawIndexSize : 0u);
+  } else {
+    ProcSetIndices(snapshot.indexBuffer);
+  }
+}
+
 void ProcSetViewport(float x, float y, float width, float height, float minZ, float maxZ) {
   SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.x, x);
   SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.y, y);
@@ -1555,8 +1715,12 @@ void ProcSetDepthStencilSurface(GuestSurface* depthStencil) {
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthStencilFormat,
                 depthStencil ? depthStencil->format : RenderFormat::UNKNOWN);
   g_dirtyStates.viewport = true;
-  if (depthStencil != nullptr)
+  if (depthStencil != nullptr) {
     g_implicitDepthStencil = depthStencil;
+    // Latch per exact size for the stale-depth rescue (both pass directions).
+    g_lastDepthBySize[DepthSizeKey(depthStencil->width, depthStencil->height,
+                                   depthStencil->sampleCount)] = depthStencil;
+  }
 }
 
 void ProcDestructResource(GuestResource* resource) {
@@ -1602,8 +1766,64 @@ void SetVertexDeclaration(GuestDevice* /*device*/, GuestVertexDeclaration* decla
   RenderQueue::Enqueue(cmd);
 }
 
-void SetStreamSource(GuestDevice* /*device*/, uint32_t index, GuestBuffer* buffer, uint32_t offset,
+namespace {
+
+std::mutex g_producerGeometryMutex;
+std::unordered_map<GuestDevice*, DrawGeometrySnapshot> g_producerGeometry;
+
+uint32_t DecodeRawBufferSize(uint32_t fetchSize) {
+  return ((fetchSize >> 2) & 0xFFFFFFu) * 4u;
+}
+
+uint8_t* SnapshotRawPhysicalBuffer(uint32_t fetchBase, uint32_t fetchSize,
+                                   uint32_t swapElementBytes, bool preserveBaseLowBits) {
+  auto* memory = ghp::GuestMemory();
+  const uint32_t size = DecodeRawBufferSize(fetchSize);
+  const uint32_t physicalAddress = fetchBase & (preserveBaseLowBits ? 0x1FFFFFFFu : 0x1FFFFFFCu);
+  if (memory == nullptr || size == 0 || size > 4u * 1024u * 1024u ||
+      uint64_t(physicalAddress) + size > 0x20000000ull ||
+      memory->GetPhysicalHeap()->QueryRangeAccess(physicalAddress, physicalAddress + size - 1u) ==
+          rex::memory::PageAccess::kNoAccess) {
+    return nullptr;
+  }
+
+  const uint8_t* source = memory->TranslatePhysical<const uint8_t*>(physicalAddress);
+  uint8_t* copy = g_intermediaryUploadAllocator.Allocate(size);
+  if (source == nullptr || copy == nullptr)
+    return nullptr;
+
+  if (swapElementBytes == 4u) {
+    const uint32_t dwordCount = size / 4u;
+    const auto* sourceWords = reinterpret_cast<const uint32_t*>(source);
+    auto* copyWords = reinterpret_cast<uint32_t*>(copy);
+    for (uint32_t index = 0; index < dwordCount; ++index)
+      copyWords[index] = std::byteswap(sourceWords[index]);
+    const uint32_t swappedBytes = dwordCount * 4u;
+    if (swappedBytes != size)
+      std::memcpy(copy + swappedBytes, source + swappedBytes, size - swappedBytes);
+  } else if (swapElementBytes == 2u) {
+    const uint32_t wordCount = size / 2u;
+    const auto* sourceWords = reinterpret_cast<const uint16_t*>(source);
+    auto* copyWords = reinterpret_cast<uint16_t*>(copy);
+    for (uint32_t index = 0; index < wordCount; ++index)
+      copyWords[index] = std::byteswap(sourceWords[index]);
+    if ((size & 1u) != 0)
+      copy[size - 1u] = source[size - 1u];
+  } else {
+    std::memcpy(copy, source, size);
+  }
+  return copy;
+}
+
+}  // namespace
+
+void SetStreamSource(GuestDevice* device, uint32_t index, GuestBuffer* buffer, uint32_t offset,
                      uint32_t stride) {
+  if (device != nullptr && index < 16u) {
+    std::lock_guard lock(g_producerGeometryMutex);
+    DrawGeometrySnapshot& snapshot = g_producerGeometry[device];
+    snapshot.streams[index] = {buffer, offset, stride};
+  }
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetStreamSource;
   cmd.setStreamSource.index = index;
@@ -1613,7 +1833,11 @@ void SetStreamSource(GuestDevice* /*device*/, uint32_t index, GuestBuffer* buffe
   RenderQueue::Enqueue(cmd);
 }
 
-void SetIndices(GuestDevice* /*device*/, GuestBuffer* buffer) {
+void SetIndices(GuestDevice* device, GuestBuffer* buffer) {
+  if (device != nullptr) {
+    std::lock_guard lock(g_producerGeometryMutex);
+    g_producerGeometry[device].indexBuffer = buffer;
+  }
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetIndices;
   cmd.setIndices.buffer = buffer;
@@ -1668,6 +1892,18 @@ GuestBaseTexture* GetCurrentColorRenderTarget() {
   // Present over sticky/implicit 720p surfaces.
   if (IsFramebufferSizedPresentSource(g_renderTarget))
     return g_renderTarget;
+  // Prefer the last RT that actually received a draw over the last one merely
+  // bound: FM2 binds the (empty) display buffer after drawing the scene/menu
+  // into another RT, and presenting the bound one shows black.
+  if (IsFramebufferSizedPresentSource(g_lastDrawnRenderTarget)) {
+    static bool loggedFirstDrawnWin = false;
+    if (!loggedFirstDrawnWin) {
+      loggedFirstDrawnWin = true;
+      REXGPU_INFO("Present source: last-DRAWN RT {}x{} won over last-bound (first occurrence)",
+                  g_lastDrawnRenderTarget->width, g_lastDrawnRenderTarget->height);
+    }
+    return g_lastDrawnRenderTarget;
+  }
   if (IsFramebufferSizedPresentSource(g_lastPresentableRenderTarget)) {
     return g_lastPresentableRenderTarget;
   }
@@ -1727,15 +1963,18 @@ void Clear(GuestDevice* /*device*/, uint32_t flags, const float* color, float z)
 }
 
 void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint,
-                      const GuestRect* sourceRect) {
+                      const GuestRect* sourceRect, uint32_t postClearFlags,
+                      const float* postClearColor, float postClearZ) {
   // Unleashed StretchRect pattern: link dest to the current RT and defer the
   // copy/MSAA resolve until FlushPendingStretchRectCommands (before Present /
   // draw). Immediate path kept for non-texture destinations or region copies.
   RenderCommand cmd{};
   cmd.type = RenderCommandType::ResolveToTexture;
   cmd.resolveToTexture.destTexture = destTexture;
-  cmd.resolveToTexture.destX = destPoint != nullptr ? uint32_t(destPoint->x.get()) : 0;
-  cmd.resolveToTexture.destY = destPoint != nullptr ? uint32_t(destPoint->y.get()) : 0;
+  cmd.resolveToTexture.destX =
+      destPoint != nullptr ? uint32_t(std::max(destPoint->x.get(), int32_t{0})) : 0;
+  cmd.resolveToTexture.destY =
+      destPoint != nullptr ? uint32_t(std::max(destPoint->y.get(), int32_t{0})) : 0;
   cmd.resolveToTexture.hasSrc = sourceRect != nullptr;
   if (sourceRect != nullptr) {
     cmd.resolveToTexture.srcLeft = sourceRect->left.get();
@@ -1743,6 +1982,12 @@ void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint
     cmd.resolveToTexture.srcRight = sourceRect->right.get();
     cmd.resolveToTexture.srcBottom = sourceRect->bottom.get();
   }
+  cmd.resolveToTexture.postClearFlags = postClearFlags;
+  for (uint32_t i = 0; i < std::size(cmd.resolveToTexture.postClearColor); ++i) {
+    cmd.resolveToTexture.postClearColor[i] =
+        postClearColor != nullptr ? postClearColor[i] : 0.0f;
+  }
+  cmd.resolveToTexture.postClearZ = postClearZ;
   RenderQueue::Enqueue(cmd);
 }
 
@@ -2172,8 +2417,7 @@ GuestVertexDeclaration* ResolveVertexDeclaration(GuestDevice* device) {
   // memory (e.g. object-pass replay restored ctx+0x2FD8 but skipped Bind).
   if (streamStride != 0 && g_inputSlots[0].stride == 0) {
     g_inputSlots[0].stride = streamStride;
-    g_pipelineState.vertexStrides[0] =
-        uint8_t(streamStride > 255u ? 255u : streamStride);
+    g_pipelineState.vertexStrides[0] = uint8_t(streamStride > 255u ? 255u : streamStride);
   }
 
   // Always try shader-header matching first. SetActivePassId mirrors a pass
@@ -2193,6 +2437,7 @@ GuestVertexDeclaration* ResolveVertexDeclaration(GuestDevice* device) {
       return decl;
     }
   }
+
   return nullptr;
 }
 
@@ -2425,6 +2670,9 @@ constexpr uint32_t kVsFloatConstantBytes = 256 * 16;  // 256 float4 registers.
 // but only the first 224 are part of the real constant-buffer ABI.
 constexpr uint32_t kPsFloatConstantBytes = 224 * 16;
 
+thread_local PendingShaderConstantFile t_pendingDrawVsConstants;
+thread_local PendingShaderConstantFile t_pendingDrawPsConstants;
+
 void ProcSetBooleans(uint32_t booleans) {
   g_sharedConstants.booleans = booleans;
 }
@@ -2479,7 +2727,7 @@ void ProcSetShaderConstants(bool vertex, const uint8_t* memory, uint32_t index, 
 }
 
 struct LocalRenderCommandQueue {
-  std::array<RenderCommand, 24> commands{};
+  std::array<RenderCommand, 32> commands{};
   uint32_t count = 0;
 
   RenderCommand& Enqueue() {
@@ -2494,8 +2742,7 @@ bool QueueConstantSnapshot(LocalRenderCommandQueue& queue, RenderCommandType typ
                            const uint32_t* source, ConstantSnapshotRange range) {
   if (source == nullptr || range.size == 0)
     return false;
-  uint8_t* copy =
-      g_intermediaryUploadAllocator.AllocateCopy(source + range.index, range.size);
+  uint8_t* copy = g_intermediaryUploadAllocator.AllocateCopy(source + range.index, range.size);
   if (copy == nullptr) {
     REXGPU_WARN("Shader constant snapshot allocation failed ({} bytes)", range.size);
     return false;
@@ -2519,6 +2766,68 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   const bool forceFullSnapshot = lastDevice != device || g_liveVsFloatConstants != nullptr ||
                                  g_livePsFloatConstants != nullptr;
   lastDevice = device;
+
+  // Vertex/index bindings are mutable guest context state just like shader
+  // constants. Capture them on the producer thread so a later unbind cannot
+  // reach the render thread before this draw is flushed. Keep the exact offset
+  // observed by SetStreamSource when the live guest pointer/stride still match.
+  DrawGeometrySnapshot geometry{};
+  {
+    std::lock_guard lock(g_producerGeometryMutex);
+    const auto it = g_producerGeometry.find(device);
+    if (it != g_producerGeometry.end())
+      geometry = it->second;
+  }
+  for (uint32_t index = 0; index < std::size(geometry.streams); ++index) {
+    const auto* address = reinterpret_cast<const rex::be<uint32_t>*>(
+        reinterpret_cast<const uint8_t*>(device) + 0x2F94u + index * 4u);
+    const uint8_t strideDwords = *(reinterpret_cast<const uint8_t*>(device) + 0x2FD8u + index);
+    GuestBuffer* liveBuffer =
+        address->get() != 0 ? ghp::ToHost<GuestBuffer>(address->get()) : nullptr;
+    const uint32_t liveStride = uint32_t(strideDwords) * 4u;
+    DrawStreamSnapshot& stream = geometry.streams[index];
+    if (liveBuffer == nullptr || liveStride == 0) {
+      stream = {};
+    } else if (!IsFm2Resource(liveBuffer)) {
+      const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
+          reinterpret_cast<const uint8_t*>(device) + 0x6F8u - index * 8u);
+      const auto* fetchSize = fetchBase + 1;
+      const uint32_t rawSize = DecodeRawBufferSize(fetchSize->get());
+      uint8_t* rawData = SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), 4u, false);
+      stream = {nullptr, 0, liveStride, rawData, rawData != nullptr ? rawSize : 0u};
+    } else if (stream.buffer != liveBuffer || stream.stride != liveStride) {
+      stream = {liveBuffer, 0, liveStride};
+    }
+  }
+  const auto* indexAddress = reinterpret_cast<const rex::be<uint32_t>*>(
+      reinterpret_cast<const uint8_t*>(device) + 0x2F7Cu);
+  geometry.indexBuffer = nullptr;
+  geometry.rawIndexData = nullptr;
+  geometry.rawIndexSize = 0;
+  geometry.rawIndexStride = 0;
+  if (indexAddress->get() != 0) {
+    GuestBuffer* liveIndexBuffer = ghp::ToHost<GuestBuffer>(indexAddress->get());
+    if (IsFm2Resource(liveIndexBuffer)) {
+      geometry.indexBuffer = liveIndexBuffer;
+    } else {
+      const auto* common = ghp::ToHost<const rex::be<uint32_t>>(indexAddress->get());
+      const auto* fetchBase = ghp::ToHost<const rex::be<uint32_t>>(indexAddress->get() + 0x18u);
+      const auto* fetchSize = ghp::ToHost<const rex::be<uint32_t>>(indexAddress->get() + 0x1Cu);
+      if (common != nullptr && fetchBase != nullptr && fetchSize != nullptr) {
+        geometry.rawIndexStride = (common->get() & 0x80000000u) != 0 ? 4u : 2u;
+        geometry.rawIndexSize = DecodeRawBufferSize(fetchSize->get());
+        geometry.rawIndexData = SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(),
+                                                          geometry.rawIndexStride, true);
+        if (geometry.rawIndexData == nullptr) {
+          geometry.rawIndexSize = 0;
+          geometry.rawIndexStride = 0;
+        }
+      }
+    }
+  }
+  RenderCommand& geometryCommand = queue.Enqueue();
+  geometryCommand.type = RenderCommandType::SetDrawGeometrySnapshot;
+  geometryCommand.setDrawGeometrySnapshot = geometry;
 
   constexpr uint64_t kBooleanDirtyMask = uint64_t{1} << 56;
   uint64_t booleanFlags = device->dirtyFlags[4].get();
@@ -2559,26 +2868,47 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   device->dirtyFlags[3] = samplerFlags;
 
   uint64_t vsFlags = device->dirtyFlags[0].get();
+  std::array<uint32_t, PendingShaderConstantFile::kRegisterCount *
+                           PendingShaderConstantFile::kDwordsPerRegister>
+      mergedVsConstants;
+  const bool hasPendingVs = !t_pendingDrawVsConstants.empty();
   ConstantSnapshotRange vsRange =
-      (forceFullSnapshot || g_liveVsFloatConstants != nullptr)
+      (forceFullSnapshot || g_liveVsFloatConstants != nullptr || hasPendingVs)
           ? ConstantSnapshotRange{0, kVsFloatConstantBytes}
           : GetConstantSnapshotRange(vsFlags, 64);
-  const uint32_t* vsSource = g_liveVsFloatConstants != nullptr
-                                 ? g_liveVsFloatConstants
-                                 : reinterpret_cast<const uint32_t*>(device->vertexShaderFloatConstants);
-  if (QueueConstantSnapshot(queue, RenderCommandType::SetVertexShaderConstants, vsSource, vsRange) &&
+  const uint32_t* vsSource =
+      g_liveVsFloatConstants != nullptr
+          ? g_liveVsFloatConstants
+          : reinterpret_cast<const uint32_t*>(device->vertexShaderFloatConstants);
+  if (hasPendingVs) {
+    std::memcpy(mergedVsConstants.data(), vsSource, kVsFloatConstantBytes);
+    t_pendingDrawVsConstants.OverlayAndClear(mergedVsConstants.data(), 256);
+    vsSource = mergedVsConstants.data();
+  }
+  if (QueueConstantSnapshot(queue, RenderCommandType::SetVertexShaderConstants, vsSource,
+                            vsRange) &&
       g_liveVsFloatConstants == nullptr) {
     device->dirtyFlags[0] = 0;
   }
 
   uint64_t psFlags = device->dirtyFlags[1].get();
+  std::array<uint32_t, PendingShaderConstantFile::kRegisterCount *
+                           PendingShaderConstantFile::kDwordsPerRegister>
+      mergedPsConstants;
+  const bool hasPendingPs = !t_pendingDrawPsConstants.empty();
   ConstantSnapshotRange psRange =
-      (forceFullSnapshot || g_livePsFloatConstants != nullptr)
+      (forceFullSnapshot || g_livePsFloatConstants != nullptr || hasPendingPs)
           ? ConstantSnapshotRange{0, kPsFloatConstantBytes}
           : GetConstantSnapshotRange(psFlags, 56);
-  const uint32_t* psSource = g_livePsFloatConstants != nullptr
-                                 ? g_livePsFloatConstants
-                                 : reinterpret_cast<const uint32_t*>(device->pixelShaderFloatConstants);
+  const uint32_t* psSource =
+      g_livePsFloatConstants != nullptr
+          ? g_livePsFloatConstants
+          : reinterpret_cast<const uint32_t*>(device->pixelShaderFloatConstants);
+  if (hasPendingPs) {
+    std::memcpy(mergedPsConstants.data(), psSource, kPsFloatConstantBytes);
+    t_pendingDrawPsConstants.OverlayAndClear(mergedPsConstants.data(), 224);
+    psSource = mergedPsConstants.data();
+  }
   if (QueueConstantSnapshot(queue, RenderCommandType::SetPixelShaderConstants, psSource, psRange) &&
       g_livePsFloatConstants == nullptr) {
     device->dirtyFlags[1] = 0;
@@ -2677,6 +3007,12 @@ uint32_t PrepareConvertedIndices(uint32_t primitiveType, uint32_t vertexOrPrimCo
 }
 
 }  // namespace
+
+void StageDrawShaderConstants(bool vertex, uint32_t startRegister, const void* beDwords,
+                              uint32_t registerCount) {
+  PendingShaderConstantFile& pending = vertex ? t_pendingDrawVsConstants : t_pendingDrawPsConstants;
+  pending.Stage(startRegister, static_cast<const uint32_t*>(beDwords), registerCount);
+}
 
 void MirrorPassVsConstants(uint32_t startRegister, const void* src, uint32_t vector4fCount) {
   if (src == nullptr || startRegister >= 0x100u || vector4fCount == 0)
@@ -2843,12 +3179,56 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
       (g_pipelineState.zEnable || g_pipelineState.stencilEnable) ? g_depthStencil : nullptr;
   if (depthStencil == nullptr && (g_pipelineState.zEnable || g_pipelineState.stencilEnable) &&
       renderTarget != nullptr && g_implicitDepthStencil != nullptr &&
-      g_implicitDepthStencil->width == renderTarget->width &&
-      g_implicitDepthStencil->height == renderTarget->height) {
+      AttachmentsCompatible(renderTarget, g_implicitDepthStencil)) {
     depthStencil = g_implicitDepthStencil;
     SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthStencilFormat,
                   depthStencil->format);
     g_dirtyStates.renderTargetAndDepthStencil = true;
+  }
+  if (!AttachmentsCompatible(renderTarget, depthStencil)) {
+    // Stale cross-pass depth bind (e.g. 512x512 envmap depth still bound when
+    // scene draws resume on the 720p color RT): EDRAM had no such pairing
+    // constraint, so FM2 never re-binds. Swap in the last full-frame depth of
+    // the color RT's sample count instead of dropping depth entirely —
+    // dropping disables depth testing for every scene draw (wrong occlusion).
+    GuestSurface* rescue = nullptr;
+    if (depthStencil != nullptr && renderTarget != nullptr) {
+      auto it = g_lastDepthBySize.find(DepthSizeKey(renderTarget->width, renderTarget->height,
+                                                    GetSampleCount(renderTarget)));
+      if (it != g_lastDepthBySize.end()) {
+        GuestSurface* candidate = it->second;
+        if (candidate != nullptr && candidate != depthStencil && IsLiveHostTexture(candidate) &&
+            AttachmentsCompatible(renderTarget, candidate)) {
+          rescue = candidate;
+        }
+      }
+    }
+    if (rescue != nullptr) {
+      static uint64_t rescuedDepth = 0;
+      if (++rescuedDepth <= 12 || rescuedDepth % 3000 == 1) {
+        REXGPU_INFO("FlushRenderState: swapped stale {}x{} depth for full-frame {}x{}@{} (n={})",
+                    depthStencil->width, depthStencil->height, rescue->width, rescue->height,
+                    GetSampleCount(rescue), rescuedDepth);
+      }
+      depthStencil = rescue;
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthStencilFormat,
+                    depthStencil->format);
+      g_dirtyStates.renderTargetAndDepthStencil = true;
+    } else {
+      static uint64_t incompatibleAttachments = 0;
+      if (++incompatibleAttachments <= 24 || incompatibleAttachments % 300 == 1) {
+        REXGPU_WARN(
+            "FlushRenderState: dropping incompatible depth target color={}x{}@{} depth={}x{}@{} "
+            "(n={})",
+            renderTarget != nullptr ? renderTarget->width : 0,
+            renderTarget != nullptr ? renderTarget->height : 0, GetSampleCount(renderTarget),
+            depthStencil != nullptr ? depthStencil->width : 0,
+            depthStencil != nullptr ? depthStencil->height : 0, GetSampleCount(depthStencil),
+            incompatibleAttachments);
+      }
+      depthStencil = nullptr;
+      g_dirtyStates.renderTargetAndDepthStencil = true;
+    }
   }
 
   const RenderPrimitiveTopology topology = ConvertPrimitiveType(primitiveType);
@@ -2917,14 +3297,19 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   }
 
   PipelineState pipelineState = g_pipelineState;
-  pipelineState.sampleCount = RenderSampleCount::COUNT_1;
+  // Surface creation preserves the Xbox MSAA count. D3D12 requires the PSO
+  // SampleDesc to match the bound attachments exactly; forcing COUNT_1 here
+  // made draws disappear and eventually removed the device.
+  pipelineState.sampleCount =
+      renderTarget != nullptr ? GetSampleCount(renderTarget) : GetSampleCount(depthStencil);
   if (depthStencil == nullptr) {
     pipelineState.zEnable = false;
     pipelineState.zWriteEnable = false;
     pipelineState.stencilEnable = false;
     pipelineState.depthStencilFormat = RenderFormat::UNKNOWN;
   }
-  RenderPipeline* pipeline = GetPipeline(pipelineState, g_insideRecordedBatch && !kObjPassRecordReplay);
+  RenderPipeline* pipeline =
+      GetPipeline(pipelineState, g_insideRecordedBatch && !kObjPassRecordReplay);
   if (pipeline == nullptr)
     return;
   RenderPipelineLayout* layout = PipelineLayout();
@@ -2943,9 +3328,9 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   commandList->setPipeline(pipeline);
   g_dirtyStates.pipelineState = false;
 
-  g_sharedConstants.swappedTexcoords =
-      g_pipelineState.vertexDeclaration != nullptr ? g_pipelineState.vertexDeclaration->swappedTexcoords
-                                                   : 0;
+  g_sharedConstants.swappedTexcoords = g_pipelineState.vertexDeclaration != nullptr
+                                           ? g_pipelineState.vertexDeclaration->swappedTexcoords
+                                           : 0;
 
   // Snapshot commands already copied the exact guest-thread state into these
   // persistent render-thread files. Never dereference mutable guest state here:
@@ -2987,6 +3372,12 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   }
 
   g_hasBoundPipeline = true;
+
+  // A draw is now guaranteed to land on g_renderTarget — remember it as the
+  // preferred present source (full-frame targets only; EDRAM tile bands must
+  // not displace the real 720p scene/menu RT).
+  if (IsFramebufferSizedPresentSource(g_renderTarget))
+    g_lastDrawnRenderTarget = g_renderTarget;
 }
 
 void DrawInstanced(uint32_t vertexCount, uint32_t startVertex) {
@@ -3021,9 +3412,7 @@ void ProcClear(uint32_t flags, const float rgba[4], float z) {
   EnsureAttachmentInitialized(g_renderTarget);
   EnsureAttachmentInitialized(g_depthStencil);
 
-  const bool onePass = (g_renderTarget == nullptr) || (g_depthStencil == nullptr) ||
-                       (g_renderTarget->width == g_depthStencil->width &&
-                        g_renderTarget->height == g_depthStencil->height);
+  const bool onePass = AttachmentsCompatible(g_renderTarget, g_depthStencil);
   if (onePass)
     SetFramebuffer(g_renderTarget, g_depthStencil, true);
 
@@ -3068,8 +3457,8 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
   if (!IsLiveHostTexture(destTexture))
     return;
   // Swap/Resolve often run after the guest unbound the color RT. Unleashed keeps
-  // using the live surface via pending StretchRect links; we fall back to the
-  // last full-frame presentable RT so aperture resolves are not no-ops.
+  // using the live surface via pending StretchRect links; fall back to the last
+  // presentable RT so aperture resolves are not no-ops.
   GuestBaseTexture* source = g_renderTarget;
   if (!IsLiveHostTexture(source)) {
     source = g_lastPresentableRenderTarget;
@@ -3116,6 +3505,21 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
     return;
   }
 
+  // D3D12 does not clip CopyTextureRegion / ResolveSubresourceRegion. FM2 can
+  // resolve a larger EDRAM surface into a smaller aperture texture, so bound
+  // both the explicit and implicit-full source rectangles to the destination.
+  RenderRect clippedSrc =
+      hasSrc ? srcRect : RenderRect(0, 0, int32_t(source->width), int32_t(source->height));
+  if (!ClipResolveCopyRegion(source, destTexture, clippedSrc, destX, destY)) {
+    static uint64_t resolveEmptySkip = 0;
+    if (++resolveEmptySkip <= 24 || resolveEmptySkip % 300 == 1) {
+      REXGPU_WARN("ResolveToTexture: empty/out-of-range region {}x{} -> {}x{} at {},{} (n={})",
+                  source->width, source->height, destTexture->width, destTexture->height, destX,
+                  destY, resolveEmptySkip);
+    }
+    return;
+  }
+
   // Region / surface-dest path: must not copy while source is still bound.
   if (g_framebuffer != nullptr) {
     CommandList()->setFramebuffer(nullptr);
@@ -3123,36 +3527,32 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
     g_dirtyStates.renderTargetAndDepthStencil = true;
   }
 
-  AddBarrier(source, RenderTextureLayout::RESOLVE_SOURCE);
-  AddBarrier(destTexture, RenderTextureLayout::RESOLVE_DEST);
-  FlushBarriers();
-
   const bool multiSampling =
       surface != nullptr && surface->sampleCount != RenderSampleCount::COUNT_1;
   if (multiSampling) {
-    if (hasSrc) {
-      CommandList()->resolveTextureRegion(destTexture->texture, destX, destY, source->texture,
-                                          &srcRect);
-    } else if (destX == 0 && destY == 0) {
+    AddBarrier(source, RenderTextureLayout::RESOLVE_SOURCE);
+    AddBarrier(destTexture, RenderTextureLayout::RESOLVE_DEST);
+    FlushBarriers();
+    const bool fullSubresource =
+        destX == 0 && destY == 0 && clippedSrc.left == 0 && clippedSrc.top == 0 &&
+        clippedSrc.right == int32_t(source->width) &&
+        clippedSrc.bottom == int32_t(source->height) && source->width == destTexture->width &&
+        source->height == destTexture->height;
+    if (fullSubresource) {
       CommandList()->resolveTexture(destTexture->texture, source->texture);
     } else {
       CommandList()->resolveTextureRegion(destTexture->texture, destX, destY, source->texture,
-                                          nullptr);
+                                          &clippedSrc);
     }
   } else {
     // 1x surfaces: copy, never ResolveSubresourceRegion.
     AddBarrier(source, RenderTextureLayout::COPY_SOURCE);
     AddBarrier(destTexture, RenderTextureLayout::COPY_DEST);
     FlushBarriers();
-    RenderBox srcBox;
-    const RenderBox* srcBoxPtr = nullptr;
-    if (hasSrc) {
-      srcBox = RenderBox(srcRect.left, srcRect.top, srcRect.right, srcRect.bottom);
-      srcBoxPtr = &srcBox;
-    }
+    const RenderBox srcBox(clippedSrc.left, clippedSrc.top, clippedSrc.right, clippedSrc.bottom);
     CommandList()->copyTextureRegion(
         RenderTextureCopyLocation::Subresource(destTexture->texture, 0),
-        RenderTextureCopyLocation::Subresource(source->texture, 0), destX, destY, 0, srcBoxPtr);
+        RenderTextureCopyLocation::Subresource(source->texture, 0), destX, destY, 0, &srcBox);
   }
   MarkAttachmentInitialized(destTexture);
   g_stretchRectPresentOverride.store(nullptr, std::memory_order_relaxed);
@@ -3205,15 +3605,13 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
   }
   RenderPipelineLayout* layout = PipelineLayout();
   RenderCommandList* commandList = CommandList();
-  PipelineState pipelineState = g_pipelineState;
-  pipelineState.sampleCount = RenderSampleCount::COUNT_1;
-  RenderPipeline* pipeline = GetPipeline(pipelineState, g_insideRecordedBatch && !kObjPassRecordReplay);
-  if (layout == nullptr || commandList == nullptr || pipeline == nullptr) {
+  // FlushRenderState already selected and bound the PSO using the temporary
+  // user-pointer stride and the actual attachment sample count.
+  if (layout == nullptr || commandList == nullptr) {
     g_hasBoundPipeline = false;
     return;
   }
   commandList->setGraphicsPipelineLayout(layout);
-  commandList->setPipeline(pipeline);
   RenderVertexBufferView view(ref, bytes);
   RenderInputSlot slot(0, stride, RenderInputSlotClassification::PER_VERTEX_DATA);
   commandList->setVertexBuffers(0, &view, 1, &slot);
@@ -3379,6 +3777,9 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
     case RenderCommandType::SetIndices:
       ProcSetIndices(cmd.setIndices.buffer);
       break;
+    case RenderCommandType::SetDrawGeometrySnapshot:
+      ProcSetDrawGeometrySnapshot(cmd.setDrawGeometrySnapshot);
+      break;
     case RenderCommandType::Clear:
       ProcClear(cmd.clear.flags, cmd.clear.color, cmd.clear.z);
       break;
@@ -3387,6 +3788,38 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
                          cmd.resolveToTexture.srcRight, cmd.resolveToTexture.srcBottom);
       ProcResolveToTexture(cmd.resolveToTexture.destTexture, cmd.resolveToTexture.destX,
                            cmd.resolveToTexture.destY, cmd.resolveToTexture.hasSrc, srcRect);
+      if (cmd.resolveToTexture.postClearFlags != 0) {
+        // Predicated-tiling band sequences: hardware re-renders EDRAM between
+        // band resolves, so resolve→clear→resolve is safe there. We render all
+        // bands in ONE pass (tile RTs grown to 720p at create), and the guest
+        // then issues its band resolves back-to-back — clearing after an
+        // intermediate band destroys the rows the NEXT band still needs
+        // (RenderDoc frame 400: RT full at band 1, 100% black at band 2 ->
+        // only the top band ever reached the frontbuffer). Apply the post
+        // clear only when this resolve's dest region reaches the bottom of
+        // the destination (last band, or full-surface resolve).
+        const GuestBaseTexture* dest = cmd.resolveToTexture.destTexture;
+        bool isIntermediateBand = false;
+        if (dest != nullptr && cmd.resolveToTexture.hasSrc) {
+          const int32_t copyHeight = srcRect.bottom - srcRect.top;
+          isIntermediateBand =
+              int32_t(cmd.resolveToTexture.destY) + copyHeight < int32_t(dest->height);
+        }
+        if (!isIntermediateBand) {
+          // A full-surface resolve is normally deferred until the next draw or
+          // present. Resolve-with-clear requires the copy to consume the old
+          // EDRAM contents before the source is cleared for the next pass.
+          FlushPendingStretchRectCommands();
+          ProcClear(cmd.resolveToTexture.postClearFlags, cmd.resolveToTexture.postClearColor,
+                    cmd.resolveToTexture.postClearZ);
+        } else {
+          static uint64_t bandClearDeferred = 0;
+          if (++bandClearDeferred <= 12 || bandClearDeferred % 300 == 1) {
+            REXGPU_INFO("ResolveToTexture: deferring post-clear past intermediate band destY={} (n={})",
+                        cmd.resolveToTexture.destY, bandClearDeferred);
+          }
+        }
+      }
       break;
     }
     case RenderCommandType::DrawPrimitive:
@@ -3430,10 +3863,10 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
       ProcUnlockTextureRect(cmd.unlockTextureRect.texture);
       break;
     case RenderCommandType::UnlockBuffer16:
-      ProcUnlockBuffer16(cmd.unlockBuffer.buffer);
+      ProcUnlockBuffer16(cmd.unlockBuffer.buffer, cmd.unlockBuffer.data, cmd.unlockBuffer.size);
       break;
     case RenderCommandType::UnlockBuffer32:
-      ProcUnlockBuffer32(cmd.unlockBuffer.buffer);
+      ProcUnlockBuffer32(cmd.unlockBuffer.buffer, cmd.unlockBuffer.data, cmd.unlockBuffer.size);
       break;
     case RenderCommandType::CopyBufferFromUpload:
       ProcCopyBufferFromUpload(cmd.copyBufferFromUpload.dst, cmd.copyBufferFromUpload.src,

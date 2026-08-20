@@ -1,9 +1,11 @@
 #include "video.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -12,6 +14,10 @@
 
 #include <plume_render_interface.h>
 #include <plume_render_interface_builders.h>
+#if defined(_WIN32)
+#include <plume_d3d12.h>
+#include <renderdoc_app.h>
+#endif
 #include <rex/chrono/clock.h>
 #include <rex/kernel/xboxkrnl/video.h>
 #include <rex/logging.h>
@@ -54,6 +60,7 @@ constexpr uint32_t kNumFrames = fm2::render::kNumFrames;
 
 std::unique_ptr<RenderInterface> g_interface;
 std::unique_ptr<RenderDevice> g_device;
+bool g_d3d12Backend = false;
 std::unique_ptr<RenderCommandQueue> g_queue;
 std::array<std::unique_ptr<RenderCommandList>, kNumFrames> g_commandLists;
 std::array<std::unique_ptr<RenderCommandFence>, kNumFrames> g_commandFences;
@@ -273,9 +280,9 @@ void ExecuteCommandListImpl() {
   g_presentSubmitOk = true;
 }
 
-// Guest-thread half of Present (Unleashed): swapchain present + 2-frame advance.
-// Caller must hold RecordingMutex so the render thread cannot Dispatch draws
-// against g_frame while we mutate it.
+// Swapchain present + 2-frame advance. Runs on the render thread as part of
+// the atomic present job (see ProcExecuteCommandList). Caller must hold
+// RecordingMutex so guest threads cannot race g_frame.
 void PresentAndAdvanceFrame() {
   if (!g_presentSubmitOk) return;
 
@@ -352,6 +359,36 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
   s_viewportWidth = width;
   s_viewportHeight = height;
 
+#if defined(_WIN32)
+  // Opt-in GPU diagnostics: set FM2_GPU_DEBUG=1 to enable the D3D12 debug
+  // layer and DRED (auto-breadcrumbs + page-fault tracking) BEFORE device
+  // creation, so a later DEVICE_REMOVED names the exact faulting command.
+  // Mirrors the old renderer's d3d12_debug cvar path
+  // (src/ui/d3d12/d3d12_provider.cpp); NoteDeviceLost reads the results.
+  {
+    const char* dbg = std::getenv("FM2_GPU_DEBUG");
+    if (dbg != nullptr && dbg[0] != '\0' && dbg[0] != '0') {
+      ID3D12Debug* debugController = nullptr;
+      if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
+        debugController->EnableDebugLayer();
+        debugController->Release();
+        REXGPU_INFO("FM2_GPU_DEBUG: D3D12 debug layer enabled");
+      } else {
+        REXGPU_WARN("FM2_GPU_DEBUG: D3D12 debug layer unavailable");
+      }
+      ID3D12DeviceRemovedExtendedDataSettings* dredSettings = nullptr;
+      if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSettings)))) {
+        dredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        dredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        dredSettings->Release();
+        REXGPU_INFO("FM2_GPU_DEBUG: DRED breadcrumbs + page-fault tracking enabled");
+      } else {
+        REXGPU_WARN("FM2_GPU_DEBUG: DRED settings unavailable");
+      }
+    }
+  }
+#endif
+
   // Prefer D3D12 on Windows, fall back to Vulkan.
   using InterfaceFn = std::unique_ptr<RenderInterface> (*)();
   const std::array<InterfaceFn, 2> factories = {
@@ -359,13 +396,15 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
       plume::CreateVulkanInterface,
   };
 
-  for (InterfaceFn factory : factories) {
-    g_interface = factory();
+  g_d3d12Backend = false;
+  for (size_t factoryIndex = 0; factoryIndex < factories.size(); ++factoryIndex) {
+    g_interface = factories[factoryIndex]();
     if (g_interface == nullptr) {
       continue;
     }
     g_device = g_interface->createDevice();
     if (g_device != nullptr) {
+      g_d3d12Backend = factoryIndex == 0;
       break;
     }
     g_interface.reset();
@@ -375,6 +414,35 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
     REXGPU_ERROR("Video::Init - failed to create a Plume render device");
     return false;
   }
+
+#if defined(_WIN32)
+  // With FM2_GPU_DEBUG on, keep the InfoQueue useful: FM2 clears RTs/DS every
+  // frame without creation clear-values, and those two warnings (820/821) fire
+  // hundreds of times, pushing the actual fatal ERROR out of the stored-message
+  // window before NoteDeviceLost can dump it. Deny-list them at storage level.
+  if (g_d3d12Backend && std::getenv("FM2_GPU_DEBUG") != nullptr) {
+    auto* d3dDevice = static_cast<plume::D3D12Device*>(g_device.get());
+    ID3D12InfoQueue* infoQueue = nullptr;
+    if (d3dDevice->d3d != nullptr &&
+        SUCCEEDED(d3dDevice->d3d->QueryInterface(IID_PPV_ARGS(&infoQueue))) &&
+        infoQueue != nullptr) {
+      D3D12_MESSAGE_ID denyIds[] = {
+          D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE,
+          D3D12_MESSAGE_ID_CLEARDEPTHSTENCILVIEW_MISMATCHINGCLEARVALUE,
+          // Post-failure fallout spam: once a frame fails to open, Procs
+          // recording into the closed list emit thousands of these and push
+          // the ORIGINAL removal-causing error out of the storage window.
+          D3D12_MESSAGE_ID_COMMAND_LIST_CLOSED,
+      };
+      D3D12_INFO_QUEUE_FILTER filter = {};
+      filter.DenyList.NumIDs = uint32_t(std::size(denyIds));
+      filter.DenyList.pIDList = denyIds;
+      infoQueue->PushStorageFilter(&filter);
+      infoQueue->Release();
+      REXGPU_INFO("FM2_GPU_DEBUG: InfoQueue clear-value warning spam muted");
+    }
+  }
+#endif
 
   REXGPU_INFO("Video::Init - device created: {}",
               g_device->getDescription().name);
@@ -595,11 +663,79 @@ bool IsDeviceLost() { return g_deviceLost.load(std::memory_order_acquire); }
 
 void NoteDeviceLost(const char* why) {
   if (!g_deviceLost.exchange(true, std::memory_order_acq_rel)) {
-    // Plume's D3D12 backend prints GetDeviceRemovedReason to stderr on the
-    // failing create/fence call; latch here so we stop create/present spam.
-    REXGPU_ERROR(
-        "GPU device lost latch set ({}); see prior GetDeviceRemovedReason in stderr",
-        why);
+    REXGPU_ERROR("GPU device lost latch set ({})", why);
+#if defined(_WIN32)
+    // Plume also writes these details to stderr, but FM2 normally runs without
+    // a visible console. Mirror the removal reason and the last severe debug
+    // messages into the persistent game log used for manual QA.
+    if (g_d3d12Backend && g_device != nullptr) {
+      auto* device = static_cast<plume::D3D12Device*>(g_device.get());
+      if (device->d3d != nullptr) {
+        const HRESULT reason = device->d3d->GetDeviceRemovedReason();
+        REXGPU_ERROR("D3D12 GetDeviceRemovedReason=0x{:08X}", uint32_t(reason));
+
+        // DRED (populated only when FM2_GPU_DEBUG enabled it at Init): name
+        // the exact op the GPU faulted on instead of just the HRESULT.
+        ID3D12DeviceRemovedExtendedData* dred = nullptr;
+        if (SUCCEEDED(device->d3d->QueryInterface(IID_PPV_ARGS(&dred))) && dred != nullptr) {
+          D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs = {};
+          if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs))) {
+            for (const D3D12_AUTO_BREADCRUMB_NODE* node = breadcrumbs.pHeadAutoBreadcrumbNode;
+                 node != nullptr; node = node->pNext) {
+              if (node->pLastBreadcrumbValue == nullptr || node->pCommandHistory == nullptr ||
+                  *node->pLastBreadcrumbValue == 0 ||
+                  *node->pLastBreadcrumbValue >= node->BreadcrumbCount) {
+                continue;  // untouched or fully-retired list
+              }
+              REXGPU_ERROR("DRED breadcrumb: completed {} of {} ops", *node->pLastBreadcrumbValue,
+                           node->BreadcrumbCount);
+              const uint32_t last = *node->pLastBreadcrumbValue;
+              const uint32_t start = last > 3 ? last - 3 : 0;
+              const uint32_t end = std::min(last + 2, node->BreadcrumbCount);
+              for (uint32_t i = start; i < end; ++i) {
+                REXGPU_ERROR("  [{}] op type {}{}", i, int(node->pCommandHistory[i]),
+                             i == last ? " <-- FAULT" : "");
+              }
+            }
+          }
+          D3D12_DRED_PAGE_FAULT_OUTPUT pageFault = {};
+          if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&pageFault)) &&
+              pageFault.PageFaultVA != 0) {
+            REXGPU_ERROR("DRED page fault at VA 0x{:016X}", pageFault.PageFaultVA);
+          }
+          dred->Release();
+        }
+
+        ID3D12InfoQueue* infoQueue = nullptr;
+        if (SUCCEEDED(device->d3d->QueryInterface(IID_PPV_ARGS(&infoQueue))) &&
+            infoQueue != nullptr) {
+          // Dump the FIRST stored messages too: the original invalid call that
+          // triggered removal is at the head; the tail is usually thousands of
+          // identical post-removal fallout lines (e.g. closed-command-list).
+          const UINT64 messageCount = infoQueue->GetNumStoredMessages();
+          const UINT64 headEnd = std::min<UINT64>(messageCount, 16);
+          const UINT64 tailStart =
+              messageCount > headEnd + 16 ? messageCount - 16 : headEnd;
+          auto dumpMessage = [&](UINT64 index, const char* which) {
+            SIZE_T messageSize = 0;
+            infoQueue->GetMessage(index, nullptr, &messageSize);
+            std::vector<uint8_t> bytes(messageSize);
+            auto* message = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
+            if (FAILED(infoQueue->GetMessage(index, message, &messageSize)) ||
+                message->Severity > D3D12_MESSAGE_SEVERITY_WARNING) {
+              return;
+            }
+            REXGPU_ERROR("D3D12 InfoQueue[{} #{}] id={} severity={}: {}", which, index,
+                         uint32_t(message->ID), uint32_t(message->Severity),
+                         message->pDescription);
+          };
+          for (UINT64 index = 0; index < headEnd; ++index) dumpMessage(index, "head");
+          for (UINT64 index = tailStart; index < messageCount; ++index) dumpMessage(index, "tail");
+          infoQueue->Release();
+        }
+      }
+    }
+#endif
   }
 }
 
@@ -682,6 +818,34 @@ void Video::Present() {
     return;
   }
 
+#if defined(_WIN32)
+  // Auto-capture: with the RenderDoc dll injected (renderdoccmd capture) and
+  // FM2_RDOC_CAPTURE_AT=<frame>, trigger a one-frame capture at that Present.
+  {
+    static RENDERDOC_API_1_0_0* rdocApi = [] {
+      RENDERDOC_API_1_0_0* api = nullptr;
+      if (HMODULE mod = GetModuleHandleA("renderdoc.dll")) {
+        auto getApi = reinterpret_cast<pRENDERDOC_GetAPI>(GetProcAddress(mod, "RENDERDOC_GetAPI"));
+        if (getApi != nullptr) getApi(eRENDERDOC_API_Version_1_0_0, reinterpret_cast<void**>(&api));
+      }
+      return api;
+    }();
+    static const uint64_t captureAt = [] {
+      const char* v = std::getenv("FM2_RDOC_CAPTURE_AT");
+      return v != nullptr ? std::strtoull(v, nullptr, 10) : 0ull;
+    }();
+    static uint64_t presentIndex = 0;
+    ++presentIndex;
+    if (presentIndex == 1) {
+      REXGPU_INFO("RenderDoc probe: api={} captureAt={}", rdocApi != nullptr, captureAt);
+    }
+    if (rdocApi != nullptr && captureAt != 0 && presentIndex == captureAt) {
+      rdocApi->TriggerCapture();
+      REXGPU_INFO("RenderDoc: TriggerCapture at present {}", presentIndex);
+    }
+  }
+#endif
+
   // Present-storm coalescing: FM2's job-system pool can call this far
   // faster than the GPU retires frames. If a Present is already recording/
   // submitting, drop this call rather than piling up work behind it.
@@ -698,21 +862,13 @@ void Video::Present() {
     return;
   }
 
-  // Unleashed split: render thread executes/submits the command list; guest
-  // thread presents the swapchain and advances the 2-frame pipeline.
+  // One atomic render-thread job: submit + swapchain present + slot advance +
+  // frame reopen (see ProcExecuteCommandList). Present/advance must not run on
+  // the guest thread: any Enqueue'd job that lands between submit and present
+  // reopens the frame against a stale back-buffer index and D3D12 removes the
+  // device (INVALID_CALL, "not the current back buffer").
   fm2::render::RenderCommand cmd{};
   cmd.type = fm2::render::RenderCommandType::ExecuteCommandList;
-  fm2::render::RenderQueue::Run(cmd);
-
-  {
-    // Hold RecordingMutex so Dispatch cannot race g_frame / swapchain while
-    // we present and advance. CreateTranslatedTextureHost dispatches without
-    // this mutex so Resolve→Translate cannot deadlock against the fence wait.
-    std::lock_guard lock(fm2::render::RecordingMutex());
-    PresentAndAdvanceFrame();
-  }
-
-  cmd.type = fm2::render::RenderCommandType::BeginCommandList;
   fm2::render::RenderQueue::Run(cmd);
 
   g_presentBusy.store(false, std::memory_order_release);
@@ -737,15 +893,31 @@ void Video::WaitForGPU() {
 
 namespace fm2::render {
 
-void ProcExecuteCommandList() { ExecuteCommandListImpl(); }
-
-void ProcBeginCommandList() {
+void ProcExecuteCommandList() {
+  // Atomic frame transaction, all on the render thread: submit the frame,
+  // present the swapchain, advance the slot, and reopen bookkeeping. Splitting
+  // these across guest/render threads let a guest-side Enqueue land between
+  // submit and present: it opened the NEXT recording frame against the OLD
+  // g_backBufferIndex, and D3D12 kills the device with DXGI_ERROR_INVALID_CALL
+  // ("attempted write buffer is not the current back buffer") -> the
+  // CreateSurface device-lost latch after the press-start screen.
+  ExecuteCommandListImpl();
+  {
+    std::lock_guard lock(RecordingMutex());
+    PresentAndAdvanceFrame();
+  }
   // Safe to reuse this slot's upload scratch now that its prior GPU work
   // has retired (Unleashed BeginCommandList / allocator reset).
   OnRecordingFrameReady(g_frame);
   // Restore per-frame dirty/descriptor/frame-index bookkeeping that Swap used
   // to drive via BeginRenderStateFrame (removed to avoid nested-Run freezes).
   fm2::render::NotifyRenderFrameBegin();
+}
+
+void ProcBeginCommandList() {
+  // Kept for command compatibility; the work now happens at the end of
+  // ProcExecuteCommandList so present/advance/reopen cannot interleave with
+  // guest-enqueued jobs.
 }
 
 void ProcWaitForGpu() {
@@ -808,5 +980,6 @@ void Video::Shutdown() {
   g_queue.reset();
   g_device.reset();
   g_interface.reset();
+  g_d3d12Backend = false;
   g_initialized = false;
 }
