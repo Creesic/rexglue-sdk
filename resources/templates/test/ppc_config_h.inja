@@ -143,7 +143,7 @@ inline std::unordered_map<u32, jmp_buf>& get_jmp_buf_map() {
 // Trap Handling
 //=============================================================================
 
-inline void ppc_trap(PPCContext& ctx, u8* base, u16 trap_type) {
+inline void ppc_trap(PPCContext& ctx, u8* base, u16 trap_type, u32 guest_pc = 0) {
   switch (trap_type) {
     case 20:
     case 26: {
@@ -153,7 +153,8 @@ inline void ppc_trap(PPCContext& ctx, u8* base, u16 trap_type) {
     }
     case 0:
     case 22:
-      REXCPU_WARN("tw/td trap hit (type {})", trap_type);
+      REXCPU_WARN("tw/td trap hit (type {}) at 0x{:08X} lr=0x{:08X}", trap_type, guest_pc,
+                  static_cast<u32>(ctx.lr));
       break;
     case 25:
       break;
@@ -190,4 +191,3 @@ inline std::atomic<i32>& ppc_global_lock_count_() {
     assert(old_count_ >= 1 && "LeaveGlobalLock called without matching EnterGlobalLock"); \
     rex::thread::global_critical_region::mutex().unlock();                                \
   } while (0)
-
