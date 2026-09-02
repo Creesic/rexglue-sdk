@@ -640,7 +640,17 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
   {
     auto global_lock = global_critical_region_.Acquire();
     for (auto& existing_module : user_modules_) {
-      if (existing_module->path() == path) {
+      // Re-loading an already-resident module must be idempotent (return the
+      // existing one), matching NT/Xenia LoadLibrary semantics. The exact-path
+      // compare alone is too strict: a module first loaded by one path form
+      // (e.g. the boot loader's "game:\Foo.xex") and later re-requested via a
+      // different but equivalent string (different case / device-absolute form)
+      // would miss here, fall through to LoadFromFile + the recomp lib_key
+      // dedup below, and be fatally refused -> the guest reads the failed load
+      // as a disc error (XamShowDirtyDiscErrorUI). Match by name/path the same
+      // way GetModule/Matches does (case-insensitive, basename-aware).
+      if (existing_module->path() == path || existing_module->Matches(path) ||
+          existing_module->Matches(name)) {
         return existing_module;
       }
     }
@@ -678,16 +688,39 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
   if (recomp && !recomp->shared_lib_name.empty()) {
     const std::string& lib_key = recomp->guest_path;
 
+    bool lib_already_resident = false;
     {
       auto global_lock = global_critical_region_.Acquire();
       auto [lib_it, inserted] = module_libraries_.emplace(lib_key, SharedLibrary{});
-      if (!inserted) {
-        REXSYS_ERROR("Recompiled module '{}' already loaded; refusing duplicate load", lib_key);
-        object_table()->ReleaseHandle(module->handle());
-        return nullptr;
-      }
+      (void)lib_it;
+      lib_already_resident = !inserted;
     }
 
+    if (lib_already_resident) {
+      // The recompiled shared library + dispatcher function table for this
+      // module are already loaded and registered. Re-loading must be idempotent
+      // (NT LoadLibrary semantics): NEVER fatally refuse here -- the guest reads
+      // a failed module load as a disc read error and pops the dirty-disc UI.
+      // Prefer returning an already-published module; if there isn't one (e.g. a
+      // prior unload left the lib resident), adopt the resident lib and publish
+      // this freshly-mapped module so the guest still gets a valid handle.
+      // Do NOT re-dlopen / re-register (that would double-register the table).
+      {
+        auto global_lock = global_critical_region_.Acquire();
+        for (auto& existing_module : user_modules_) {
+          if (existing_module->Matches(path) || existing_module->Matches(name)) {
+            object_table()->ReleaseHandle(module->handle());
+            return existing_module;
+          }
+        }
+      }
+      REXSYS_WARN("Recompiled module '{}' already resident with no live module entry; "
+                  "adopting it instead of refusing the load",
+                  lib_key);
+      wired_recomp = true;
+    }
+
+    if (!wired_recomp) {
     SharedLibrary library_local;
     if (!library_local.Load(recomp->shared_lib_name)) {
       REXSYS_ERROR("Failed to load shared library for module '{}'", recomp->pe_name);
@@ -713,6 +746,7 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
           wired_recomp = true;
         }
       }
+    }
     }
 
     if (!wired_recomp) {

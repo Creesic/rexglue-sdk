@@ -16,10 +16,12 @@
 #include <filesystem>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <fmt/format.h>
 #include <inja/inja.hpp>
 
+#include <rex/codegen/bootstrap_merge.h>
 #include <rex/codegen/function_graph.h>
 #include <rex/codegen/template_registry.h>
 #include <rex/logging.h>
@@ -50,30 +52,59 @@ nlohmann::json buildTemplateData(const rex::codegen::CodegenContext& ctx,
     }
   }
 
-  // Build functions JSON array
-  nlohmann::json functionsJson = nlohmann::json::array();
-  for (const auto* fn : functions) {
-    std::string funcName;
-    bool isRexcrt = false;
-
+  auto resolveFunctionName = [&](const rex::codegen::FunctionNode* fn) -> std::string {
     auto crtIt = rexcrtByAddr.find(static_cast<uint32_t>(fn->base()));
     if (crtIt != rexcrtByAddr.end()) {
-      funcName = crtIt->second;
-      isRexcrt = true;
-    } else if (fn->base() == ctx.analysisState().entryPoint) {
-      funcName = "xstart";
-    } else if (!fn->name().empty()) {
-      funcName = fn->name();
-    } else {
-      funcName = fmt::format("sub_{:08X}", fn->base());
+      return crtIt->second;
     }
+    if (fn->base() == ctx.analysisState().entryPoint) {
+      return "xstart";
+    }
+    if (!fn->name().empty()) {
+      return fn->name();
+    }
+    return fmt::format("sub_{:08X}", fn->base());
+  };
 
+  // Build functions JSON array
+  nlohmann::json functionsJson = nlohmann::json::array();
+  std::unordered_set<uint32_t> registeredAddresses;
+  for (const auto* fn : functions) {
+    std::string funcName = resolveFunctionName(fn);
+    bool isRexcrt = rexcrtByAddr.contains(static_cast<uint32_t>(fn->base()));
+
+    registeredAddresses.insert(static_cast<uint32_t>(fn->base()));
     functionsJson.push_back({
         {"address", fmt::format("0x{:X}", fn->base())},
         {"name", funcName},
         {"is_rexcrt", isRexcrt},
         {"below_code_base", (fn->base() < codeMin)},
         {"is_import", fn->authority() == rex::codegen::FunctionAuthority::IMPORT},
+    });
+  }
+
+  // Config chunks merged into a parent are not emitted separately; alias their
+  // entry points to the parent function for dispatch tables.
+  for (const auto& [chunkAddr, chunkCfg] : cfg.functions) {
+    if (!chunkCfg.isChunk() || registeredAddresses.contains(chunkAddr)) {
+      continue;
+    }
+
+    const rex::codegen::FunctionNode* parent = ctx.graph.getFunction(chunkCfg.parent);
+    std::string parentName;
+    if (parent) {
+      parentName = resolveFunctionName(parent);
+    } else {
+      parentName = fmt::format("sub_{:08X}", chunkCfg.parent);
+    }
+
+    registeredAddresses.insert(chunkAddr);
+    functionsJson.push_back({
+        {"address", fmt::format("0x{:X}", chunkAddr)},
+        {"name", parentName},
+        {"is_rexcrt", false},
+        {"below_code_base", (chunkAddr < codeMin)},
+        {"is_import", false},
     });
   }
 
@@ -225,6 +256,7 @@ bool CodegenWriter::write(bool force) {
                       static_cast<uint32_t>(analysisState().entryPoint), nullptr};
   if (runtime_)
     emitCtx.resolver = runtime_->export_resolver();
+  emitCtx.bootstrapSuggestions = &ctx_.bootstrapSuggestions();
 
   // Generate recomp files with size-based splitting
   REXCODEGEN_TRACE("Recompiling {} functions...", functions.size());
@@ -251,6 +283,12 @@ bool CodegenWriter::write(bool force) {
 
   SaveCurrentOutData();
   REXCODEGEN_TRACE("Recompilation complete.");
+
+  if (!ctx_.bootstrapSuggestions().empty()) {
+    const auto suggestions_path =
+        ctx_.configDir() / config().outDirectoryPath / "bootstrap_suggestions.toml";
+    WriteBootstrapSuggestionsToml(suggestions_path, ctx_.bootstrapSuggestions());
+  }
 
   // Generate sources.cmake
   REXCODEGEN_TRACE("Recompile: generating sources.cmake");

@@ -218,6 +218,7 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
 
   // Built-in overlays
   std::shared_ptr<LogCaptureSink> log_sink_;
+  std::unique_ptr<ui::DebugOverlayDialog> fps_overlay_;
   std::unique_ptr<ui::DebugOverlayDialog> debug_overlay_;
   std::unique_ptr<ui::ConsoleDialog> console_overlay_;
   std::unique_ptr<ui::SettingsDialog> settings_overlay_;

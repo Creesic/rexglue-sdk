@@ -19,6 +19,10 @@
 #include <rex/graphics/util/draw.h>
 #include <rex/math.h>
 
+REXCVAR_DEFINE_INT32(fm4_sun_glow_scale_percent, 50, "GPU/Debug",
+                     "Scale FM4 sun glow shader RGB output for diagnostics")
+    .range(0, 100);
+
 namespace rex::graphics {
 using namespace ucode;
 
@@ -1916,6 +1920,15 @@ void DxbcShaderTranslator::CompletePixelShader_WriteToROV() {
     // Check if need to write anything to the render target.
     // temp.x = free.
     a_.OpIf(true, temp_x_src);
+
+    if (current_shader().ucode_data_hash() == UINT64_C(0x79E7143A85AB2395)) {
+      int32_t scale_percent = REXCVAR_GET(fm4_sun_glow_scale_percent);
+      if (scale_percent != 100) {
+        float scale = float(std::max(INT32_C(0), std::min(scale_percent, INT32_C(100)))) * 0.01f;
+        a_.OpMul(dxbc::Dest::R(system_temps_color_[i], 0b0111),
+                 dxbc::Src::R(system_temps_color_[i]), dxbc::Src::LF(scale));
+      }
+    }
 
     // Apply the exponent bias after alpha to coverage because it needs the
     // unbiased alpha from the shader.

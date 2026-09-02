@@ -258,7 +258,6 @@ REX_EXPORT_STUB(__imp__XexTitleHashOpen);
 REX_EXPORT_STUB(__imp__XexReserveCodeBuffer);
 REX_EXPORT_STUB(__imp__XexCommitCodeBuffer);
 REX_EXPORT_STUB(__imp__XexRegisterUsermodeModule);
-REX_EXPORT_STUB(__imp__LDICreateDecompression);
-REX_EXPORT_STUB(__imp__LDIDecompress);
-REX_EXPORT_STUB(__imp__LDIDestroyDecompression);
-REX_EXPORT_STUB(__imp__LDIResetDecompression);
+// LDICreateDecompression / LDIDecompress / LDIDestroyDecompression /
+// LDIResetDecompression are implemented in xboxkrnl_lzx.cpp (LZX archive
+// decompression used by title asset streaming).

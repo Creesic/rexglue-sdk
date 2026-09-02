@@ -31,6 +31,9 @@ X_STATUS HostPathFile::ReadSync(std::span<uint8_t> buffer, size_t byte_offset,
   }
 
   if (file_handle_->Read(byte_offset, buffer.data(), buffer.size(), out_bytes_read)) {
+    if (!buffer.empty() && out_bytes_read && *out_bytes_read == 0) {
+      return X_STATUS_END_OF_FILE;
+    }
     return X_STATUS_SUCCESS;
   } else {
     return X_STATUS_END_OF_FILE;

@@ -29,6 +29,61 @@
 #include <rex/system/xtypes.h>
 #include <rex/thread/mutex.h>
 
+#include <atomic>
+#include <string>
+#include <string_view>
+
+namespace {
+
+std::string ToLowerAscii(std::string_view path) {
+  std::string lower(path);
+  for (char& c : lower) {
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  return lower;
+}
+
+bool IsTrackedMediaPath(std::string_view path) {
+  const std::string lower = ToLowerAscii(path);
+  if (lower.starts_with("update:") || lower.find("update:\\") != std::string::npos) {
+    return true;
+  }
+  const bool under_media =
+      lower.find("\\media\\") != std::string::npos || lower.find("/media/") != std::string::npos;
+  if (!under_media) {
+    return false;
+  }
+  if (lower.ends_with("media.zip")) {
+    return true;
+  }
+  const bool under_audio =
+      lower.find("\\audio\\") != std::string::npos || lower.find("/audio/") != std::string::npos;
+  if (!under_audio) {
+    return false;
+  }
+  return lower.ends_with(".fsb") || lower.ends_with(".zip") || lower.ends_with(".fev");
+}
+
+void LogTrackedMediaOpen(std::string_view path, uint32_t result, uint32_t handle) {
+  static std::atomic<uint32_t> ok_count{0};
+  static std::atomic<uint32_t> fail_count{0};
+  if (XSUCCEEDED(result)) {
+    const uint32_t n = ok_count.fetch_add(1, std::memory_order_relaxed);
+    if (n < 200 || (n % 100) == 0) {
+      REXKRNL_WARN("AUDIO_MEDIA_OPEN ok #{}: path='{}' handle={:#x}", n + 1, path, handle);
+    }
+    return;
+  }
+  const uint32_t n = fail_count.fetch_add(1, std::memory_order_relaxed);
+  if (n < 80 || (n % 50) == 0) {
+    REXKRNL_WARN("AUDIO_MEDIA_OPEN FAIL #{}: path='{}' -> {:#x}", n + 1, path, result);
+  }
+}
+
+}  // namespace
+
 namespace rex::kernel::xboxkrnl {
 using namespace rex::system;
 
@@ -168,6 +223,9 @@ u32 NtCreateFile_entry(mapped_u32 handle_out, u32 desired_access,
   }
 
   *handle_out = handle;
+  if (IsTrackedMediaPath(target_path)) {
+    LogTrackedMediaOpen(target_path, result, handle);
+  }
   if (XFAILED(result)) {
     REXKRNL_IMPORT_FAIL("NtCreateFile", "path='{}' -> {:#x}", target_path, result);
   } else {

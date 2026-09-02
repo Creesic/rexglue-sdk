@@ -26,6 +26,7 @@ set(CODEGEN_CORE_SOURCES
     template_registry.cpp
     manifest.cpp
     project_recompiler.cpp
+    bootstrap_merge.cpp
 )
 
 # PPC architecture sources (merged from rexarch)

@@ -35,6 +35,9 @@ class StfsContainerFile : public File {
 
  private:
   StfsContainerEntry* entry_;
+  size_t last_block_index_ = 0;
+  size_t last_block_src_offset_ = 0;
+  bool has_last_block_ = false;
 };
 
 }  // namespace rex::filesystem

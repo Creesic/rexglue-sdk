@@ -399,9 +399,21 @@ void Shader::GatherVertexFetchInformation(const VertexFetchInstruction& op,
   VertexBinding::Attribute* attrib = nullptr;
   for (auto& vertex_binding : vertex_bindings_) {
     if (vertex_binding.fetch_constant == op.fetch_constant_index()) {
-      // It may not hold that all strides are equal, but I hope it does.
-      assert_true(!fetch_instr.attributes.stride ||
-                  vertex_binding.stride_words == fetch_instr.attributes.stride);
+      // It may not hold that all strides are equal -- FM4 re-fetches a binding
+      // with a different stride. Keep the first binding's stride and continue
+      // rather than aborting (Xenia tolerates this; a stride mismatch at worst
+      // mis-addresses a vertex attribute, it does not justify killing the title).
+      if (fetch_instr.attributes.stride &&
+          vertex_binding.stride_words != fetch_instr.attributes.stride) {
+        static bool warned = false;
+        if (!warned) {
+          warned = true;
+          REXGPU_WARN(
+              "Vertex fetch stride mismatch (binding stride_words={} fetch stride={}); "
+              "keeping binding stride (warn once)",
+              vertex_binding.stride_words, fetch_instr.attributes.stride);
+        }
+      }
       vertex_binding.attributes.push_back({});
       attrib = &vertex_binding.attributes.back();
       break;

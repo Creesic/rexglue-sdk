@@ -32,6 +32,7 @@ set(REXSYSTEM_SOURCES
     xam/user_profile.cpp
 
     ppc_types.cpp
+    ../ppc/guest_pc_fiber.cpp
     elf_module.cpp
     entry_table.cpp
     export_resolver.cpp
@@ -40,6 +41,7 @@ set(REXSYSTEM_SOURCES
     map_parser.cpp
     module.cpp
     function_dispatcher.cpp
+    bootstrap.cpp
     thread.cpp
     thread_state.cpp
     xex_module.cpp
@@ -80,7 +82,7 @@ endif()
 
 if(REXGLUE_ENABLE_PERF_COUNTERS)
     target_compile_definitions(rexruntime PUBLIC
-        $<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
+        $<$<CONFIG:Debug>:REXGLUE_ENABLE_PERF_COUNTERS>)
 endif()
 
 if(WIN32)

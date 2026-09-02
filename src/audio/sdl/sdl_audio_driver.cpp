@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 
 #include <rex/assert.h>
@@ -26,6 +27,57 @@
 REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
 
 namespace rex::audio::sdl {
+
+namespace {
+
+constexpr uint32_t kGuestChannels = 6;
+constexpr uint32_t kChannelSamples = 256;
+
+float GuestBeFloat(const float* guest_samples, size_t index) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &guest_samples[index], sizeof(bits));
+  bits = rex::byte_swap(bits);
+  float value = 0.0f;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+void LogGuestFrameAmplitude(uint32_t submit_index, uint32_t frame_ptr, const float* guest_samples) {
+  float peak = 0.0f;
+  double sum_sq = 0.0;
+  uint32_t nonzero = 0;
+  std::array<float, kGuestChannels> ch_peak = {};
+
+  for (uint32_t ch = 0; ch < kGuestChannels; ++ch) {
+    for (uint32_t sample = 0; sample < kChannelSamples; ++sample) {
+      const float v = GuestBeFloat(guest_samples, ch * kChannelSamples + sample);
+      const float av = std::fabs(v);
+      ch_peak[ch] = std::max(ch_peak[ch], av);
+      peak = std::max(peak, av);
+      sum_sq += static_cast<double>(v) * static_cast<double>(v);
+      if (av > 1.0e-7f) {
+        ++nonzero;
+      }
+    }
+  }
+
+  const double rms = std::sqrt(sum_sq / static_cast<double>(kGuestChannels * kChannelSamples));
+  REXAPU_WARN(
+      "SDL_AMP guest #{} ptr={:08X} peak={:.6f} rms={:.6f} nonzero={}/{} "
+      "ch_peak=[{:.4f},{:.4f},{:.4f},{:.4f},{:.4f},{:.4f}]",
+      submit_index, frame_ptr, peak, rms, nonzero, kGuestChannels * kChannelSamples, ch_peak[0],
+      ch_peak[1], ch_peak[2], ch_peak[3], ch_peak[4], ch_peak[5]);
+}
+
+float OutputBufferPeak(const float* samples, int count) {
+  float peak = 0.0f;
+  for (int i = 0; i < count; ++i) {
+    peak = std::max(peak, std::fabs(samples[i]));
+  }
+  return peak;
+}
+
+}  // namespace
 
 SDLAudioDriver::SDLAudioDriver(memory::Memory* memory, rex::thread::Semaphore* semaphore)
     : AudioDriver(memory), semaphore_(semaphore) {}
@@ -98,6 +150,9 @@ bool SDLAudioDriver::Initialize() {
     return false;
   }
 
+  REXAPU_WARN("SDLAudioDriver init ok: device_ch={} guest_ch={} samples/ch={} mute={}",
+              static_cast<uint32_t>(sdl_device_channels_), frame_channels_, channel_samples_,
+              REXCVAR_GET(audio_mute) ? 1 : 0);
   return true;
 }
 
@@ -117,11 +172,10 @@ void SDLAudioDriver::SubmitFrame(uint32_t frame_ptr) {
   std::memcpy(output_frame, input_frame, frame_samples_ * sizeof(float));
 
   static uint32_t sdl_submit_count = 0;
-  if (sdl_submit_count < 10) {
-    REXAPU_DEBUG("SDLAudioDriver::SubmitFrame: frame_ptr={:08X} queued_count={}", frame_ptr,
-                 frames_queued_.size() + 1);
-    sdl_submit_count++;
+  if (sdl_submit_count < 30 || (sdl_submit_count % 5000) == 0) {
+    LogGuestFrameAmplitude(sdl_submit_count, frame_ptr, input_frame);
   }
+  ++sdl_submit_count;
 
   {
     std::unique_lock<std::mutex> guard(frames_mutex_);
@@ -170,10 +224,11 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
     static uint32_t sdl_callback_count = 0;
     std::unique_lock<std::mutex> guard(driver->frames_mutex_);
     if (driver->frames_queued_.empty()) {
-      if (sdl_callback_count < 10) {
-        REXAPU_DEBUG("SDLCallback: no frames queued (silence)");
-        sdl_callback_count++;
+      if (sdl_callback_count < 20 || (sdl_callback_count % 5000) == 0) {
+        REXAPU_WARN("SDL_AMP callback #{}: queue empty -> silence ({} samples)", sdl_callback_count,
+                    sample_count);
       }
+      ++sdl_callback_count;
       std::memset(data, 0, len);
       if (!SDL_PutAudioStreamData(stream, data, len)) {
         REXAPU_ERROR("SDL_PutAudioStreamData() failed while filling silence: {}", SDL_GetError());
@@ -203,6 +258,13 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
         driver->frames_unused_.push(buffer);
         break;
       }
+      if (sdl_callback_count < 30 || (sdl_callback_count % 5000) == 0) {
+        REXAPU_WARN("SDL_AMP callback #{}: played frame out_peak={:.6f} dev_ch={} mute={}",
+                    sdl_callback_count, OutputBufferPeak(data, sample_count),
+                    static_cast<uint32_t>(driver->sdl_device_channels_),
+                    REXCVAR_GET(audio_mute) ? 1 : 0);
+      }
+      ++sdl_callback_count;
       driver->frames_unused_.push(buffer);
 
       auto ret = driver->semaphore_->Release(1, nullptr);

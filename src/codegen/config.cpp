@@ -386,6 +386,16 @@ void ApplyToml(const toml::table& toml, RecompilerConfig& cfg, const std::string
       }
     }
   }
+
+  // bootstrap_ignore_functions -> bootstrapIgnoredFunctions (set)
+  if (auto bootstrapIgnoreArray = toml["bootstrap_ignore_functions"].as_array()) {
+    for (auto& entry : *bootstrapIgnoreArray) {
+      if (auto addr = entry.value<int64_t>()) {
+        cfg.bootstrapIgnoredFunctions.insert(static_cast<uint32_t>(*addr));
+        REXCODEGEN_DEBUG("Loaded bootstrap ignore function at 0x{:08X}", *addr);
+      }
+    }
+  }
 }
 
 bool ApplyTableWithIncludes(const toml::table& tbl, const std::filesystem::path& base_dir,
@@ -539,6 +549,14 @@ RecompilerConfig::ValidationResult RecompilerConfig::Validate() const {
   for (const auto& [addr, size] : functions) {
     if (addr & 0x3) {
       result.errors.push_back(fmt::format("Function address 0x{:08X} is not 4-byte aligned", addr));
+      result.valid = false;
+    }
+  }
+
+  for (uint32_t addr : bootstrapIgnoredFunctions) {
+    if (addr & 0x3) {
+      result.errors.push_back(
+          fmt::format("Bootstrap ignore address 0x{:08X} is not 4-byte aligned", addr));
       result.valid = false;
     }
   }

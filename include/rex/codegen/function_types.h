@@ -51,6 +51,7 @@ struct EmitContext {
   const FunctionGraph& graph;
   uint32_t entryPoint = 0;                      ///< For "xstart" naming
   runtime::ExportResolver* resolver = nullptr;  ///< For import ordinal resolution (nullable)
+  std::set<uint32_t>* bootstrapSuggestions = nullptr;  ///< Unresolved targets for auto-merge
 };
 
 //=============================================================================

@@ -9,6 +9,8 @@
  *              See LICENSE file in the project root for full license text.
  */
 
+#include <filesystem>
+
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
 #include <rex/filesystem/devices/host_path_device.h>
@@ -294,6 +296,32 @@ bool Runtime::SetupVfs() {
         file_system_->RegisterSymbolicLink("update:", update_mount);
         REXSYS_INFO("  Mounted {} at update:", abs_update_root.string());
       }
+    } else {
+      REXSYS_WARN("Runtime::SetupVfs: update_data_root does not exist: {}",
+                  abs_update_root.string());
+    }
+  } else {
+    // FM4 and other titles probe update:\ even when no DLC/update pack is installed.
+    // Alias to the game partition so paths like update:\media.zip resolve instead of
+    // failing with STATUS_NO_SUCH_DEVICE.
+    file_system_->RegisterSymbolicLink("update:", mount_path);
+    REXSYS_INFO("  Aliased update: -> game: (no update_data_root set)");
+  }
+
+  // Mount cache_root as cache:\ for titles that stream media from cache paths
+  // (e.g. FM4 intro opens cache:\replay_stream).
+  {
+    auto cache_host_root = cache_root_.empty() ? user_data_root_ / "cache" : cache_root_;
+    std::error_code ec;
+    std::filesystem::create_directories(cache_host_root, ec);
+    auto cache_mount = "\\Device\\Harddisk0\\PartitionCache";
+    auto cache_device = std::make_unique<rex::filesystem::HostPathDevice>(cache_mount, cache_host_root,
+                                                                          false);
+    if (cache_device->Initialize() && file_system_->RegisterDevice(std::move(cache_device))) {
+      file_system_->RegisterSymbolicLink("cache:", cache_mount);
+      REXSYS_INFO("  Mounted {} at cache:", cache_host_root.string());
+    } else {
+      REXSYS_WARN("Runtime::SetupVfs: Failed to mount cache: at {}", cache_host_root.string());
     }
   }
 
@@ -310,10 +338,6 @@ bool Runtime::SetupVfs() {
     file_system_->RegisterDevice(std::move(null_device));
     REXSYS_DEBUG("  Registered NullDevice for \\Device\\Harddisk0\\{{Partition0,Cache0,Cache1}}");
   }
-
-  // NOTE: Do NOT register a device for cache: paths
-  // Games handle "device not found" gracefully but don't handle actual device
-  // errors (like NAME_COLLISION) well. Let cache: fail cleanly.
 
   return true;
 }

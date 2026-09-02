@@ -28,7 +28,11 @@
 #include <rex/graphics/d3d12/graphics_system.h>
 #endif
 #include <rex/audio/audio_system.h>
+#include <rex/audio/nop/nop_audio_system.h>
 #include <rex/audio/sdl/sdl_audio_system.h>
+#if REX_PLATFORM_WIN32
+#include <rex/audio/xaudio2/xaudio2_audio_system.h>
+#endif
 #include <rex/input/input_system.h>
 #include <rex/kernel/init.h>
 #include <rex/system.h>
@@ -46,6 +50,9 @@
 #include <string_view>
 
 namespace rex {
+
+REXCVAR_DEFINE_STRING(audio_backend, "sdl", "Audio", "Audio backend: sdl, xaudio2, nop")
+    .allowed({"sdl", "xaudio2", "nop"});
 
 // --- ReXApp ---
 
@@ -266,7 +273,22 @@ bool ReXApp::SetupPresentation() {
 #elif REX_HAS_VULKAN
   config_.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
 #endif
-  config_.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+  const auto backend = REXCVAR_GET(audio_backend);
+  REXLOG_INFO("Audio backend requested: {}", backend);
+  if (backend == "nop") {
+    REXLOG_INFO("Audio backend selected: nop");
+    config_.audio_factory = REX_AUDIO_BACKEND(rex::audio::nop::NopAudioSystem);
+  }
+#if REX_PLATFORM_WIN32
+  else if (backend == "xaudio2") {
+    REXLOG_INFO("Audio backend selected: xaudio2");
+    config_.audio_factory = REX_AUDIO_BACKEND(rex::audio::xaudio2::XAudio2AudioSystem);
+  }
+#endif
+  else {
+    REXLOG_INFO("Audio backend selected: sdl");
+    config_.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+  }
   config_.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
   config_.kernel_init = rex::kernel::InitializeKernel;
 
@@ -316,6 +338,14 @@ bool ReXApp::SetupPresentation() {
           } else {
             debug_overlay_ = std::make_unique<ui::DebugOverlayDialog>(imgui_drawer_.get(),
                                                                       frame_stats_provider_);
+          }
+        });
+        rex::ui::RegisterBind("bind_fps_overlay", "F2", "Toggle FPS overlay", [this] {
+          if (fps_overlay_) {
+            fps_overlay_.reset();
+          } else {
+            fps_overlay_ = std::make_unique<ui::DebugOverlayDialog>(imgui_drawer_.get(),
+                                                                    frame_stats_provider_, true);
           }
         });
         rex::ui::RegisterBind("bind_console", "Backtick", "Toggle console overlay", [this] {
@@ -410,12 +440,14 @@ void ReXApp::OnDestroy() {
 
   // Unregister overlay keybinds before destroying dialogs
   rex::ui::UnregisterBind("bind_debug_overlay");
+  rex::ui::UnregisterBind("bind_fps_overlay");
   rex::ui::UnregisterBind("bind_console");
   rex::ui::UnregisterBind("bind_settings");
 
   // ImGui cleanup (reverse of setup)
   settings_overlay_.reset();
   console_overlay_.reset();
+  fps_overlay_.reset();
   debug_overlay_.reset();
   if (imgui_drawer_) {
     imgui_drawer_->SetPresenterAndImmediateDrawer(nullptr, nullptr);
@@ -448,6 +480,9 @@ void ReXApp::SetGuestFrameStats(ui::DebugOverlayDialog::FrameStatsProvider provi
   frame_stats_provider_ = provider;
   if (debug_overlay_) {
     debug_overlay_->SetStatsProvider(provider);
+  }
+  if (fps_overlay_) {
+    fps_overlay_->SetStatsProvider(provider);
   }
 }
 

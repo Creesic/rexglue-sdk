@@ -1343,6 +1343,19 @@ bool build_vpkd3d128(BuilderContext& ctx) {
         return true;
       }
 
+      // In-place packing (vpkd3d128 vD, vD, 5, ...) is common: dst == src. The
+      // mask=2 clear below zeroes the half of the destination that won't be
+      // written -- but when dst == src that wipes the source lanes the pack loop
+      // is about to read, so half of every FLOAT16_4 output packed as 0x0000
+      // (silent post-splash audio: FMOD channel gains converted in place all
+      // came out as 0). Snapshot the four source lanes before the clear and read
+      // only from the snapshot. The enclosing scope keeps _vpks* from colliding
+      // when a single function contains multiple case-5 packs.
+      ctx.println("\t{{");
+      for (size_t i = 0; i < 4; i++) {
+        ctx.println("\t\tconst uint32_t _vpks{} = {}.u32[{}];", i, ctx.v(ctx.insn.operands[1]), i);
+      }
+
       // mask=2: before writing, clear the half that will NOT be written.
       // Shift is guaranteed to be 0 or 2 at this point due to the guard above.
       if (mask == 2) {
@@ -1350,7 +1363,7 @@ bool build_vpkd3d128(BuilderContext& ctx) {
         // shift=0 → clears upper half u64[1]
         // shift=2 → clears lower half u64[0]
         size_t clearU64Start = (shift == 0) ? 1 : 0;
-        ctx.println("\t{}.u64[{}] = 0;", ctx.v(ctx.insn.operands[0]), clearU64Start);
+        ctx.println("\t\t{}.u64[{}] = 0;", ctx.v(ctx.insn.operands[0]), clearU64Start);
       }
 
       // Invariant: dstIdx must stay under 8 (valid u16 lanes are 0..7).
@@ -1361,22 +1374,22 @@ bool build_vpkd3d128(BuilderContext& ctx) {
         size_t srcIdx = 3 - i;
         size_t dstIdx = (3 - i) + (2 * shift);
 
-        ctx.println("\t{}.u32 = ({}.u32[{}]&0x7FFFFFFF);", ctx.temp(), ctx.v(ctx.insn.operands[1]),
-                    srcIdx);
+        ctx.println("\t\t{}.u32 = (_vpks{} & 0x7FFFFFFF);", ctx.temp(), srcIdx);
         ctx.println(
-            "\t{0}.u8[0] = ({1}.f32 != {1}.f32) || ({1}.f32 > 65504.0f) ? 0xFF : "
-            "(({2}.u32[{3}]&0x7f800000)>>23);",
-            ctx.v_temp(), ctx.temp(), ctx.v(ctx.insn.operands[1]), srcIdx);
-        ctx.println("\t{}.u16 = {}.u8[0] != 0xFF ? (({}.u32[{}]&0x7FE000)>>13) : 0x0;", ctx.temp(),
-                    ctx.v_temp(), ctx.v(ctx.insn.operands[1]), srcIdx);
+            "\t\t{0}.u8[0] = ({1}.f32 != {1}.f32) || ({1}.f32 > 65504.0f) ? 0xFF : "
+            "((_vpks{2}&0x7f800000)>>23);",
+            ctx.v_temp(), ctx.temp(), srcIdx);
+        ctx.println("\t\t{}.u16 = {}.u8[0] != 0xFF ? ((_vpks{}&0x7FE000)>>13) : 0x0;", ctx.temp(),
+                    ctx.v_temp(), srcIdx);
         ctx.println(
-            "\t{0}.u16[{1}] = {2}.u8[0] != 0xFF ? ({2}.u8[0] > 0x70 ? "
+            "\t\t{0}.u16[{1}] = {2}.u8[0] != 0xFF ? ({2}.u8[0] > 0x70 ? "
             "((({2}.u8[0]-0x70)<<10)+{3}.u16) : (0x71-{2}.u8[0] > 31 ? 0x0 : "
             "((0x400+{3}.u16)>>(0x71-{2}.u8[0])))) : 0x7FFF;",
             ctx.v(ctx.insn.operands[0]), dstIdx, ctx.v_temp(), ctx.temp());
-        ctx.println("\t{}.u16[{}] |= (({}.u32[{}]&0x80000000)>>16);", ctx.v(ctx.insn.operands[0]),
-                    dstIdx, ctx.v(ctx.insn.operands[1]), srcIdx);
+        ctx.println("\t\t{}.u16[{}] |= ((_vpks{}&0x80000000)>>16);", ctx.v(ctx.insn.operands[0]),
+                    dstIdx, srcIdx);
       }
+      ctx.println("\t}}");
       break;
     }
 

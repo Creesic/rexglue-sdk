@@ -176,6 +176,62 @@ void gapFillCodeRegions(CodegenContext& ctx) {
 // Cleanup absorbed GAP_FILL functions
 //=============================================================================
 
+void mergeConfigChunks(CodegenContext& ctx) {
+  auto& graph = ctx.graph;
+  const auto& chunksByParent = ctx.analysisState().chunksByParent;
+
+  std::vector<uint32_t> toRemove;
+
+  for (const auto& [parentAddr, chunkAddrs] : chunksByParent) {
+    FunctionNode* parent = graph.getFunction(parentAddr);
+    if (!parent || !parent->isDiscovered()) {
+      REXCODEGEN_WARN("mergeConfigChunks: parent 0x{:08X} not ready for chunk merge", parentAddr);
+      continue;
+    }
+
+    for (uint32_t chunkAddr : chunkAddrs) {
+      FunctionNode* chunk = graph.getFunction(chunkAddr);
+      if (!chunk || !chunk->isDiscovered()) {
+        REXCODEGEN_WARN("mergeConfigChunks: chunk 0x{:08X} not ready for merge", chunkAddr);
+        continue;
+      }
+
+      REXCODEGEN_DEBUG("mergeConfigChunks: absorbing chunk 0x{:08X} into parent 0x{:08X}", chunkAddr,
+                       parentAddr);
+
+      for (const auto& block : chunk->blocks()) {
+        graph.addBlockToFunction(parentAddr, block);
+      }
+      for (uint32_t label : chunk->labels()) {
+        graph.addLabelToFunction(parentAddr, label);
+      }
+      for (const auto& jt : chunk->jumpTables()) {
+        graph.addJumpTableToFunction(parentAddr, jt);
+      }
+      for (const auto& call : chunk->calls()) {
+        graph.addCallToFunction(parentAddr, call.site, call.target);
+      }
+      for (const auto& tc : chunk->tailCalls()) {
+        graph.addTailCallToFunction(parentAddr, tc.site, tc.target);
+      }
+      for (const auto& uj : chunk->unresolvedJumps()) {
+        graph.addUnresolvedJumpToFunction(parentAddr, uj.site, uj.target, uj.isCall,
+                                         uj.isConditional);
+      }
+
+      toRemove.push_back(chunkAddr);
+    }
+  }
+
+  for (uint32_t addr : toRemove) {
+    graph.removeFunction(addr);
+  }
+
+  if (!toRemove.empty()) {
+    REXCODEGEN_TRACE("mergeConfigChunks: absorbed {} config chunks", toRemove.size());
+  }
+}
+
 void cleanupAbsorbedGapFills(CodegenContext& ctx) {
   auto& graph = ctx.graph;
   std::vector<uint32_t> toRemove;
@@ -226,6 +282,7 @@ VoidResult GapFill(CodegenContext& ctx, ProgressReporter* reporter) {
   REXCODEGEN_TRACE("Analyze: discovered blocks for {} gap-filled functions", discovered);
 
   cleanupAbsorbedGapFills(ctx);
+  mergeConfigChunks(ctx);
 
   return Ok();
 }

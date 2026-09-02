@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -106,6 +107,7 @@ struct RecompilerConfig {
   std::unordered_map<uint32_t, FunctionConfig> functions;  ///< Function/chunk configuration
   std::unordered_map<uint32_t, JumpTable> switchTables;
   std::unordered_map<uint32_t, MidAsmHook> midAsmHooks;
+  std::set<uint32_t> bootstrapIgnoredFunctions;  ///< Runtime-discovered entries not to merge
   uint32_t longJmpAddress = 0;
   uint32_t setJmpAddress = 0;
 

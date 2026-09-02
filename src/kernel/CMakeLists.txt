@@ -46,6 +46,7 @@ set(REXKERNEL_SOURCES
     xboxkrnl/xboxkrnl_misc.cpp
     xboxkrnl/xboxkrnl_module.cpp
     xboxkrnl/xboxkrnl_modules.cpp
+    xboxkrnl/xboxkrnl_lzx.cpp
     xboxkrnl/xboxkrnl_ob.cpp
     xboxkrnl/xboxkrnl_rtl.cpp
     xboxkrnl/xboxkrnl_strings.cpp

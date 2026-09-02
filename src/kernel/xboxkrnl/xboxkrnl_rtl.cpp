@@ -427,13 +427,37 @@ u32 RtlTryEnterCriticalSection_entry(ppc_ptr_t<X_RTL_CRITICAL_SECTION> cs) {
 }
 
 void RtlLeaveCriticalSection_entry(ppc_ptr_t<X_RTL_CRITICAL_SECTION> cs) {
-  assert_true(cs->owning_thread == XThread::GetCurrentThread()->guest_object());
+  auto* thread = XThread::GetCurrentThread();
+  if (!thread) {
+    REXKRNL_WARN("RtlLeaveCriticalSection: no current thread (cs={:#x})", cs.guest_address());
+    return;
+  }
+  const uint32_t cur_thread = thread->guest_object();
+
+  // FM4 race-exit tears down worker threads that call Leave on a CS Entered
+  // elsewhere. Asserting here traps the title in the debugger; recover instead.
+  if (cs->owning_thread != cur_thread) {
+    REXKRNL_WARN(
+        "RtlLeaveCriticalSection: owner mismatch cs={:#x} owner={:#x} current={:#x} "
+        "recursion={}",
+        cs.guest_address(), static_cast<uint32_t>(cs->owning_thread), cur_thread,
+        static_cast<uint32_t>(cs->recursion_count));
+    if (cs->recursion_count == 0 || cs->owning_thread == 0) {
+      return;
+    }
+    cs->owning_thread = cur_thread;
+  }
 
   // Drop recursion count - if it isn't zero we still have the lock.
-  assert_true(cs->recursion_count > 0);
+  if (cs->recursion_count <= 0) {
+    REXKRNL_WARN("RtlLeaveCriticalSection: recursion_count={} cs={:#x}",
+                 static_cast<int>(cs->recursion_count), cs.guest_address());
+    cs->recursion_count = 0;
+    cs->owning_thread = 0;
+    cs->lock_count = -1;
+    return;
+  }
   if (--cs->recursion_count != 0) {
-    assert_true(cs->recursion_count >= 0);
-
     rex::thread::atomic_dec(&cs->lock_count);
     return;
   }

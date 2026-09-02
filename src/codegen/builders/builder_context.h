@@ -225,6 +225,9 @@ struct BuilderContext {
    */
   void emit_function_call(uint32_t address);
 
+  /// Emit runtime bootstrap stub call or fatal for unresolved guest targets.
+  void emit_bootstrap_or_fatal(const char* kind, uint32_t target);
+
   /**
    * @brief Emit C++ code for a conditional branch.
    * @param not_ If true, invert the condition

@@ -29,6 +29,7 @@ namespace rex::codegen {
 struct BinaryConfig {
   RecompilerConfig recompiler;
   std::string guestPath;
+  std::vector<std::string> configIncludes;  ///< Paths from `includes = [...]` for bootstrap merge
 };
 
 /**

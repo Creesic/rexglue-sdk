@@ -14,6 +14,13 @@ add_library(rexaudio OBJECT
     sdl/sdl_audio_system.cpp
     sdl/sdl_audio_driver.cpp
 )
+
+if (WIN32)
+    target_sources(rexaudio PRIVATE
+        xaudio2/xaudio2_audio_system.cpp
+        xaudio2/xaudio2_audio_driver.cpp
+    )
+endif()
 add_library(rex::audio ALIAS rexaudio)
 
 target_include_directories(rexaudio PUBLIC
@@ -25,3 +32,7 @@ target_link_libraries(rexaudio
     PUBLIC rexcore SDL3::SDL3
     PRIVATE libavcodec libavutil
 )
+
+if (WIN32)
+    target_link_libraries(rexaudio PRIVATE ole32)
+endif()

@@ -61,9 +61,17 @@ bool IsValidProjectName(std::string_view name) {
 bool LoadBinaryConfig(const toml::table& tbl, const std::filesystem::path& base_dir,
                       std::string_view project_name, BinaryConfig& out) {
   out.recompiler = RecompilerConfig{};
+  out.configIncludes.clear();
   out.recompiler.projectName = std::string(project_name);
   if (!out.recompiler.LoadFromTable(tbl, base_dir)) {
     return false;
+  }
+  if (const auto* includes = tbl["includes"].as_array()) {
+    for (const auto& elem : *includes) {
+      if (auto path = elem.value<std::string>()) {
+        out.configIncludes.push_back(*path);
+      }
+    }
   }
   return true;
 }

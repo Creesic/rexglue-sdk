@@ -18,12 +18,14 @@ option(REXGLUE_ENABLE_SANITIZERS "Enable UndefinedBehaviorSanitizer" OFF)
 option(REXGLUE_ENABLE_FIDELITYFX "Enable optional AMD FidelityFX integration (experimental)" OFF)
 option(REXGLUE_ENABLE_TRACY                "Enable Tracy profiler integration" ON)
 option(REXGLUE_ENABLE_PERF_COUNTERS        "Enable lightweight perf counter registry and overlay" ON)
-# Propagate profiling defines globally (compiled out in Release)
+# Propagate profiling defines globally. Tracy stays available in
+# RelWithDebInfo, but the overlay perf counters are Debug-only because their
+# per-event atomics are visible in FM4 hot-path profiles.
 if(REXGLUE_ENABLE_TRACY)
     add_compile_definitions($<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PROFILING>)
 endif()
 if(REXGLUE_ENABLE_PERF_COUNTERS)
-    add_compile_definitions($<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
+    add_compile_definitions($<$<CONFIG:Debug>:REXGLUE_ENABLE_PERF_COUNTERS>)
 endif()
 
 # Graphics backend selection
@@ -86,6 +88,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_DEBUG_POSTFIX d)
 set(CMAKE_RELWITHDEBINFO_POSTFIX rd)
 
+# Normalize architecture detection once so SDK and vendored dependencies agree.
+set(REXGLUE_SYSTEM_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
+if(NOT REXGLUE_SYSTEM_PROCESSOR)
+    set(REXGLUE_SYSTEM_PROCESSOR "${CMAKE_HOST_SYSTEM_PROCESSOR}")
+endif()
+if(NOT REXGLUE_SYSTEM_PROCESSOR AND DEFINED ENV{PROCESSOR_ARCHITECTURE})
+    set(REXGLUE_SYSTEM_PROCESSOR "$ENV{PROCESSOR_ARCHITECTURE}")
+endif()
+if(NOT REXGLUE_SYSTEM_PROCESSOR AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(REXGLUE_SYSTEM_PROCESSOR "AMD64")
+endif()
+if(NOT CMAKE_SYSTEM_PROCESSOR AND REXGLUE_SYSTEM_PROCESSOR)
+    set(CMAKE_SYSTEM_PROCESSOR "${REXGLUE_SYSTEM_PROCESSOR}")
+endif()
+
 if(NOT WIN32)
     # Use appropriate code model based on architecture
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
@@ -102,13 +119,24 @@ endif()
 # Global compile options
 add_compile_options(
     -fno-strict-aliasing
-    -ffp-model=strict
     $<$<CONFIG:DEBUG>:-g>
     $<$<CONFIG:DEBUG>:-O0>
     $<$<CONFIG:RELEASE>:-O3>
     $<$<CONFIG:RELEASE>:-DNDEBUG>
-    -fno-char8_t
 )
+
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    add_compile_options(
+        /fp:strict
+        $<$<COMPILE_LANGUAGE:CXX>:/EHsc>
+        $<$<COMPILE_LANGUAGE:CXX>:/Zc:char8_t->
+    )
+else()
+    add_compile_options(
+        -ffp-model=strict
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-char8_t>
+    )
+endif()
 
 # Platform detection (supports AMD64 and ARM64)
 if(WIN32)
@@ -172,6 +200,36 @@ configure_file(
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${REXGLUE_ROOT}/out/${REX_PLATFORM}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${REXGLUE_ROOT}/out/${REX_PLATFORM}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${REXGLUE_ROOT}/out/${REX_PLATFORM}")
+
+# clang-cl + lld-link truncates /LIBPATH:C:/Program Files/... at the space when the
+# path is passed through CMAKE_*_LINKER_FLAGS. link_directories() avoids that and
+# ensures MSVC STL symbols (e.g. __std_find_* from msvcprt.lib) resolve.
+if(WIN32 AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    set(_rex_msvc_lib_dir "")
+    if(DEFINED ENV{VCToolsInstallDir})
+        file(TO_CMAKE_PATH "$ENV{VCToolsInstallDir}/lib/x64" _rex_msvc_lib_dir)
+    else()
+        get_filename_component(_rex_clang_bindir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        get_filename_component(_rex_tools_dir "${_rex_clang_bindir}/../../.." ABSOLUTE)
+        file(GLOB _rex_msvc_versions RELATIVE "${_rex_tools_dir}/MSVC" "${_rex_tools_dir}/MSVC/*")
+        if(_rex_msvc_versions)
+            list(SORT _rex_msvc_versions COMPARE NATURAL ORDER DESCENDING)
+            list(GET _rex_msvc_versions 0 _rex_msvc_ver)
+            set(_rex_msvc_lib_dir "${_rex_tools_dir}/MSVC/${_rex_msvc_ver}/lib/x64")
+        endif()
+    endif()
+    if(_rex_msvc_lib_dir AND EXISTS "${_rex_msvc_lib_dir}")
+        link_directories("${_rex_msvc_lib_dir}")
+        message(STATUS "MSVC STL lib dir: ${_rex_msvc_lib_dir}")
+    else()
+        message(WARNING "MSVC STL lib dir not found; link may fail on __std_find_* symbols")
+    endif()
+    unset(_rex_msvc_lib_dir)
+    unset(_rex_clang_bindir)
+    unset(_rex_tools_dir)
+    unset(_rex_msvc_versions)
+    unset(_rex_msvc_ver)
+endif()
 
 # Sanitizer support for debugging memory corruption and undefined behavior
 if(REXGLUE_ENABLE_SANITIZERS)

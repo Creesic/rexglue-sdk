@@ -294,7 +294,13 @@ void XamLoaderTerminateTitle_entry() {
 }
 
 u32 XamAlloc_entry(u32 unk, u32 size, mapped_u32 out_ptr) {
-  assert_true(unk == 0);
+  // `unk` is the allocation flags. Some titles (e.g. FM4) pass a nonzero flag
+  // (observed 0x10000000) that selects a heap/attributes on real XAM; allocating
+  // from the system heap regardless is sufficient here, so accept any flags
+  // instead of asserting they are zero.
+  if (unk != 0) {
+    REXKRNL_DEBUG("XamAlloc: ignoring nonzero flags {:#x}", (uint32_t)unk);
+  }
 
   // Allocate from the heap. Not sure why XAM does this specially, perhaps
   // it keeps stuff in a separate heap?

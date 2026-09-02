@@ -216,6 +216,12 @@ void AudioSystem::Shutdown() {
 }
 
 X_STATUS AudioSystem::RegisterClient(uint32_t callback, uint32_t callback_arg, size_t* out_index) {
+  static uint32_t register_log_count = 0;
+  if (register_log_count < 20) {
+    REXAPU_WARN("AudioSystem::RegisterClient #{}: callback={:08X} callback_arg={:08X}",
+                register_log_count, callback, callback_arg);
+  }
+  ++register_log_count;
   REXAPU_DEBUG("AudioSystem::RegisterClient: callback={:08X} callback_arg={:08X}", callback,
                callback_arg);
   auto global_lock = global_critical_region_.Acquire();
@@ -252,11 +258,11 @@ void AudioSystem::SubmitFrame(size_t index, uint32_t samples_ptr) {
   SCOPE_profile_cpu_f("apu");
 
   static uint32_t submit_count = 0;
-  if (submit_count < 10) {
-    REXAPU_DEBUG("AudioSystem::SubmitFrame called: index={} samples_ptr={:08X}", index,
-                 samples_ptr);
-    submit_count++;
+  if (submit_count < 30 || (submit_count % 500) == 0) {
+    REXAPU_WARN("AudioSystem::SubmitFrame #{}: index={} samples_ptr={:08X}", submit_count, index,
+                samples_ptr);
   }
+  ++submit_count;
 
   auto global_lock = global_critical_region_.Acquire();
   assert_true(index < kMaximumClientCount);
