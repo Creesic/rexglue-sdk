@@ -1,7 +1,8 @@
 # FM4 runtime cvars (loaded from fm4.toml beside fm4.exe).
 
-# GPU emulation plugin loaded at startup (SDK 0.10: graphics is a runtime plugin).
-gpu_plugin = "xenos"
+# GPU path: "xenos" = SDK GPU emulation plugin (default), "native" = FM4's own
+# Plume renderer (milestone 1: clear + present only; draws are not rendered).
+gpu_plugin = "native"
 
 # Host audio output: sdl (default), xaudio2 (Windows, lower latency), nop (silent).
 audio_backend = "xaudio2"

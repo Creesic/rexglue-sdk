@@ -18,6 +18,7 @@ set(FM4_SOURCES
     src/fm4_debug_audio_mix.cpp
     src/fm4_midasm_hooks.cpp
     src/gpu/fm4_d3d_trace.cpp
+    src/gpu/native_video.cpp
 )
 
 if(WIN32)
@@ -37,6 +38,17 @@ set(PLUME_D3D12_AGILITY_SDK_ENABLED OFF CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/plume plume EXCLUDE_FROM_ALL)
 
 rexglue_setup_target(fm4 GPU_PLUGINS xenos)
+
+# Plume is added by the add_subdirectory block above (Task 3). Linked, not
+# runtime-loaded.
+target_link_libraries(fm4 PRIVATE plume)
+if(WIN32)
+    # Plume's own CMakeLists.txt does not link d3d12/dxgi to its target (see
+    # thirdparty/plume/examples/*/CMakeLists.txt, which link these on the
+    # executable the same way); without them, fm4.exe fails to link with
+    # unresolved D3D12CreateDevice / D3D12SerializeRootSignature.
+    target_link_libraries(fm4 PRIVATE d3d12 dxgi)
+endif()
 
 add_custom_command(TARGET fm4 POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
