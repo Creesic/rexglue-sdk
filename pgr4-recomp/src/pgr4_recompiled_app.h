@@ -9,6 +9,9 @@
 #include <rex/rex_app.h>
 
 #if PGR4_ENABLE_PLUME
+#include <memory>
+
+#include "render/guest_gpu.h"
 #include "render/video.h"
 #endif
 
@@ -41,6 +44,14 @@ class Pgr4RecompiledApp : public rex::ReXApp {
     // would leave two things believing they own presentation. Leaving the plugin
     // name empty is what makes LoadGpuPlugin a no-op.
     config.gpu_plugin.clear();
+
+    // ...but clearing it also leaves graphics_system() null, and the xboxkrnl
+    // Vd* exports return early when it is -- silently dropping the guest's
+    // graphics interrupt callback, so its frame loop never advances and
+    // D3DDevice_Swap is never reached. Supplying our own IGraphicsSystem keeps
+    // that surface alive without reloading xenos; ReXApp only loads a plugin
+    // when this field is still null.
+    config.graphics = std::make_unique<pgr4::render::Pgr4GraphicsSystem>();
 #else
     if (config.gpu_plugin.empty()) {
       config.gpu_plugin = "xenos";

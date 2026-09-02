@@ -28,6 +28,7 @@ if(PGR4_ENABLE_PLUME)
     list(APPEND PGR4RECOMPILED_SOURCES
         src/render/video.cpp
         src/render/d3d_hooks.cpp
+        src/render/guest_gpu.cpp
     )
 endif()
 

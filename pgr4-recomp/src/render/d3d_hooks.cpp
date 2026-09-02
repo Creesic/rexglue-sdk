@@ -14,11 +14,41 @@
 // option rather than a runtime cvar: with the option OFF this file is not
 // compiled at all and the xenos plugin path is untouched.
 
+#include <rex/chrono/clock.h>
 #include <rex/hook.h>
+#include <rex/logging.h>
 
 #include "video.h"
 
 namespace {
+
+// Phase 1 bring-up instrumentation: report swap cadence once per second, so we
+// can tell whether the guest actually drives presentation at frame rate and
+// whether Present() is silently dropping every frame. Remove once the renderer
+// produces real output.
+void ReportSwapCadence(bool presented) {
+  static uint64_t swaps = 0;
+  static uint64_t presents = 0;
+  static uint64_t windowStart = 0;
+
+  ++swaps;
+  if (presented) {
+    ++presents;
+  }
+
+  const uint64_t now = rex::chrono::Clock::QueryHostTickCount();
+  const uint64_t freq = rex::chrono::Clock::QueryHostTickFrequency();
+  if (windowStart == 0) {
+    windowStart = now;
+    return;
+  }
+  if (freq != 0 && (now - windowStart) >= freq) {
+    REXLOG_INFO("PGR4 Plume: {} D3DDevice_Swap/sec, {} presented", swaps, presents);
+    swaps = 0;
+    presents = 0;
+    windowStart = now;
+  }
+}
 
 // D3DDevice_Swap(CDevice* device, void* frontBuffer,
 //                const D3DVIDEO_SCALER_PARAMETERS* scalerParams)
@@ -34,10 +64,11 @@ void SwapHook(u32 device_ptr, u32 front_buffer_ptr, u32 scaler_params_ptr) {
   // Init failed, or the renderer was never brought up. Returning leaves the
   // guest running with nothing on screen, which beats taking the game down.
   if (!Video::IsInitialized()) {
+    ReportSwapCadence(false);
     return;
   }
 
-  Video::Present();
+  ReportSwapCadence(Video::Present());
 }
 
 }  // namespace
