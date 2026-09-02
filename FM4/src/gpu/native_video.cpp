@@ -49,8 +49,11 @@ void GpuMmioWrite(void*, void*, uint32_t, uint32_t) {
 std::atomic<bool> g_vsync_running{false};
 std::atomic<uint32_t> g_interrupt_device{0};
 std::atomic<uint32_t> g_swaps_to_ack{0};  // presented frames awaiting a source-1 interrupt
-// OnGraphicsInterruptRegistered is the only creator, Shutdown the only stopper;
-// no additional lock is needed around this handle.
+// g_vsync_mutex serialises the only creator (OnGraphicsInterruptRegistered) and
+// the only stopper (Shutdown via StopVsyncThread). Never take s.mutex while
+// holding it: the vsync thread calls Present(), which takes s.mutex, and
+// StopVsyncThread joins that thread.
+std::mutex g_vsync_mutex;
 rex::system::object_ref<rex::system::XHostThread> g_vsync_thread;
 
 int VsyncThreadMain() {
@@ -83,6 +86,7 @@ int VsyncThreadMain() {
 }
 
 void StopVsyncThread() {
+  std::lock_guard lock(g_vsync_mutex);
   if (!g_vsync_thread) {
     return;
   }
@@ -237,8 +241,7 @@ void Video::Shutdown() {
 }
 
 void Video::OnGraphicsInterruptRegistered(uint32_t device_va) {
-  auto& s = S();
-  std::lock_guard lock(s.mutex);
+  std::lock_guard lock(g_vsync_mutex);
   g_interrupt_device.store(device_va, std::memory_order_relaxed);
   if (g_vsync_thread) {
     return;  // re-registration: the thread picks up the new device
