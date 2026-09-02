@@ -36,6 +36,163 @@
 0x826E46D0 = { name = 'D3D_InterruptCallback' }
 0x826E52B8 = { name = 'D3D_VerticalBlankInterrupt' }
 
+# ---------------------------------------------------------------------------
+# FM2P port: addresses from FM4/docs/fm2p-port-hook-map.md (verified unless a
+# comment says otherwise) plus the FM4-only families in
+# native-render-plume-deepdive.md section 5.2.
+#
+# Naming a function only creates the weak symbol + __imp__ twin. The render
+# state setters below are named for debuggability and are deliberately NOT
+# hooked: FM4 inlines 12 of the 36 (hook map section 4.2), so the whole family
+# is sampled from the device register shadows at draw time instead (Task 6).
+# Do NOT name 0x826E8358 (D3D::CBlocker::Check) -- fm4_midasm_hooks.cpp owns it
+# as sub_826E8358.
+# ---------------------------------------------------------------------------
+
+# --- resources ---
+0x826E7348 = { name = 'D3DDevice_CreateVertexBuffer' }
+0x826E7410 = { name = 'D3DDevice_CreateIndexBuffer' }
+0x826E6B48 = { name = 'D3DDevice_CreateVertexDeclaration' }
+0x82386BF8 = { name = 'D3DVertexBuffer_Lock' }
+0x826E8218 = { name = 'D3DIndexBuffer_Lock' }
+0x826DF418 = { name = 'D3DSurface_LockRect' }
+0x826DEF78 = { name = 'D3DTexture_LockRect' }
+0x826DF050 = { name = 'D3DCubeTexture_LockRect' }
+0x826DF380 = { name = 'D3DSurface_GetDesc' }
+0x826DEEC0 = { name = 'D3DTexture_GetSurfaceLevel' }
+0x826DEDD8 = { name = 'D3DBaseTexture_LockTail' }
+0x82392748 = { name = 'D3DResource_AddRef' }
+0x82386FB8 = { name = 'D3DResource_Release' }
+0x822E5CB0 = { name = 'D3DResource_GetType' }
+0x826DE730 = { name = 'D3D_Lock2DSurface' }
+0x826DE658 = { name = 'D3D_LockSurface' }
+
+# --- queries ---
+0x826EB2A8 = { name = 'D3DDevice_CreateQueryTiled' }
+0x8239B2C0 = { name = 'D3DQuery_GetData' }
+0x826E9B68 = { name = 'D3DQuery_Release' }
+
+# --- state binds ---
+0x822F8728 = { name = 'D3DDevice_SetVertexDeclaration' }
+0x822FEB28 = { name = 'D3D_SetViewport' }
+0x823925C0 = { name = 'D3DDevice_SetViewportF' }
+0x826E6830 = { name = 'D3DDevice_SetVertexShaderConstantB' }
+0x82333ED8 = { name = 'D3DDevice_SetPixelShaderConstantB' }
+0x82316A28 = { name = 'D3DDevice_SetVertexShaderConstantFN' }
+0x826E0D28 = { name = 'D3DDevice_SetVertexFetchConstant' }
+0x82381318 = { name = 'D3DDevice_FlushHiZStencil' }
+0x8238D7A8 = { name = 'D3DDevice_SetScreenExtentQueryMode' }
+0x822BA060 = { name = 'D3DDevice_SetShaderGPRAllocation' }
+0x826E8600 = { name = 'D3DDevice_AcquireThreadOwnership' }
+0x822C2250 = { name = 'D3DDevice_InsertCallback' }
+0x826F3190 = { name = 'D3DDevice_SetScalerParameters' }
+0x826E4D98 = { name = 'D3DDevice_NuiMetaData' }
+
+# --- sampler state (out of line in FM4; FM2P never hooked these) ---
+0x823443A0 = { name = 'D3DDevice_SetSamplerState_MinFilter' }
+0x82344468 = { name = 'D3DDevice_SetSamplerState_MagFilter' }
+0x82344530 = { name = 'D3DDevice_SetSamplerState_MipMapLodBias' }
+0x8239B6C0 = { name = 'D3DDevice_SetSamplerState_MaxAnisotropy' }
+0x822A7538 = { name = 'D3DDevice_SetSamplerState_MinMipLevel' }
+0x822B0930 = { name = 'D3DDevice_SetSamplerState_MaxMipLevel' }
+0x826E04F8 = { name = 'D3DDevice_SetSamplerState_MinFilterZ' }
+0x826E05D8 = { name = 'D3DDevice_SetSamplerState_MagFilterZ' }
+0x826E0690 = { name = 'D3DDevice_SetSamplerState_SeparateZFilterEnable' }
+
+# --- render state setters: NAMED FOR DEBUGGING, NEVER HOOKED (see header) ---
+0x82350618 = { name = 'D3DDevice_SetRenderState_AlphaBlendEnable' }
+0x8235B148 = { name = 'D3DDevice_SetRenderState_AlphaTestEnable' }
+0x826DF578 = { name = 'D3DDevice_SetRenderState_AlphaRef' }
+0x82392680 = { name = 'D3DDevice_SetRenderState_BlendOp' }
+0x826DF4D8 = { name = 'D3DDevice_SetRenderState_BlendOpAlpha' }
+0x822BC9E0 = { name = 'D3DDevice_SetRenderState_ColorWriteEnable' }
+0x826DFA00 = { name = 'D3DDevice_SetRenderState_DepthBias' }
+0x822D2E40 = { name = 'D3DDevice_SetRenderState_DestBlend' }
+0x822CF1C8 = { name = 'D3DDevice_SetRenderState_DestBlendAlpha' }
+0x8236E330 = { name = 'D3DDevice_SetRenderState_SeparateAlphaBlendEnable' }
+0x8235C600 = { name = 'D3DDevice_SetRenderState_SlopeScaleDepthBias' }
+0x823676F0 = { name = 'D3DDevice_SetRenderState_SrcBlend' }
+0x822CF228 = { name = 'D3DDevice_SetRenderState_SrcBlendAlpha' }
+0x82384230 = { name = 'D3DDevice_SetRenderState_StencilEnable' }
+0x826DF7F8 = { name = 'D3DDevice_SetRenderState_StencilFail' }
+0x826DF830 = { name = 'D3DDevice_SetRenderState_StencilZFail' }
+0x822B3AC8 = { name = 'D3DDevice_SetRenderState_StencilRef' }
+0x826DF918 = { name = 'D3DDevice_SetRenderState_StencilWriteMask' }
+0x826DF888 = { name = 'D3DDevice_SetRenderState_CCWStencilFail' }
+0x826DF8C0 = { name = 'D3DDevice_SetRenderState_CCWStencilZFail' }
+0x823925E0 = { name = 'D3DDevice_SetRenderState_TwoSidedStencilMode' }
+0x8234FB48 = { name = 'D3DDevice_SetRenderState_ZEnable' }
+0x822BB2A8 = { name = 'D3DDevice_SetRenderState_ZFunc' }
+0x822EB508 = { name = 'D3DDevice_SetRenderState_ViewportEnable' }
+
+# --- render state getters: used in Task 6 to confirm the register bit layout ---
+0x826DF7C0 = { name = 'D3DDevice_GetRenderState_ZFunc' }
+0x826DF7D8 = { name = 'D3DDevice_GetRenderState_StencilEnable' }
+0x826DF7E8 = { name = 'D3DDevice_GetRenderState_StencilFunc' }
+0x826DF820 = { name = 'D3DDevice_GetRenderState_StencilFail' }
+0x826DF858 = { name = 'D3DDevice_GetRenderState_StencilZFail' }
+0x826DF868 = { name = 'D3DDevice_GetRenderState_StencilPass' }
+0x826DF878 = { name = 'D3DDevice_GetRenderState_CCWStencilPass' }
+0x826DF8B0 = { name = 'D3DDevice_GetRenderState_CCWStencilFail' }
+0x826DF8E8 = { name = 'D3DDevice_GetRenderState_CCWStencilZFail' }
+0x826DF8F8 = { name = 'D3DDevice_GetRenderState_CCWStencilFunc' }
+0x826DF908 = { name = 'D3DDevice_GetRenderState_StencilRef' }
+0x826DF910 = { name = 'D3DDevice_GetRenderState_StencilMask' }
+
+# --- command buffers ---
+0x826E23E8 = { name = 'D3DDevice_BeginCommandBuffer' }
+0x826E2350 = { name = 'D3DCommandBuffer_CreateClone' }
+0x826E2158 = { name = 'D3DCommandBuffer_GetClone' }
+0x826E1420 = { name = 'D3DDevice_CreateCommandBuffer' }
+0x826E14D0 = { name = 'D3DDevice_CreateGrowableCommandBuffer' }
+0x826E31A8 = { name = 'D3DCommandBuffer_Deconstruct' }
+0x826E33B0 = { name = 'D3DCommandBuffer_BeginReconstruction' }
+0x826E3470 = { name = 'D3DCommandBuffer_EndReconstruction' }
+0x826E16F0 = { name = 'D3DCommandBuffer_BeginDynamicFixups' }
+0x826E1F70 = { name = 'D3D_CCommandBuffer_GetFixup' }
+0x826E1D70 = { name = 'D3D_FixupPatches' }
+0x826E2100 = { name = 'D3D_CCommandBuffer_Destroy' }
+0x826E2C20 = { name = 'D3DCommandBuffer_SetShaderConstantF' }
+0x826E28E0 = { name = 'D3DCommandBuffer_SetSurfaces' }
+0x826E2B80 = { name = 'D3DCommandBuffer_SetClipRect' }
+0x826E2CB0 = { name = 'D3DCommandBuffer_SetViewport' }
+0x826E2E08 = { name = 'D3DCommandBuffer_SetTexture' }
+0x826E2F20 = { name = 'D3DCommandBuffer_SetVertexBuffer' }
+0x826E2FE8 = { name = 'D3DCommandBuffer_SetIndexBuffer' }
+0x826E3088 = { name = 'D3DCommandBuffer_SetVertexShader' }
+0x826E3110 = { name = 'D3DCommandBuffer_SetPixelShader' }
+
+# --- library internals the port reads or neutralises ---
+0x823114F8 = { name = 'D3D_SetPending_RenderStates' }
+0x823619B0 = { name = 'D3D_SetPending_Predicated' }
+0x822BF380 = { name = 'D3D_SetPending_ClipPlanes' }
+0x826E1930 = { name = 'D3D_TimeStampBufferResources' }
+0x826E34B0 = { name = 'D3D_AsyncTimeStampBufferResources' }
+0x826ED8C0 = { name = 'D3D_TilingPatch' }
+0x826ED688 = { name = 'D3D_XpsQueryPatch' }
+0x826ED5A8 = { name = 'D3D_XpsVisibilityPatch' }
+0x826E8488 = { name = 'D3D_InitializeAsyncCommandBuffers' }
+0x826F36C8 = { name = 'D3D_ExecuteLowPriCommandBuffer' }
+0x826ECE10 = { name = 'D3D_LockL2' }
+0x826ED058 = { name = 'D3D_AutoPatch' }
+0x826ECB18 = { name = 'D3DVertexShader_Bind' }
+0x826EC870 = { name = 'D3D_PatchVertexShaderToMatchPixelShader' }
+0x826EBFB8 = { name = 'D3D_PatchBoundInterpolatorHeadersToMatch' }
+0x826FBEB8 = { name = 'D3DXCreateTextureFromFileInMemoryEx' }
+0x822D3EA0 = { name = 'TileBuffer_GetTileRects' }
+
+# --- likely, confirmed by the task that first uses them ---
+# 0x8236D900: per-rect body D3DDevice_Clear hoists out (hook map section 1).
+0x8236D900 = { name = 'D3DDevice_ClearRects' }
+# deep dive section 4.1 marks these "?." = unconfirmed. Task 7 confirms
+# D3D_DrawVertices_Core; Task 8 confirms the tiling wrapper.
+0x8233AC60 = { name = 'D3D_DrawVertices_Core' }
+0x823813B0 = { name = 'D3DDevice_BeginTiling_Wrapper' }
+0x82310FC8 = { name = 'Gfx_RunCommandBufferOrRecord' }
+0x822AF9D8 = { name = 'TileBuffer_SwapImpl' }
+0x826E4E28 = { name = 'D3D_InitializeRingBuffer' }
+0x826F48B8 = { name = 'D3D_DestroyDevice' }
+
     [functions.0x822A1940]
 
     [functions.0x822A1958]
