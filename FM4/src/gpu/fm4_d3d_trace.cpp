@@ -70,6 +70,10 @@ void DumpShader(uint8_t* base, uint32_t function_va, const char* ext) {
   const auto dir = std::filesystem::current_path() / "shaders";
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
+  if (ec && !std::filesystem::exists(dir)) {
+    REXLOG_WARN("[d3dtrace] cannot create {}", dir.string());
+    return;
+  }
   char name[64];
   std::snprintf(name, sizeof(name), "%016llX.%s", static_cast<unsigned long long>(hash), ext);
   const auto path = dir / name;
@@ -78,6 +82,10 @@ void DumpShader(uint8_t* base, uint32_t function_va, const char* ext) {
   }
   std::ofstream out(path, std::ios::binary);
   out.write(reinterpret_cast<const char*>(base + function_va), bytes);
+  if (!out) {
+    REXLOG_WARN("[d3dtrace] failed to write {}", path.string());
+    return;
+  }
   REXLOG_INFO("[d3dtrace] dumped {} ({} bytes)", name, bytes);
 }
 

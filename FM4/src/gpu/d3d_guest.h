@@ -21,7 +21,7 @@ inline uint32_t ShaderContainerBytes(const rex::be<uint32_t>* words) {
 
 // File-name hash only; XenosRecomp computes its own content hash.
 constexpr uint64_t Fnv1a64(const uint8_t* p, size_t n) {
-  uint64_t h = 1469598103934665603ull;
+  uint64_t h = 14695981039346656037ull;
   for (size_t i = 0; i < n; ++i) {
     h ^= p[i];
     h *= 1099511628211ull;
@@ -50,6 +50,6 @@ static_assert(ShaderContainerBytes(0x100, 0x40) == 0x140);
 static_assert(RingSinkGuarantee(0x1000) < RingSinkLimit(0x1000));
 static_assert(RingSinkGuarantee(0x1000) > 0x1000);
 constexpr uint8_t kFnvProbe[3] = {'a', 'b', 'c'};
-static_assert(Fnv1a64(kFnvProbe, 3) == 0xE16801510DB89EFDull);  // FNV-1a("abc") with this offset basis
+static_assert(Fnv1a64(kFnvProbe, 3) == 0xE71FA2190541574Bull);  // FNV-1a("abc")
 
 }  // namespace fm4::gpu
