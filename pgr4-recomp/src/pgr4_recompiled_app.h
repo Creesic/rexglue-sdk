@@ -8,6 +8,10 @@
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 
+#if PGR4_ENABLE_PLUME
+#include "render/video.h"
+#endif
+
 class Pgr4RecompiledApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -31,10 +35,33 @@ class Pgr4RecompiledApp : public rex::ReXApp {
   }
 
   void OnPreSetup(rex::RuntimeConfig& config) override {
+#if PGR4_ENABLE_PLUME
+    // The native renderer replaces the plugin outright: src/render/d3d_hooks.cpp
+    // has already taken over D3DDevice_Swap at link time, so loading xenos here
+    // would leave two things believing they own presentation. Leaving the plugin
+    // name empty is what makes LoadGpuPlugin a no-op.
+    config.gpu_plugin.clear();
+#else
     if (config.gpu_plugin.empty()) {
       config.gpu_plugin = "xenos";
     }
+#endif
   }
+
+#if PGR4_ENABLE_PLUME
+  void OnPreLaunchModule() override {
+    // Runs after the window exists but before guest code executes, so the
+    // swapchain is live before the first D3DDevice_Swap can arrive.
+    if (auto* w = window()) {
+      if (!Video::Init(w->GetNativeWindowHandle(), Video::s_viewportWidth,
+                       Video::s_viewportHeight)) {
+        REXLOG_ERROR("PGR4 native Plume renderer failed to initialize; nothing will be presented");
+      }
+    } else {
+      REXLOG_ERROR("PGR4 native Plume renderer: no window at OnPreLaunchModule");
+    }
+  }
+#endif
 
   void OnPostSetup() override {
     // execute_unclipped_draw_vs_on_cpu is defined inside the GPU plugin DLL, so
@@ -62,6 +89,12 @@ class Pgr4RecompiledApp : public rex::ReXApp {
     // fast path reachable.
     return nullptr;
   }
-  // void OnShutdown() override {}
+#if PGR4_ENABLE_PLUME
+  void OnShutdown() override {
+    // Drains the queue before tearing down device objects; safe to call even
+    // if Init() failed, since Shutdown() is written to tolerate null state.
+    Video::Shutdown();
+  }
+#endif
   // void OnConfigurePaths(rex::PathConfig& paths) override {}
 };

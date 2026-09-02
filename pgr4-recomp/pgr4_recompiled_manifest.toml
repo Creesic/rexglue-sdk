@@ -15,6 +15,9 @@ includes = []
 # Hand-derived, recovered from beatrixzy/PGR4-Recomp @ main (2026-08-31).
 # 'rexglue init' does not emit these - functions the analyzer missed on its own.
 [entrypoint.functions]
+# Native Plume renderer present trigger. Sole caller of the VdSwap import
+# (IDA: 1 xref); size 0x594 vs FM2's 0x598 for the same XDK routine.
+0x82695BE0 = { name = "D3DDevice_Swap" }
 0x824B8670 = {}
 0x82526280 = {}
 0x828DDA98 = {}
