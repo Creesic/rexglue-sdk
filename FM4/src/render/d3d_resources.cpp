@@ -312,7 +312,8 @@ GuestTexture* CreateTexture(uint32_t width, uint32_t height, uint32_t depth, uin
 void PublishGuestFetchConstant(GuestBaseTexture* resource, uint32_t guestFormat, uint32_t width,
                                uint32_t height) {
   if (resource == nullptr) return;
-  auto* fc = reinterpret_cast<rex::be<uint32_t>*>(reinterpret_cast<uint8_t*>(resource) + 0x18);
+  auto* fc = reinterpret_cast<rex::be<uint32_t>*>(reinterpret_cast<uint8_t*>(resource) +
+                                                  kGuestTextureFetchConstantOffset);
   const uint32_t pitchBlocks = ((width + 31u) / 32u) & 0x1FFu;
   fc[0] = pitchBlocks << 22;
   fc[1] = guestFormat & 0x3Fu;
@@ -1082,7 +1083,7 @@ GuestTexture* TranslateGuestTextureFetch(const void* guestFetch, bool uploadGues
 // Translates a raw XG-header guest texture object (see the section comment
 // above) into a native GuestTexture. The header's Common field (offset 0)
 // must tag it as a texture resource; the fetch constant lives 7 dwords in
-// (GPUTEXTURE_FETCH_CONSTANT at header +0x1C).
+// (GPUTEXTURE_FETCH_CONSTANT at header +kGuestTextureFetchConstantOffset).
 GuestTexture* TranslateGuestTexture(void* guestHeader, bool uploadGuestData) {
   const uint32_t guestAddress = ToGuest(guestHeader);
 
@@ -1096,7 +1097,7 @@ GuestTexture* TranslateGuestTexture(void* guestHeader, bool uploadGuestData) {
     }
     return nullptr;
   }
-  XenosTextureInfo info = ParseTextureFetchConstant(header + 7);
+  XenosTextureInfo info = ParseTextureFetchConstant(header + kGuestTextureFetchConstantOffset / 4);
   if (!info.valid) {
     static std::unordered_set<uint32_t> s_warned;
     if (s_warned.insert(guestAddress).second) {

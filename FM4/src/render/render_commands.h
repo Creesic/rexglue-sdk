@@ -36,7 +36,7 @@ constexpr ConstantSnapshotRange GetConstantSnapshotRange(uint64_t dirtyFlags,
 
 // Per-draw constants emitted through APIs that return a command-buffer payload
 // for the caller to fill (notably D3DDevice_GpuBeginShaderConstantF4). Those
-// values never enter GuestDevice's +0x700/+0x1700 files, so stage them until the
+// values never enter GuestDevice's +0x780/+0x1780 files, so stage them until the
 // next native draw and overlay only the registers that the guest emitted.
 struct PendingShaderConstantFile {
   static constexpr uint32_t kRegisterCount = 256;

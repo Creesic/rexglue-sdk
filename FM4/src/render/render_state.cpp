@@ -110,7 +110,7 @@ struct SharedConstants {
   uint32_t texture2DIndices[16]{};
   uint32_t texture3DIndices[16]{};
   uint32_t textureCubeIndices[16]{};
-  uint32_t samplerIndices[16]{};  // Bindless indices populated from GuestSamplerState each draw.
+  uint32_t samplerIndices[16]{};  // Bindless indices from the texture fetch constants each draw.
   uint32_t booleans[8]{};         // VS words 0-3, PS words 4-7.
   uint32_t swappedTexcoords = 0;
   uint32_t swappedNormals = 0;
@@ -1178,12 +1178,10 @@ void SetAlphaTestMode(bool enable) {
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.specConstants, specConstants);
 }
 
-// FM2's clip planes and enable mask live at fixed byte offsets inside the
-// guest device struct (this repo's GuestDevice is a byte-exact overlay of
-// the real object, so these offsets refer to real, live guest memory).
-constexpr uint32_t kGuestClipPlanesOffset = 0x2820;
-constexpr uint32_t kGuestClipPlaneMask = 0x3F;
-constexpr uint32_t kGuestScissorEnableOffset = 0x2E48;
+// Clip planes, the enable mask and the scissor-test flag live at fixed byte
+// offsets inside the guest device struct (GuestDevice is a byte-exact overlay
+// of the real object, so these offsets refer to real, live guest memory).
+// The offsets themselves are FM4's and live in guest_device.h.
 
 struct GuestClipPlane {
   rex::be<float> x, y, z, w;
@@ -1195,9 +1193,7 @@ GuestClipPlane* ClipPlanes(GuestDevice* device) {
 }
 
 bool ScissorTestEnabled(GuestDevice* device) {
-  auto* value = reinterpret_cast<rex::be<uint32_t>*>(reinterpret_cast<uint8_t*>(device) +
-                                                     kGuestScissorEnableOffset);
-  return value->get() != 0;
+  return GuestScissorEnable(device);
 }
 
 // Simplified framebuffer cache: just caches one RenderFramebuffer per unique
@@ -2754,8 +2750,8 @@ uint32_t EffectiveStream0Stride(GuestDevice* device) {
   if (stride == 0)
     stride = g_pipelineState.vertexStrides[0];
   if (stride == 0 && device != nullptr) {
-    // Xbox stores stride/4 as a byte at device+0x2FD8+stream (080plume).
-    const uint8_t dwords = reinterpret_cast<const uint8_t*>(device)[0x2FD8];
+    // Xbox stores stride/4 as a byte at device+0x3250+stream.
+    const uint8_t dwords = device->streamStrideDwords[0];
     if (dwords != 0)
       stride = uint32_t(dwords) * 4u;
   }
@@ -2766,7 +2762,7 @@ GuestVertexDeclaration* ResolveVertexDeclaration(GuestDevice* device) {
   const uint32_t streamStride = EffectiveStream0Stride(device);
 
   // Keep host stride mirrors coherent when a low-level guest path wrote
-  // device+0x2FD8 without reaching the BindVertexStream wrapper.
+  // device+0x3250 without reaching the BindVertexStream wrapper.
   if (streamStride != 0 && g_inputSlots[0].stride == 0) {
     g_inputSlots[0].stride = streamStride;
     g_pipelineState.vertexStrides[0] = uint8_t(streamStride > 255u ? 255u : streamStride);
@@ -3190,9 +3186,8 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
       geometry = it->second;
   }
   for (uint32_t index = 0; index < std::size(geometry.streams); ++index) {
-    const auto* address = reinterpret_cast<const rex::be<uint32_t>*>(
-        reinterpret_cast<const uint8_t*>(device) + 0x2F94u + index * 4u);
-    const uint8_t strideDwords = *(reinterpret_cast<const uint8_t*>(device) + 0x2FD8u + index);
+    const auto* address = &device->boundVertexStreams[index];
+    const uint8_t strideDwords = device->streamStrideDwords[index];
     GuestBuffer* liveBuffer =
         address->get() != 0 ? ghp::ToHost<GuestBuffer>(address->get()) : nullptr;
     const uint32_t liveStride = uint32_t(strideDwords) * 4u;
@@ -3201,7 +3196,8 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
       stream = {};
     } else if (!IsFm4Resource(liveBuffer)) {
       const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
-          reinterpret_cast<const uint8_t*>(device) + 0x6F8u - index * 8u);
+          reinterpret_cast<const uint8_t*>(device) + kGuestVertexFetchBase -
+          kGuestVertexFetchStride * index);
       const auto* fetchSize = fetchBase + 1;
       const uint32_t rawSize = DecodeRawBufferSize(fetchSize->get());
       uint8_t* rawData = SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), 4u, false);
@@ -3210,8 +3206,7 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
       stream = {liveBuffer, 0, liveStride};
     }
   }
-  const auto* indexAddress = reinterpret_cast<const rex::be<uint32_t>*>(
-      reinterpret_cast<const uint8_t*>(device) + 0x2F7Cu);
+  const auto* indexAddress = &device->boundIndexBuffer;
   geometry.indexBuffer = nullptr;
   geometry.rawIndexData = nullptr;
   geometry.rawIndexSize = 0;
@@ -3269,7 +3264,7 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
     const uint64_t mask = uint64_t{1} << (31u - i);
     if (!forceFullSnapshot && (samplerFlags & mask) == 0)
       continue;
-    const GuestSamplerState& state = device->samplerStates[i];
+    const GuestFetchConstant& state = device->textureFetchConstants[i];
     RenderCommand& cmd = queue.Enqueue();
     cmd.type = RenderCommandType::SetSamplerState;
     cmd.setSamplerState.index = i;
@@ -3881,7 +3876,7 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
 
   const uint8_t* uploadData = copy;
   std::array<uint8_t, 4 * 20> normalizedQuad;
-  if (g_viewportEnabled && primitiveType == D3DPT_TRIANGLESTRIP &&
+  if (!g_viewportEnabled && primitiveType == D3DPT_TRIANGLESTRIP &&
       bytes == normalizedQuad.size()) {
     std::memcpy(normalizedQuad.data(), copy, bytes);
     if (NormalizeUnitFullscreenUpQuad(normalizedQuad.data(), vertexCount, stride, bytes))
@@ -4272,6 +4267,39 @@ void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
   g_hasBoundPipeline = false;
   g_pendingMsaaResolves.clear();
   g_dirtyStates = DirtyStates(true);
+}
+
+// Called once from the Direct3D_CreateDevice hook (Task 5). Prints the live
+// values of the fields whose offsets were derived rather than measured, so a
+// wrong offset shows up in the log as an implausible number instead of as a
+// black screen three tasks later.
+void LogGuestDeviceLayout(const GuestDevice* device) {
+  if (device == nullptr) {
+    REXLOG_ERROR("fm4render: LogGuestDeviceLayout(nullptr)");
+    return;
+  }
+  const auto* bytes = reinterpret_cast<const uint8_t*>(device);
+  const auto be32 = [bytes](uint32_t off) {
+    return reinterpret_cast<const rex::be<uint32_t>*>(bytes + off)->get();
+  };
+  REXLOG_INFO("fm4render: device layout sizeof=0x{:X} ring=0x{:08X} token=0x{:08X} flags=0x{:02X}",
+              sizeof(GuestDevice), be32(0x2B10), be32(0x2B08), bytes[0x2B3D]);
+  REXLOG_INFO("fm4render:   control=0x{:08X} color=0x{:08X} mode=0x{:08X} blend0=0x{:08X}",
+              be32(kGuestControlPacketOffset), be32(kGuestColorControlOffset),
+              be32(kGuestModeControlOffset), be32(kGuestBlendControl0Offset));
+  REXLOG_INFO("fm4render:   decl=0x{:08X} ib=0x{:08X} vb0=0x{:08X} stride0={}",
+              device->vertexDeclaration.get(), device->boundIndexBuffer.get(),
+              device->boundVertexStreams[0].get(), device->streamStrideDwords[0] * 4u);
+  const rex::be<float>* vp = GuestViewportFloats(device);
+  if (vp != nullptr) {
+    REXLOG_INFO("fm4render:   viewport {} {} {}x{} z[{} {}] scissor={}", vp[0].get(), vp[1].get(),
+                vp[2].get(), vp[3].get(), vp[4].get(), vp[5].get(), GuestScissorEnable(device));
+  } else {
+    REXLOG_WARN("fm4render: guest viewport offset unknown; draws with no explicit SetViewport use the full render target");
+  }
+  if (kGuestScissorEnableOffset == 0) {
+    REXLOG_WARN("fm4render: guest scissor-enable offset unknown; scissor test always off");
+  }
 }
 
 }  // namespace fm4::render

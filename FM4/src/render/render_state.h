@@ -13,6 +13,10 @@
 
 namespace fm4::render {
 
+// One-shot diagnostic: dumps the live values of every derived guest-device
+// offset. Called from the Direct3D_CreateDevice hook.
+void LogGuestDeviceLayout(const GuestDevice* device);
+
 void BeginRenderStateFrame();
 // Monotonic frame counter (incremented each BeginRenderStateFrame); used to
 // dedupe per-frame guest-memory uploads.

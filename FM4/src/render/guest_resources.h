@@ -38,19 +38,25 @@ enum class ResourceType {
 inline constexpr uint32_t kFm4ResourceMagic = 0x464D3452;  // 'FM4R'
 
 // These objects live in guest memory (ghp::GuestNew) and are handed to the
-// title as its own D3D resources, so FM2's D3D reads and writes their headers
-// in place. Footprints and offsets taken from FM2 itself:
-//   D3DDevice_CreateVertexBuffer @0x82369ED8 -> 0x20 bytes; writes Common,
-//       ReferenceCount, BaseFlush, Format.dword[0..1]
-//   D3DDevice_CreateSurface     @0x8236BFC0 -> 0x30 bytes; read-modify-writes
-//       +0x00, +0x1C and +0x20 (EDRAM tile address bits)
-//   D3DDevice_CreateTexture     @0x8236BEA0 -> 0x34 bytes; writes the 6-dword
-//       GPUTEXTURE_FETCH_CONSTANT spanning +0x18..+0x2F
-// The largest guest footprint is 0x34. Reserve 0x40 so no host-side member can
-// share storage with it: host pointers previously sat at +0x10/+0x18/+0x20 and
-// the guest's +0x1C read-modify-write silently corrupted the texture pointer
+// title as its own D3D resources, so FM4's D3D reads and writes their headers
+// in place. Footprints and offsets taken from FM4 itself (ida40 typed structs):
+//   D3DDevice_CreateVertexBuffer @0x826E7348 -> D3DVertexBuffer is 32 bytes;
+//       GPUVERTEX_FETCH_CONSTANT at +0x18 (deep dive 4.1)
+//   D3DDevice_CreateIndexBuffer  @0x826E7410 -> D3DIndexBuffer is 32 bytes;
+//       Address at +0x18, Size at +0x1C
+//   D3DDevice_CreateSurface      @0x826DF248 -> D3DSurface is 48 bytes
+//   D3DDevice_CreateTexture      @0x826DF128 -> D3DBaseTexture is 52 bytes;
+//       GPUTEXTURE_FETCH_CONSTANT spanning +0x1C..+0x33
+// The largest guest footprint is 52 (0x34). Reserve 0x40 so no host-side member
+// can share storage with it: host pointers previously sat at +0x10/+0x18/+0x20
+// and the guest's +0x1C read-modify-write silently corrupted the texture pointer
 // (IsLiveHostTexture then rejected the render target and Present went black).
 inline constexpr uint32_t kGuestResourceHeaderBytes = 0x40;
+
+// Offset of GPUTEXTURE_FETCH_CONSTANT inside the guest D3DBaseTexture header.
+// FM2P wrote it at 0x18; FM4's typed D3DBaseTexture puts it at 0x1C (7 header
+// dwords, then 24 bytes of fetch constant, total 52).
+inline constexpr uint32_t kGuestTextureFetchConstantOffset = 0x1C;
 
 struct GuestResource {
   // Deliberately aliases the guest's D3DResource::Common; IsFm4Resource reads
