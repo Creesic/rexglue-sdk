@@ -278,7 +278,8 @@ void XAudio2AudioDriver::SubmitFrame(uint32_t frame_ptr) {
         }
       }
     } else {
-      conversion::sequential_6_BE_to_interleaved_6_LE(output_frame, input_frame, channel_samples_);
+      conversion::sequential_6_BE_to_interleaved_6_LE(output_frame, input_frame, channel_samples_,
+                                                      GetSurroundMix(), GetOutputGain());
     }
   } else {
     std::memcpy(output_frame, input_frame, frame_size_);
