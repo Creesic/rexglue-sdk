@@ -69,3 +69,12 @@
 [submodule "thirdparty/plume"]
 	path = thirdparty/plume
 	url = https://github.com/zolaware/plume.git
+[submodule "thirdparty/dxc-bin"]
+	path = thirdparty/dxc-bin
+	url = https://github.com/renderbag/dxc-bin.git
+[submodule "thirdparty/zstd"]
+	path = thirdparty/zstd
+	url = https://github.com/facebook/zstd.git
+[submodule "tools/XenosRecomp"]
+	path = tools/XenosRecomp
+	url = https://github.com/Creesic/XenosRecomp.git
