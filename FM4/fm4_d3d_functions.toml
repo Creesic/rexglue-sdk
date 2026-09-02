@@ -32,6 +32,9 @@
 0x826E6EA0 = { name = 'D3DDevice_CreatePixelShader' }
 0x826E7088 = { name = 'D3DDevice_CreateVertexShader' }
 0x826E8AA0 = { name = 'Direct3D_CreateDevice' }
+0x826F46E0 = { name = 'D3D_InitializeEngines' }
+0x826E46D0 = { name = 'D3D_InterruptCallback' }
+0x826E52B8 = { name = 'D3D_VerticalBlankInterrupt' }
 
     [functions.0x822A1940]
 

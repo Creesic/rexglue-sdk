@@ -22,6 +22,13 @@ class Video {
   static bool Init(rex::ui::Window* window);
   static void Shutdown();
 
+  // The guest registered D3D::InterruptCallback for this device (hooked at
+  // D3D_InitializeEngines). Without a GPU plugin nothing raises graphics
+  // interrupts, and the game loop gates on the vblank they deliver, so this maps
+  // a stub GPU MMIO window (the callback reads interrupt status there) and starts
+  // a host vsync thread that calls the callback with source 0 at 60 Hz.
+  static void OnGraphicsInterruptRegistered(uint32_t device_va);
+
   // The next Present clears the back buffer to this D3DCOLOR (ARGB8).
   static void RequestClear(uint32_t argb);
 

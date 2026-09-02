@@ -64,11 +64,25 @@ extern "C" REX_FUNC(D3DDevice_IsFencePending) {
 // The front buffer is ignored in milestone 1; the swapchain shows the clear.
 extern "C" REX_FUNC(D3DDevice_Swap) {
   fm4::gpu::TraceOnSwap();
-  if (!Native()) {
-    __imp__D3DDevice_Swap(ctx, base);
-    return;
+  // The library's own Swap advances the frame token and swap counters the game
+  // polls; with the ring library-owned and every GPU wait neutralised it is safe
+  // to run (VdSwap is ignored by the kernel without a GPU plugin). Present after.
+  __imp__D3DDevice_Swap(ctx, base);
+  if (Native()) {
+    fm4::gpu::Video::Present();
   }
-  fm4::gpu::Video::Present();
+}
+
+// D3D_InitializeEngines(pDevice) (ida40 sub_826F46E0) calls VdInitializeEngines and
+// VdSetGraphicsInterruptCallback(D3D::InterruptCallback, pDevice). The kernel drops
+// that registration when no GPU plugin is loaded, so the native path takes the
+// device here and raises vblank interrupts itself.
+extern "C" REX_FUNC(D3D_InitializeEngines) {
+  const uint32_t device = ctx.r3.u32;
+  __imp__D3D_InitializeEngines(ctx, base);
+  if (Native()) {
+    fm4::gpu::Video::OnGraphicsInterruptRegistered(device);
+  }
 }
 
 // D3DDevice_Clear(pDevice, Count, pRects, Flags, Color, Z, Stencil, EDRAMClear):

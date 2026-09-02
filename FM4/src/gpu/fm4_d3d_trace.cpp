@@ -32,12 +32,16 @@ enum Counter : size_t {
   kCreateTexture,
   kCreateVS,
   kCreatePS,
+  kInterruptCb,        // D3D::InterruptCallback invocations (any source)
+  kInterruptVblankSrc, // ... with source 0 (vblank)
+  kVblank,             // D3D::VerticalBlankInterrupt actually ran
   kCount
 };
 
 constexpr std::array<const char*, kCount> kNames = {
-    "swap",       "drawIdx",   "drawIdxUP", "beginVerts", "runCB", "beginTiling",
-    "resolve",    "rtIdxNon0", "createTex", "createVS",   "createPS"};
+    "swap",       "drawIdx",   "drawIdxUP", "beginVerts", "runCB",    "beginTiling",
+    "resolve",    "rtIdxNon0", "createTex", "createVS",   "createPS", "irq",
+    "irqVbl",     "vblank"};
 
 std::array<std::atomic<uint32_t>, kCount> g_counters{};
 std::atomic<uint32_t> g_resolve_flags{0};
@@ -115,6 +119,20 @@ extern "C" REX_FUNC(D3DDevice_DrawIndexedVerticesUP) {
 extern "C" REX_FUNC(D3DDevice_BeginVertices) {
   if (Enabled()) Bump(kBeginVertices);
   __imp__D3DDevice_BeginVertices(ctx, base);
+}
+
+// D3D::InterruptCallback(InterruptSources, pDevice): r3 = source (0 = vblank).
+extern "C" REX_FUNC(D3D_InterruptCallback) {
+  if (Enabled()) {
+    Bump(kInterruptCb);
+    if (ctx.r3.u32 == 0) Bump(kInterruptVblankSrc);
+  }
+  __imp__D3D_InterruptCallback(ctx, base);
+}
+
+extern "C" REX_FUNC(D3D_VerticalBlankInterrupt) {
+  if (Enabled()) Bump(kVblank);
+  __imp__D3D_VerticalBlankInterrupt(ctx, base);
 }
 
 extern "C" REX_FUNC(D3DDevice_RunCommandBuffer) {
