@@ -74,6 +74,7 @@ class Pgr4RecompiledApp : public rex::ReXApp {
   }
 #endif
 
+#if !PGR4_ENABLE_PLUME
   void OnPostSetup() override {
     // execute_unclipped_draw_vs_on_cpu is defined inside the GPU plugin DLL, so
     // it is not registered until LoadGpuPlugin runs. OnPostSetup is the first
@@ -84,6 +85,8 @@ class Pgr4RecompiledApp : public rex::ReXApp {
       REXLOG_WARN("Could not set execute_unclipped_draw_vs_on_cpu; PGR4 may render incorrectly");
     }
   }
+#endif  // !PGR4_ENABLE_PLUME -- that cvar lives in the xenos DLL, which the
+        // native renderer never loads; setting it there only logs a false warning.
 
   // void OnPreSetup(rex::RuntimeConfig& config) override {}
   // void OnLoadXexImage(std::string& xex_image) override {}

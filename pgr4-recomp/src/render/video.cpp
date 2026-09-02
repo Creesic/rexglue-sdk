@@ -33,6 +33,15 @@ constexpr RenderFormat kSwapChainFormat = RenderFormat::B8G8R8A8_UNORM;
 struct FrameSlot {
   std::unique_ptr<RenderCommandList> commandList;
   std::unique_ptr<RenderCommandFence> fence;
+
+  // Per-frame, not shared. A binary semaphore signalled again before its
+  // previous wait has been consumed is a validation error on Vulkan, and with
+  // two frames in flight a single shared acquire semaphore does exactly that.
+  // D3D12's present ignores semaphores entirely, which is why one shared
+  // semaphore *appeared* to work there.
+  std::unique_ptr<RenderCommandSemaphore> acquireSemaphore;
+  std::unique_ptr<RenderCommandSemaphore> renderFinishedSemaphore;
+
   bool submitted = false;
 };
 
@@ -40,7 +49,6 @@ std::unique_ptr<RenderInterface> g_interface;
 std::unique_ptr<RenderDevice> g_device;
 std::unique_ptr<RenderCommandQueue> g_queue;
 std::unique_ptr<RenderSwapChain> g_swapChain;
-std::unique_ptr<RenderCommandSemaphore> g_acquireSemaphore;
 std::array<FrameSlot, kNumFrames> g_frames;
 
 // One framebuffer per swapchain image, built lazily and dropped on resize.
@@ -133,18 +141,14 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
   for (FrameSlot& slot : g_frames) {
     slot.commandList = g_queue->createCommandList();
     slot.fence = g_device->createCommandFence();
-    if (slot.commandList == nullptr || slot.fence == nullptr) {
-      REXLOG_ERROR("PGR4 Plume: per-frame command list/fence creation failed");
+    slot.acquireSemaphore = g_device->createCommandSemaphore();
+    slot.renderFinishedSemaphore = g_device->createCommandSemaphore();
+    if (slot.commandList == nullptr || slot.fence == nullptr ||
+        slot.acquireSemaphore == nullptr || slot.renderFinishedSemaphore == nullptr) {
+      REXLOG_ERROR("PGR4 Plume: per-frame command list/fence/semaphore creation failed");
       Shutdown();
       return false;
     }
-  }
-
-  g_acquireSemaphore = g_device->createCommandSemaphore();
-  if (g_acquireSemaphore == nullptr) {
-    REXLOG_ERROR("PGR4 Plume: createCommandSemaphore failed");
-    Shutdown();
-    return false;
   }
 
   g_initialized = true;
@@ -186,12 +190,14 @@ bool Video::Present() {
 
   FrameSlot& slot = g_frames[g_frameIndex];
   if (slot.submitted) {
+    // Waiting on this slot's fence also guarantees its semaphores' previous
+    // signal/wait pair has fully retired before we reuse them below.
     g_queue->waitForCommandFence(slot.fence.get());
     slot.submitted = false;
   }
 
   uint32_t textureIndex = 0;
-  if (!g_swapChain->acquireTexture(g_acquireSemaphore.get(), &textureIndex)) {
+  if (!g_swapChain->acquireTexture(slot.acquireSemaphore.get(), &textureIndex)) {
     return false;
   }
 
@@ -212,12 +218,17 @@ bool Video::Present() {
   }
   cmd->end();
 
+  // Execution waits for the image to be acquired and signals when the clear
+  // has finished; present then waits on that signal. On Vulkan present would
+  // otherwise run before the clear -- VulkanSwapChain::present honours these
+  // semaphores, D3D12SwapChain::present ignores them.
   const RenderCommandList* lists[] = {cmd};
-  RenderCommandSemaphore* waits[] = {g_acquireSemaphore.get()};
-  g_queue->executeCommandLists(lists, 1, waits, 1, nullptr, 0, slot.fence.get());
+  RenderCommandSemaphore* waits[] = {slot.acquireSemaphore.get()};
+  RenderCommandSemaphore* signals[] = {slot.renderFinishedSemaphore.get()};
+  g_queue->executeCommandLists(lists, 1, waits, 1, signals, 1, slot.fence.get());
   slot.submitted = true;
 
-  const bool presented = g_swapChain->present(textureIndex, nullptr, 0);
+  const bool presented = g_swapChain->present(textureIndex, signals, 1);
   g_frameIndex = (g_frameIndex + 1) % kNumFrames;
   return presented;
 }
@@ -244,9 +255,10 @@ void Video::Shutdown() {
   for (FrameSlot& slot : g_frames) {
     slot.commandList.reset();
     slot.fence.reset();
+    slot.acquireSemaphore.reset();
+    slot.renderFinishedSemaphore.reset();
     slot.submitted = false;
   }
-  g_acquireSemaphore.reset();
   g_swapChain.reset();
   g_queue.reset();
   g_device.reset();

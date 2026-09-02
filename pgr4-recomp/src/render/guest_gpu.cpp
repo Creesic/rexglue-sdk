@@ -2,14 +2,16 @@
 
 #include "guest_gpu.h"
 
+#include <array>
 #include <chrono>
-#include <string>
 
-#include <fmt/format.h>
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/memory/utils.h>
 #include <rex/runtime.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xmemory.h>
 #include <rex/thread.h>
 
 // This models a hardware vblank, so it must stay near display refresh. It is
@@ -34,6 +36,7 @@ namespace pgr4::render {
 using rex::X_STATUS;
 
 namespace {
+
 // The guest's interrupt callback takes two arguments:
 //   r3 = source, 0 for a normal vsync interrupt
 //   r4 = the user_data handed to VdSetGraphicsInterruptCallback
@@ -42,15 +45,44 @@ constexpr uint64_t kInterruptSourceVsync = 0;
 // Fallback when the cvar is unset or nonsensical. 60 matches the rate the
 // title was written for.
 constexpr int32_t kDefaultVsyncHz = 60;
+
+// GPU register window. Same mapping the xenos plugin registers: 64 KB at
+// 0x7FC80000, addressed as dword indices.
+constexpr uint32_t kGpuRegisterBase = 0x7FC80000;
+constexpr uint32_t kGpuRegisterMask = 0xFFFF0000;
+constexpr uint32_t kGpuRegisterSize = 0x0000FFFF;
+constexpr uint32_t kGpuRegisterCount = 0x4000;
+
+// Register indices the guest's D3D touches during bring-up.
+constexpr uint32_t kRegCpRbRptr = 0x01C4;         // CP_RB_RPTR
+constexpr uint32_t kRegCpRbWptr = 0x01C5;         // CP_RB_WPTR
+constexpr uint32_t kRegRbEdramTiming = 0x0F00;    // RB_EDRAM_TIMING
+constexpr uint32_t kRegRbBcControl = 0x0F01;      // RB_BC_CONTROL
+constexpr uint32_t kRegD1ModeVCounter = 0x194C;   // R500_D1MODE_V_COUNTER
+constexpr uint32_t kRegInterruptStatus = 0x1951;  // interrupt status
+constexpr uint32_t kRegD1ModeViewport = 0x1961;   // AVIVO_D1MODE_VIEWPORT_SIZE
+
+// The guest frame PGR4 renders. Reported for the display-mode registers so the
+// same values the xenos plugin derives from VdQueryVideoMode come back here,
+// without pulling that dependency in for two constants.
+constexpr uint32_t kGuestWidth = 1280;
+constexpr uint32_t kGuestHeight = 720;
+
+// Last-written values, so reads of registers we do not special-case return
+// what the guest stored -- the same fallback the real register file provides.
+std::array<uint32_t, kGpuRegisterCount> g_registers{};
+
 }  // namespace
 
 Pgr4GraphicsSystem::~Pgr4GraphicsSystem() { Shutdown(); }
 
-rex::X_STATUS Pgr4GraphicsSystem::SetupPresentation(rex::ui::WindowedAppContext* app_context) {
+X_STATUS Pgr4GraphicsSystem::SetupPresentation(rex::ui::WindowedAppContext* app_context) {
   (void)app_context;
   has_presentation_ = true;
   return X_STATUS_SUCCESS;
 }
+
+// ---- Vd* surface -----------------------------------------------------------
 
 void Pgr4GraphicsSystem::SetInterruptCallback(uint32_t callback, uint32_t user_data) {
   interrupt_user_data_.store(user_data, std::memory_order_relaxed);
@@ -61,20 +93,124 @@ void Pgr4GraphicsSystem::SetInterruptCallback(uint32_t callback, uint32_t user_d
 }
 
 void Pgr4GraphicsSystem::InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
-  // Accepted and ignored: nothing consumes PM4 on the native path. Logged so the
-  // difference from the xenos path stays visible in a log.
-  REXLOG_INFO("PGR4 guest GPU: ring buffer at {:08X} (2^{} bytes) ignored; D3D is hooked directly",
-              ptr, size_log2);
+  // Nothing here executes PM4; the ring is only ever *consumed* (see
+  // PublishReadPointer). Its location is not needed for that, so it is logged
+  // and otherwise ignored. Size follows the real command processor's decode.
+  write_ptr_index_.store(0, std::memory_order_relaxed);
+  REXLOG_INFO("PGR4 guest GPU: ring buffer at {:08X} ({} bytes); consumed without execution",
+              ptr, uint32_t(1) << (size_log2 + 3));
 }
 
 void Pgr4GraphicsSystem::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) {
-  (void)ptr;
   (void)block_size_log2;
+  // CP_RB_RPTR_ADDR: the physical address the guest polls for how far the GPU
+  // has consumed the ring. From here on, every write-pointer update and every
+  // vblank republishes "everything consumed" to it.
+  read_ptr_writeback_.store(ptr, std::memory_order_release);
+  REXLOG_INFO("PGR4 guest GPU: read-pointer writeback at {:08X}", ptr);
+  PublishReadPointer();
 }
 
-rex::X_STATUS Pgr4GraphicsSystem::SetupGuestGpu(rex::runtime::FunctionDispatcher* function_dispatcher,
+void Pgr4GraphicsSystem::PublishReadPointer() {
+  const uint32_t writeback = read_ptr_writeback_.load(std::memory_order_acquire);
+  if (writeback == 0 || memory_ == nullptr) {
+    return;
+  }
+  // Mirror the write pointer back as the read pointer. To the guest this is a
+  // GPU that has always finished everything it was handed, which is exactly
+  // what a native renderer intercepting at the API level looks like from the
+  // guest's side. The real command processor does this same store after
+  // executing; we do it without executing.
+  const uint32_t write_index = write_ptr_index_.load(std::memory_order_acquire);
+  rex::memory::store_and_swap<uint32_t>(memory_->TranslatePhysical<uint8_t*>(writeback),
+                                        write_index);
+}
+
+// ---- GPU register window ---------------------------------------------------
+
+uint32_t Pgr4GraphicsSystem::ReadRegisterThunk(void* ppc_context, void* self, uint32_t addr) {
+  (void)ppc_context;
+  return static_cast<Pgr4GraphicsSystem*>(self)->ReadRegister(addr);
+}
+
+void Pgr4GraphicsSystem::WriteRegisterThunk(void* ppc_context, void* self, uint32_t addr,
+                                            uint32_t value) {
+  (void)ppc_context;
+  static_cast<Pgr4GraphicsSystem*>(self)->WriteRegister(addr, value);
+}
+
+uint32_t Pgr4GraphicsSystem::ReadRegister(uint32_t addr) {
+  const uint32_t r = (addr & 0xFFFF) / 4;
+  switch (r) {
+    // The guest polls these during device init. Values match what the xenos
+    // plugin answers, so bring-up sees the same hardware it would there.
+    case kRegRbEdramTiming:
+      return 0x08100748;
+    case kRegRbBcControl:
+      return 0x0000200E;
+    case kRegD1ModeVCounter:
+      return kGuestHeight;
+    case kRegInterruptStatus:
+      return 1;  // vblank
+    case kRegD1ModeViewport:
+      return (kGuestWidth << 16) | kGuestHeight;
+    // Consumption is instantaneous, so the read pointer is always the write
+    // pointer -- same answer the writeback location gives.
+    case kRegCpRbRptr:
+      return write_ptr_index_.load(std::memory_order_acquire);
+    default:
+      break;
+  }
+  return r < kGpuRegisterCount ? g_registers[r] : 0;
+}
+
+void Pgr4GraphicsSystem::WriteRegister(uint32_t addr, uint32_t value) {
+  const uint32_t r = (addr & 0xFFFF) / 4;
+  if (r < kGpuRegisterCount) {
+    g_registers[r] = value;
+  }
+  if (r == kRegCpRbWptr) {
+    // The guest just advanced its write pointer. Consume immediately so its
+    // allocator never sees the ring as full.
+    write_ptr_index_.store(value, std::memory_order_release);
+    PublishReadPointer();
+
+    // Bring-up instrumentation: whether the guest ever submits ring work is the
+    // dividing line between "stalled on a full ring" and "stalled before it
+    // ever built a frame". Without this the two are indistinguishable.
+    static std::atomic<uint64_t> writes{0};
+    if (writes.fetch_add(1, std::memory_order_relaxed) == 0) {
+      REXLOG_INFO("PGR4 guest GPU: first CP_RB_WPTR write = {:08X}", value);
+    }
+    return;
+  }
+
+  // Anything else the guest pokes during bring-up that we are not modelling.
+  // Logged once per register so a missing behaviour shows up by name instead
+  // of as silence.
+  static std::array<std::atomic<bool>, kGpuRegisterCount> logged{};
+  if (r < kGpuRegisterCount && !logged[r].exchange(true, std::memory_order_relaxed)) {
+    REXLOG_INFO("PGR4 guest GPU: unmodelled register write {:04X} = {:08X}", r, value);
+  }
+}
+
+// ---- lifecycle ---------------------------------------------------------------
+
+X_STATUS Pgr4GraphicsSystem::SetupGuestGpu(rex::runtime::FunctionDispatcher* function_dispatcher,
                                            rex::system::KernelState* kernel_state) {
   function_dispatcher_ = function_dispatcher;
+  memory_ = kernel_state->memory();
+
+  // Without this mapping the guest's CP_RB_WPTR stores land nowhere and its
+  // status polls read zero, and D3D device creation never completes.
+  if (!memory_->AddVirtualMappedRange(
+          kGpuRegisterBase, kGpuRegisterMask, kGpuRegisterSize, this,
+          reinterpret_cast<rex::runtime::MMIOReadCallback>(ReadRegisterThunk),
+          reinterpret_cast<rex::runtime::MMIOWriteCallback>(WriteRegisterThunk))) {
+    REXLOG_ERROR("PGR4 guest GPU: failed to map GPU register window at {:08X}", kGpuRegisterBase);
+    return X_STATUS_UNSUCCESSFUL;
+  }
+  mmio_mapped_ = true;
 
   worker_running_.store(true, std::memory_order_release);
   worker_thread_ = rex::system::object_ref<rex::system::XHostThread>(
@@ -101,6 +237,11 @@ void Pgr4GraphicsSystem::WorkerMain() {
       rex::thread::Sleep(std::chrono::milliseconds(1));
       continue;
     }
+
+    // Republish consumption every vblank as well as on every write-pointer
+    // store, so a guest that polls the writeback rather than the register sees
+    // progress even between its own submissions.
+    PublishReadPointer();
 
     uint64_t args[] = {kInterruptSourceVsync,
                        interrupt_user_data_.load(std::memory_order_relaxed)};
@@ -165,7 +306,10 @@ void Pgr4GraphicsSystem::Shutdown() {
     worker_thread_->Wait(0, 0, 0, nullptr);
     worker_thread_.reset();
   }
+  // The MMIO range is left registered: Memory offers no matching remove, and
+  // the guest is gone by the time this runs.
   function_dispatcher_ = nullptr;
+  memory_ = nullptr;
 }
 
 }  // namespace pgr4::render
