@@ -1,7 +1,7 @@
 // Opt-in D3D call trace (fm4_d3d_trace = true in fm4.toml). Counts the entry
 // points the native renderer must emulate and dumps every shader container the
 // game creates, so the shader cache for the native path can be built offline.
-// Runs under the xenos plugin; every hook forwards to the original body.
+// Works under both GPU paths; every hook forwards to the original body.
 #include "generated/default/fm4_init.h"
 
 #include <array>
@@ -16,7 +16,7 @@
 #include "gpu/d3d_guest.h"
 
 REXCVAR_DEFINE_BOOL(fm4_d3d_trace, false, "FM4",
-                    "Count D3D entry points per 300 frames and dump shader bytecode to <cwd>/shaders");
+                    "Count D3D entry points per 300 frames and dump shader bytecode to <cwd>/shaders. Works under both GPU paths");
 
 namespace {
 
@@ -70,7 +70,8 @@ void DumpShader(uint8_t* base, uint32_t function_va, const char* ext) {
   const auto dir = std::filesystem::current_path() / "shaders";
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
-  if (ec && !std::filesystem::exists(dir)) {
+  std::error_code exists_ec;
+  if (ec && !std::filesystem::exists(dir, exists_ec)) {
     REXLOG_WARN("[d3dtrace] cannot create {}", dir.string());
     return;
   }

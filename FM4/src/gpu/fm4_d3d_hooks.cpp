@@ -69,7 +69,6 @@ extern "C" REX_FUNC(D3DDevice_Swap) {
     return;
   }
   fm4::gpu::Video::Present();
-  ctx.r3.u64 = 0;
 }
 
 // D3DDevice_Clear(pDevice, Count, pRects, Flags, Color, Z, Stencil, EDRAMClear):

@@ -38,7 +38,7 @@ class Fm4App : public rex::ReXApp {
     }
     REXLOG_INFO("fm4: window at OnPostSetup: {}", window() ? "present" : "null");
     if (!fm4::gpu::Video::Init(window())) {
-      REXLOG_ERROR("fm4: native GPU init failed; the guest will hang at Direct3D_CreateDevice");
+      REXLOG_ERROR("fm4: native GPU init failed; running headless (guest waits are still neutralised, Present is a no-op)");
     }
   }
 

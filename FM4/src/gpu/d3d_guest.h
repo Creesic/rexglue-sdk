@@ -1,5 +1,5 @@
-// Pure helpers shared by the trace and the native hooks. Everything here is
-// constexpr and self-checked with static_assert; no runtime test target needed.
+// Pure helpers shared by the trace and the native hooks, plus the TraceOnSwap
+// hand-off. The constexpr helpers are self-checked with static_assert.
 #pragma once
 
 #include <cstddef>

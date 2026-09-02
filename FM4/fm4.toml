@@ -1,8 +1,8 @@
 # FM4 runtime cvars (loaded from fm4.toml beside fm4.exe).
 
-# GPU path: "xenos" = SDK GPU emulation plugin (default), "native" = FM4's own
-# Plume renderer (milestone 1: clear + present only; draws are not rendered).
-gpu_plugin = "native"
+# GPU path: "xenos" = SDK GPU emulation plugin (default). "native" = FM4's own
+# Plume renderer, currently milestone 1: clears and presents only, no draws.
+gpu_plugin = "xenos"
 
 # Host audio output: sdl (default), xaudio2 (Windows, lower latency), nop (silent).
 audio_backend = "xaudio2"
@@ -22,5 +22,6 @@ gpu_allow_invalid_fetch_constants = true
 # reproduce. ROV emulates EDRAM accurately (supported on this GPU).
 render_target_path_d3d12 = "rov"
 
-# Count D3D entry points and dump shader bytecode to <cwd>/shaders (xenos path).
-fm4_d3d_trace = true
+# Count D3D entry points per 300 frames and dump shader bytecode to <cwd>/shaders.
+# Works under both GPU paths. Off by default: it writes files and log lines.
+fm4_d3d_trace = false

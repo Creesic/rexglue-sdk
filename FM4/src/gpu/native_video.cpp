@@ -74,6 +74,7 @@ bool BuildFramebuffers(State& s) {
     if (!fb) {
       REXLOG_ERROR("native gpu: createFramebuffer failed for image {}", i);
       s.framebuffers.clear();
+      s.render.clear();
       return false;
     }
     s.framebuffers.push_back(std::move(fb));
@@ -155,8 +156,9 @@ void Video::Shutdown() {
   s.framebuffers.clear();
   s.render.clear();
   s.swap_chain.reset();
-  // Device, queue, lists and fences are leaked on purpose: Plume's device
-  // release does not track children, and the process is exiting.
+  // Device, queue, lists and fences stay alive until static destruction; the
+  // hazard to avoid is a guest thread calling Present() after this, which
+  // s.window = nullptr and the swap_chain reset make a no-op.
   s.window = nullptr;
 }
 
@@ -180,12 +182,13 @@ void Video::Present() {
   if (!s.swap_chain && !BuildSwapChain(s)) {
     return;
   }
-  if (s.swap_chain->needsResize()) {
+  if (s.swap_chain->needsResize() || s.framebuffers.empty()) {
     WaitAllSubmitted(s);
     s.framebuffers.clear();
+    s.render.clear();
     s.swap_chain->resize();
     if (s.swap_chain->isEmpty() || !BuildFramebuffers(s)) {
-      return;  // minimised: nothing to draw into
+      return;  // minimised: nothing to draw into; retried next Present
     }
   }
 

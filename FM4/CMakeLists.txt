@@ -28,20 +28,16 @@ else()
     add_executable(fm4 ${FM4_SOURCES})
 endif()
 
-# Plume render abstraction, vendored in the SDK tree at thirdparty/plume. FM4
-# consumes the SDK as an installed package, so the SDK's REXGLUE_ENABLE_PLUME
-# option does not reach this tree; add the submodule directly. Task 4 links it.
-# Plume at pin de0f70f has no PLUME_D3D12_ENABLED/PLUME_VULKAN_ENABLED options
-# -- it builds D3D12 automatically on WIN32 and Vulkan unconditionally on every
-# platform (see thirdparty/plume/CMakeLists.txt) -- so only the real Agility
-# SDK toggle is set here.
+# Plume render abstraction, vendored in the SDK tree at thirdparty/plume and
+# built here because this tree consumes the SDK as an installed package.
+# Plume at the pinned commit has no per-backend options; the Agility SDK is
+# off because this tree carries no directx12-agility package.
 set(PLUME_D3D12_AGILITY_SDK_ENABLED OFF CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/plume plume EXCLUDE_FROM_ALL)
 
 rexglue_setup_target(fm4 GPU_PLUGINS xenos)
 
-# Plume is added by the add_subdirectory block above (Task 3). Linked, not
-# runtime-loaded.
+# Plume is linked, not runtime-loaded; it does not propagate d3d12/dxgi.
 target_link_libraries(fm4 PRIVATE plume)
 if(WIN32)
     # Plume's own CMakeLists.txt does not link d3d12/dxgi to its target (see
