@@ -419,3 +419,6 @@ FodyWeavers.xsd
 
 # CMake User Overrides
 CMakeUserPresets.json
+
+# ReXGlue codegen output (pgr4-recomp/generated/) - regenerate with: rexglue codegen
+generated/

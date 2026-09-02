@@ -1,0 +1,67 @@
+// pgr4_recompiled - ReXGlue Recompiled Project
+//
+// Customize your app by overriding virtual hooks from rex::ReXApp.
+
+#pragma once
+
+#include <rex/cvar.h>
+#include <rex/logging.h>
+#include <rex/rex_app.h>
+
+class Pgr4RecompiledApp : public rex::ReXApp {
+ public:
+  using rex::ReXApp::ReXApp;
+
+  static std::unique_ptr<rex::ui::WindowedApp> Create(
+      rex::ui::WindowedAppContext& ctx) {
+    return std::unique_ptr<Pgr4RecompiledApp>(new Pgr4RecompiledApp(ctx, "pgr4_recompiled",
+        PPCImageConfig));
+  }
+
+  // Override virtual hooks for customization:
+  // void OnPostInitLogging() override {}
+  // PGR4 needs three settings that would otherwise have to be passed on every
+  // launch. Baked in here so the exe runs standalone. game_data_root and
+  // gpu_plugin are only defaulted when unset, so a command-line value still wins.
+
+  void OnConfigurePaths(rex::PathConfig& paths) override {
+    if (paths.game_data_root.empty()) {
+      paths.game_data_root = R"(D:\Emulation\Games_Xbox_360\PGR4\Extracted)";
+    }
+  }
+
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+    if (config.gpu_plugin.empty()) {
+      config.gpu_plugin = "xenos";
+    }
+  }
+
+  void OnPostSetup() override {
+    // execute_unclipped_draw_vs_on_cpu is defined inside the GPU plugin DLL, so
+    // it is not registered until LoadGpuPlugin runs. OnPostSetup is the first
+    // hook after that, hence set by name rather than REXCVAR_SET (the exe does
+    // not link the plugin). Unconditional: a bool cvar left at its false default
+    // is indistinguishable from an explicit --execute_unclipped_draw_vs_on_cpu=false.
+    if (!rex::cvar::SetFlagByName("execute_unclipped_draw_vs_on_cpu", "true")) {
+      REXLOG_WARN("Could not set execute_unclipped_draw_vs_on_cpu; PGR4 may render incorrectly");
+    }
+  }
+
+  // void OnPreSetup(rex::RuntimeConfig& config) override {}
+  // void OnLoadXexImage(std::string& xex_image) override {}
+  // void OnPostLoadXexImage() override {}
+  // void OnPostSetup() override {}
+  // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
+  // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
+  std::unique_ptr<rex::ui::AchievementNotificationDialog>
+  CreateAchievementNotificationDialog() override {
+    // Constructing this registers a permanent UI drawer at startup, so
+    // ui_drawers_ is never empty and Presenter::GetDesiredPaintModeFromUIThread
+    // always returns kUIThreadOnRequest - the paced path - instead of ever
+    // reaching kGuestOutputThreadImmediately. Returning nullptr keeps the
+    // fast path reachable.
+    return nullptr;
+  }
+  // void OnShutdown() override {}
+  // void OnConfigurePaths(rex::PathConfig& paths) override {}
+};
