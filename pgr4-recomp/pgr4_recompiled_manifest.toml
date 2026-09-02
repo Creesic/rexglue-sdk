@@ -18,6 +18,43 @@ includes = []
 # Native Plume renderer present trigger. Sole caller of the VdSwap import
 # (IDA: 1 xref); size 0x594 vs FM2's 0x598 for the same XDK routine.
 0x82695BE0 = { name = "D3DDevice_Swap" }
+
+# Remaining portable D3D surface for the native renderer, all verified in IDA.
+# Named here but NOT yet hooked -- codegen emits normal recompiled bodies until
+# a REX_HOOK claims one. Kept in the manifest so the addresses are durable
+# rather than living only in the IDB.
+
+# Present / compositing
+0x82696978 = { name = "D3DDevice_Resolve" }
+
+# Draws
+0x8269A9F0 = { name = "D3DDevice_DrawVertices" }
+0x8269ADD8 = { name = "D3DDevice_DrawIndexedVertices" }
+0x8269A9A8 = { name = "D3DDevice_DrawVerticesUP" }
+
+# Resource creation
+0x826934E8 = { name = "D3DDevice_CreateTexture" }
+0x82693608 = { name = "D3DDevice_CreateSurface" }
+0x8269A1D8 = { name = "D3DDevice_CreateVertexBuffer" }
+0x8269A300 = { name = "D3DDevice_CreateIndexBuffer" }
+0x82694F80 = { name = "D3DDevice_CreateVertexDeclaration" }
+
+# Resource locking
+0x826937C8 = { name = "D3DSurface_LockRect" }
+0x8269A2A0 = { name = "D3DVertexBuffer_Lock" }
+
+# Binding / state
+0x82693850 = { name = "D3DDevice_SetTexture" }
+0x8269C378 = { name = "D3DDevice_ClearF" }
+0x82690FA0 = { name = "D3DDevice_SetRenderTarget" }
+0x82691308 = { name = "D3DDevice_SetDepthStencilSurface" }
+0x82690E68 = { name = "D3DDevice_SetViewport" }
+0x826904C8 = { name = "D3DDevice_SetScissorRect" }
+
+# Shaders / constants
+0x826952F8 = { name = "D3DDevice_CreateVertexShader" }
+0x826951A8 = { name = "D3DDevice_CreatePixelShader" }
+0x826943F8 = { name = "D3DDevice_SetVertexShaderConstantFN" }
 0x824B8670 = {}
 0x82526280 = {}
 0x828DDA98 = {}
