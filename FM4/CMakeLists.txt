@@ -17,6 +17,7 @@ set(FM4_SOURCES
     src/fm4_debug_media.cpp
     src/fm4_debug_audio_mix.cpp
     src/fm4_midasm_hooks.cpp
+    src/gpu/fm4_d3d_hooks.cpp
     src/gpu/fm4_d3d_trace.cpp
     src/gpu/native_video.cpp
 )

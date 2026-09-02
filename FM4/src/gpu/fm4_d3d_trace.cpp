@@ -91,15 +91,14 @@ void DumpShader(uint8_t* base, uint32_t function_va, const char* ext) {
 
 }  // namespace
 
-// D3DDevice_Swap(pDevice, pFrontBuffer, pParameters): one per presented frame.
-extern "C" REX_FUNC(D3DDevice_Swap) {
-  if (Enabled()) {
-    Bump(kSwap);
-    if ((g_frames.fetch_add(1, std::memory_order_relaxed) % 300) == 299) {
-      LogAndReset();
-    }
+void fm4::gpu::TraceOnSwap() {
+  if (!Enabled()) {
+    return;
   }
-  __imp__D3DDevice_Swap(ctx, base);
+  Bump(kSwap);
+  if ((g_frames.fetch_add(1, std::memory_order_relaxed) % 300) == 299) {
+    LogAndReset();
+  }
 }
 
 extern "C" REX_FUNC(D3DDevice_DrawIndexedVertices) {
