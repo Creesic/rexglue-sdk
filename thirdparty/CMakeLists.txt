@@ -59,6 +59,10 @@ if(REXGLUE_ENABLE_TRACY)
     list(APPEND REQUIRED_SUBMODULES tracy)
 endif()
 
+if(REXGLUE_ENABLE_PLUME)
+    list(APPEND REQUIRED_SUBMODULES plume)
+endif()
+
 if(REXGLUE_BUILD_TESTS)
     list(APPEND REQUIRED_SUBMODULES catch2)
 endif()
@@ -702,3 +706,17 @@ set_target_properties(libavutil libavcodec PROPERTIES
     C_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
     FOLDER "FFmpeg")
+
+#=============================================================================
+# Plume (native-render titles only)
+#=============================================================================
+if(REXGLUE_ENABLE_PLUME)
+    # System D3D12 runtime is enough for milestone 1; the Agility SDK needs a
+    # vcpkg directx12-agility package this tree does not carry. Plume at this
+    # pin (de0f70f) has no PLUME_D3D12_ENABLED/PLUME_VULKAN_ENABLED options --
+    # it builds D3D12 automatically on WIN32 and Vulkan unconditionally on
+    # every platform (see thirdparty/plume/CMakeLists.txt), so only the real
+    # Agility SDK toggle is set here.
+    set(PLUME_D3D12_AGILITY_SDK_ENABLED OFF CACHE BOOL "" FORCE)
+    add_subdirectory(plume EXCLUDE_FROM_ALL)
+endif()

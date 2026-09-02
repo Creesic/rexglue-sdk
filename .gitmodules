@@ -66,3 +66,6 @@
 [submodule "thirdparty/tracy"]
 	path = thirdparty/tracy
 	url = https://github.com/wolfpld/tracy.git
+[submodule "thirdparty/plume"]
+	path = thirdparty/plume
+	url = https://github.com/zolaware/plume.git
