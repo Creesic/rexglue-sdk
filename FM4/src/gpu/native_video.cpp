@@ -49,6 +49,8 @@ void GpuMmioWrite(void*, void*, uint32_t, uint32_t) {
 std::atomic<bool> g_vsync_running{false};
 std::atomic<uint32_t> g_interrupt_device{0};
 std::atomic<uint32_t> g_swaps_to_ack{0};  // presented frames awaiting a source-1 interrupt
+// OnGraphicsInterruptRegistered is the only creator, Shutdown the only stopper;
+// no additional lock is needed around this handle.
 rex::system::object_ref<rex::system::XHostThread> g_vsync_thread;
 
 int VsyncThreadMain() {
@@ -216,11 +218,14 @@ bool Video::Init(rex::ui::Window* window) {
 
 void Video::Shutdown() {
   auto& s = S();
+  // Must run before the lock: joining the vsync thread pumps guest interrupt
+  // callbacks that can re-enter Present()/RequestClear(), which take s.mutex,
+  // so holding it here would deadlock the join.
+  StopVsyncThread();
   std::lock_guard lock(s.mutex);
   if (!s.device) {
     return;
   }
-  StopVsyncThread();
   WaitAllSubmitted(s);
   s.framebuffers.clear();
   s.render.clear();
