@@ -71,3 +71,13 @@ extern "C" REX_FUNC(D3DDevice_Swap) {
   fm4::gpu::Video::Present();
   ctx.r3.u64 = 0;
 }
+
+// D3DDevice_Clear(pDevice, Count, pRects, Flags, Color, Z, Stencil, EDRAMClear):
+// r6 = Flags, r7 = Color (Z rides in f1 with a reserved GPR slot after it).
+// The library's own body still runs so its pending state stays consistent.
+extern "C" REX_FUNC(D3DDevice_Clear) {
+  if (Native() && (ctx.r6.u32 & 0x1u) != 0) {
+    fm4::gpu::Video::RequestClear(ctx.r7.u32);
+  }
+  __imp__D3DDevice_Clear(ctx, base);
+}
