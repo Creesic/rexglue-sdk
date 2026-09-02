@@ -1,0 +1,25 @@
+# FM4 runtime cvars (loaded from fm4.toml beside fm4.exe).
+
+# GPU emulation plugin loaded at startup (SDK 0.10: graphics is a runtime plugin).
+gpu_plugin = "xenos"
+
+# Host audio output: sdl (default), xaudio2 (Windows, lower latency), nop (silent).
+audio_backend = "xaudio2"
+
+# Optional DLC/update pack folder. When unset, update: aliases to game: (assets/).
+# Set this if you have a separate update partition with media.zip.
+# update_data_root = "C:/path/to/update"
+
+# menu and full-screen video. Allow the backend to proceed past invalid fetch
+# constants (the documented Xenia compatibility bypass for this exact symptom).
+gpu_allow_invalid_fetch_constants = true
+
+# Force the ROV (pixel-shader-interlock) render-target path. The auto-selected
+# host-RTV path renders the menu fine but produces a black 3D scene in-game
+# (draws succeed + present, but the EDRAM->front-buffer resolve yields black) --
+# FM4's gameplay uses EDRAM render-target configurations the RTV path can't
+# reproduce. ROV emulates EDRAM accurately (supported on this GPU).
+render_target_path_d3d12 = "rov"
+
+# Count D3D entry points and dump shader bytecode to <cwd>/shaders (xenos path).
+fm4_d3d_trace = true
