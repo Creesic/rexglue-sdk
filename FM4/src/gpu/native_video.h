@@ -32,8 +32,9 @@ class Video {
   // The next Present clears the back buffer to this D3DCOLOR (ARGB8).
   static void RequestClear(uint32_t argb);
 
-  // Acquire a swapchain image, clear it, present. Safe to call from any guest
-  // thread; no-op until Init succeeded.
+  // Present one frame through the ported renderer (render/video.cpp). Safe to
+  // call from any guest thread; a Present already in flight is coalesced away
+  // by ::Video::Present's own busy latch.
   static void Present();
 
   static uint64_t PresentedFrames();

@@ -1,14 +1,10 @@
 #include "gpu/native_video.h"
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
-#include <memory>
 #include <mutex>
-#include <vector>
 
-#include <plume_render_interface.h>
 #include <rex/chrono/clock.h>
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
@@ -16,14 +12,10 @@
 #include <rex/thread.h>
 #include <rex/ui/window.h>
 
-namespace plume {
-extern std::unique_ptr<RenderInterface> CreateD3D12Interface();
-}
+#include "render/video.h"
 
 namespace fm4::gpu {
 namespace {
-
-constexpr uint32_t kNumFrames = 2;
 
 std::atomic<bool> g_native_requested{false};
 
@@ -95,96 +87,8 @@ void StopVsyncThread() {
   g_vsync_thread.reset();
 }
 
-struct State {
-  std::mutex mutex;
-  rex::ui::Window* window = nullptr;
-  std::unique_ptr<plume::RenderInterface> iface;
-  std::unique_ptr<plume::RenderDevice> device;
-  std::unique_ptr<plume::RenderCommandQueue> queue;
-  std::array<std::unique_ptr<plume::RenderCommandList>, kNumFrames> lists;
-  std::array<std::unique_ptr<plume::RenderCommandFence>, kNumFrames> fences;
-  std::array<bool, kNumFrames> submitted{};
-  std::array<std::unique_ptr<plume::RenderCommandSemaphore>, kNumFrames> acquire;
-  std::vector<std::unique_ptr<plume::RenderCommandSemaphore>> render;  // one per swapchain image
-  std::unique_ptr<plume::RenderSwapChain> swap_chain;
-  std::vector<std::unique_ptr<plume::RenderFramebuffer>> framebuffers;
-  uint32_t frame = 0;
-  plume::RenderColor clear_color{};
-  bool clear_logged_once = false;
-  std::atomic<uint64_t> presented{0};
-};
-
-State& S() {
-  static State s;
-  return s;
-}
-
-plume::RenderColor MakeColor(float r, float g, float b, float a) {
-  plume::RenderColor c{};
-  c.rgba[0] = r;
-  c.rgba[1] = g;
-  c.rgba[2] = b;
-  c.rgba[3] = a;
-  return c;
-}
-
-void WaitAllSubmitted(State& s) {
-  for (uint32_t i = 0; i < kNumFrames; ++i) {
-    if (s.submitted[i]) {
-      s.queue->waitForCommandFence(s.fences[i].get());
-      s.submitted[i] = false;
-    }
-  }
-}
-
-bool BuildFramebuffers(State& s) {
-  s.framebuffers.clear();
-  s.render.clear();
-  const uint32_t count = s.swap_chain->getTextureCount();
-  for (uint32_t i = 0; i < count; ++i) {
-    const plume::RenderTexture* color[1] = {s.swap_chain->getTexture(i)};
-    plume::RenderFramebufferDesc desc(color, 1);
-    auto fb = s.device->createFramebuffer(desc);
-    if (!fb) {
-      REXLOG_ERROR("native gpu: createFramebuffer failed for image {}", i);
-      s.framebuffers.clear();
-      s.render.clear();
-      return false;
-    }
-    s.framebuffers.push_back(std::move(fb));
-    s.render.push_back(s.device->createCommandSemaphore());
-  }
-  return true;
-}
-
-// Needs the window's native handle, which does not exist when Init runs
-// during SDK presentation setup; hence lazy.
-bool BuildSwapChain(State& s) {
-  if (!s.window) {
-    return false;
-  }
-  auto handle = static_cast<plume::RenderWindow>(s.window->GetNativeWindowHandle());
-  if (!handle) {
-    return false;
-  }
-  // kNumFrames + 1: a flip-model swapchain needs one image beyond the frames
-  // in flight so acquiring never waits on scanout.
-  plume::RenderSwapChainDesc desc(handle, plume::RenderFormat::B8G8R8A8_UNORM, kNumFrames + 1);
-  s.swap_chain = s.queue->createSwapChain(desc);
-  if (!s.swap_chain || s.swap_chain->isEmpty()) {
-    REXLOG_ERROR("native gpu: createSwapChain failed");
-    s.swap_chain.reset();
-    return false;
-  }
-  s.swap_chain->setVsyncEnabled(true);
-  if (!BuildFramebuffers(s)) {
-    s.swap_chain.reset();
-    return false;
-  }
-  REXLOG_INFO("native gpu: swapchain {}x{} with {} images", s.swap_chain->getWidth(),
-              s.swap_chain->getHeight(), s.swap_chain->getTextureCount());
-  return true;
-}
+std::atomic<uint64_t> g_presented{0};
+std::atomic<bool> g_initialized{false};
 
 }  // namespace
 
@@ -192,52 +96,32 @@ void SetNativeRequested(bool on) { g_native_requested.store(on); }
 bool NativeRequested() { return g_native_requested.load(); }
 
 bool Video::Init(rex::ui::Window* window) {
-  auto& s = S();
-  std::lock_guard lock(s.mutex);
-  s.window = window;
-  if (s.device) {
-    return true;
-  }
-  s.iface = plume::CreateD3D12Interface();
-  if (!s.iface) {
-    REXLOG_ERROR("native gpu: CreateD3D12Interface failed");
+  if (!window) {
+    REXLOG_ERROR("native gpu: no window at Init");
     return false;
   }
-  s.device = s.iface->createDevice();
-  if (!s.device) {
-    REXLOG_ERROR("native gpu: createDevice failed");
+  void* handle = window->GetNativeWindowHandle();
+  if (!handle) {
+    REXLOG_ERROR("native gpu: window has no native handle at Init");
     return false;
   }
-  s.queue = s.device->createCommandQueue(plume::RenderCommandListType::DIRECT);
-  for (uint32_t i = 0; i < kNumFrames; ++i) {
-    s.lists[i] = s.queue->createCommandList();
-    s.fences[i] = s.device->createCommandFence();
-    s.acquire[i] = s.device->createCommandSemaphore();
+  // 1280x720 is a hint only: ::Video::Init resizes to the HWND client rect and
+  // publishes the real size in s_viewportWidth/Height.
+  if (!::Video::Init(handle, 1280, 720)) {
+    REXLOG_ERROR("native gpu: render video init failed");
+    return false;
   }
-  s.clear_color = MakeColor(1.0f, 0.0f, 1.0f, 1.0f);  // magenta until the guest clears
-  REXLOG_INFO("native gpu: D3D12 device '{}'", s.device->getDescription().name);
-  BuildSwapChain(s);  // may legitimately fail here; retried on first Present
+  g_initialized.store(true);
+  REXLOG_INFO("native gpu: render video up at {}x{}", ::Video::s_viewportWidth,
+              ::Video::s_viewportHeight);
   return true;
 }
 
 void Video::Shutdown() {
-  auto& s = S();
-  // Must run before the lock: joining the vsync thread pumps guest interrupt
-  // callbacks that can re-enter Present()/RequestClear(), which take s.mutex,
-  // so holding it here would deadlock the join.
   StopVsyncThread();
-  std::lock_guard lock(s.mutex);
-  if (!s.device) {
-    return;
+  if (g_initialized.exchange(false)) {
+    ::Video::Shutdown();
   }
-  WaitAllSubmitted(s);
-  s.framebuffers.clear();
-  s.render.clear();
-  s.swap_chain.reset();
-  // Device, queue, lists and fences stay alive until static destruction; the
-  // hazard to avoid is a guest thread calling Present() after this, which
-  // s.window = nullptr and the swap_chain reset make a no-op.
-  s.window = nullptr;
 }
 
 void Video::OnGraphicsInterruptRegistered(uint32_t device_va) {
@@ -258,70 +142,29 @@ void Video::OnGraphicsInterruptRegistered(uint32_t device_va) {
 }
 
 void Video::RequestClear(uint32_t argb) {
-  auto& s = S();
-  std::lock_guard lock(s.mutex);
-  s.clear_color = MakeColor(((argb >> 16) & 0xFF) / 255.0f, ((argb >> 8) & 0xFF) / 255.0f,
-                            (argb & 0xFF) / 255.0f, ((argb >> 24) & 0xFF) / 255.0f);
-  if (!s.clear_logged_once) {
-    s.clear_logged_once = true;
+  ::Video::SetFallbackClearColor(((argb >> 16) & 0xFF) / 255.0f, ((argb >> 8) & 0xFF) / 255.0f,
+                                 (argb & 0xFF) / 255.0f, ((argb >> 24) & 0xFF) / 255.0f);
+  // Kept from the milestone-1 body: this is the one line that proves the guest's
+  // D3DDevice_ClearF hook still reaches the renderer, and it is what tells a
+  // black window apart from a window clearing to the colour the guest asked for.
+  static std::atomic<bool> logged{false};
+  if (!logged.exchange(true)) {
     REXLOG_INFO("native gpu: first guest clear colour 0x{:08X}", argb);
   }
 }
 
 void Video::Present() {
-  auto& s = S();
-  std::lock_guard lock(s.mutex);
-  if (!s.device) {
+  if (!g_initialized.load()) {
     return;
   }
-  if (!s.swap_chain && !BuildSwapChain(s)) {
-    return;
+  // Present-source selection lands in Task 9; until then the blit has no source
+  // and ::Video::Present falls back to the clear colour.
+  if (::Video::Present(nullptr)) {
+    g_presented.fetch_add(1, std::memory_order_relaxed);
+    g_swaps_to_ack.fetch_add(1, std::memory_order_relaxed);
   }
-  if (s.swap_chain->needsResize() || s.framebuffers.empty()) {
-    WaitAllSubmitted(s);
-    s.framebuffers.clear();
-    s.render.clear();
-    s.swap_chain->resize();
-    if (s.swap_chain->isEmpty() || !BuildFramebuffers(s)) {
-      return;  // minimised: nothing to draw into; retried next Present
-    }
-  }
-
-  uint32_t image = 0;
-  if (!s.swap_chain->acquireTexture(s.acquire[s.frame].get(), &image)) {
-    return;
-  }
-  plume::RenderTexture* back = s.swap_chain->getTexture(image);
-  plume::RenderCommandList* list = s.lists[s.frame].get();
-
-  list->begin();
-  list->barriers(plume::RenderBarrierStage::GRAPHICS,
-                 plume::RenderTextureBarrier(back, plume::RenderTextureLayout::COLOR_WRITE));
-  list->setFramebuffer(s.framebuffers[image].get());
-  list->clearColor(0, s.clear_color);
-  list->setFramebuffer(nullptr);
-  list->barriers(plume::RenderBarrierStage::GRAPHICS,
-                 plume::RenderTextureBarrier(back, plume::RenderTextureLayout::PRESENT));
-  list->end();
-
-  const plume::RenderCommandList* lists[] = {list};
-  plume::RenderCommandSemaphore* waits[] = {s.acquire[s.frame].get()};
-  plume::RenderCommandSemaphore* signals[] = {s.render[image].get()};
-  s.queue->executeCommandLists(lists, 1, waits, 1, signals, 1, s.fences[s.frame].get());
-  s.submitted[s.frame] = true;
-  s.swap_chain->present(image, signals, 1);
-
-  // Advance, then wait for the slot about to be reused (one frame old). That
-  // gap is the CPU/GPU overlap.
-  s.frame = (s.frame + 1) % kNumFrames;
-  if (s.submitted[s.frame]) {
-    s.queue->waitForCommandFence(s.fences[s.frame].get());
-    s.submitted[s.frame] = false;
-  }
-  s.presented.fetch_add(1, std::memory_order_relaxed);
-  g_swaps_to_ack.fetch_add(1, std::memory_order_relaxed);
 }
 
-uint64_t Video::PresentedFrames() { return S().presented.load(std::memory_order_relaxed); }
+uint64_t Video::PresentedFrames() { return g_presented.load(std::memory_order_relaxed); }
 
 }  // namespace fm4::gpu
