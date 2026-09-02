@@ -66,3 +66,15 @@
 [submodule "thirdparty/tracy"]
 	path = thirdparty/tracy
 	url = https://github.com/wolfpld/tracy.git
+[submodule "thirdparty/plume"]
+	path = thirdparty/plume
+	url = https://github.com/Creesic/plume.git
+	branch = PGR4
+[submodule "tools/XenosRecomp"]
+	path = tools/XenosRecomp
+	url = https://github.com/Creesic/XenosRecomp.git
+	branch = PGR4
+[submodule "thirdparty/dxc-bin"]
+	path = thirdparty/dxc-bin
+	url = https://github.com/Creesic/dxc-bin.git
+	branch = PGR4
