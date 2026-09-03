@@ -519,3 +519,17 @@ extern "C" REX_FUNC(D3DDevice_BeginVertices) {
   }
   ctx.r3.u64 = scratchAddr;
 }
+
+// D3DDevice_Resolve(pDevice, Flags, pSourceRect, pDestTexture, ...) @0x822E2120:
+// the original body dereferences the destination resource header, which is one
+// of ours, and faulted writing guest 0x00000004. Nothing on the native path
+// consumes the library's resolve output today (Present falls back to the clear
+// until Task 9 selects a source), and Task 8 owns the real host-side resolve.
+extern "C" REX_FUNC(D3DDevice_Resolve) {
+  fm4::gpu::TraceOnResolve(ctx.r4.u32);
+  if (!Native()) {
+    __imp__D3DDevice_Resolve(ctx, base);
+    return;
+  }
+  ctx.r3.u64 = 0;  // D3D_OK
+}

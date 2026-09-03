@@ -118,6 +118,14 @@ void fm4::gpu::TraceOnBeginVertices() {
   if (Enabled()) Bump(kBeginVertices);
 }
 
+// D3DDevice_Resolve(pDevice, Flags, ...): Flags is r4 (D3DRESOLVE_*).
+void fm4::gpu::TraceOnResolve(uint32_t flags) {
+  if (Enabled()) {
+    Bump(kResolve);
+    g_resolve_flags.fetch_or(flags, std::memory_order_relaxed);
+  }
+}
+
 // D3D::InterruptCallback(InterruptSources, pDevice): r3 = source (0 = vblank).
 extern "C" REX_FUNC(D3D_InterruptCallback) {
   if (Enabled()) {
@@ -140,15 +148,6 @@ extern "C" REX_FUNC(D3DDevice_RunCommandBuffer) {
 extern "C" REX_FUNC(D3DDevice_BeginTiling) {
   if (Enabled()) Bump(kBeginTiling);
   __imp__D3DDevice_BeginTiling(ctx, base);
-}
-
-// D3DDevice_Resolve(pDevice, Flags, ...): r4 = Flags (D3DRESOLVE_*).
-extern "C" REX_FUNC(D3DDevice_Resolve) {
-  if (Enabled()) {
-    Bump(kResolve);
-    g_resolve_flags.fetch_or(ctx.r4.u32, std::memory_order_relaxed);
-  }
-  __imp__D3DDevice_Resolve(ctx, base);
 }
 
 // D3DDevice_SetRenderTarget(pDevice, RenderTargetIndex, pSurface): r4 = index.
