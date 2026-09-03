@@ -43,5 +43,7 @@ void TraceOnSwap();
 // for a guest function another translation unit already replaces.
 void TraceOnCreateTexture();
 void TraceOnCreateShader(uint32_t function_va, bool pixel);
+void TraceOnDrawIndexed(bool up);
+void TraceOnBeginVertices();
 
 }  // namespace fm4::gpu

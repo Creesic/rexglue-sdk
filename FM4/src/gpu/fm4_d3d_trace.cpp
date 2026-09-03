@@ -107,19 +107,15 @@ void fm4::gpu::TraceOnSwap() {
   }
 }
 
-extern "C" REX_FUNC(D3DDevice_DrawIndexedVertices) {
-  if (Enabled()) Bump(kDrawIndexed);
-  __imp__D3DDevice_DrawIndexedVertices(ctx, base);
+// The two indexed draw entry points are hooked outright by
+// render/d3d_hooks.cpp (a guest function can only have one strong REX_FUNC),
+// so the trace is driven from there.
+void fm4::gpu::TraceOnDrawIndexed(bool up) {
+  if (Enabled()) Bump(up ? kDrawIndexedUP : kDrawIndexed);
 }
 
-extern "C" REX_FUNC(D3DDevice_DrawIndexedVerticesUP) {
-  if (Enabled()) Bump(kDrawIndexedUP);
-  __imp__D3DDevice_DrawIndexedVerticesUP(ctx, base);
-}
-
-extern "C" REX_FUNC(D3DDevice_BeginVertices) {
+void fm4::gpu::TraceOnBeginVertices() {
   if (Enabled()) Bump(kBeginVertices);
-  __imp__D3DDevice_BeginVertices(ctx, base);
 }
 
 // D3D::InterruptCallback(InterruptSources, pDevice): r3 = source (0 = vblank).

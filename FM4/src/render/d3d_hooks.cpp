@@ -9,9 +9,11 @@
 // single forward to __imp__ with the guest's own register state untouched.
 #include "generated/default/fm4_init.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -445,4 +447,75 @@ extern "C" REX_FUNC(D3DResource_Release) {
     rr::ScheduleResourceDestruction(host);
   }
   ctx.r3.u64 = remaining;
+}
+
+// ---------------------------------------------------------------------------
+// temporary until Task 7 replaces these with the real draw hooks
+//
+// The guest's own draw submitters walk the bound D3DVertexDeclaration and
+// vertex/index buffer headers to build fetch constants and flush pending state
+// (D3D::SetPending_Shaders / SetPending_HiZEnable). Those objects are ours now,
+// with host members from +0x40 on, so the walk reads garbage and faults --
+// observed as a read AV of guest 0x38D83030 inside D3D_DrawVertices_Core.
+// Under the native path they are no-ops so the title still boots to the clear
+// colour; under xenos they are untouched. FM4's D3D library exposes exactly
+// these three submitters (ida40 symbol sweep for /draw/): there is no separate
+// D3DDevice_DrawVertices or D3DDevice_DrawVerticesUP symbol -- game code calls
+// D3D_DrawVertices_Core directly for un-indexed draws. D3DDevice_BeginVertices
+// is deliberately NOT stubbed: it returns the ring pointer the guest then
+// writes its vertices into, so a no-op would hand back a null.
+// ---------------------------------------------------------------------------
+
+extern "C" REX_FUNC(D3D_DrawVertices_Core) {
+  if (!Native()) {
+    __imp__D3D_DrawVertices_Core(ctx, base);
+    return;
+  }
+  ctx.r3.u64 = 0;
+}
+
+extern "C" REX_FUNC(D3DDevice_DrawIndexedVertices) {
+  fm4::gpu::TraceOnDrawIndexed(/*up=*/false);
+  if (!Native()) {
+    __imp__D3DDevice_DrawIndexedVertices(ctx, base);
+    return;
+  }
+  ctx.r3.u64 = 0;
+}
+
+extern "C" REX_FUNC(D3DDevice_DrawIndexedVerticesUP) {
+  fm4::gpu::TraceOnDrawIndexed(/*up=*/true);
+  if (!Native()) {
+    __imp__D3DDevice_DrawIndexedVerticesUP(ctx, base);
+    return;
+  }
+  ctx.r3.u64 = 0;
+}
+
+// D3DDevice_BeginVertices(pDevice, PrimitiveType, VertexCount, VertexSize)
+// returns the ring pointer the guest then fills with vertices, so it cannot be
+// a plain no-op -- but its body flushes pending state through the same
+// SetPending_* table that faults on our resources (observed: read AV of guest
+// 0x38E22030, D3DDevice_BeginVertices -> SetPending_Shaders ->
+// SetPending_HiZEnable). Hand back a scratch block instead; what the guest
+// writes there is never read, because the three submitters above are no-ops.
+// ponytail: one shared grow-only block, no per-call lifetime -- correct only
+// while every draw is a no-op, and Task 7 replaces this hook outright.
+extern "C" REX_FUNC(D3DDevice_BeginVertices) {
+  fm4::gpu::TraceOnBeginVertices();
+  if (!Native()) {
+    __imp__D3DDevice_BeginVertices(ctx, base);
+    return;
+  }
+  const uint32_t bytes = std::max(ctx.r5.u32 * ctx.r6.u32, 0x1000u);
+  static std::mutex scratchMutex;
+  static uint32_t scratchAddr = 0;
+  static uint32_t scratchSize = 0;
+  std::lock_guard lock(scratchMutex);
+  if (bytes > scratchSize) {
+    ghp::GuestFreeRaw(scratchAddr);
+    scratchAddr = ghp::GuestAllocRaw(bytes, 0x10);
+    scratchSize = scratchAddr != 0 ? bytes : 0;
+  }
+  ctx.r3.u64 = scratchAddr;
 }
