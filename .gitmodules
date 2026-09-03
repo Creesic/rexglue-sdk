@@ -78,3 +78,6 @@
 	path = thirdparty/dxc-bin
 	url = https://github.com/Creesic/dxc-bin.git
 	branch = PGR4
+[submodule "thirdparty/zstd"]
+	path = thirdparty/zstd
+	url = https://github.com/facebook/zstd.git

@@ -55,6 +55,59 @@ includes = []
 0x826952F8 = { name = "D3DDevice_CreateVertexShader" }
 0x826951A8 = { name = "D3DDevice_CreatePixelShader" }
 0x826943F8 = { name = "D3DDevice_SetVertexShaderConstantFN" }
+
+# Phase 2 (FM2 render port): remaining D3D library entry points the ported
+# render code hooks. All located in the IDB; same XDK routines as FM2.
+0x8269A090 = { name = "D3DResource_AddRef" }
+0x8269A108 = { name = "D3DResource_Release" }
+0x82690BF0 = { name = "D3D_SetViewport" }
+0x82693730 = { name = "D3DSurface_GetDesc" }
+0x82690618 = { name = "D3DDevice_SetStreamSource" }
+0x826907C0 = { name = "D3DDevice_SetIndices" }
+0x82694C20 = { name = "D3DDevice_SetVertexShader" }
+0x82694920 = { name = "D3DDevice_SetPixelShader" }
+
+# Render state (the IDB already names these; the stencil/cull family is still
+# unnamed there and those hooks stay dormant until located).
+0x8268E1F0 = { name = "D3DDevice_SetRenderState_AlphaTestEnable" }
+0x8268E228 = { name = "D3DDevice_SetRenderState_AlphaBlendEnable" }
+0x8268E2B8 = { name = "D3DDevice_SetRenderState_BlendOp" }
+0x8268E348 = { name = "D3DDevice_SetRenderState_SrcBlend" }
+0x8268E3D8 = { name = "D3DDevice_SetRenderState_DestBlend" }
+0x8268E468 = { name = "D3DDevice_SetRenderState_BlendOpAlpha" }
+0x8268E4D8 = { name = "D3DDevice_SetRenderState_SrcBlendAlpha" }
+0x8268E548 = { name = "D3DDevice_SetRenderState_DestBlendAlpha" }
+0x8268E5B8 = { name = "D3DDevice_SetRenderState_SeparateAlphaBlendEnable" }
+0x8268E8E0 = { name = "D3DDevice_SetRenderState_ZEnable" }
+0x8268E950 = { name = "D3DDevice_SetRenderState_ZFunc" }
+0x8268EC60 = { name = "D3DDevice_SetRenderState_ClipPlaneEnable" }
+0x8268ECB8 = { name = "D3DDevice_SetRenderState_SlopeScaleDepthBias" }
+0x8268ED80 = { name = "D3DDevice_SetRenderState_DepthBias" }
+0x8268EE78 = { name = "D3DDevice_SetRenderState_ColorWriteEnable" }
+0x8268F3F8 = { name = "D3DDevice_SetRenderState_ViewportEnable" }
+
+# Stencil / Z-write family. Unnamed in the IDB until now; located by layout --
+# FM2's ZFunc..ClipPlaneEnable span is 0x310 bytes and so is PGR4's, and every
+# offset-derived address defined cleanly as a function with a non-overlapping
+# end. AlphaRef is NOT mapped: its FM2-relative position lands mid-function.
+0x8268E650 = { name = "D3DDevice_SetRenderState_AlphaRef" }  # SeparateAlphaBlendEnable+0x98, as in FM2
+0x8268E920 = { name = "D3DDevice_SetRenderState_ZWriteEnable" }
+0x8268E988 = { name = "D3DDevice_SetRenderState_StencilEnable" }
+0x8268E9C8 = { name = "D3DDevice_SetRenderState_TwoSidedStencilMode" }
+0x8268EA00 = { name = "D3DDevice_SetRenderState_StencilFunc" }
+0x8268EA30 = { name = "D3DDevice_SetRenderState_StencilFail" }
+0x8268EA68 = { name = "D3DDevice_SetRenderState_StencilZFail" }
+0x8268EAA0 = { name = "D3DDevice_SetRenderState_StencilPass" }
+0x8268EAD0 = { name = "D3DDevice_SetRenderState_CCWStencilFunc" }
+0x8268EB00 = { name = "D3DDevice_SetRenderState_CCWStencilFail" }
+0x8268EB38 = { name = "D3DDevice_SetRenderState_CCWStencilZFail" }
+0x8268EB70 = { name = "D3DDevice_SetRenderState_CCWStencilPass" }
+0x8268EBA0 = { name = "D3DDevice_SetRenderState_StencilRef" }
+0x8268EBC0 = { name = "D3DDevice_SetRenderState_StencilMask" }
+0x8268EBE0 = { name = "D3DDevice_SetRenderState_StencilWriteMask" }
+0x8268EC00 = { name = "D3DDevice_SetRenderState_CCWStencilRef" }
+0x8268EC20 = { name = "D3DDevice_SetRenderState_CCWStencilMask" }
+0x8268EC40 = { name = "D3DDevice_SetRenderState_CCWStencilWriteMask" }
 0x824B8670 = {}
 0x82526280 = {}
 0x828DDA98 = {}
