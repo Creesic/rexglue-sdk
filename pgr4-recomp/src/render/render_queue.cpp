@@ -11,7 +11,7 @@
 
 #include <rex/logging.h>
 
-namespace fm2::render {
+namespace pgr4::render {
 namespace {
 
 struct Job {
@@ -283,4 +283,4 @@ bool RenderQueue::ReplayRecording(uint32_t cloneAddress,
   return true;
 }
 
-}  // namespace fm2::render
+}  // namespace pgr4::render

@@ -7,7 +7,7 @@
 #include <rex/memory.h>
 #include <rex/system/kernel_state.h>
 
-namespace fm2::ghp {
+namespace pgr4::ghp {
 
 inline auto* GuestMemory() { return rex::system::kernel_state()->memory(); }
 inline uint8_t* GuestBase() { return GuestMemory()->virtual_membase(); }
@@ -54,4 +54,4 @@ inline void GuestDelete(T* host) {
   GuestFreeRaw(addr);
 }
 
-}  // namespace fm2::ghp
+}  // namespace pgr4::ghp

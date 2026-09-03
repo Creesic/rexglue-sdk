@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-namespace fm2::render {
+namespace pgr4::render {
 struct GuestBaseTexture;
 }
 
@@ -22,7 +22,7 @@ struct Video {
 
   // Acquire the present gate, publish this frame's frontbuffer, and present.
   // Returns false when the frame was dropped by the existing busy coalescer.
-  static bool Present(fm2::render::GuestBaseTexture* frontBuffer);
+  static bool Present(pgr4::render::GuestBaseTexture* frontBuffer);
 
   // Record the guest's most recent D3DDevice_ClearF color, used as the
   // present-time clear color until real render-target tracking (resource

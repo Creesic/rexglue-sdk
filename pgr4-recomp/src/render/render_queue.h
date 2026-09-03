@@ -13,7 +13,7 @@
 
 #include "render/render_commands.h"
 
-namespace fm2::render {
+namespace pgr4::render {
 
 // Persistent copy of the ordinary D3D commands emitted while FM2 compiles a
 // reusable guest command buffer. Pointer-backed draw payloads are owned here;
@@ -169,4 +169,4 @@ struct RenderQueue {
                               const DeferredExecutionSnapshot* executionSnapshot);
 };
 
-}  // namespace fm2::render
+}  // namespace pgr4::render

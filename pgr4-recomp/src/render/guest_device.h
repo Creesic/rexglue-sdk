@@ -7,7 +7,7 @@
 
 #include <rex/types.h>
 
-namespace fm2::render {
+namespace pgr4::render {
 
 struct GuestSamplerState {
   rex::be<uint32_t> data[6];
@@ -261,4 +261,4 @@ inline GuestDevice* g_activeGuestDevice = nullptr;
 inline void SetActiveGuestDevice(GuestDevice* device) { g_activeGuestDevice = device; }
 inline GuestDevice* GetActiveGuestDevice() { return g_activeGuestDevice; }
 
-}  // namespace fm2::render
+}  // namespace pgr4::render

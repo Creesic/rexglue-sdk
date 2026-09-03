@@ -14,7 +14,7 @@
 #include <cstring>
 #include <type_traits>
 
-namespace fm2::render {
+namespace pgr4::render {
 
 struct ConstantSnapshotRange {
   uint32_t index{};  // uint32_t index into the stage's float-constant file.
@@ -495,4 +495,4 @@ void ProcSetStencilState(uint32_t enable, uint32_t twoSided, uint32_t frontFunc,
                          uint32_t backFail, uint32_t backDepthFail, uint32_t backPass,
                          uint32_t readMask, uint32_t writeMask, uint32_t ref);
 
-}  // namespace fm2::render
+}  // namespace pgr4::render

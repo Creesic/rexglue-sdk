@@ -10,7 +10,7 @@
 
 #include <plume_render_interface.h>
 
-namespace fm2::render {
+namespace pgr4::render {
 
 // Bindless table sizes (match the shader-side descriptor arrays / ABI).
 inline constexpr uint32_t kTextureDescriptorSize = 65536;
@@ -27,9 +27,9 @@ inline constexpr uint32_t kNumFrames = 2;
 // FM2's guest frame, and the EDRAM tile height it binds during predicated
 // tiling. These describe the *guest*: the host swapchain follows the window and
 // is unrelated, so never substitute Video::s_viewport* for them.
-inline constexpr uint32_t kFm2FrameWidth = 1280;
-inline constexpr uint32_t kFm2FrameHeight = 720;
-inline constexpr uint32_t kFm2TileHeight = 256;
+inline constexpr uint32_t kPgr4FrameWidth = 1280;
+inline constexpr uint32_t kPgr4FrameHeight = 720;
+inline constexpr uint32_t kPgr4TileHeight = 256;
 
 // The active Plume interface and device created by Video::Init(), or nullptr.
 plume::RenderInterface* Interface();
@@ -99,4 +99,4 @@ struct GuestDevice;
 struct GuestVertexDeclaration;
 std::vector<GuestVertexDeclaration*> SnapshotGameDeclarations();
 
-}  // namespace fm2::render
+}  // namespace pgr4::render

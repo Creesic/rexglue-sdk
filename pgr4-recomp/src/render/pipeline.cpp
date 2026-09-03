@@ -27,7 +27,7 @@
 
 using namespace plume;
 
-namespace fm2::render {
+namespace pgr4::render {
 
 namespace {
 
@@ -482,4 +482,4 @@ RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants) {
 #endif
 }
 
-}  // namespace fm2::render
+}  // namespace pgr4::render

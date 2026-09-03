@@ -11,7 +11,7 @@
 #include "render/guest_device.h"
 #include "render/guest_resources.h"
 
-namespace fm2::render {
+namespace pgr4::render {
 
 void BeginRenderStateFrame();
 // Monotonic frame counter (incremented each BeginRenderStateFrame); used to
@@ -42,7 +42,7 @@ void SetTextureBase(GuestDevice* device, uint32_t index, GuestBaseTexture* textu
 
 // Translates a raw XG-header guest texture object (created via the low-level
 // XGSetTextureHeader XDK API rather than D3DDevice_CreateTexture, so it has
-// no kFm2ResourceMagic tag) into a native GuestTexture by parsing its Xenos
+// no kPgr4ResourceMagic tag) into a native GuestTexture by parsing its Xenos
 // fetch constant and, if requested, detiling/uploading its guest texture
 // data. Results are cached by guest base address. Returns nullptr if the
 // header's fetch constant can't be parsed (unsupported format, zero base,
@@ -126,4 +126,4 @@ void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t ba
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                              const void* data, uint32_t stride);
 
-}  // namespace fm2::render
+}  // namespace pgr4::render

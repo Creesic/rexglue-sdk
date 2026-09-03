@@ -40,13 +40,13 @@ extern std::unique_ptr<RenderInterface> CreateD3D12Interface();
 extern std::unique_ptr<RenderInterface> CreateVulkanInterface();
 }  // namespace plume
 
-namespace fm2::render {
+namespace pgr4::render {
 // Not part of render_internal.h's public surface (only used within this
 // TU); forward-declared here so ExecuteCommandListImpl (below) can call it ahead of
 // its definition.
 // its definition further down this file.
 void EnsureFrameStarted();
-}  // namespace fm2::render
+}  // namespace pgr4::render
 
 namespace {
 
@@ -56,7 +56,7 @@ constexpr RenderFormat kBackbufferFormat = RenderFormat::R8G8B8A8_UNORM;
 // is chewing on it, slot N+1 is free to record the next frame. Present()
 // only blocks on a slot's fence right before reusing it, not right after
 // submitting it.
-constexpr uint32_t kNumFrames = fm2::render::kNumFrames;
+constexpr uint32_t kNumFrames = pgr4::render::kNumFrames;
 
 std::unique_ptr<RenderInterface> g_interface;
 std::unique_ptr<RenderDevice> g_device;
@@ -81,13 +81,13 @@ std::mutex g_copyMutex;
 
 std::unique_ptr<RenderDescriptorSet> g_textureDescriptorSet;
 std::mutex g_descriptorMutex;
-uint32_t g_descriptorCapacity = fm2::render::kNullTextureDescriptorCount;
+uint32_t g_descriptorCapacity = pgr4::render::kNullTextureDescriptorCount;
 std::vector<uint32_t> g_freedDescriptors;
 std::array<std::unique_ptr<RenderTexture>,
-           fm2::render::kNullTextureDescriptorCount>
+           pgr4::render::kNullTextureDescriptorCount>
     g_nullTextures;
 std::array<std::unique_ptr<RenderTextureView>,
-           fm2::render::kNullTextureDescriptorCount>
+           pgr4::render::kNullTextureDescriptorCount>
     g_nullTextureViews;
 
 // Bindless sampler set + the graphics pipeline layout (XenosRecomp ABI).
@@ -132,7 +132,7 @@ std::atomic<bool> g_presentBusy{false};
 bool g_presentSubmitOk = false;
 
 // The guest's final front-buffer surface to blit this frame (D3DDevice_Swap).
-fm2::render::GuestBaseTexture* g_presentSource = nullptr;
+pgr4::render::GuestBaseTexture* g_presentSource = nullptr;
 
 // Guest's most recent D3DDevice_ClearF color, used when there is no real
 // present source yet (see Video::SetFallbackClearColor).
@@ -153,20 +153,20 @@ void RebuildFramebuffers() {
 // Swapchain present + 2-frame advance run on the guest thread (Unleashed).
 // Only ever runs on the dedicated render thread.
 void ExecuteCommandListImpl() {
-  std::lock_guard lock(fm2::render::RecordingMutex());
+  std::lock_guard lock(pgr4::render::RecordingMutex());
   g_presentSubmitOk = false;
-  if (fm2::render::IsDeviceLost()) return;
+  if (pgr4::render::IsDeviceLost()) return;
 
   // The guest's draws/clears for this frame have already been recorded into
   // the open command list (targeting the guest's own render-target
   // surfaces). Make sure a frame is open even if the guest issued nothing.
-  fm2::render::EnsureFrameStarted();
+  pgr4::render::EnsureFrameStarted();
   if (!g_frameOpen) {
     return;  // acquire failed this frame
   }
 
   // Unleashed: ExecutePendingStretchRectCommands before present blit.
-  fm2::render::FlushPendingStretchRectCommands();
+  pgr4::render::FlushPendingStretchRectCommands();
 
   // Prefer resolve-assembled frontbuffer (Swap aperture lookup) over sticky
   // color RTs — tile bands land on the resolve dest, not the last SetRT.
@@ -176,14 +176,14 @@ void ExecuteCommandListImpl() {
     static bool loggedFirstTarget = false;
     static uint64_t presentSourceChecks = 0;
     ++presentSourceChecks;
-    fm2::render::GuestBaseTexture* rt = fm2::render::ConsumeStretchRectPresentOverride();
+    pgr4::render::GuestBaseTexture* rt = pgr4::render::ConsumeStretchRectPresentOverride();
     const char* kind = "stretch-src";
     if (rt == nullptr || rt->texture == nullptr) {
-      rt = fm2::render::ConsumeFrontbufferPresentSource();
+      rt = pgr4::render::ConsumeFrontbufferPresentSource();
       kind = "aperture";
     }
     if (rt == nullptr || rt->texture == nullptr) {
-      rt = fm2::render::GetCurrentColorRenderTarget();
+      rt = pgr4::render::GetCurrentColorRenderTarget();
       kind = "sticky-rt";
     }
     if (rt != nullptr && !loggedFirstTarget) {
@@ -198,7 +198,7 @@ void ExecuteCommandListImpl() {
       REXGPU_INFO("ExecuteCommandList: present kind={} {}x{} fmt={}", kind, rt->width, rt->height,
                   int(rt->format));
     }
-    fm2::render::SetPresentSource(rt);
+    pgr4::render::SetPresentSource(rt);
   }
 
   RenderCommandList* commandList = g_commandLists[g_frame].get();
@@ -206,7 +206,7 @@ void ExecuteCommandListImpl() {
   RenderFramebuffer* framebuffer = g_framebuffers[g_backBufferIndex].get();
 
   commandList->setFramebuffer(nullptr);
-  RenderPipeline* blitPipeline = fm2::render::GetBlitPipeline(kBackbufferFormat);
+  RenderPipeline* blitPipeline = pgr4::render::GetBlitPipeline(kBackbufferFormat);
   const bool blit = g_presentSource != nullptr &&
                     g_presentSource->texture != nullptr &&
                     blitPipeline != nullptr;
@@ -231,7 +231,7 @@ void ExecuteCommandListImpl() {
   }
   if (blit) {
     if (g_presentSource->descriptorIndex == 0) {
-      g_presentSource->descriptorIndex = fm2::render::AllocTextureDescriptor();
+      g_presentSource->descriptorIndex = pgr4::render::AllocTextureDescriptor();
     }
     g_textureDescriptorSet->setTexture(
         g_presentSource->descriptorIndex, g_presentSource->texture,
@@ -337,7 +337,7 @@ void StartVsyncWorker() {
         }
         return 0;
       }));
-  g_vsyncWorkerThread->set_name("FM2 Native VSync");
+  g_vsyncWorkerThread->set_name("PGR4 Native VSync");
   g_vsyncWorkerThread->Create();
 }
 
@@ -360,30 +360,30 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
   s_viewportHeight = height;
 
 #if defined(_WIN32)
-  // Opt-in GPU diagnostics: set FM2_GPU_DEBUG=1 to enable the D3D12 debug
+  // Opt-in GPU diagnostics: set PGR4_GPU_DEBUG=1 to enable the D3D12 debug
   // layer and DRED (auto-breadcrumbs + page-fault tracking) BEFORE device
   // creation, so a later DEVICE_REMOVED names the exact faulting command.
   // Mirrors the old renderer's d3d12_debug cvar path
   // (src/ui/d3d12/d3d12_provider.cpp); NoteDeviceLost reads the results.
   {
-    const char* dbg = std::getenv("FM2_GPU_DEBUG");
+    const char* dbg = std::getenv("PGR4_GPU_DEBUG");
     if (dbg != nullptr && dbg[0] != '\0' && dbg[0] != '0') {
       ID3D12Debug* debugController = nullptr;
       if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
         debugController->EnableDebugLayer();
         debugController->Release();
-        REXGPU_INFO("FM2_GPU_DEBUG: D3D12 debug layer enabled");
+        REXGPU_INFO("PGR4_GPU_DEBUG: D3D12 debug layer enabled");
       } else {
-        REXGPU_WARN("FM2_GPU_DEBUG: D3D12 debug layer unavailable");
+        REXGPU_WARN("PGR4_GPU_DEBUG: D3D12 debug layer unavailable");
       }
       ID3D12DeviceRemovedExtendedDataSettings* dredSettings = nullptr;
       if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSettings)))) {
         dredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
         dredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
         dredSettings->Release();
-        REXGPU_INFO("FM2_GPU_DEBUG: DRED breadcrumbs + page-fault tracking enabled");
+        REXGPU_INFO("PGR4_GPU_DEBUG: DRED breadcrumbs + page-fault tracking enabled");
       } else {
-        REXGPU_WARN("FM2_GPU_DEBUG: DRED settings unavailable");
+        REXGPU_WARN("PGR4_GPU_DEBUG: DRED settings unavailable");
       }
     }
   }
@@ -416,11 +416,11 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
   }
 
 #if defined(_WIN32)
-  // With FM2_GPU_DEBUG on, keep the InfoQueue useful: FM2 clears RTs/DS every
+  // With PGR4_GPU_DEBUG on, keep the InfoQueue useful: FM2 clears RTs/DS every
   // frame without creation clear-values, and those two warnings (820/821) fire
   // hundreds of times, pushing the actual fatal ERROR out of the stored-message
   // window before NoteDeviceLost can dump it. Deny-list them at storage level.
-  if (g_d3d12Backend && std::getenv("FM2_GPU_DEBUG") != nullptr) {
+  if (g_d3d12Backend && std::getenv("PGR4_GPU_DEBUG") != nullptr) {
     auto* d3dDevice = static_cast<plume::D3D12Device*>(g_device.get());
     ID3D12InfoQueue* infoQueue = nullptr;
     if (d3dDevice->d3d != nullptr &&
@@ -439,7 +439,7 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
       filter.DenyList.pIDList = denyIds;
       infoQueue->PushStorageFilter(&filter);
       infoQueue->Release();
-      REXGPU_INFO("FM2_GPU_DEBUG: InfoQueue clear-value warning spam muted");
+      REXGPU_INFO("PGR4_GPU_DEBUG: InfoQueue clear-value warning spam muted");
     }
   }
 #endif
@@ -480,12 +480,12 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
   g_copyFence = g_device->createCommandFence();
 
   {
-    using fm2::render::kNullTexture2DDescriptor;
-    using fm2::render::kNullTexture3DDescriptor;
-    using fm2::render::kNullTextureCubeDescriptor;
-    using fm2::render::kNullTextureDescriptorCount;
-    using fm2::render::kSamplerDescriptorSize;
-    using fm2::render::kTextureDescriptorSize;
+    using pgr4::render::kNullTexture2DDescriptor;
+    using pgr4::render::kNullTexture3DDescriptor;
+    using pgr4::render::kNullTextureCubeDescriptor;
+    using pgr4::render::kNullTextureDescriptorCount;
+    using pgr4::render::kSamplerDescriptorSize;
+    using pgr4::render::kTextureDescriptorSize;
 
     RenderDescriptorSetBuilder textureSetBuilder;
     textureSetBuilder.begin();
@@ -573,9 +573,9 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
   // Init/Shutdown cycle.
   g_deviceLost.store(false, std::memory_order_release);
 
-  fm2::render::RenderQueue::Start();
+  pgr4::render::RenderQueue::Start();
   for (uint32_t i = 0; i < kNumFrames; ++i) {
-    fm2::render::OnRecordingFrameReady(i);
+    pgr4::render::OnRecordingFrameReady(i);
   }
   StartVsyncWorker();
   return true;
@@ -587,7 +587,7 @@ void Video::SetFallbackClearColor(float r, float g, float b, float a) {
   g_fallbackClearColor = RenderColor(r, g, b, a);
 }
 
-namespace fm2::render {
+namespace pgr4::render {
 
 RenderInterface* Interface() { return g_interface.get(); }
 RenderDevice* Device() { return g_device.get(); }
@@ -674,7 +674,7 @@ void NoteDeviceLost(const char* why) {
         const HRESULT reason = device->d3d->GetDeviceRemovedReason();
         REXGPU_ERROR("D3D12 GetDeviceRemovedReason=0x{:08X}", uint32_t(reason));
 
-        // DRED (populated only when FM2_GPU_DEBUG enabled it at Init): name
+        // DRED (populated only when PGR4_GPU_DEBUG enabled it at Init): name
         // the exact op the GPU faulted on instead of just the HRESULT.
         ID3D12DeviceRemovedExtendedData* dred = nullptr;
         if (SUCCEEDED(device->d3d->QueryInterface(IID_PPV_ARGS(&dred))) && dred != nullptr) {
@@ -811,16 +811,16 @@ void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t w
   g_copyQueue->waitForCommandFence(g_copyFence.get());
 }
 
-}  // namespace fm2::render
+}  // namespace pgr4::render
 
-bool Video::Present(fm2::render::GuestBaseTexture* frontBuffer) {
-  if (!g_initialized || fm2::render::IsDeviceLost()) {
+bool Video::Present(pgr4::render::GuestBaseTexture* frontBuffer) {
+  if (!g_initialized || pgr4::render::IsDeviceLost()) {
     return false;
   }
 
 #if defined(_WIN32)
   // Auto-capture: with the RenderDoc dll injected (renderdoccmd capture) and
-  // FM2_RDOC_CAPTURE_AT=<frame>, trigger a one-frame capture at that Present.
+  // PGR4_RDOC_CAPTURE_AT=<frame>, trigger a one-frame capture at that Present.
   {
     static RENDERDOC_API_1_0_0* rdocApi = [] {
       RENDERDOC_API_1_0_0* api = nullptr;
@@ -831,7 +831,7 @@ bool Video::Present(fm2::render::GuestBaseTexture* frontBuffer) {
       return api;
     }();
     static const uint64_t captureAt = [] {
-      const char* v = std::getenv("FM2_RDOC_CAPTURE_AT");
+      const char* v = std::getenv("PGR4_RDOC_CAPTURE_AT");
       return v != nullptr ? std::strtoull(v, nullptr, 10) : 0ull;
     }();
     static uint64_t presentIndex = 0;
@@ -866,7 +866,7 @@ bool Video::Present(fm2::render::GuestBaseTexture* frontBuffer) {
   // admission. A null lookup deliberately preserves the existing sticky
   // fallback selected by ExecuteCommandListImpl.
   if (frontBuffer != nullptr && frontBuffer->texture != nullptr) {
-    fm2::render::SetFrontbufferPresentSource(frontBuffer);
+    pgr4::render::SetFrontbufferPresentSource(frontBuffer);
   }
 
   // One atomic render-thread job: submit + swapchain present + slot advance +
@@ -874,9 +874,9 @@ bool Video::Present(fm2::render::GuestBaseTexture* frontBuffer) {
   // the guest thread: any Enqueue'd job that lands between submit and present
   // reopens the frame against a stale back-buffer index and D3D12 removes the
   // device (INVALID_CALL, "not the current back buffer").
-  fm2::render::RenderCommand cmd{};
-  cmd.type = fm2::render::RenderCommandType::ExecuteCommandList;
-  fm2::render::RenderQueue::Run(cmd);
+  pgr4::render::RenderCommand cmd{};
+  cmd.type = pgr4::render::RenderCommandType::ExecuteCommandList;
+  pgr4::render::RenderQueue::Run(cmd);
 
   g_presentBusy.store(false, std::memory_order_release);
   return true;
@@ -893,13 +893,13 @@ void Video::WaitForGPU() {
   // holds it on this thread (e.g. EnsureFrameStarted's resize-fail path,
   // reached from a guest thread that's already holding the lock via
   // CommandList()).
-  std::lock_guard lock(fm2::render::RecordingMutex());
-  fm2::render::RenderCommand cmd{};
-  cmd.type = fm2::render::RenderCommandType::WaitForGpu;
-  fm2::render::RenderQueue::Run(cmd);
+  std::lock_guard lock(pgr4::render::RecordingMutex());
+  pgr4::render::RenderCommand cmd{};
+  cmd.type = pgr4::render::RenderCommandType::WaitForGpu;
+  pgr4::render::RenderQueue::Run(cmd);
 }
 
-namespace fm2::render {
+namespace pgr4::render {
 
 void ProcExecuteCommandList() {
   // Atomic frame transaction, all on the render thread: submit the frame,
@@ -919,7 +919,7 @@ void ProcExecuteCommandList() {
   OnRecordingFrameReady(g_frame);
   // Restore per-frame dirty/descriptor/frame-index bookkeeping that Swap used
   // to drive via BeginRenderStateFrame (removed to avoid nested-Run freezes).
-  fm2::render::NotifyRenderFrameBegin();
+  pgr4::render::NotifyRenderFrameBegin();
 }
 
 void ProcBeginCommandList() {
@@ -954,7 +954,7 @@ void ProcWaitForGpu() {
   g_queue->waitForCommandFence(g_commandFences[0].get());
 }
 
-}  // namespace fm2::render
+}  // namespace pgr4::render
 
 void Video::Shutdown() {
   if (!g_initialized) {
@@ -965,7 +965,7 @@ void Video::Shutdown() {
   // full-GPU drain below, so WaitForGPU()'s RenderQueue::Run falls back to
   // running inline once the queue is torn down (see its Init/Shutdown-edge
   // comment in render_queue.cpp).
-  fm2::render::RenderQueue::Stop();
+  pgr4::render::RenderQueue::Stop();
   WaitForGPU();
   g_blitPipelines.clear();
   g_blitPixelShader.reset();

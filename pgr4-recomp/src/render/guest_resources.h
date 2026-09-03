@@ -18,7 +18,7 @@
 struct IDxcBlobEncoding;
 #endif
 
-namespace fm2::render {
+namespace pgr4::render {
 
 enum class ResourceType {
   Texture,
@@ -35,7 +35,7 @@ enum class ResourceType {
 // Sentinel at offset 0 (where a real guest D3DResource has its Common flags),
 // so hooks can tell our Guest* objects apart from genuine guest D3D resources
 // created through paths we don't hook (e.g. XeInitD3DDevice internals).
-inline constexpr uint32_t kFm2ResourceMagic = 0x464D3252;  // 'FM2R'
+inline constexpr uint32_t kPgr4ResourceMagic = 0x464D3252;  // 'FM2R'
 
 // These objects live in guest memory (ghp::GuestNew) and are handed to the
 // title as its own D3D resources, so FM2's D3D reads and writes their headers
@@ -55,7 +55,7 @@ inline constexpr uint32_t kGuestResourceHeaderBytes = 0x40;
 struct GuestResource {
   // Deliberately aliases the guest's D3DResource::Common; IsFm2Resource reads
   // it through an arbitrary guest pointer to identify our objects.
-  uint32_t magic = kFm2ResourceMagic;
+  uint32_t magic = kPgr4ResourceMagic;
   // Host LE atomic. Guest D3DResource_AddRef/Release use BE lwarx/stwcx on
   // this same offset -- those paths must be fully hooked for FM2 objects
   // (see D3DResource_AddRef @ 0x82369D90 / D3DResource_Release @ 0x82369E08)
@@ -76,7 +76,7 @@ static_assert(offsetof(GuestResource, type) == kGuestResourceHeaderBytes,
 
 // True only for pointers to our own guest-allocated Guest* objects.
 inline bool IsFm2Resource(const void* p) {
-  return p != nullptr && *reinterpret_cast<const uint32_t*>(p) == kFm2ResourceMagic;
+  return p != nullptr && *reinterpret_cast<const uint32_t*>(p) == kPgr4ResourceMagic;
 }
 
 struct GuestBaseTexture;
@@ -232,4 +232,4 @@ struct GuestShader : GuestResource {
   ~GuestShader();
 };
 
-}  // namespace fm2::render
+}  // namespace pgr4::render

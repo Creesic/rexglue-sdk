@@ -30,9 +30,9 @@
 #include "render/render_state.h"
 
 using namespace plume;
-using namespace fm2::ghp;
+using namespace pgr4::ghp;
 
-namespace fm2::render {
+namespace pgr4::render {
 
 // ---------------------------------------------------------------------------
 // Format helpers
@@ -501,9 +501,9 @@ void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t heigh
   // texture at full 720p up front (no mid-CL recreate / DEVICE_REMOVED).
   uint32_t hostWidth = width;
   uint32_t hostHeight = height;
-  if (width == kFm2FrameWidth && height == kFm2TileHeight) {
+  if (width == kPgr4FrameWidth && height == kPgr4TileHeight) {
     surface->tileGrownFromHeight = height;
-    hostHeight = kFm2FrameHeight;
+    hostHeight = kPgr4FrameHeight;
     static uint64_t growAtCreate = 0;
     ++growAtCreate;
     if (growAtCreate <= 12 || growAtCreate % 300 == 1) {
@@ -711,7 +711,7 @@ void ProcUnlockTextureRect(GuestBaseTexture* texture) {
 }
 
 // ---------------------------------------------------------------------------
-// Generic unlock dispatch (FM2_D3DResource_UnlockResource): the resource
+// Generic unlock dispatch (PGR4_D3DResource_UnlockResource): the resource
 // pointer's own type tag says whether it's a buffer or a texture/surface.
 // ---------------------------------------------------------------------------
 
@@ -745,7 +745,7 @@ void UnlockGuestResource(GuestResource* resource) {
 // FM2 also creates some textures via the low-level XG* XDK API
 // (XGSetTextureHeader + a raw Xenos fetch constant written directly into the
 // header) instead of always going through D3DDevice_CreateTexture. Those
-// objects carry no kFm2ResourceMagic tag, so D3DDevice_SetTexture can't bind
+// objects carry no kPgr4ResourceMagic tag, so D3DDevice_SetTexture can't bind
 // them the normal pure-replace way. This section parses the header's fetch
 // constant directly and materializes a native GuestTexture from the guest's
 // own (possibly tiled/packed) texture data, so SetTexture has something real
@@ -1197,7 +1197,7 @@ void GetSurfaceDesc(const GuestSurface* surface, GuestSurfaceDesc* desc) {
 }
 
 // ---------------------------------------------------------------------------
-// DDS texture loading (FM2_D3D_CreateTextureFromMemoryBuffer). Parses the DDS
+// DDS texture loading (PGR4_D3D_CreateTextureFromMemoryBuffer). Parses the DDS
 // blob and uploads it directly -- bypasses the original D3DX
 // texture-from-memory pipeline entirely, which (via TileSurface) reads a raw
 // GPU-memory-address field out of the D3D9 texture object it creates; our
@@ -1619,4 +1619,4 @@ GuestShader* LookupShaderAlias(uint32_t guestAddress) {
   return it != g_shaderAliases.end() ? it->second : nullptr;
 }
 
-}  // namespace fm2::render
+}  // namespace pgr4::render

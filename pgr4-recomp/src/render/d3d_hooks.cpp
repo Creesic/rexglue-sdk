@@ -2,21 +2,21 @@
 //
 // Phase 1 (device + present bring-up): hooks D3DDevice_ClearF and
 // D3DDevice_Swap as full plume replacements, and lets
-// FM2_D3D_TryPresentAndUpdateStatus's original guest body keep running
+// PGR4_D3D_TryPresentAndUpdateStatus's original guest body keep running
 // (status/bookkeeping, not a GPU call) with Video::Present() layered on top.
 //
-// Video::Init/Shutdown are driven from Fm2App::OnPreLaunchModule/OnShutdown
-// (see fm2_app.h), not from a guest-function hook: FM2_D3D_InitGlobalDeviceSingleton
+// Video::Init/Shutdown are driven from Pgr4App::OnPreLaunchModule/OnShutdown
+// (see pgr4_app.h), not from a guest-function hook: PGR4_D3D_InitGlobalDeviceSingleton
 // does not need to run under the native renderer, and the app-lifecycle hook is
 // the same window/device-creation order the guest function would have driven.
 //
 // Phase 2 (resource hooks): buffer/texture/surface/vertex-declaration
 // creation and lock/unlock. Every guest-facing D3D9 wrapper function that
-// calls one of these primitives (e.g. FM2_D3D_CreateTextureWrapper calling
+// calls one of these primitives (e.g. PGR4_D3D_CreateTextureWrapper calling
 // D3DDevice_CreateTexture) is a thin, unhooked call-through -- hooking the
 // primitive here is enough; the linker's strong-symbol replacement covers
 // every caller automatically, no separate wrapper hooks needed. Same reason
-// FM2_Image_ParseDDSFromMemory and the D3DX texture-from-memory pipeline
+// PGR4_Image_ParseDDSFromMemory and the D3DX texture-from-memory pipeline
 // need no hooks at all: that whole (fairly involved) original algorithm
 // keeps running unmodified and transparently calls through these hooked
 // primitives for the actual create/lock/unlock work.
@@ -56,15 +56,15 @@ struct Pgr4NoopGuestFn {
 };
 }  // namespace
 
-using fm2::render::GuestBuffer;
-using fm2::render::GuestDevice;
-using fm2::render::GuestLockedRect;
-using fm2::render::GuestResource;
-using fm2::render::GuestSurface;
-using fm2::render::GuestSurfaceDesc;
-using fm2::render::GuestVertexElement;
+using pgr4::render::GuestBuffer;
+using pgr4::render::GuestDevice;
+using pgr4::render::GuestLockedRect;
+using pgr4::render::GuestResource;
+using pgr4::render::GuestSurface;
+using pgr4::render::GuestSurfaceDesc;
+using pgr4::render::GuestVertexElement;
 
-namespace fm2::render {
+namespace pgr4::render {
 GuestBuffer* CreateVertexBuffer(uint32_t length);
 GuestBuffer* CreateIndexBuffer(uint32_t length, uint32_t format);
 uint32_t LockVertexBuffer(GuestBuffer* buffer, uint32_t flags);
@@ -82,14 +82,14 @@ GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size);
 GuestShader* CreateVertexShader(const uint32_t* function);
 GuestShader* CreatePixelShader(const uint32_t* function);
 GuestShader* LookupShaderAlias(uint32_t guestAddress);
-}  // namespace fm2::render
+}  // namespace pgr4::render
 
 namespace {
 
 uint32_t ReadGuestU32At(uint32_t guestAddress) {
   if (guestAddress == 0)
     return 0;
-  auto* p = fm2::ghp::ToHost<const rex::be<uint32_t>>(guestAddress);
+  auto* p = pgr4::ghp::ToHost<const rex::be<uint32_t>>(guestAddress);
   return p != nullptr ? p->get() : 0;
 }
 
@@ -112,12 +112,12 @@ void ClearF(GuestDevice* device, uint32_t flags, void* /*rect*/, const uint32_t*
     }
   }
   Video::SetFallbackClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
-  fm2::render::Clear(device, flags, rgba, z);
+  pgr4::render::Clear(device, flags, rgba, z);
 }
 
 // D3DDevice_Swap: the real per-frame present trigger for FM2 (confirmed
 // against this same guest binary by the reference repo's own investigation;
-// FM2_D3D_TryPresentAndUpdateStatus never actually fires on the live present
+// PGR4_D3D_TryPresentAndUpdateStatus never actually fires on the live present
 // path). The original guest body kicks the real Xenos GPU ring buffer, which
 // does not exist under the native renderer, so it must not run here; this
 // hook fully replaces it.
@@ -132,12 +132,12 @@ void Swap(uint32_t device, uint32_t arg4, uint32_t /*arg5*/, uint32_t caller) {
                            : caller == 0x825ADE54u ? "tile-buffer"
                                                    : "other";
 
-  fm2::render::GuestBaseTexture* presentSource = nullptr;
+  pgr4::render::GuestBaseTexture* presentSource = nullptr;
   const char* kind = "none";
   uint32_t fbBase = 0;
   if (arg4 != 0) {
     fbBase = ReadGuestU32At(arg4 + 28u + 4u) & 0x1FFFFFFFu & ~0xFFFu;
-    presentSource = fm2::render::LookupResolveSurfaceAperture(fbBase);
+    presentSource = pgr4::render::LookupResolveSurfaceAperture(fbBase);
     if (presentSource != nullptr && presentSource->texture != nullptr) {
       kind = "aperture";
     } else {
@@ -163,7 +163,7 @@ void Swap(uint32_t device, uint32_t arg4, uint32_t /*arg5*/, uint32_t caller) {
 
 }  // namespace
 
-// PGR4: FM2_D3D_TryPresentAndUpdateStatus is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_D3D_TryPresentAndUpdateStatus is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origTryPresentAndUpdateStatus;
 
@@ -184,7 +184,7 @@ REX_HOOK(D3DDevice_ClearF, ClearF);
 REX_HOOK_RAW(D3DDevice_Swap) {
   Swap(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.lr);
 }
-REX_HOOK(FM2_D3D_TryPresentAndUpdateStatus, PresentAndUpdateStatus);
+REX_HOOK(PGR4_D3D_TryPresentAndUpdateStatus, PresentAndUpdateStatus);
 
 // ---------------------------------------------------------------------------
 // Phase 2: resource creation / lock / unlock. Pure replacements -- the
@@ -194,8 +194,8 @@ REX_HOOK(FM2_D3D_TryPresentAndUpdateStatus, PresentAndUpdateStatus);
 
 namespace {
 
-namespace rr = fm2::render;
-namespace ghp = fm2::ghp;
+namespace rr = pgr4::render;
+namespace ghp = pgr4::ghp;
 
 uint32_t CreateVertexBufferHook(uint32_t length, uint32_t /*usage*/, uint32_t /*pool*/) {
   return ghp::ToGuest(rr::CreateVertexBuffer(length));
@@ -222,9 +222,9 @@ uint32_t CreateVertexDeclarationHook(const GuestVertexElement* elements) {
 
 // D3DDevice_CreateVertexShader/CreatePixelShader take the raw ShaderContainer
 // microcode pointer directly -- these two addresses were mislabeled in the
-// manifest as unrelated GPU-memory-block allocators (FM2_Render_AllocGpuPassMemoryBlock
-// / FM2_D3D_CreateGpuMemoryBlock) despite already being correctly renamed in
-// IDA; fixed in fm2_manifest.toml. Without this fix no vertex/pixel shader
+// manifest as unrelated GPU-memory-block allocators (PGR4_Render_AllocGpuPassMemoryBlock
+// / PGR4_D3D_CreateGpuMemoryBlock) despite already being correctly renamed in
+// IDA; fixed in pgr4_manifest.toml. Without this fix no vertex/pixel shader
 // object is ever created, so SetVertexShaderState/SetPixelShaderState's
 // ResolveShader() would never find a real GuestShader to bind.
 uint32_t CreateVertexShaderHook(const uint32_t* function) {
@@ -246,15 +246,15 @@ uint32_t CreatePixelShaderHook(const uint32_t* function) {
 // and the original guest body still runs for anything we didn't create.
 REX_IMPORT(__imp__D3DVertexBuffer_Lock, g_origVertexBufferLock,
            uint32_t(uint32_t, uint32_t, uint32_t, uint32_t));
-// PGR4: FM2_D3D_LockGpuBufferRaw is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_D3D_LockGpuBufferRaw is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origIndexBufferLock;
 REX_IMPORT(__imp__D3DSurface_LockRect, g_origSurfaceLockRect,
            void(uint32_t, uint32_t, uint32_t, uint32_t));
-// PGR4: FM2_D3DTexture_LockRect is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_D3DTexture_LockRect is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origTextureLockRect;
-// PGR4: FM2_D3DResource_UnlockResource is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_D3DResource_UnlockResource is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origUnlockResource;
 REX_IMPORT(__imp__D3DSurface_GetDesc, g_origSurfaceGetDesc, void(uint32_t, uint32_t));
@@ -298,11 +298,11 @@ void SurfaceLockRectHook(uint32_t textureAddr, uint32_t lockedRectAddr, uint32_t
 
 // D3D9 textures lock through a *different* entry point than surfaces
 // (IDirect3DTexture9::LockRect takes a mip Level; IDirect3DSurface9 doesn't).
-// This guest function was previously misnamed FM2_AudioRender_SubmitFrontBufferPath
+// This guest function was previously misnamed PGR4_AudioRender_SubmitFrontBufferPath
 // in the manifest/IDA -- confirmed via decompile to be the real texture-lock
-// leaf (renamed to FM2_D3DTexture_LockRect). Missing this hook left the
+// leaf (renamed to PGR4_D3DTexture_LockRect). Missing this hook left the
 // original body running against our GuestTexture's non-XDK layout, producing
-// a garbage lock pointer that crashed later in TileSurface/FM2_MemcpyAligned.
+// a garbage lock pointer that crashed later in TileSurface/PGR4_MemcpyAligned.
 // The Level param routes to LockRect so Unlock uploads into the right mip --
 // dropping it uploaded every level over mip 0 and left mips 1+ uninitialized
 // (minified sampling aliased, e.g. the striped menu backgrounds).
@@ -359,12 +359,12 @@ uint32_t D3DResourceReleaseHook(uint32_t resourceAddr) {
   return remaining;
 }
 
-// FM2_D3D_CreateTextureFromMemoryBuffer(textureHolder, data, size): the
+// PGR4_D3D_CreateTextureFromMemoryBuffer(textureHolder, data, size): the
 // original guest body hands off to the D3DX texture-from-memory pipeline,
 // whose internal tiling step (TileSurface) reads a raw GPU-memory-address
 // field out of the D3D9 texture object it creates -- our GuestTexture has no
 // such field, so letting that pipeline run corrupts memory (confirmed via a
-// crash in FM2_MemcpyAligned during boot). This hook bypasses it completely:
+// crash in PGR4_MemcpyAligned during boot). This hook bypasses it completely:
 // parse+upload the DDS blob ourselves, then populate textureHolder's fields
 // directly (offsets match what the guest's own post-load step,
 // sub_825A2538, would have written: +4 texture handle, +12 loaded flag,
@@ -400,12 +400,12 @@ REX_HOOK(D3DDevice_CreateVertexDeclaration, CreateVertexDeclarationHook);
 REX_HOOK(D3DDevice_CreateVertexShader, CreateVertexShaderHook);
 REX_HOOK(D3DDevice_CreatePixelShader, CreatePixelShaderHook);
 REX_HOOK(D3DVertexBuffer_Lock, VertexBufferLockHook);
-REX_HOOK(FM2_D3D_LockGpuBufferRaw, IndexBufferLockHook);
+REX_HOOK(PGR4_D3D_LockGpuBufferRaw, IndexBufferLockHook);
 REX_HOOK(D3DSurface_LockRect, SurfaceLockRectHook);
-REX_HOOK(FM2_D3DTexture_LockRect, TextureLockRectHook);
-REX_HOOK(FM2_D3DResource_UnlockResource, UnlockResourceHook);
+REX_HOOK(PGR4_D3DTexture_LockRect, TextureLockRectHook);
+REX_HOOK(PGR4_D3DResource_UnlockResource, UnlockResourceHook);
 REX_HOOK(D3DSurface_GetDesc, SurfaceGetDescHook);
-REX_HOOK(FM2_D3D_CreateTextureFromMemoryBuffer, CreateTextureFromMemoryBufferHook);
+REX_HOOK(PGR4_D3D_CreateTextureFromMemoryBuffer, CreateTextureFromMemoryBufferHook);
 REX_HOOK(D3DResource_AddRef, D3DResourceAddRefHook);    // @ 0x82369D90
 REX_HOOK(D3DResource_Release, D3DResourceReleaseHook);  // @ 0x82369E08
 
@@ -432,46 +432,46 @@ GuestDevice* DeviceForRenderContext(uint32_t renderContext) {
 
 }  // namespace
 
-#define FM2_RS_IMPORT(guestName, callableName) \
+#define PGR4_RS_IMPORT(guestName, callableName) \
   REX_IMPORT(__imp__##guestName, callableName, void(uint32_t, uint32_t))
 
-FM2_RS_IMPORT(D3DDevice_SetRenderState_AlphaBlendEnable, g_origRsAlphaBlendEnable);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_AlphaTestEnable, g_origRsAlphaTestEnable);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_AlphaRef, g_origRsAlphaRef);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_ZEnable, g_origRsZEnable);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_ZWriteEnable, g_origRsZWriteEnable);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_ZFunc, g_origRsZFunc);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_ColorWriteEnable, g_origRsColorWriteEnable);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_BlendOp, g_origRsBlendOp);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_BlendOpAlpha, g_origRsBlendOpAlpha);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_SeparateAlphaBlendEnable, g_origRsSeparateAlphaBlendEnable);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_SrcBlend, g_origRsSrcBlend);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_DestBlend, g_origRsDestBlend);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_SrcBlendAlpha, g_origRsSrcBlendAlpha);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_DestBlendAlpha, g_origRsDestBlendAlpha);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_CullMode, g_origRsCullMode);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_StencilEnable, g_origRsStencilEnable);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_TwoSidedStencilMode, g_origRsTwoSidedStencilMode);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_StencilFunc, g_origRsStencilFunc);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_StencilFail, g_origRsStencilFail);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_StencilZFail, g_origRsStencilZFail);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_StencilPass, g_origRsStencilPass);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_StencilRef, g_origRsStencilRef);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_StencilMask, g_origRsStencilMask);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_StencilWriteMask, g_origRsStencilWriteMask);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilFunc, g_origRsCcwStencilFunc);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilFail, g_origRsCcwStencilFail);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilZFail, g_origRsCcwStencilZFail);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilPass, g_origRsCcwStencilPass);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilRef, g_origRsCcwStencilRef);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilMask, g_origRsCcwStencilMask);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilWriteMask, g_origRsCcwStencilWriteMask);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_AlphaBlendEnable, g_origRsAlphaBlendEnable);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_AlphaTestEnable, g_origRsAlphaTestEnable);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_AlphaRef, g_origRsAlphaRef);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_ZEnable, g_origRsZEnable);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_ZWriteEnable, g_origRsZWriteEnable);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_ZFunc, g_origRsZFunc);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_ColorWriteEnable, g_origRsColorWriteEnable);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_BlendOp, g_origRsBlendOp);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_BlendOpAlpha, g_origRsBlendOpAlpha);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_SeparateAlphaBlendEnable, g_origRsSeparateAlphaBlendEnable);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_SrcBlend, g_origRsSrcBlend);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_DestBlend, g_origRsDestBlend);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_SrcBlendAlpha, g_origRsSrcBlendAlpha);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_DestBlendAlpha, g_origRsDestBlendAlpha);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_CullMode, g_origRsCullMode);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilEnable, g_origRsStencilEnable);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_TwoSidedStencilMode, g_origRsTwoSidedStencilMode);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilFunc, g_origRsStencilFunc);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilFail, g_origRsStencilFail);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilZFail, g_origRsStencilZFail);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilPass, g_origRsStencilPass);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilRef, g_origRsStencilRef);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilMask, g_origRsStencilMask);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilWriteMask, g_origRsStencilWriteMask);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilFunc, g_origRsCcwStencilFunc);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilFail, g_origRsCcwStencilFail);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilZFail, g_origRsCcwStencilZFail);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilPass, g_origRsCcwStencilPass);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilRef, g_origRsCcwStencilRef);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilMask, g_origRsCcwStencilMask);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilWriteMask, g_origRsCcwStencilWriteMask);
 // PGR4: ScissorTestEnable not located in this IDB yet; stubbed (hook dormant).
 [[maybe_unused]] static Pgr4NoopGuestFn g_origRsScissorTestEnable;
-FM2_RS_IMPORT(D3DDevice_SetRenderState_SlopeScaleDepthBias, g_origRsSlopeScaleDepthBias);
-FM2_RS_IMPORT(D3DDevice_SetRenderState_DepthBias, g_origRsDepthBias);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_SlopeScaleDepthBias, g_origRsSlopeScaleDepthBias);
+PGR4_RS_IMPORT(D3DDevice_SetRenderState_DepthBias, g_origRsDepthBias);
 
-#undef FM2_RS_IMPORT
+#undef PGR4_RS_IMPORT
 
 namespace {
 
@@ -482,86 +482,86 @@ void MirrorRenderState(uint32_t renderContext, uint32_t d3drs, uint32_t value) {
   rr::SetRenderState(device, d3drs, value);
 }
 
-#define FM2_RS_HOOK(hookName, origCallable, d3drs) \
+#define PGR4_RS_HOOK(hookName, origCallable, d3drs) \
   void hookName(uint32_t device, uint32_t value) { \
     origCallable(device, value);                   \
     MirrorRenderState(device, d3drs, value);       \
   }
 
-FM2_RS_HOOK(Fm2RsAlphaBlendEnable, g_origRsAlphaBlendEnable, rr::D3DRS_ALPHABLENDENABLE)
-FM2_RS_HOOK(Fm2RsAlphaTestEnable, g_origRsAlphaTestEnable, rr::D3DRS_ALPHATESTENABLE)
-FM2_RS_HOOK(Fm2RsAlphaRef, g_origRsAlphaRef, rr::D3DRS_ALPHAREF)
-FM2_RS_HOOK(Fm2RsZEnable, g_origRsZEnable, rr::D3DRS_ZENABLE)
-FM2_RS_HOOK(Fm2RsZWriteEnable, g_origRsZWriteEnable, rr::D3DRS_ZWRITEENABLE)
-FM2_RS_HOOK(Fm2RsZFunc, g_origRsZFunc, rr::D3DRS_ZFUNC)
-FM2_RS_HOOK(Fm2RsColorWriteEnable, g_origRsColorWriteEnable, rr::D3DRS_COLORWRITEENABLE)
-FM2_RS_HOOK(Fm2RsBlendOp, g_origRsBlendOp, rr::D3DRS_BLENDOP)
-FM2_RS_HOOK(Fm2RsBlendOpAlpha, g_origRsBlendOpAlpha, rr::D3DRS_BLENDOPALPHA)
-FM2_RS_HOOK(Fm2RsSeparateAlphaBlendEnable, g_origRsSeparateAlphaBlendEnable,
+PGR4_RS_HOOK(Pgr4RsAlphaBlendEnable, g_origRsAlphaBlendEnable, rr::D3DRS_ALPHABLENDENABLE)
+PGR4_RS_HOOK(Pgr4RsAlphaTestEnable, g_origRsAlphaTestEnable, rr::D3DRS_ALPHATESTENABLE)
+PGR4_RS_HOOK(Pgr4RsAlphaRef, g_origRsAlphaRef, rr::D3DRS_ALPHAREF)
+PGR4_RS_HOOK(Pgr4RsZEnable, g_origRsZEnable, rr::D3DRS_ZENABLE)
+PGR4_RS_HOOK(Pgr4RsZWriteEnable, g_origRsZWriteEnable, rr::D3DRS_ZWRITEENABLE)
+PGR4_RS_HOOK(Pgr4RsZFunc, g_origRsZFunc, rr::D3DRS_ZFUNC)
+PGR4_RS_HOOK(Pgr4RsColorWriteEnable, g_origRsColorWriteEnable, rr::D3DRS_COLORWRITEENABLE)
+PGR4_RS_HOOK(Pgr4RsBlendOp, g_origRsBlendOp, rr::D3DRS_BLENDOP)
+PGR4_RS_HOOK(Pgr4RsBlendOpAlpha, g_origRsBlendOpAlpha, rr::D3DRS_BLENDOPALPHA)
+PGR4_RS_HOOK(Pgr4RsSeparateAlphaBlendEnable, g_origRsSeparateAlphaBlendEnable,
             rr::D3DRS_SEPARATEALPHABLENDENABLE)
-FM2_RS_HOOK(Fm2RsSrcBlend, g_origRsSrcBlend, rr::D3DRS_SRCBLEND)
-FM2_RS_HOOK(Fm2RsDestBlend, g_origRsDestBlend, rr::D3DRS_DESTBLEND)
-FM2_RS_HOOK(Fm2RsSrcBlendAlpha, g_origRsSrcBlendAlpha, rr::D3DRS_SRCBLENDALPHA)
-FM2_RS_HOOK(Fm2RsDestBlendAlpha, g_origRsDestBlendAlpha, rr::D3DRS_DESTBLENDALPHA)
-FM2_RS_HOOK(Fm2RsCullMode, g_origRsCullMode, rr::D3DRS_CULLMODE)
-FM2_RS_HOOK(Fm2RsStencilEnable, g_origRsStencilEnable, rr::D3DRS_STENCILENABLE)
-FM2_RS_HOOK(Fm2RsTwoSidedStencilMode, g_origRsTwoSidedStencilMode, rr::D3DRS_TWOSIDEDSTENCILMODE)
-FM2_RS_HOOK(Fm2RsStencilFunc, g_origRsStencilFunc, rr::D3DRS_STENCILFUNC)
-FM2_RS_HOOK(Fm2RsStencilFail, g_origRsStencilFail, rr::D3DRS_STENCILFAIL)
-FM2_RS_HOOK(Fm2RsStencilZFail, g_origRsStencilZFail, rr::D3DRS_STENCILZFAIL)
-FM2_RS_HOOK(Fm2RsStencilPass, g_origRsStencilPass, rr::D3DRS_STENCILPASS)
-FM2_RS_HOOK(Fm2RsStencilRef, g_origRsStencilRef, rr::D3DRS_STENCILREF)
-FM2_RS_HOOK(Fm2RsStencilMask, g_origRsStencilMask, rr::D3DRS_STENCILMASK)
-FM2_RS_HOOK(Fm2RsStencilWriteMask, g_origRsStencilWriteMask, rr::D3DRS_STENCILWRITEMASK)
-FM2_RS_HOOK(Fm2RsCcwStencilFunc, g_origRsCcwStencilFunc, rr::D3DRS_CCWSTENCILFUNC)
-FM2_RS_HOOK(Fm2RsCcwStencilFail, g_origRsCcwStencilFail, rr::D3DRS_CCWSTENCILFAIL)
-FM2_RS_HOOK(Fm2RsCcwStencilZFail, g_origRsCcwStencilZFail, rr::D3DRS_CCWSTENCILZFAIL)
-FM2_RS_HOOK(Fm2RsCcwStencilPass, g_origRsCcwStencilPass, rr::D3DRS_CCWSTENCILPASS)
-FM2_RS_HOOK(Fm2RsCcwStencilRef, g_origRsCcwStencilRef, rr::D3DRS_CCWSTENCILREF)
-FM2_RS_HOOK(Fm2RsCcwStencilMask, g_origRsCcwStencilMask, rr::D3DRS_CCWSTENCILMASK)
-FM2_RS_HOOK(Fm2RsCcwStencilWriteMask, g_origRsCcwStencilWriteMask, rr::D3DRS_CCWSTENCILWRITEMASK)
-FM2_RS_HOOK(Fm2RsScissorTestEnable, g_origRsScissorTestEnable, rr::D3DRS_SCISSORTESTENABLE)
-FM2_RS_HOOK(Fm2RsSlopeScaleDepthBias, g_origRsSlopeScaleDepthBias, rr::D3DRS_SLOPESCALEDEPTHBIAS)
-FM2_RS_HOOK(Fm2RsDepthBias, g_origRsDepthBias, rr::D3DRS_DEPTHBIAS)
+PGR4_RS_HOOK(Pgr4RsSrcBlend, g_origRsSrcBlend, rr::D3DRS_SRCBLEND)
+PGR4_RS_HOOK(Pgr4RsDestBlend, g_origRsDestBlend, rr::D3DRS_DESTBLEND)
+PGR4_RS_HOOK(Pgr4RsSrcBlendAlpha, g_origRsSrcBlendAlpha, rr::D3DRS_SRCBLENDALPHA)
+PGR4_RS_HOOK(Pgr4RsDestBlendAlpha, g_origRsDestBlendAlpha, rr::D3DRS_DESTBLENDALPHA)
+PGR4_RS_HOOK(Pgr4RsCullMode, g_origRsCullMode, rr::D3DRS_CULLMODE)
+PGR4_RS_HOOK(Pgr4RsStencilEnable, g_origRsStencilEnable, rr::D3DRS_STENCILENABLE)
+PGR4_RS_HOOK(Pgr4RsTwoSidedStencilMode, g_origRsTwoSidedStencilMode, rr::D3DRS_TWOSIDEDSTENCILMODE)
+PGR4_RS_HOOK(Pgr4RsStencilFunc, g_origRsStencilFunc, rr::D3DRS_STENCILFUNC)
+PGR4_RS_HOOK(Pgr4RsStencilFail, g_origRsStencilFail, rr::D3DRS_STENCILFAIL)
+PGR4_RS_HOOK(Pgr4RsStencilZFail, g_origRsStencilZFail, rr::D3DRS_STENCILZFAIL)
+PGR4_RS_HOOK(Pgr4RsStencilPass, g_origRsStencilPass, rr::D3DRS_STENCILPASS)
+PGR4_RS_HOOK(Pgr4RsStencilRef, g_origRsStencilRef, rr::D3DRS_STENCILREF)
+PGR4_RS_HOOK(Pgr4RsStencilMask, g_origRsStencilMask, rr::D3DRS_STENCILMASK)
+PGR4_RS_HOOK(Pgr4RsStencilWriteMask, g_origRsStencilWriteMask, rr::D3DRS_STENCILWRITEMASK)
+PGR4_RS_HOOK(Pgr4RsCcwStencilFunc, g_origRsCcwStencilFunc, rr::D3DRS_CCWSTENCILFUNC)
+PGR4_RS_HOOK(Pgr4RsCcwStencilFail, g_origRsCcwStencilFail, rr::D3DRS_CCWSTENCILFAIL)
+PGR4_RS_HOOK(Pgr4RsCcwStencilZFail, g_origRsCcwStencilZFail, rr::D3DRS_CCWSTENCILZFAIL)
+PGR4_RS_HOOK(Pgr4RsCcwStencilPass, g_origRsCcwStencilPass, rr::D3DRS_CCWSTENCILPASS)
+PGR4_RS_HOOK(Pgr4RsCcwStencilRef, g_origRsCcwStencilRef, rr::D3DRS_CCWSTENCILREF)
+PGR4_RS_HOOK(Pgr4RsCcwStencilMask, g_origRsCcwStencilMask, rr::D3DRS_CCWSTENCILMASK)
+PGR4_RS_HOOK(Pgr4RsCcwStencilWriteMask, g_origRsCcwStencilWriteMask, rr::D3DRS_CCWSTENCILWRITEMASK)
+PGR4_RS_HOOK(Pgr4RsScissorTestEnable, g_origRsScissorTestEnable, rr::D3DRS_SCISSORTESTENABLE)
+PGR4_RS_HOOK(Pgr4RsSlopeScaleDepthBias, g_origRsSlopeScaleDepthBias, rr::D3DRS_SLOPESCALEDEPTHBIAS)
+PGR4_RS_HOOK(Pgr4RsDepthBias, g_origRsDepthBias, rr::D3DRS_DEPTHBIAS)
 
-#undef FM2_RS_HOOK
+#undef PGR4_RS_HOOK
 
 }  // namespace
 
-REX_HOOK(D3DDevice_SetRenderState_AlphaBlendEnable, Fm2RsAlphaBlendEnable);
-REX_HOOK(D3DDevice_SetRenderState_AlphaTestEnable, Fm2RsAlphaTestEnable);
-REX_HOOK(D3DDevice_SetRenderState_AlphaRef, Fm2RsAlphaRef);
-REX_HOOK(D3DDevice_SetRenderState_ZEnable, Fm2RsZEnable);
-REX_HOOK(D3DDevice_SetRenderState_ZWriteEnable, Fm2RsZWriteEnable);
-REX_HOOK(D3DDevice_SetRenderState_ZFunc, Fm2RsZFunc);
-REX_HOOK(D3DDevice_SetRenderState_ColorWriteEnable, Fm2RsColorWriteEnable);
-REX_HOOK(D3DDevice_SetRenderState_BlendOp, Fm2RsBlendOp);
-REX_HOOK(D3DDevice_SetRenderState_BlendOpAlpha, Fm2RsBlendOpAlpha);
-REX_HOOK(D3DDevice_SetRenderState_SeparateAlphaBlendEnable, Fm2RsSeparateAlphaBlendEnable);
-REX_HOOK(D3DDevice_SetRenderState_SrcBlend, Fm2RsSrcBlend);
-REX_HOOK(D3DDevice_SetRenderState_DestBlend, Fm2RsDestBlend);
-REX_HOOK(D3DDevice_SetRenderState_SrcBlendAlpha, Fm2RsSrcBlendAlpha);
-REX_HOOK(D3DDevice_SetRenderState_DestBlendAlpha, Fm2RsDestBlendAlpha);
-REX_HOOK(D3DDevice_SetRenderState_CullMode, Fm2RsCullMode);
-REX_HOOK(D3DDevice_SetRenderState_StencilEnable, Fm2RsStencilEnable);
-REX_HOOK(D3DDevice_SetRenderState_TwoSidedStencilMode, Fm2RsTwoSidedStencilMode);
-REX_HOOK(D3DDevice_SetRenderState_StencilFunc, Fm2RsStencilFunc);
-REX_HOOK(D3DDevice_SetRenderState_StencilFail, Fm2RsStencilFail);
-REX_HOOK(D3DDevice_SetRenderState_StencilZFail, Fm2RsStencilZFail);
-REX_HOOK(D3DDevice_SetRenderState_StencilPass, Fm2RsStencilPass);
-REX_HOOK(D3DDevice_SetRenderState_StencilRef, Fm2RsStencilRef);
-REX_HOOK(D3DDevice_SetRenderState_StencilMask, Fm2RsStencilMask);
-REX_HOOK(D3DDevice_SetRenderState_StencilWriteMask, Fm2RsStencilWriteMask);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilFunc, Fm2RsCcwStencilFunc);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilFail, Fm2RsCcwStencilFail);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilZFail, Fm2RsCcwStencilZFail);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilPass, Fm2RsCcwStencilPass);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilRef, Fm2RsCcwStencilRef);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilMask, Fm2RsCcwStencilMask);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilWriteMask, Fm2RsCcwStencilWriteMask);
-REX_HOOK(D3DDevice_SetRenderState_ScissorTestEnable, Fm2RsScissorTestEnable);
-REX_HOOK(D3DDevice_SetRenderState_SlopeScaleDepthBias, Fm2RsSlopeScaleDepthBias);
-REX_HOOK(D3DDevice_SetRenderState_DepthBias, Fm2RsDepthBias);
+REX_HOOK(D3DDevice_SetRenderState_AlphaBlendEnable, Pgr4RsAlphaBlendEnable);
+REX_HOOK(D3DDevice_SetRenderState_AlphaTestEnable, Pgr4RsAlphaTestEnable);
+REX_HOOK(D3DDevice_SetRenderState_AlphaRef, Pgr4RsAlphaRef);
+REX_HOOK(D3DDevice_SetRenderState_ZEnable, Pgr4RsZEnable);
+REX_HOOK(D3DDevice_SetRenderState_ZWriteEnable, Pgr4RsZWriteEnable);
+REX_HOOK(D3DDevice_SetRenderState_ZFunc, Pgr4RsZFunc);
+REX_HOOK(D3DDevice_SetRenderState_ColorWriteEnable, Pgr4RsColorWriteEnable);
+REX_HOOK(D3DDevice_SetRenderState_BlendOp, Pgr4RsBlendOp);
+REX_HOOK(D3DDevice_SetRenderState_BlendOpAlpha, Pgr4RsBlendOpAlpha);
+REX_HOOK(D3DDevice_SetRenderState_SeparateAlphaBlendEnable, Pgr4RsSeparateAlphaBlendEnable);
+REX_HOOK(D3DDevice_SetRenderState_SrcBlend, Pgr4RsSrcBlend);
+REX_HOOK(D3DDevice_SetRenderState_DestBlend, Pgr4RsDestBlend);
+REX_HOOK(D3DDevice_SetRenderState_SrcBlendAlpha, Pgr4RsSrcBlendAlpha);
+REX_HOOK(D3DDevice_SetRenderState_DestBlendAlpha, Pgr4RsDestBlendAlpha);
+REX_HOOK(D3DDevice_SetRenderState_CullMode, Pgr4RsCullMode);
+REX_HOOK(D3DDevice_SetRenderState_StencilEnable, Pgr4RsStencilEnable);
+REX_HOOK(D3DDevice_SetRenderState_TwoSidedStencilMode, Pgr4RsTwoSidedStencilMode);
+REX_HOOK(D3DDevice_SetRenderState_StencilFunc, Pgr4RsStencilFunc);
+REX_HOOK(D3DDevice_SetRenderState_StencilFail, Pgr4RsStencilFail);
+REX_HOOK(D3DDevice_SetRenderState_StencilZFail, Pgr4RsStencilZFail);
+REX_HOOK(D3DDevice_SetRenderState_StencilPass, Pgr4RsStencilPass);
+REX_HOOK(D3DDevice_SetRenderState_StencilRef, Pgr4RsStencilRef);
+REX_HOOK(D3DDevice_SetRenderState_StencilMask, Pgr4RsStencilMask);
+REX_HOOK(D3DDevice_SetRenderState_StencilWriteMask, Pgr4RsStencilWriteMask);
+REX_HOOK(D3DDevice_SetRenderState_CCWStencilFunc, Pgr4RsCcwStencilFunc);
+REX_HOOK(D3DDevice_SetRenderState_CCWStencilFail, Pgr4RsCcwStencilFail);
+REX_HOOK(D3DDevice_SetRenderState_CCWStencilZFail, Pgr4RsCcwStencilZFail);
+REX_HOOK(D3DDevice_SetRenderState_CCWStencilPass, Pgr4RsCcwStencilPass);
+REX_HOOK(D3DDevice_SetRenderState_CCWStencilRef, Pgr4RsCcwStencilRef);
+REX_HOOK(D3DDevice_SetRenderState_CCWStencilMask, Pgr4RsCcwStencilMask);
+REX_HOOK(D3DDevice_SetRenderState_CCWStencilWriteMask, Pgr4RsCcwStencilWriteMask);
+REX_HOOK(D3DDevice_SetRenderState_ScissorTestEnable, Pgr4RsScissorTestEnable);
+REX_HOOK(D3DDevice_SetRenderState_SlopeScaleDepthBias, Pgr4RsSlopeScaleDepthBias);
+REX_HOOK(D3DDevice_SetRenderState_DepthBias, Pgr4RsDepthBias);
 
 // ---------------------------------------------------------------------------
 // Clip planes.
@@ -574,14 +574,14 @@ REX_IMPORT(__imp__D3DDevice_SetRenderState_ViewportEnable, g_origRsViewportEnabl
 
 namespace {
 
-void Fm2RsClipPlaneEnable(uint32_t renderContext, uint32_t value) {
+void Pgr4RsClipPlaneEnable(uint32_t renderContext, uint32_t value) {
   g_origRsClipPlaneEnable(renderContext, value);
   GuestDevice* device = DeviceForRenderContext(renderContext);
   if (device != nullptr)
     rr::SetClipPlaneState(device, value);
 }
 
-void Fm2RsViewportEnable(uint32_t renderContext, uint32_t value) {
+void Pgr4RsViewportEnable(uint32_t renderContext, uint32_t value) {
   g_origRsViewportEnable(renderContext, value);
   GuestDevice* device = DeviceForRenderContext(renderContext);
   if (device != nullptr)
@@ -590,8 +590,8 @@ void Fm2RsViewportEnable(uint32_t renderContext, uint32_t value) {
 
 }  // namespace
 
-REX_HOOK(D3DDevice_SetRenderState_ClipPlaneEnable, Fm2RsClipPlaneEnable);
-REX_HOOK(D3DDevice_SetRenderState_ViewportEnable, Fm2RsViewportEnable);
+REX_HOOK(D3DDevice_SetRenderState_ClipPlaneEnable, Pgr4RsClipPlaneEnable);
+REX_HOOK(D3DDevice_SetRenderState_ViewportEnable, Pgr4RsViewportEnable);
 
 // ---------------------------------------------------------------------------
 // Vertex/pixel shader bool constants (device->vertexShaderBoolConstants /
@@ -627,7 +627,7 @@ void SetShaderConstantB(rex::be<uint32_t>* constants, uint32_t constantCount,
   }
 }
 
-void Fm2SetPixelShaderConstantB(uint32_t device, uint32_t startRegister, uint32_t constantData,
+void Pgr4SetPixelShaderConstantB(uint32_t device, uint32_t startRegister, uint32_t constantData,
                                 uint32_t boolCount) {
   g_origSetPsBoolConst(device, startRegister, constantData, boolCount);
   auto* dev = ghp::ToHost<GuestDevice>(device);
@@ -638,7 +638,7 @@ void Fm2SetPixelShaderConstantB(uint32_t device, uint32_t startRegister, uint32_
                      ghp::ToHost<const uint32_t>(constantData), boolCount);
 }
 
-void Fm2SetVertexShaderConstantB(uint32_t device, uint32_t startRegister, uint32_t constantData,
+void Pgr4SetVertexShaderConstantB(uint32_t device, uint32_t startRegister, uint32_t constantData,
                                  uint32_t boolCount) {
   g_origSetVsBoolConst(device, startRegister, constantData, boolCount);
   auto* dev = ghp::ToHost<GuestDevice>(device);
@@ -651,16 +651,16 @@ void Fm2SetVertexShaderConstantB(uint32_t device, uint32_t startRegister, uint32
 
 }  // namespace
 
-REX_HOOK(sub_8236DBC8, Fm2SetPixelShaderConstantB);
-REX_HOOK(sub_8236DB68, Fm2SetVertexShaderConstantB);
+REX_HOOK(sub_8236DBC8, Pgr4SetPixelShaderConstantB);
+REX_HOOK(sub_8236DB68, Pgr4SetVertexShaderConstantB);
 
-// PGR4: FM2_RenderContext_SetVertexDeclaration is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_RenderContext_SetVertexDeclaration is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origSetVertexDeclaration;
 
 namespace {
 
-void Fm2SetVertexDeclaration(uint32_t renderContext, uint32_t declarationAddress) {
+void Pgr4SetVertexDeclaration(uint32_t renderContext, uint32_t declarationAddress) {
   g_origSetVertexDeclaration(renderContext, declarationAddress);
   GuestDevice* device = DeviceForRenderContext(renderContext);
   if (device == nullptr)
@@ -672,16 +672,16 @@ void Fm2SetVertexDeclaration(uint32_t renderContext, uint32_t declarationAddress
 
 }  // namespace
 
-REX_HOOK(FM2_RenderContext_SetVertexDeclaration, Fm2SetVertexDeclaration);
+REX_HOOK(PGR4_RenderContext_SetVertexDeclaration, Pgr4SetVertexDeclaration);
 
 // ---------------------------------------------------------------------------
 // Vertex/index stream + surface binding.
 // ---------------------------------------------------------------------------
 
-// PGR4: FM2_RenderContext_BindIndexBuffer is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_RenderContext_BindIndexBuffer is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origBindIndexBuffer;
-// PGR4: FM2_RenderContext_SetBoundSurface is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_RenderContext_SetBoundSurface is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origSetBoundSurface;
 // PGR4: sub_823716F8 is not exported by this manifest (FM2-engine, or not yet located);
@@ -708,7 +708,7 @@ void SetRenderTargetNative(GuestDevice* device, uint32_t index, uint32_t surface
 
 }  // namespace
 
-// PGR4: FM2_RenderContext_BindVertexStream is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_RenderContext_BindVertexStream is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origFm2BindVertexStream;
 
@@ -716,7 +716,7 @@ void SetRenderTargetNative(GuestDevice* device, uint32_t index, uint32_t surface
 // the standard auto-marshaling would only read the low half, so this hook
 // stays RAW to forward the full context, matching the reference's own
 // documented reasoning for the same guest function.
-REX_HOOK_RAW(FM2_RenderContext_BindVertexStream) {
+REX_HOOK_RAW(PGR4_RenderContext_BindVertexStream) {
   const uint32_t renderContext = ctx.r3.u32;
   const uint32_t slot = ctx.r4.u32;
   const uint32_t resourceAddr = ctx.r5.u32;
@@ -732,7 +732,7 @@ REX_HOOK_RAW(FM2_RenderContext_BindVertexStream) {
   rr::SetStreamSource(device, slot, buffer, byteOffset, strideBytes);
 }
 
-void Fm2BindIndexBuffer(uint32_t renderContext, uint32_t resourceAddr) {
+void Pgr4BindIndexBuffer(uint32_t renderContext, uint32_t resourceAddr) {
   g_origBindIndexBuffer(renderContext, resourceAddr);
   GuestDevice* device = DeviceForRenderContext(renderContext);
   if (device == nullptr)
@@ -740,12 +740,12 @@ void Fm2BindIndexBuffer(uint32_t renderContext, uint32_t resourceAddr) {
   rr::SetIndices(device, ghp::ToHost<GuestBuffer>(resourceAddr));
 }
 
-// FM2_RenderContext_SetBoundSurface is the guest equivalent of BOTH
+// PGR4_RenderContext_SetBoundSurface is the guest equivalent of BOTH
 // SetRenderTarget and SetDepthStencilSurface: classify by resource type and
 // route depth surfaces to the depth slot instead of always binding color
 // index 0 (otherwise depth is never bound and every depth-tested draw
 // sanitizes to an unknown depth-stencil format).
-void Fm2SetBoundSurface(uint32_t renderContext, uint32_t surfaceAddr, uint32_t surfaceArg) {
+void Pgr4SetBoundSurface(uint32_t renderContext, uint32_t surfaceAddr, uint32_t surfaceArg) {
   g_origSetBoundSurface(renderContext, surfaceAddr, surfaceArg);
   GuestDevice* device = DeviceForRenderContext(renderContext);
   if (device == nullptr || surfaceAddr == 0)
@@ -762,7 +762,7 @@ void Fm2SetBoundSurface(uint32_t renderContext, uint32_t surfaceAddr, uint32_t s
 // primary color RT), not the standard D3DDevice_SetRenderTarget. Without
 // this, the native render target is never bound and the screen stays at
 // its clear color.
-void Fm2BindSurface(uint32_t renderContext, uint32_t slot, uint32_t surfaceAddr) {
+void Pgr4BindSurface(uint32_t renderContext, uint32_t slot, uint32_t surfaceAddr) {
   g_origBindSurfaceInternal(renderContext, slot, surfaceAddr);
   GuestDevice* device = DeviceForRenderContext(renderContext);
   if (device == nullptr || surfaceAddr == 0)
@@ -770,9 +770,9 @@ void Fm2BindSurface(uint32_t renderContext, uint32_t slot, uint32_t surfaceAddr)
   SetRenderTargetNative(device, slot, surfaceAddr);
 }
 
-REX_HOOK(FM2_RenderContext_BindIndexBuffer, Fm2BindIndexBuffer);
-REX_HOOK(FM2_RenderContext_SetBoundSurface, Fm2SetBoundSurface);
-REX_HOOK(sub_823716F8, Fm2BindSurface);
+REX_HOOK(PGR4_RenderContext_BindIndexBuffer, Pgr4BindIndexBuffer);
+REX_HOOK(PGR4_RenderContext_SetBoundSurface, Pgr4SetBoundSurface);
+REX_HOOK(sub_823716F8, Pgr4BindSurface);
 
 // ---------------------------------------------------------------------------
 // Shader state.
@@ -802,14 +802,14 @@ rr::GuestShader* ResolveShader(uint32_t shaderAddr) {
 // metadata. That table's merge loop decrements a uint16_t count by 2 until
 // it hits zero -- mathematically impossible to terminate if the (garbage)
 // count is odd, which intermittently hung the process for minutes.
-void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shaderAddr) {
+void Pgr4SetPixelShaderState(uint32_t renderContext, uint32_t shaderAddr) {
   GuestDevice* device = DeviceForRenderContext(renderContext);
   if (device == nullptr || shaderAddr == 0)
     return;
   rr::SetPixelShader(device, ResolveShader(shaderAddr));
 }
 
-void Fm2SetVertexShaderState(uint32_t renderContext, uint32_t shaderAddr) {
+void Pgr4SetVertexShaderState(uint32_t renderContext, uint32_t shaderAddr) {
   GuestDevice* device = DeviceForRenderContext(renderContext);
   if (device == nullptr || shaderAddr == 0)
     return;
@@ -818,8 +818,8 @@ void Fm2SetVertexShaderState(uint32_t renderContext, uint32_t shaderAddr) {
 
 }  // namespace
 
-REX_HOOK(FM2_RenderContext_SetPixelShaderState, Fm2SetPixelShaderState);
-REX_HOOK(FM2_RenderContext_SetVertexShaderState, Fm2SetVertexShaderState);
+REX_HOOK(PGR4_RenderContext_SetPixelShaderState, Pgr4SetPixelShaderState);
+REX_HOOK(PGR4_RenderContext_SetVertexShaderState, Pgr4SetVertexShaderState);
 
 // ---------------------------------------------------------------------------
 // Viewport / scissor. Full replacements: the originals pack hardware-specific
@@ -870,7 +870,7 @@ REX_HOOK(D3D_SetViewport, SetViewportHook);
 //
 // PendingMask3 (4th guest arg) is XDK dirty-bit bookkeeping for that ring --
 // unused here. Pure-replace GuestTexture / GuestSurface objects are bound
-// directly; raw XG-header textures (no kFm2ResourceMagic, created via
+// directly; raw XG-header textures (no kPgr4ResourceMagic, created via
 // XGSetTextureHeader instead of D3DDevice_CreateTexture) go through
 // TranslateGuestTexture to parse their Xenos fetch constant and materialize
 // a native texture (Lock/GetDesc on these still bind null -- that gap is
@@ -1035,7 +1035,7 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
       resolveApertureCount % 300 == 1) {
     REXGPU_INFO(
         "Resolve: n={} lr=0x{:08X} parentLr=0x{:08X} owner=0x{:08X} flags=0x{:X} "
-        "dest=0x{:08X} dataBase=0x{:08X} {}x{} fmt={} fm2={} destPt=({},{}) "
+        "dest=0x{:08X} dataBase=0x{:08X} {}x{} fmt={} pgr4={} destPt=({},{}) "
         "srcRect=({},{},{},{})",
         resolveApertureCount, g_resolveCaller, g_resolveParentCaller, g_resolveOwner, flags,
         destTextureAddr, dataBase, reo->width, reo->height, int(reo->format),
@@ -1094,16 +1094,16 @@ REX_IMPORT(__imp__D3DDevice_DrawIndexedVertices, g_origDrawIndexedVertices,
 [[maybe_unused]] static Pgr4NoopGuestFn g_origDrawIndexedVerticesWithVertexFormat;
 REX_IMPORT(__imp__D3DDevice_DrawVerticesUP, g_origDrawVerticesUP,
            void(GuestDevice*, uint32_t, uint32_t, const void*, uint32_t));
-// PGR4: FM2_D3D_BeginCommandBufferBatch is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_D3D_BeginCommandBufferBatch is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origBeginCommandBufferBatch;
-// PGR4: FM2_D3D_FinalizeCommandBufferBatch is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_D3D_FinalizeCommandBufferBatch is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origFinalizeCommandBufferBatch;
-// PGR4: FM2_D3D_CreateCommandBufferClone is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_D3D_CreateCommandBufferClone is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origCreateCommandBufferClone;
-// PGR4: FM2_D3D_EmitDirtyStateAndDrawList is FM2-engine or not yet located in this IDB; the guest import is
+// PGR4: PGR4_D3D_EmitDirtyStateAndDrawList is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origEmitDirtyStateAndDrawList;
 // PGR4: D3DCommandBuffer_CreateTextureFixup is not exported by this manifest (FM2-engine, or not yet located);
@@ -1149,7 +1149,7 @@ void DrainDeferredShaderConstants() {
     pending.swap(g_deferredShaderConstants);
   }
 
-  auto* memory = fm2::ghp::GuestMemory();
+  auto* memory = pgr4::ghp::GuestMemory();
   if (memory == nullptr)
     return;
 
@@ -1168,7 +1168,7 @@ void DrainDeferredShaderConstants() {
     const auto* source = memory->TranslatePhysical<const uint32_t*>(physicalAddress);
     if (source == nullptr)
       continue;
-    fm2::render::StageDrawShaderConstants(!constants.pixelShader, constants.startRegister, source,
+    pgr4::render::StageDrawShaderConstants(!constants.pixelShader, constants.startRegister, source,
                                           constants.registerCount);
   }
 }
@@ -1183,7 +1183,7 @@ void DrainDeferredCommandBufferConstants() {
   }
 
   for (const DeferredCommandBufferConstants& constants : pending) {
-    fm2::render::StageDrawShaderConstants(true, constants.startRegister, constants.values.data(),
+    pgr4::render::StageDrawShaderConstants(true, constants.startRegister, constants.values.data(),
                                           constants.registerCount);
   }
 }
@@ -1196,7 +1196,7 @@ void DrainDeferredDrawShaderConstants() {
 void DrawVerticesHook(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
                       uint32_t vertexCount) {
   DrainDeferredDrawShaderConstants();
-  if (fm2::render::RenderQueue::IsRecording())
+  if (pgr4::render::RenderQueue::IsRecording())
     g_origDrawVertices(device, primitiveType, startVertex, vertexCount);
   rr::DrawVertices(device, primitiveType, startVertex, vertexCount);
 }
@@ -1204,7 +1204,7 @@ void DrawVerticesHook(GuestDevice* device, uint32_t primitiveType, uint32_t star
 void DrawIndexedVerticesHook(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
                              uint32_t startIndex, uint32_t indexCount) {
   DrainDeferredDrawShaderConstants();
-  if (fm2::render::RenderQueue::IsRecording())
+  if (pgr4::render::RenderQueue::IsRecording())
     g_origDrawIndexedVertices(device, primitiveType, baseVertexIndex, startIndex, indexCount);
   rr::DrawIndexedVertices(device, primitiveType, baseVertexIndex, startIndex, indexCount);
 }
@@ -1213,7 +1213,7 @@ void DrawIndexedVerticesWithVertexFormatHook(GuestDevice* device, uint32_t primi
                                              int32_t baseVertexIndex, uint32_t startIndex,
                                              uint32_t indexCount) {
   DrainDeferredDrawShaderConstants();
-  if (fm2::render::RenderQueue::IsRecording())
+  if (pgr4::render::RenderQueue::IsRecording())
     g_origDrawIndexedVerticesWithVertexFormat(device, primitiveType, baseVertexIndex, startIndex,
                                               indexCount);
   rr::DrawIndexedVertices(device, primitiveType, baseVertexIndex, startIndex, indexCount);
@@ -1222,7 +1222,7 @@ void DrawIndexedVerticesWithVertexFormatHook(GuestDevice* device, uint32_t primi
 void DrawVerticesUPHook(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                         const void* vertexStreamZeroData, uint32_t vertexStreamZeroStride) {
   DrainDeferredDrawShaderConstants();
-  if (fm2::render::RenderQueue::IsRecording()) {
+  if (pgr4::render::RenderQueue::IsRecording()) {
     g_origDrawVerticesUP(device, primitiveType, vertexCount, vertexStreamZeroData,
                          vertexStreamZeroStride);
   }
@@ -1323,19 +1323,19 @@ REX_HOOK(D3DDevice_DrawIndexedVertices_WithVertexFormatSetup,
          DrawIndexedVerticesWithVertexFormatHook);
 REX_HOOK(D3DDevice_DrawVerticesUP, DrawVerticesUPHook);
 
-REX_HOOK_RAW(FM2_D3D_BeginCommandBufferBatch) {
-  fm2::render::RenderQueue::BeginRecording();
+REX_HOOK_RAW(PGR4_D3D_BeginCommandBufferBatch) {
+  pgr4::render::RenderQueue::BeginRecording();
   g_origBeginCommandBufferBatch.fn(ctx, base);
 }
 
-REX_HOOK_RAW(FM2_D3D_FinalizeCommandBufferBatch) {
+REX_HOOK_RAW(PGR4_D3D_FinalizeCommandBufferBatch) {
   g_origFinalizeCommandBufferBatch.fn(ctx, base);
-  fm2::render::RenderQueue::EndRecording();
+  pgr4::render::RenderQueue::EndRecording();
 }
 
-REX_HOOK_RAW(FM2_D3D_CreateCommandBufferClone) {
+REX_HOOK_RAW(PGR4_D3D_CreateCommandBufferClone) {
   g_origCreateCommandBufferClone.fn(ctx, base);
-  fm2::render::RenderQueue::BindPendingRecording(ctx.r3.u32);
+  pgr4::render::RenderQueue::BindPendingRecording(ctx.r3.u32);
 }
 
 REX_HOOK_RAW(D3DCommandBuffer_CreateTextureFixup) {
@@ -1343,7 +1343,7 @@ REX_HOOK_RAW(D3DCommandBuffer_CreateTextureFixup) {
   g_origCreateTextureFixup.fn(ctx, base);
   const uint32_t handle = ctx.r3.u32;
   const size_t matches =
-      fm2::render::RenderQueue::AssociatePendingTextureFixup(handle, textureAddress);
+      pgr4::render::RenderQueue::AssociatePendingTextureFixup(handle, textureAddress);
   static std::atomic<uint32_t> fixupCount{0};
   const uint32_t count = fixupCount.fetch_add(1, std::memory_order_relaxed) + 1;
   if (count <= 16) {
@@ -1363,18 +1363,18 @@ REX_HOOK_RAW(D3DCommandBuffer_SetTexture) {
   rr::GuestBaseTexture* texture =
       textureAddress != 0 ? ghp::ToHost<rr::GuestBaseTexture>(textureAddress) : nullptr;
   const ResolvedTextureBinding binding = ResolveTextureBinding(texture);
-  fm2::render::RenderCommand replacement{};
+  pgr4::render::RenderCommand replacement{};
   if (binding.baseTexture) {
-    replacement.type = fm2::render::RenderCommandType::SetTextureBase;
+    replacement.type = pgr4::render::RenderCommandType::SetTextureBase;
     replacement.setTextureBase.texture = binding.texture;
     replacement.setTextureBase.guestAddress = textureAddress;
   } else {
-    replacement.type = fm2::render::RenderCommandType::SetTexture;
+    replacement.type = pgr4::render::RenderCommandType::SetTexture;
     replacement.setTexture.texture = static_cast<rr::GuestTexture*>(binding.texture);
     replacement.setTexture.guestAddress = textureAddress;
   }
   const bool applied =
-      fm2::render::RenderQueue::SetRecordingTextureFixup(cloneAddress, handle, replacement);
+      pgr4::render::RenderQueue::SetRecordingTextureFixup(cloneAddress, handle, replacement);
   static std::atomic<uint32_t> setFixupCount{0};
   const uint32_t count = setFixupCount.fetch_add(1, std::memory_order_relaxed) + 1;
   if (count <= 16) {
@@ -1385,19 +1385,19 @@ REX_HOOK_RAW(D3DCommandBuffer_SetTexture) {
   }
 }
 
-REX_HOOK_RAW(FM2_D3D_EmitDirtyStateAndDrawList) {
+REX_HOOK_RAW(PGR4_D3D_EmitDirtyStateAndDrawList) {
   const uint32_t contextAddress = ctx.r3.u32;
   const uint32_t cloneAddress = ctx.r4.u32;
-  fm2::render::DeferredExecutionSnapshot executionSnapshot{};
+  pgr4::render::DeferredExecutionSnapshot executionSnapshot{};
   const uint8_t* context = nullptr;
   if (contextAddress != 0 &&
-      contextAddress <= UINT32_MAX - fm2::render::DeferredExecutionSnapshot::kContextBytes) {
+      contextAddress <= UINT32_MAX - pgr4::render::DeferredExecutionSnapshot::kContextBytes) {
     context = ghp::ToHost<const uint8_t>(contextAddress);
   }
-  const bool captured = fm2::render::CaptureDeferredExecutionSnapshot(executionSnapshot, context);
+  const bool captured = pgr4::render::CaptureDeferredExecutionSnapshot(executionSnapshot, context);
   g_origEmitDirtyStateAndDrawList.fn(ctx, base);
 
-  if (fm2::render::RenderQueue::ReplayRecording(cloneAddress,
+  if (pgr4::render::RenderQueue::ReplayRecording(cloneAddress,
                                                 captured ? &executionSnapshot : nullptr)) {
     static std::atomic<uint32_t> replayCount{0};
     const uint32_t count = replayCount.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1442,14 +1442,14 @@ REX_HOOK(D3D_CBlocker_Check, CBlockerCheckHook);
 // XDK entry points that Unleashed also stubs and that have no surviving host
 // state. Leave guest registers untouched, avoid per-call logging, and keep
 // tiling/predication out of FM2's native D3D path.
-#define FM2_D3D_GPU_NOOP(name) \
+#define PGR4_D3D_GPU_NOOP(name) \
   REX_HOOK_RAW(name) {}
 
-FM2_D3D_GPU_NOOP(D3DDevice_SetGammaRamp);
-FM2_D3D_GPU_NOOP(D3DDevice_SetShaderGPRAllocation);
-FM2_D3D_GPU_NOOP(D3DDevice_BeginTiling);
-FM2_D3D_GPU_NOOP(D3DDevice_EndTiling);
-FM2_D3D_GPU_NOOP(D3DDevice_SetPredication);
-FM2_D3D_GPU_NOOP(D3DDevice_Release);
+PGR4_D3D_GPU_NOOP(D3DDevice_SetGammaRamp);
+PGR4_D3D_GPU_NOOP(D3DDevice_SetShaderGPRAllocation);
+PGR4_D3D_GPU_NOOP(D3DDevice_BeginTiling);
+PGR4_D3D_GPU_NOOP(D3DDevice_EndTiling);
+PGR4_D3D_GPU_NOOP(D3DDevice_SetPredication);
+PGR4_D3D_GPU_NOOP(D3DDevice_Release);
 
-#undef FM2_D3D_GPU_NOOP
+#undef PGR4_D3D_GPU_NOOP

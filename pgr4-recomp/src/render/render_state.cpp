@@ -46,7 +46,7 @@
 
 using namespace plume;
 
-namespace fm2::render {
+namespace pgr4::render {
 
 void ClearResolveSurfaceAperture(GuestBaseTexture* host);
 
@@ -694,9 +694,9 @@ bool IsLiveHostTexture(GuestBaseTexture* texture) {
 bool IsFramebufferSizedPresentSource(GuestBaseTexture* texture) {
   if (!IsLiveHostTexture(texture))
     return false;
-  if (texture->width == kFm2FrameWidth && texture->height < kFm2FrameHeight)
+  if (texture->width == kPgr4FrameWidth && texture->height < kPgr4FrameHeight)
     return false;
-  return texture->width >= kFm2FrameWidth && texture->height >= kFm2FrameHeight;
+  return texture->width >= kPgr4FrameWidth && texture->height >= kPgr4FrameHeight;
 }
 
 void AddBarrier(GuestBaseTexture* texture, RenderTextureLayout layout) {
@@ -2594,7 +2594,7 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
     if (!IsCanonicalDeclType(e.type)) {
       // Variant fetch dword handled by the field-decode fallback (or UNKNOWN).
       // Log the first few so unmapped formats become visible instead of
-      // silently degrading (mirrors 080plume's FM2_DECL_UNKNOWN_FMT logging).
+      // silently degrading (mirrors 080plume's PGR4_DECL_UNKNOWN_FMT logging).
       static std::atomic<uint32_t> s_variantDeclLogs{0};
       if (s_variantDeclLogs.fetch_add(1, std::memory_order_relaxed) < 16) {
         REXGPU_WARN(
@@ -4270,4 +4270,4 @@ void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
   g_dirtyStates = DirtyStates(true);
 }
 
-}  // namespace fm2::render
+}  // namespace pgr4::render
