@@ -477,4 +477,19 @@ behind a fence, properly lit red car. From the user-provided captures
   gpuResolved` is set in `ResolveHook` and `NeedsGuestUpload` skips such
   textures. Ceiling: a texture the game resolves into once and later
   rewrites from the CPU would go stale (none seen so far).
+- **Crowd as tiny far-away meshes** (`pgr4_ps3.rdc` EID 17561 and every
+  other crowd draw): the crowd instance matrix (3 x FLOAT16_4 rows in
+  POSITION1..3) comes from a stride-0 raw stream whose fetch base carries the
+  per-draw byte offset. The draw snapshot dropped stride-0 streams, so the
+  D3D12 slot kept a stale binding and every person used the same parked
+  matrix (translation -768 on all axes, 1100 units away). Stride-0 raw streams
+  are now snapshotted per draw (clamped to 256 bytes) and bound with stride 0.
+- **Shadow without its mask** (EID 26204): the mask is a stacked texture
+  (fetch dimension 3D + stacked bit, `size_stack.depth` slices) sampled as a
+  Texture2DArray through the 3D index table. It was translated as a single
+  2D image and only published in the 2D slot, so the shader read the null
+  3D descriptor. `XenosTextureInfo::arraySize` now covers cube (6) and
+  stacked (depth + 1) textures; slices upload like cube faces and
+  `BindTextureDescriptor` publishes stacked textures in the 3D slot only.
+  Ceiling: slices are assumed to be mip-0 footprints back to back.
 

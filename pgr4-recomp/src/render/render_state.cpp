@@ -831,12 +831,18 @@ void BindTextureDescriptor(uint32_t index, GuestBaseTexture* texture,
                            RenderTextureViewDimension viewDimension) {
   AddBarrier(texture, RenderTextureLayout::SHADER_READ);
   EnsureShaderResourceDescriptor(texture);
+  // PGR4 stacked textures: a 2D view over several slices (a Texture2DArray
+  // SRV). XenosRecomp samples every 3D fetch as Texture2DArray, so they
+  // publish through the 3D index table and not the 2D one.
+  const bool stacked = texture && viewDimension == RenderTextureViewDimension::TEXTURE_2D &&
+                       texture->type == ResourceType::Texture &&
+                       static_cast<GuestTexture*>(texture)->depth > 1;
   g_sharedConstants.texture2DIndices[index] =
-      (texture && viewDimension == RenderTextureViewDimension::TEXTURE_2D)
+      (texture && viewDimension == RenderTextureViewDimension::TEXTURE_2D && !stacked)
           ? texture->descriptorIndex
           : kNullTexture2DDescriptor;
   g_sharedConstants.texture3DIndices[index] =
-      (texture && viewDimension == RenderTextureViewDimension::TEXTURE_3D)
+      (texture && (viewDimension == RenderTextureViewDimension::TEXTURE_3D || stacked))
           ? texture->descriptorIndex
           : kNullTexture3DDescriptor;
   g_sharedConstants.textureCubeIndices[index] =
@@ -1918,7 +1924,7 @@ void ProcSetDrawGeometrySnapshot(const DrawGeometrySnapshot& snapshot) {
     if (stream.rawData != nullptr && stream.rawSize != 0) {
       MixFrameTraceBytes(g_frameTrace.vertexDataHash, stream.rawData, stream.rawSize);
     }
-    if (stream.rawData == nullptr || stream.rawSize == 0 || stream.stride == 0) {
+    if (stream.rawData == nullptr || stream.rawSize == 0) {
       ProcSetStreamSource(index, stream.buffer, stream.offset, stream.stride);
       continue;
     }
@@ -3401,15 +3407,21 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
         address->get() != 0 ? ghp::ToHost<GuestBuffer>(address->get()) : nullptr;
     const uint32_t liveStride = uint32_t(strideDwords) * 4u;
     DrawStreamSnapshot& stream = geometry.streams[index];
-    if (liveBuffer == nullptr || liveStride == 0) {
+    if (liveBuffer == nullptr || (liveStride == 0 && IsFm2Resource(liveBuffer))) {
       stream = {};
     } else if (!IsFm2Resource(liveBuffer)) {
       // Vertex fetch constants count down from Fetch[31] (see GuestDevice).
+      // Stride 0 (PGR4 crowd: one 3 x FLOAT16_4 instance matrix per draw) is a
+      // valid D3D12 stride; the fetch base already includes the per-draw byte
+      // offset, and one element is all the draw can read.
       const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
           reinterpret_cast<const uint8_t*>(device) + 0x778u - index * 8u);
       const auto* fetchSize = fetchBase + 1;
-      const uint32_t rawSize = DecodeRawBufferSize(fetchSize->get());
+      uint32_t rawSize = DecodeRawBufferSize(fetchSize->get());
       uint8_t* rawData = SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), 4u, false);
+      constexpr uint32_t kStrideZeroSnapshotBytes = 256u;
+      if (liveStride == 0)
+        rawSize = std::min(rawSize, kStrideZeroSnapshotBytes);
       stream = {nullptr, 0, liveStride, rawData, rawData != nullptr ? rawSize : 0u};
     } else if (stream.buffer != liveBuffer || stream.stride != liveStride) {
       stream = {liveBuffer, 0, liveStride};

@@ -413,13 +413,15 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   // PGR4: cube maps (sky / environment lighting). The caller pre-sets
   // viewDimension to TEXTURE_CUBE; six array slices, one face each.
   const bool cube = texture->viewDimension == RenderTextureViewDimension::TEXTURE_CUBE;
+  // Stacked textures: the caller pre-sets depth to the slice count.
+  const uint32_t slices = cube ? 6u : std::max(1u, texture->depth);
   RenderTextureDesc desc;
   desc.dimension = RenderTextureDimension::TEXTURE_2D;
   desc.width = width;
   desc.height = height;
   desc.depth = 1;
   desc.mipLevels = 1;
-  desc.arraySize = cube ? 6 : 1;
+  desc.arraySize = slices;
   desc.format = fmt;
   // Only request RT for formats that can actually be render targets. BC/etc.
   // translated textures must stay COPY_DEST+SRV — marking them RT removes the
@@ -441,6 +443,8 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
 
   RenderTextureViewDesc viewDesc;
   viewDesc.format = fmt;
+  // plume builds a Texture2DArray SRV for a TEXTURE_2D view whenever the
+  // texture has more than one slice, so stacked textures keep the 2D view.
   viewDesc.dimension = cube ? RenderTextureViewDimension::TEXTURE_CUBE
                             : RenderTextureViewDimension::TEXTURE_2D;
   viewDesc.mipLevels = 1;
@@ -451,7 +455,7 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   texture->textureView = texture->texture->createTextureView(viewDesc);
   texture->width = width;
   texture->height = height;
-  texture->depth = 1;
+  texture->depth = slices;
   texture->levels = 1;
   texture->format = fmt;
   texture->requiresHostInitialization = false;
@@ -828,6 +832,10 @@ struct XenosTextureInfo {
   // footprint is 16 bpp, the host texture is R8G8B8A8 and the upload expands.
   uint32_t expand16From = 0;
   bool cube = false;  // fetch dimension 3: six faces stored consecutively
+  // Array slices stored consecutively: 6 for cube maps, size_stack.depth + 1
+  // for stacked textures (dimension 3D with the stacked bit; XenosRecomp
+  // samples those as Texture2DArray through the 3D index table).
+  uint32_t arraySize = 1;
   bool tiled = false;
   bool packedMips = false;
   bool valid = false;
@@ -866,7 +874,12 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
   info.width = (fc2 & 0x1FFF) + 1;
   info.height = ((fc2 >> 13) & 0x1FFF) + 1;
   info.packedMips = ((fc[5].get() >> 11) & 0x1) != 0;
-  info.cube = ((fc[5].get() >> 9) & 0x3) == 3;  // dimension: 0 1D, 1 2D, 2 3D, 3 cube
+  const uint32_t dimension = (fc[5].get() >> 9) & 0x3;  // 0 1D, 1 2D, 2 3D/stacked, 3 cube
+  info.cube = dimension == 3;
+  if (info.cube)
+    info.arraySize = 6;
+  else if (dimension == 2 && ((fc1 >> 10) & 0x1) != 0)  // stacked: size_stack.depth (6 bits)
+    info.arraySize = ((fc2 >> 26) & 0x3F) + 1;
 
   switch (gpuFormat) {
     case 2:  // k_8 (L8/A8)
@@ -967,7 +980,7 @@ bool UploadGuestTextureFace(GuestTexture* texture, const XenosTextureInfo& info,
 bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info) {
   // Cube maps: six faces stored consecutively, each laid out like a 2D level
   // (rows aligned to the 32-texel tile); face i is array slice i.
-  const uint32_t faces = info.cube ? 6u : 1u;
+  const uint32_t faces = info.arraySize;
   bool ok = true;
   for (uint32_t face = 0; face < faces; ++face)
     ok = UploadGuestTextureFace(texture, info, face) && ok;
@@ -1155,6 +1168,7 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
   texture->type = ResourceType::Texture;
   texture->viewDimension = info.cube ? RenderTextureViewDimension::TEXTURE_CUBE
                                      : RenderTextureViewDimension::TEXTURE_2D;
+  texture->depth = info.arraySize;  // stacked: slice count for the host create
 
   bool created = false;
   RenderCommand cmd{};
