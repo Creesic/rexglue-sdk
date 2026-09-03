@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -120,7 +121,7 @@ struct SharedConstants {
   uint32_t swappedBlendWeights = 0;
   float halfPixelOffsetX = 0.0f;
   float halfPixelOffsetY = 0.0f;
-  uint32_t halfPixelPadding = 0;
+  uint32_t swappedPositions = 0;  // PGR4: was padding; XenosRecomp g_SwappedPositions
   float clipPlane[4]{};
   uint32_t clipPlaneEnabled = 0;
   float alphaThreshold = 0.0f;
@@ -151,7 +152,7 @@ static_assert(offsetof(SharedConstants, samplerIndices) == 192);
 static_assert(offsetof(SharedConstants, booleans) == 256);
 static_assert(offsetof(SharedConstants, swappedTexcoords) == 288);
 static_assert(offsetof(SharedConstants, halfPixelOffsetX) == 308);
-static_assert(offsetof(SharedConstants, halfPixelPadding) == 316);
+static_assert(offsetof(SharedConstants, swappedPositions) == 316);
 static_assert(offsetof(SharedConstants, clipPlane) == 320);
 static_assert(offsetof(SharedConstants, clipPlaneEnabled) == 336);
 static_assert(offsetof(SharedConstants, vteFlags) == 352);
@@ -417,6 +418,17 @@ void LogAndResetFrameTrace() {
   g_previousFrameShapeHash = g_frameTrace.shapeHash;
   g_previousDrawDataTrace.swap(g_currentDrawDataTrace);
   g_currentDrawDataTrace.clear();
+  {
+    static const uint32_t captureDraws = [] {
+      const char* v = std::getenv("PGR4_RDOC_CAPTURE_DRAWS");
+      return v != nullptr ? uint32_t(std::strtoul(v, nullptr, 10)) : 0u;
+    }();
+    static bool requested = false;
+    if (captureDraws != 0 && !requested && g_frameTrace.attemptedDraws >= captureDraws) {
+      requested = true;
+      g_rdocCaptureRequested.store(true, std::memory_order_relaxed);
+    }
+  }
   g_frameTrace = {};
 }
 
@@ -1823,6 +1835,7 @@ void ApplyVertexDeclarationMetadata(GuestVertexDeclaration* declaration) {
   g_sharedConstants.packedTexcoordsLo = declaration != nullptr ? declaration->packedTexcoordsLo : 0;
   g_sharedConstants.packedTexcoordsHi = declaration != nullptr ? declaration->packedTexcoordsHi : 0;
   g_sharedConstants.packedBasis = declaration != nullptr ? declaration->packedBasis : 0;
+  g_sharedConstants.swappedPositions = declaration != nullptr ? declaration->swappedPositions : 0;
 
   constexpr uint32_t kDeclarationSpecConstants = SPEC_CONSTANT_R11G11B10_NORMAL |
                                                  SPEC_CONSTANT_UNPACK_UBYTE4_BASIS |
@@ -2677,6 +2690,15 @@ uint32_t PackedVertexMode(uint32_t type) {
   return 1u + family * 3u + kind;
 }
 
+// Integer 16-bit elements (SHORT2/SHORT4/USHORT*): the IA hands the shader
+// the sign/zero-extended integers; modes 10/11 convert them (a bitcast gave
+// NaN texcoords on the PGR4 front-end streetlamps).
+uint32_t Int16VertexMode(uint32_t type) {
+  const uint32_t fmt = type & 0x3Fu;
+  if ((fmt != 0x19u && fmt != 0x1Au) || (type & 0x200u) == 0) return 0;
+  return (type & 0x100u) ? 10u : 11u;
+}
+
 void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
   if (decl == nullptr || decl->inputElements != nullptr)
     return;
@@ -2711,8 +2733,18 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
         decl->hasFloat16Position = true;
       if (isInt16)
         decl->hasInt16Position = true;
-    } else if (e.usage == D3DDECLUSAGE_POSITION && e.usageIndex == 1) {
-      decl->indexVertexStream = e.stream;
+    } else if (e.usage == D3DDECLUSAGE_POSITION && e.usageIndex >= 1) {
+      if (e.usageIndex == 1)
+        decl->indexVertexStream = e.stream;
+      // PGR4: POSITION1..3 hold a FLOAT16_4 per-draw matrix (stride-0 stream);
+      // 16-bit lanes need the .yxwz half-order fix-up in the shader.
+      switch (e.type & 0x3Fu) {
+        case 0x19: case 0x1A: case 0x1F: case 0x20:
+          decl->swappedPositions |= 1u << std::min<uint32_t>(e.usageIndex, 31u);
+          break;
+        default:
+          break;
+      }
     } else if (e.usage == D3DDECLUSAGE_NORMAL || e.usage == D3DDECLUSAGE_TANGENT ||
                e.usage == D3DDECLUSAGE_BINORMAL) {
       // Classify by the fetch-format field (bits 0-5) so variant dwords take
@@ -2743,6 +2775,12 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
           decl->packedTexcoordsLo |= packedMode << (e.usageIndex * 4u);
         else
           decl->packedTexcoordsHi |= packedMode << ((e.usageIndex - 8u) * 4u);
+      }
+      if (const uint32_t intMode = Int16VertexMode(e.type); intMode != 0) {
+        if (e.usageIndex < 8)
+          decl->packedTexcoordsLo |= intMode << (e.usageIndex * 4u);
+        else
+          decl->packedTexcoordsHi |= intMode << ((e.usageIndex - 8u) * 4u);
       }
       switch (e.type & 0x3Fu) {
         case 0x19:  // k_16_16 (SHORT2/SHORT2N/USHORT2N)
@@ -4083,6 +4121,47 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
 
 }  // namespace
 
+// Guest-thread readback of vertex stream 0 (FM2 buffer or raw fetch), for
+// the rect-list expansion of vertex-buffer draws. Returns nullptr when the
+// stream cannot be read.
+static const uint8_t* ReadStream0(GuestDevice* device, uint32_t& stride, uint64_t& size) {
+  stride = uint32_t(device->streamStrideDwords[0]) * 4u;
+  size = 0;
+  const uint32_t address = device->streamSources[0].get();
+  if (address == 0 || stride == 0) return nullptr;
+  auto* buffer = ghp::ToHost<GuestBuffer>(address);
+  if (IsFm2Resource(buffer)) {
+    size = buffer->dataSize;
+    return static_cast<const uint8_t*>(buffer->mappedMemory);
+  }
+  const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
+      reinterpret_cast<const uint8_t*>(device) + 0x778u);
+  const auto* fetchSize = fetchBase + 1;
+  size = DecodeRawBufferSize(fetchSize->get());
+  return SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), 4u, false);
+}
+
+// Same for the bound index buffer; indexStride is 2 or 4.
+static const uint8_t* ReadIndexBuffer(GuestDevice* device, uint32_t& indexStride, uint64_t& size) {
+  indexStride = 0;
+  size = 0;
+  const uint32_t address = device->indexBuffer.get();
+  if (address == 0) return nullptr;
+  auto* buffer = ghp::ToHost<GuestBuffer>(address);
+  if (IsFm2Resource(buffer)) {
+    indexStride = buffer->format == RenderFormat::R32_UINT ? 4u : 2u;
+    size = buffer->dataSize;
+    return static_cast<const uint8_t*>(buffer->mappedMemory);
+  }
+  const auto* common = ghp::ToHost<const rex::be<uint32_t>>(address);
+  const auto* fetchBase = ghp::ToHost<const rex::be<uint32_t>>(address + 0x18u);
+  const auto* fetchSize = ghp::ToHost<const rex::be<uint32_t>>(address + 0x1Cu);
+  if (common == nullptr || fetchBase == nullptr || fetchSize == nullptr) return nullptr;
+  indexStride = (common->get() & 0x80000000u) != 0 ? 4u : 2u;
+  size = DecodeRawBufferSize(fetchSize->get());
+  return SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), indexStride, true);
+}
+
 void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
                   uint32_t vertexCount) {
   if (primitiveType == D3DPT_RECTLIST) {
@@ -4090,25 +4169,11 @@ void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVer
     // and go through the user-pointer path, which expands each rectangle
     // into two triangles (see ExpandRectList). Falls through (half
     // rectangles) only if the stream cannot be read.
-    const uint32_t stride = uint32_t(device->streamStrideDwords[0]) * 4u;
-    const uint32_t address = device->streamSources[0].get();
-    const uint8_t* data = nullptr;
+    uint32_t stride = 0;
     uint64_t size = 0;
-    if (address != 0 && stride != 0) {
-      auto* buffer = ghp::ToHost<GuestBuffer>(address);
-      if (IsFm2Resource(buffer)) {
-        data = static_cast<const uint8_t*>(buffer->mappedMemory);
-        size = buffer->dataSize;
-      } else {
-        const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
-            reinterpret_cast<const uint8_t*>(device) + 0x778u);
-        const auto* fetchSize = fetchBase + 1;
-        data = SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), 4u, false);
-        size = DecodeRawBufferSize(fetchSize->get());
-      }
-    }
+    const uint8_t* data = ReadStream0(device, stride, size);
     const uint64_t needed = (uint64_t(startVertex) + vertexCount) * stride;
-    if (data != nullptr && needed <= size) {
+    if (data != nullptr && stride != 0 && needed <= size) {
       DrawUserPointerVertices(device, primitiveType, vertexCount,
                               data + size_t(startVertex) * stride, stride);
       return;
@@ -4127,6 +4192,36 @@ void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVer
 
 void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
                          uint32_t startIndex, uint32_t indexCount) {
+  if (primitiveType == D3DPT_RECTLIST) {
+    // Indexed rect lists (the PGR4 front-end backdrop): de-index stream 0 on
+    // the guest thread and expand through the user-pointer path.
+    uint32_t stride = 0, indexStride = 0;
+    uint64_t vertexBytes = 0, indexBytes = 0;
+    const uint8_t* vertices = ReadStream0(device, stride, vertexBytes);
+    const uint8_t* indices = ReadIndexBuffer(device, indexStride, indexBytes);
+    const uint64_t indexEnd = (uint64_t(startIndex) + indexCount) * indexStride;
+    if (vertices != nullptr && indices != nullptr && stride != 0 && indexStride != 0 &&
+        indexEnd <= indexBytes && indexCount <= 65535u) {
+      std::vector<uint8_t> deindexed(size_t(indexCount) * stride);
+      bool ok = true;
+      for (uint32_t i = 0; i < indexCount && ok; ++i) {
+        const uint8_t* p = indices + size_t(startIndex + i) * indexStride;
+        uint32_t index;
+        if (indexStride == 4) {
+          rex::be<uint32_t> v; std::memcpy(&v, p, 4); index = v.get();
+        } else {
+          rex::be<uint16_t> v; std::memcpy(&v, p, 2); index = v.get();
+        }
+        const int64_t vertex = int64_t(index) + baseVertexIndex;
+        if (vertex < 0 || (uint64_t(vertex) + 1) * stride > vertexBytes) { ok = false; break; }
+        std::memcpy(deindexed.data() + size_t(i) * stride, vertices + size_t(vertex) * stride, stride);
+      }
+      if (ok) {
+        DrawUserPointerVertices(device, primitiveType, indexCount, deindexed.data(), stride);
+        return;
+      }
+    }
+  }
   LocalRenderCommandQueue queue;
   QueueDrawStateSnapshots(device, queue);
   RenderCommand& cmd = queue.Enqueue();
@@ -4206,16 +4301,17 @@ static std::vector<uint8_t> ExpandRectList(GuestDevice* device, const uint8_t* d
         }
       }
     }
-    // Triangles (v0, v1, v2) and (va, v3, vb): the second shares edge va-vb
-    // with the first, so its winding is kept by ordering it (va, v3, vb) when
-    // (va, vb) appear in that order in the first triangle.
+    // Triangles (v0, v1, v2) and (vb-side, v3, va-side) with the same
+    // winding as the first (checked per corner case with signed areas; the
+    // reversed order got one half culled whenever culling was on):
+    //   corner v0: (v1, v3, v2)   corner v1: (v2, v3, v0)   corner v2: (v0, v3, v1)
     std::memcpy(dst + 0 * stride, v0, stride);
     std::memcpy(dst + 1 * stride, v1, stride);
     std::memcpy(dst + 2 * stride, v2, stride);
-    // Slot 5 currently holds v3; move it to slot 4 and place va/vb around it.
+    // Slot 5 currently holds v3; move it to slot 4 and place the others around it.
     std::memcpy(dst + 4 * stride, v3, stride);
-    std::memcpy(dst + 3 * stride, cornerIndex == 0 ? v2 : cornerIndex == 1 ? v0 : v1, stride);
-    std::memcpy(dst + 5 * stride, cornerIndex == 0 ? v1 : cornerIndex == 1 ? v2 : v0, stride);
+    std::memcpy(dst + 3 * stride, cornerIndex == 0 ? v1 : cornerIndex == 1 ? v2 : v0, stride);
+    std::memcpy(dst + 5 * stride, cornerIndex == 0 ? v2 : cornerIndex == 1 ? v0 : v1, stride);
   }
   return out;
 }

@@ -120,8 +120,12 @@ struct GuestBaseTexture : GuestResource {
   // Frame index of the last guest-memory upload; lets us upload a sampled
   // texture at most once per frame instead of once per draw (huge perf win).
   uint64_t lastUploadFrame = ~0ull;
+  // PGR4: set once the texture has been a resolve destination. Its guest
+  // memory is then stale (the exposure textures hold zeros there), so the
+  // once-per-frame refresh must not clobber the GPU-resolved contents.
+  bool gpuResolved = false;
   bool NeedsGuestUpload(bool requested, uint64_t frame) const {
-    return requested && lastUploadFrame != frame;
+    return requested && !gpuResolved && lastUploadFrame != frame;
   }
   GuestBaseTexture* sourceTexture = nullptr;
   uint32_t pendingResolveCount = 0;
@@ -205,6 +209,7 @@ struct GuestVertexDeclaration : GuestResource {
   uint32_t packedTexcoordsLo = 0;
   uint32_t packedTexcoordsHi = 0;
   uint32_t packedBasis = 0;
+  uint32_t swappedPositions = 0;  // PGR4: POSITION1+ 16-bit elements needing .yxwz
   uint32_t indexVertexStream = 0;
   bool hasR11G11B10Normal = false;
   bool hasUByte4TangentBasis = false;

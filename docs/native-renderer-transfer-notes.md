@@ -439,3 +439,42 @@ and `decode_post_vs_outputs` gave the same clip position for every vertex.
   `read_constant_buffer` and `get_shader` (disassembly) worked and were
   enough.
 
+## Title screen against the reference (2026-09-03, late)
+
+Reference: light grey backdrop, red/black silhouette skyline, black crowd
+behind a fence, properly lit red car. From the user-provided captures
+(`renderdoccaps/pgr4_ps1.rdc`, `pgr4_ps2.rdc`):
+
+- **Streetlamps white** (EID 14719): the lamp texcoords are `SHORT2`
+  (integer 16-bit) and were bit-cast to NaN; `Int16VertexMode` publishes
+  unpack modes 10/11 (signed/unsigned int16 -> float) through the same
+  `unpackTexcoord` path. Their cube-map slots also sat on the null
+  descriptor before cube maps were translated.
+- **Crowd stretched off screen** (EID 16295 / 22691): the crowd shader takes
+  a per-draw FLOAT16x4 matrix in POSITION1..3 from a stride-0 stream; the
+  16-bit lanes need the same `.yxwz` half-order fix-up as POSITION0.
+  `g_SwappedPositions` (shared constant 316, the former half-pixel padding)
+  carries a per-usage-index mask, set for 16-bit POSITION1+ elements, and
+  XenosRecomp wraps those fetches in `swapFloats`.
+- **Half rectangles** (EID ~26247 and the diagonal split): the rectangle
+  expansion emitted the synthesized triangle with reversed winding, so
+  with culling on one half of every expanded rectangle (the scene-to-UI
+  composite quad among them) was culled. Fixed per corner case; indexed
+  rect lists (`DrawIndexedVertices`) are now de-indexed and expanded too.
+- The XenosRecomp serial retry now makes up to four passes (one pass still
+  left the flaky r63 shader out of one regen).
+- Capture policy: no automated RenderDoc runs; the user drops captures in
+  `renderdoccaps/`. `PGR4_RDOC_CAPTURE_DRAWS=<n>` triggers one capture at the
+  first frame issuing that many draws if a manual run wants it.
+- **Blown-out title scene (exposure)**: the tonemap draw scales the scene by
+  a factor derived from a 1x1 R32_FLOAT exposure texture. The adaptation
+  draw computes `prev + (1 - exp2(-0.874 * dt)) * (avgLum - prev)`, but
+  `prev` sampled as 0 every frame: both 1x1 textures are resolve
+  destinations whose guest memory holds zeros, and the once-per-frame
+  guest refresh (`FindAndRefreshGuestTexture`) re-uploaded that memory over
+  the GPU-resolved value. Exposure therefore stayed at 2% of the target
+  (0.01 instead of ~0.5) and the tonemap gain was ~20x. `GuestBaseTexture::
+  gpuResolved` is set in `ResolveHook` and `NeedsGuestUpload` skips such
+  textures. Ceiling: a texture the game resolves into once and later
+  rewrites from the CPU would go stale (none seen so far).
+

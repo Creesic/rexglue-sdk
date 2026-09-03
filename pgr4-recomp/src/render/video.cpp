@@ -839,6 +839,11 @@ bool Video::Present(pgr4::render::GuestBaseTexture* frontBuffer) {
     if (presentIndex == 1) {
       REXGPU_INFO("RenderDoc probe: api={} captureAt={}", rdocApi != nullptr, captureAt);
     }
+    if (rdocApi != nullptr &&
+        ::g_rdocCaptureRequested.exchange(false, std::memory_order_relaxed)) {
+      rdocApi->TriggerCapture();
+      REXGPU_INFO("RenderDoc: TriggerCapture (draw-count trigger) at present {}", presentIndex);
+    }
     if (rdocApi != nullptr && captureAt != 0 && presentIndex == captureAt) {
       rdocApi->TriggerCapture();
       REXGPU_INFO("RenderDoc: TriggerCapture at present {}", presentIndex);

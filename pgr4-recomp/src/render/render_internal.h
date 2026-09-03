@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -102,3 +104,9 @@ struct GuestVertexDeclaration;
 std::vector<GuestVertexDeclaration*> SnapshotGameDeclarations();
 
 }  // namespace pgr4::render
+
+// PGR4 diagnostics: set by the frame trace when a frame issues at least
+// PGR4_RDOC_CAPTURE_DRAWS draws; Video::Present turns it into one RenderDoc
+// capture (present-index triggers miss under RenderDoc's lower frame rate).
+inline std::atomic<bool> g_rdocCaptureRequested{false};
+

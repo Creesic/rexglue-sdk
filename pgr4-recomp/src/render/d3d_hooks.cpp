@@ -1266,6 +1266,7 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
     return;
   }
 
+  reo->gpuResolved = true;
   const bool destIsBlockCompressed = reo->format >= plume::RenderFormat::BC1_TYPELESS &&
                                      reo->format <= plume::RenderFormat::BC7_UNORM_SRGB;
   if (destIsBlockCompressed) {
