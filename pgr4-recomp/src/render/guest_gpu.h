@@ -79,6 +79,15 @@ class Pgr4GraphicsSystem final : public rex::system::IGraphicsSystem {
   // Reports the ring as consumed up to the current write pointer.
   void PublishReadPointer();
 
+  // Minimal PM4 executor. Walks [read, write) and applies only the packets
+  // whose side effects the guest's D3D library polls for during bring-up:
+  // type-0 register writes, WAIT_REG_MEM on the coherency handshake, and
+  // INDIRECT_BUFFER recursion. Draws, constants, events -- everything the
+  // native renderer intercepts at the D3D API instead -- are skipped by count.
+  void ExecutePackets(const uint8_t* buffer, uint32_t dword_count, uint32_t depth);
+  void ExecuteRing(uint32_t write_index);
+  void ApplyRegisterWrite(uint32_t reg, uint32_t value);
+
   void WorkerMain();
 
   rex::runtime::FunctionDispatcher* function_dispatcher_ = nullptr;
@@ -95,6 +104,28 @@ class Pgr4GraphicsSystem final : public rex::system::IGraphicsSystem {
   // RPtrWriteBack asked us to publish the read pointer to (0 until then).
   std::atomic<uint32_t> write_ptr_index_{0};
   std::atomic<uint32_t> read_ptr_writeback_{0};
+
+  // Physical base of the primary ring, from VdInitializeRingBuffer. Kept so
+  // the first submission can be dumped and decoded: the guest submits one
+  // init batch and then waits on its side effects, and we need to see exactly
+  // which packets those are.
+  std::atomic<uint32_t> ring_base_{0};
+
+  // PM4_INTERRUPT packets set bits here (one per target CPU); the worker
+  // drains them and delivers the guest callback with source=1. They cannot be
+  // dispatched from ExecuteRing itself, which runs inside the guest's own
+  // CP_RB_WPTR store -- re-entering guest code from the middle of one of its
+  // instructions is not something the recompiled code can survive.
+  std::atomic<uint32_t> pending_cpu_interrupts_{0};
+
+  // Mirrors the command processor's event counter: advanced once per vblank
+  // and once per XE_SWAP, and written into memory by EVENT_WRITE_SHD packets
+  // that ask for the counter rather than an immediate. Guest fences read it.
+  std::atomic<uint32_t> event_counter_{0};
+  uint32_t ring_size_dwords_ = 0;
+  // Only touched from the guest thread that stores CP_RB_WPTR (execution runs
+  // synchronously inside that MMIO write), so no atomic needed.
+  uint32_t read_ptr_index_ = 0;
 
   std::atomic<bool> worker_running_{false};
   bool has_presentation_ = false;
