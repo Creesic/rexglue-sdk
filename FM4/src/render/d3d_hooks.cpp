@@ -76,11 +76,11 @@ enum Counter : size_t {
   kCreatePS,
   kLock,
   kUnlock,
-  kPassthrough,
+  kPassCalls,
   kCounterCount
 };
 constexpr const char* kCounterNames[kCounterCount] = {"vb",  "ib", "tex",  "surf",   "decl",
-                                                      "vs",  "ps", "lock", "unlock", "passthru"};
+                                                      "vs",  "ps", "lock", "unlock", "passcalls"};
 std::atomic<uint32_t> g_counters[kCounterCount]{};
 void Bump(Counter c) { g_counters[c].fetch_add(1, std::memory_order_relaxed); }
 
@@ -260,7 +260,7 @@ extern "C" REX_FUNC(D3DDevice_CreatePixelShader) {
 // ---------------------------------------------------------------------------
 // Lock / unlock / describe / refcount: conditional replacements. Objects the
 // guest built through the XG* header API are not ours -- IsFm4Resource is
-// false and the original body runs (counted as "passthru").
+// false and the original body runs (counted as "passcalls").
 // ---------------------------------------------------------------------------
 
 // D3DVertexBuffer_Lock(pThis, OffsetToLock, SizeToLock, Flags) @0x82386BF8.
@@ -274,7 +274,7 @@ extern "C" REX_FUNC(D3DVertexBuffer_Lock) {
   }
   auto* host = OurResource(ctx.r3.u32);
   if (host == nullptr) {
-    Bump(kPassthrough);
+    Bump(kPassCalls);
     __imp__D3DVertexBuffer_Lock(ctx, base);
     return;
   }
@@ -291,7 +291,7 @@ extern "C" REX_FUNC(D3DIndexBuffer_Lock) {
   }
   auto* host = OurResource(ctx.r3.u32);
   if (host == nullptr) {
-    Bump(kPassthrough);
+    Bump(kPassCalls);
     __imp__D3DIndexBuffer_Lock(ctx, base);
     return;
   }
@@ -309,7 +309,7 @@ extern "C" REX_FUNC(D3DSurface_LockRect) {
   }
   auto* host = OurResource(ctx.r3.u32);
   if (host == nullptr) {
-    Bump(kPassthrough);
+    Bump(kPassCalls);
     __imp__D3DSurface_LockRect(ctx, base);
     return;
   }
@@ -330,7 +330,7 @@ extern "C" REX_FUNC(D3DTexture_LockRect) {
   }
   auto* host = OurResource(ctx.r3.u32);
   if (host == nullptr) {
-    Bump(kPassthrough);
+    Bump(kPassCalls);
     __imp__D3DTexture_LockRect(ctx, base);
     return;
   }
@@ -354,7 +354,7 @@ extern "C" REX_FUNC(D3D_UnlockResource) {
   }
   auto* host = OurResource(ctx.r3.u32);
   if (host == nullptr) {
-    Bump(kPassthrough);
+    Bump(kPassCalls);
     __imp__D3D_UnlockResource(ctx, base);
     return;
   }
@@ -370,7 +370,7 @@ extern "C" REX_FUNC(D3DSurface_GetDesc) {
   }
   auto* host = OurResource(ctx.r3.u32);
   if (host == nullptr) {
-    Bump(kPassthrough);
+    Bump(kPassCalls);
     __imp__D3DSurface_GetDesc(ctx, base);
     return;
   }
@@ -392,7 +392,7 @@ extern "C" REX_FUNC(D3DResource_GetType) {
   }
   auto* host = OurResource(ctx.r3.u32);
   if (host == nullptr) {
-    Bump(kPassthrough);
+    Bump(kPassCalls);
     __imp__D3DResource_GetType(ctx, base);
     return;
   }
@@ -406,7 +406,10 @@ extern "C" REX_FUNC(D3DResource_GetType) {
     case fm4::render::ResourceType::VertexDeclaration: type = 5; break;
     case fm4::render::ResourceType::VertexShader: type = 6; break;
     case fm4::render::ResourceType::PixelShader: type = 7; break;
-    case fm4::render::ResourceType::VolumeTexture: type = 14; break;
+    // 17, not 14: this XDK shifts the texture-family tail (0x822E5CE0 is
+    // `li r11,0x11` for the volume branch), and d3d_resources.cpp already
+    // treats D3DType 17 as D3DRTYPE_VOLUMETEXTURE.
+    case fm4::render::ResourceType::VolumeTexture: type = 17; break;
   }
   ctx.r3.u64 = type;
 }
@@ -422,7 +425,7 @@ extern "C" REX_FUNC(D3DResource_AddRef) {
   }
   auto* host = OurResource(ctx.r3.u32);
   if (host == nullptr) {
-    Bump(kPassthrough);
+    Bump(kPassCalls);
     __imp__D3DResource_AddRef(ctx, base);
     return;
   }
@@ -436,7 +439,7 @@ extern "C" REX_FUNC(D3DResource_Release) {
   }
   auto* host = OurResource(ctx.r3.u32);
   if (host == nullptr) {
-    Bump(kPassthrough);
+    Bump(kPassCalls);
     __imp__D3DResource_Release(ctx, base);
     return;
   }
@@ -450,7 +453,7 @@ extern "C" REX_FUNC(D3DResource_Release) {
 }
 
 // ---------------------------------------------------------------------------
-// temporary until Task 7 replaces these with the real draw hooks
+// temporary until Tasks 7/8 replace these with the real hooks
 //
 // The guest's own draw submitters walk the bound D3DVertexDeclaration and
 // vertex/index buffer headers to build fetch constants and flush pending state
@@ -461,9 +464,7 @@ extern "C" REX_FUNC(D3DResource_Release) {
 // colour; under xenos they are untouched. FM4's D3D library exposes exactly
 // these three submitters (ida40 symbol sweep for /draw/): there is no separate
 // D3DDevice_DrawVertices or D3DDevice_DrawVerticesUP symbol -- game code calls
-// D3D_DrawVertices_Core directly for un-indexed draws. D3DDevice_BeginVertices
-// is deliberately NOT stubbed: it returns the ring pointer the guest then
-// writes its vertices into, so a no-op would hand back a null.
+// D3D_DrawVertices_Core directly for un-indexed draws.
 // ---------------------------------------------------------------------------
 
 extern "C" REX_FUNC(D3D_DrawVertices_Core) {

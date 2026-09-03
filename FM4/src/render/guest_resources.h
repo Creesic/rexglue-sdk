@@ -68,8 +68,8 @@ struct GuestResource {
   // it through an arbitrary guest pointer to identify our objects.
   uint32_t magic = kFm4ResourceMagic;
   // Host LE atomic. Guest D3DResource_AddRef/Release use BE lwarx/stwcx on
-  // this same offset -- those paths must be fully hooked for FM2 objects
-  // (see D3DResource_AddRef @ 0x82369D90 / D3DResource_Release @ 0x82369E08)
+  // this same offset -- those paths must be fully hooked for our objects
+  // (see D3DResource_AddRef @ 0x82392748 / D3DResource_Release @ 0x82386FB8)
   // or refcount corruption / double-free.
   std::atomic<uint32_t> refCount{1};
   // Guest-owned bytes: fences, identifier, BaseFlush and the fetch constant.
