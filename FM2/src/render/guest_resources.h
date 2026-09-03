@@ -105,9 +105,24 @@ struct GuestBaseTexture : GuestResource {
   // StretchRectShaderBlit must fail closed on non-RT destinations: drawing into
   // a NONE-flag resource makes D3D12 remove the device (invalid RTV).
   bool hostRenderTargetCapable = false;
+  // Xbox 360 D3DFORMAT bit 8 (0x100): the guest treats this texture's memory
+  // as TILED. Lock/Unlock writers produce pre-tiled GPU-ready bytes (asset
+  // blobs / XGTileTextureLevel), so the unlock upload must untile them.
+  bool guestTiled = false;
+  // Size of the lock staging allocation backing mappedMemory (bounds guard for
+  // the tiled unlock read pattern).
+  uint32_t mappedSizeBytes = 0;
+  // Mip level the current Lock targets (D3DTexture_LockRect's Level param).
+  // Unlock uploads into this subresource; surfaces are always level 0.
+  uint32_t lockedLevel = 0;
+  // Total mip levels of the host texture (1 for surfaces).
+  uint32_t levels = 1;
   // Frame index of the last guest-memory upload; lets us upload a sampled
   // texture at most once per frame instead of once per draw (huge perf win).
   uint64_t lastUploadFrame = ~0ull;
+  bool NeedsGuestUpload(bool requested, uint64_t frame) const {
+    return requested && lastUploadFrame != frame;
+  }
   GuestBaseTexture* sourceTexture = nullptr;
   uint32_t pendingResolveCount = 0;
   std::vector<PendingResolve> pendingResolves;
@@ -121,7 +136,6 @@ struct GuestBaseTexture : GuestResource {
 // D3DFMT_* texture/volume texture.
 struct GuestTexture : GuestBaseTexture {
   uint32_t depth = 0;
-  uint32_t levels = 1;
   plume::RenderTextureViewDimension viewDimension = plume::RenderTextureViewDimension::TEXTURE_2D;
   std::unique_ptr<plume::RenderFramebuffer> framebuffer;
   // Unleashed StretchRect link: surface this texture will receive a resolve/

@@ -104,9 +104,6 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/plume/CMakeLists.
         fm2_compile_dxil_shader(FM2_BLIT_SHADER_HEADERS
             src/render/shaders/copy_ps.hlsl ps_6_0 main g_copy_ps_dxil
             render/shaders copy_ps.hlsl)
-        fm2_compile_dxil_shader(FM2_BLIT_SHADER_HEADERS
-            src/render/shaders/placeholder_ps.hlsl ps_6_0 main g_placeholder_ps_dxil
-            render/shaders placeholder_ps.hlsl)
         add_custom_target(fm2_blit_shaders DEPENDS ${FM2_BLIT_SHADER_HEADERS})
         add_dependencies(fm2 fm2_blit_shaders)
         target_sources(fm2 PRIVATE ${FM2_BLIT_SHADER_HEADERS})
@@ -147,3 +144,38 @@ endif()
 
 enable_testing()
 add_subdirectory(tests)
+
+set(FM2_XENOS_RECOMP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../tools/XenosRecomp")
+if(EXISTS "${FM2_XENOS_RECOMP_ROOT}/XenosRecomp/CMakeLists.txt")
+    set(XENOS_RECOMP_THIRDPARTY_ROOT "${FM2_XENOS_RECOMP_ROOT}/thirdparty")
+    if(WIN32 AND NOT CMAKE_SYSTEM_PROCESSOR)
+        if(CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
+            set(CMAKE_SYSTEM_PROCESSOR AMD64)
+        elseif(CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "ARM64")
+            set(CMAKE_SYSTEM_PROCESSOR ARM64)
+        endif()
+    endif()
+    add_subdirectory("${FM2_XENOS_RECOMP_ROOT}/thirdparty"
+        "${CMAKE_CURRENT_BINARY_DIR}/XenosRecomp/thirdparty" EXCLUDE_FROM_ALL)
+    add_subdirectory("${FM2_XENOS_RECOMP_ROOT}/XenosRecomp"
+        "${CMAKE_CURRENT_BINARY_DIR}/XenosRecomp/tool" EXCLUDE_FROM_ALL)
+
+    add_custom_target(fm2_regenerate_shader_cache
+        COMMAND "${CMAKE_COMMAND}"
+            "-DXENOS_RECOMP=$<TARGET_FILE:XenosRecomp>"
+            "-DINPUT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/assets/missed_shaders"
+            "-DSHADER_COMMON=${FM2_XENOS_RECOMP_ROOT}/XenosRecomp/shader_common.h"
+            "-DOUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/generated/shader_cache.cpp"
+            "-DVERIFY_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyShaderCache.cmake"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/RegenerateShaderCache.cmake"
+        DEPENDS
+            XenosRecomp
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/RegenerateShaderCache.cmake"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyShaderCache.cmake"
+        COMMENT "Regenerating the verified 158-shader FM2 cache"
+        VERBATIM
+        USES_TERMINAL
+    )
+else()
+    message(WARNING "tools/XenosRecomp is not initialized; shader-cache regeneration is unavailable")
+endif()

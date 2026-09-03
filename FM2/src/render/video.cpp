@@ -813,9 +813,9 @@ void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t w
 
 }  // namespace fm2::render
 
-void Video::Present() {
+bool Video::Present(fm2::render::GuestBaseTexture* frontBuffer) {
   if (!g_initialized || fm2::render::IsDeviceLost()) {
-    return;
+    return false;
   }
 
 #if defined(_WIN32)
@@ -859,7 +859,14 @@ void Video::Present() {
           "Video::Present: dropped, previous present still in flight ({} dropped so far)",
           droppedBusyCount);
     }
-    return;
+    return false;
+  }
+
+  // A dropped Swap must not replace the frontbuffer of the frame that won
+  // admission. A null lookup deliberately preserves the existing sticky
+  // fallback selected by ExecuteCommandListImpl.
+  if (frontBuffer != nullptr && frontBuffer->texture != nullptr) {
+    fm2::render::SetFrontbufferPresentSource(frontBuffer);
   }
 
   // One atomic render-thread job: submit + swapchain present + slot advance +
@@ -872,6 +879,7 @@ void Video::Present() {
   fm2::render::RenderQueue::Run(cmd);
 
   g_presentBusy.store(false, std::memory_order_release);
+  return true;
 }
 
 void Video::WaitForGPU() {

@@ -1,15 +1,8 @@
 // render/render_state.h
 //
-// Phase 3 (render state + pipeline/shaders): state setters, shader load/PSO
-// cache, texture/sampler binding. Still no draws (Phase 4).
-//
-// Trimmed from the reference repo's render_state.h, which also declared a
-// large VRAM-viewer/present-diagnostics API (SetTestGameTexture,
-// RecordVramViewTexture, GetSceneResolveSource, SetScenePresentRT, ...) and
-// PM4-record/replay-specific plumbing (SnapshotSurfaceForResolve,
-// SetStreamSourceGuestData/HostWindow, StretchRect) that belongs to the
-// abandoned diagnostic subsystem or to the Phase 4 constant-transport
-// rebuild, not here.
+// Native D3D state, shader/PSO, resource binding, and draw translation. The
+// historical VRAM viewer and object-pass replay diagnostics are intentionally
+// outside this interface.
 
 #pragma once
 
@@ -29,7 +22,7 @@ void NotifyRenderFrameBegin();
 
 void SetRenderState(GuestDevice* device, uint32_t state, uint32_t value);
 void SetViewportEnable(GuestDevice* device, uint32_t value);
-void UpdateClipPlaneConstants(GuestDevice* device);
+void SetClipPlaneState(GuestDevice* device, uint32_t enabledMask);
 void SetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc);
 
 struct GuestStencilState {
@@ -41,10 +34,11 @@ struct GuestStencilState {
 };
 void SetStencilState(const GuestStencilState& s);
 
-void SetTexture(GuestDevice* device, uint32_t index, GuestTexture* texture);
+void SetTexture(GuestDevice* device, uint32_t index, GuestTexture* texture, uint32_t guestAddress);
 // Bind a non-GuestTexture GuestBaseTexture (render-target / depth surface used
 // as a shader resource). Clears any stale GuestTexture alias at this slot.
-void SetTextureBase(GuestDevice* device, uint32_t index, GuestBaseTexture* texture);
+void SetTextureBase(GuestDevice* device, uint32_t index, GuestBaseTexture* texture,
+                    uint32_t guestAddress);
 
 // Translates a raw XG-header guest texture object (created via the low-level
 // XGSetTextureHeader XDK API rather than D3DDevice_CreateTexture, so it has
@@ -54,8 +48,8 @@ void SetTextureBase(GuestDevice* device, uint32_t index, GuestBaseTexture* textu
 // header's fetch constant can't be parsed (unsupported format, zero base,
 // etc.) or the texture could not be created.
 GuestTexture* TranslateGuestTexture(void* guestHeader, bool uploadGuestData);
-// Same translation, but starting directly from a GPUTEXTURE_FETCH_CONSTANT
-// (as bound by the PM4 command stream) rather than a full XG texture header.
+// Same translation, but starting directly from a raw
+// GPUTEXTURE_FETCH_CONSTANT rather than a full XG texture header.
 GuestTexture* TranslateGuestTextureFetch(const void* guestFetch, bool uploadGuestData);
 
 void SetVertexShader(GuestDevice* device, GuestShader* shader);
@@ -73,11 +67,6 @@ void SetRenderTarget(GuestDevice* device, uint32_t index, GuestBaseTexture* rend
 void SetImplicitRenderTarget(GuestBaseTexture* renderTarget);
 GuestBaseTexture* GetCurrentColorRenderTarget();
 
-// Marks the currently-bound color render target as this frame's present
-// source. Call right before Video::Present() (from whichever hook is the
-// live present trigger) -- without this, Present() never has a front buffer
-// to blit and always falls back to a flat clear color.
-void PrepareFramePresent();
 void SetDepthStencilSurface(GuestDevice* device, GuestSurface* depthStencil);
 
 // Drain pending StretchRect / Resolve copies (and MSAA resolves) into their
@@ -136,12 +125,5 @@ void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t ba
 // stream 0's tracked GuestBuffer binding surviving a call to this function.
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                              const void* data, uint32_t stride);
-
-// True while inside a FM2_Render_ScopedBatchBegin/Finalize bracket. The lower
-// command-buffer batch hooks capture these object-pass draws and replay them
-// from their persistent clone with record-time state plus live traversal
-// constants; FlushRenderState therefore always resolves the real pixel shader.
-void SetInsideRecordedBatch(bool inside);
-bool IsInsideRecordedBatch();
 
 }  // namespace fm2::render

@@ -8,9 +8,11 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 
 namespace fm2::render {
 
@@ -78,6 +80,106 @@ struct PendingShaderConstantFile {
   }
 };
 
+// State that FM2 patches into a reusable D3D command buffer immediately
+// before execution. Keep this producer-owned copy independent of the recorded
+// template commands: the guest context can advance before the render thread
+// reaches the replay job.
+struct DeferredExecutionSnapshot {
+  static constexpr uint32_t kVsConstantOffset = 0x700;
+  static constexpr uint32_t kVsConstantBytes = 12 * 16;
+  static constexpr uint32_t kPsConstantOffset = 0x1700;
+  static constexpr uint32_t kPsConstantBytes = 224 * 16;
+  static constexpr uint32_t kVsBooleanOffset = 0x2700;
+  static constexpr uint32_t kPsBooleanOffset = 0x2710;
+  static constexpr uint32_t kContextBytes = 0x2720;
+
+  std::array<uint8_t, kVsConstantBytes> vertexConstants{};
+  std::array<uint8_t, kPsConstantBytes> pixelConstants{};
+  std::array<uint32_t, 8> booleans{};
+};
+
+static_assert(std::is_trivially_copyable_v<DeferredExecutionSnapshot>);
+static_assert(sizeof(DeferredExecutionSnapshot) == 3808);
+
+inline bool CaptureDeferredExecutionSnapshot(DeferredExecutionSnapshot& snapshot,
+                                             const uint8_t* context) {
+  if (context == nullptr)
+    return false;
+
+  std::memcpy(snapshot.vertexConstants.data(),
+              context + DeferredExecutionSnapshot::kVsConstantOffset,
+              snapshot.vertexConstants.size());
+  std::memcpy(snapshot.pixelConstants.data(),
+              context + DeferredExecutionSnapshot::kPsConstantOffset,
+              snapshot.pixelConstants.size());
+  for (uint32_t i = 0; i < 4; ++i) {
+    uint32_t word;
+    std::memcpy(&word, context + DeferredExecutionSnapshot::kVsBooleanOffset + i * sizeof(word),
+                sizeof(word));
+    snapshot.booleans[i] = std::byteswap(word);
+    std::memcpy(&word, context + DeferredExecutionSnapshot::kPsBooleanOffset + i * sizeof(word),
+                sizeof(word));
+    snapshot.booleans[4 + i] = std::byteswap(word);
+  }
+  return true;
+}
+
+inline bool NormalizeUnitFullscreenUpQuad(uint8_t* data, uint32_t vertexCount, uint32_t stride,
+                                          uint32_t bytes) {
+  if (data == nullptr || vertexCount != 4 || stride != 20 || bytes != vertexCount * stride)
+    return false;
+
+  auto read = [](const uint8_t* source) {
+    uint32_t word;
+    std::memcpy(&word, source, sizeof(word));
+    return std::bit_cast<float>(std::byteswap(word));
+  };
+  float minX = read(data), maxX = minX;
+  float minY = read(data + 4), maxY = minY;
+  float minU = read(data + 12), maxU = minU;
+  float minV = read(data + 16), maxV = minV;
+  if (!std::isfinite(minX) || !std::isfinite(minY) || !std::isfinite(minU) ||
+      !std::isfinite(minV)) {
+    return false;
+  }
+  for (uint32_t vertex = 1; vertex < vertexCount; ++vertex) {
+    const uint8_t* source = data + vertex * stride;
+    const float x = read(source);
+    const float y = read(source + 4);
+    const float u = read(source + 12);
+    const float v = read(source + 16);
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(u) || !std::isfinite(v))
+      return false;
+    minX = std::min(minX, x);
+    maxX = std::max(maxX, x);
+    minY = std::min(minY, y);
+    maxY = std::max(maxY, y);
+    minU = std::min(minU, u);
+    maxU = std::max(maxU, u);
+    minV = std::min(minV, v);
+    maxV = std::max(maxV, v);
+  }
+  constexpr float kTolerance = 1.0e-6f;
+  auto isNear = [=](float value, float expected) {
+    return std::fabs(value - expected) <= kTolerance;
+  };
+  if (!isNear(minX, 0.0f) || !isNear(maxX, 1.0f) || !isNear(minY, 0.0f) || !isNear(maxY, 1.0f) ||
+      !isNear(minU, 0.0f) || !isNear(maxU, 1.0f) || !isNear(minV, 0.0f) || !isNear(maxV, 1.0f)) {
+    return false;
+  }
+
+  auto write = [](uint8_t* destination, float value) {
+    const uint32_t word = std::byteswap(std::bit_cast<uint32_t>(value));
+    std::memcpy(destination, &word, sizeof(word));
+  };
+  for (uint32_t vertex = 0; vertex < vertexCount; ++vertex) {
+    uint8_t* destination = data + vertex * stride;
+    write(destination, read(destination) * 2.0f - 1.0f);
+    write(destination + 4, 1.0f - read(destination + 4) * 2.0f);
+  }
+  return true;
+}
+
 struct GuestBaseTexture;
 struct GuestBuffer;
 struct GuestResource;
@@ -112,6 +214,7 @@ enum class RenderCommandType : uint32_t {
   SetDepthStencilSurface,
   SetRenderState,
   SetViewportEnable,
+  SetClipPlaneState,
   SetDepthState,
   SetStencilState,
   SetTexture,
@@ -184,6 +287,11 @@ struct RenderCommand {
     } setViewportEnable;
 
     struct {
+      uint32_t enabled;
+      float plane[4];
+    } setClipPlaneState;
+
+    struct {
       uint32_t zEnable;
       uint32_t zWriteEnable;
       uint32_t cmpFunc;
@@ -200,11 +308,13 @@ struct RenderCommand {
     struct {
       uint32_t index;
       GuestTexture* texture;
+      uint32_t guestAddress;
     } setTexture;
 
     struct {
       uint32_t index;
       GuestBaseTexture* texture;
+      uint32_t guestAddress;
     } setTextureBase;
 
     struct {
@@ -215,7 +325,7 @@ struct RenderCommand {
     } setSamplerState;
 
     struct {
-      uint32_t booleans;
+      uint32_t words[8];
     } setBooleans;
 
     struct {
@@ -358,6 +468,8 @@ struct RenderCommand {
 };
 
 void DispatchRenderCommand(const RenderCommand& cmd);
+void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
+                                    const DeferredExecutionSnapshot* executionSnapshot);
 
 void ProcExecuteCommandList();
 void ProcBeginCommandList();
@@ -376,6 +488,7 @@ void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t w
 void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint32_t height,
                                      uint32_t format, uint32_t baseAddress, bool* createdOut);
 void ProcSetViewportEnable(uint32_t value);
+void ProcSetClipPlaneState(uint32_t enabled, const float* plane);
 void ProcSetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc);
 void ProcSetStencilState(uint32_t enable, uint32_t twoSided, uint32_t frontFunc, uint32_t frontFail,
                          uint32_t frontDepthFail, uint32_t frontPass, uint32_t backFunc,

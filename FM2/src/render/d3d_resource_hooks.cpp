@@ -121,6 +121,20 @@ uint32_t ComputeTexturePitch(const GuestBaseTexture* texture) {
   return (pitch + 255u) & ~255u;
 }
 
+// Pitch for an arbitrary mip width of the same texture (256-aligned like
+// ComputeTexturePitch). BC formats still use byte-per-texel granularity here
+// because the guest lock pitch contract predates the BC-aware upload path;
+// the unlock path recomputes block geometry itself.
+uint32_t ComputeTexturePitchForWidth(const GuestBaseTexture* texture, uint32_t width) {
+  uint32_t bpp = FormatBytes(texture->format);
+  uint32_t pitch = width * bpp;
+  return (pitch + 255u) & ~255u;
+}
+
+// Defined in the guest-translate section below; shared with the tiled
+// Lock/Unlock upload path.
+uint32_t TiledOffset2D(uint32_t x, uint32_t y, uint32_t width, uint32_t bytesPerElement);
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -309,6 +323,8 @@ void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t heigh
                            uint32_t levels, uint32_t usage, uint32_t format, bool volume) {
   if (texture == nullptr || IsDeviceLost()) return;
   PublishGuestFetchConstant(texture, format, width, height);
+  // D3DFORMAT bit 8: guest memory layout for this texture is tiled.
+  texture->guestTiled = (format & 0x100u) != 0;
 
   RenderTextureDesc desc;
   desc.dimension = volume ? RenderTextureDimension::TEXTURE_3D : RenderTextureDimension::TEXTURE_2D;
@@ -553,13 +569,24 @@ void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t heigh
 // LockRect returns pitch + a guest-visible staging pointer. Shared by
 // D3DDevice_CreateTexture-created textures and D3DDevice_CreateSurface-created
 // render targets/depth-stencil surfaces alike (both derive GuestBaseTexture).
-void LockRect(GuestBaseTexture* texture, uint32_t* outPitch, uint32_t* outBits) {
-  uint32_t pitch = ComputeTexturePitch(texture);
-  uint32_t slicePitch = pitch * texture->height;
+// `level` selects the mip being locked (D3DTexture_LockRect's Level param);
+// surfaces always lock level 0. The staging allocation covers mip 0 (the
+// largest level), so deeper mips reuse it safely.
+void LockRect(GuestBaseTexture* texture, uint32_t level, uint32_t* outPitch, uint32_t* outBits) {
+  if (texture->levels != 0)
+    level = std::min(level, texture->levels - 1u);
+  const uint32_t mipWidth = std::max(texture->width >> level, 1u);
+  uint32_t pitch = ComputeTexturePitchForWidth(texture, mipWidth);
   if (texture->mappedMemory == nullptr) {
-    uint32_t addr = GuestAllocRaw(slicePitch, 0x10);
+    // Allocate for mip 0 so one staging block serves every level of this
+    // texture (the guest locks levels one at a time).
+    const uint32_t fullPitch = ComputeTexturePitch(texture);
+    const uint32_t fullSize = fullPitch * std::max(texture->height, 1u);
+    uint32_t addr = GuestAllocRaw(fullSize, 0x10);
     texture->mappedMemory = ToHost<void>(addr);
+    texture->mappedSizeBytes = fullSize;
   }
+  texture->lockedLevel = level;
   if (outPitch)
     *outPitch = pitch;
   if (outBits)
@@ -579,10 +606,75 @@ void ProcUnlockTextureRect(GuestBaseTexture* texture) {
   if (texture == nullptr || texture->mappedMemory == nullptr || texture->texture == nullptr)
     return;
 
-  uint32_t pitch = ComputeTexturePitch(texture);
-  uint32_t slicePitch = pitch * texture->height;
+  // Geometry of the LOCKED mip level (D3DTexture_LockRect's Level param,
+  // recorded by LockRect). Uploading every level over mip 0 left mips 1+
+  // uninitialized -> minified sampling read garbage (or the game's intended
+  // pinstripe backgrounds aliased into harsh stripes).
+  const uint32_t level =
+      texture->levels != 0 ? std::min(texture->lockedLevel, texture->levels - 1u) : 0u;
+  const uint32_t mipWidth = std::max(texture->width >> level, 1u);
+  const uint32_t mipHeight = std::max(texture->height >> level, 1u);
+  uint32_t pitch = ComputeTexturePitchForWidth(texture, mipWidth);
+  uint32_t slicePitch = pitch * mipHeight;
 
-  RenderBufferReference ref = UploadFrameData(texture->mappedMemory, slicePitch, false);
+  // Xbox 360 Lock on a tiled-format texture exposes raw TILED memory (Lock
+  // never untiles; writers memcpy pre-tiled asset bytes). Uploading those
+  // bytes linearly scrambles the image in 32-texel macroblocks. Untile into a
+  // linear staging image first, mirroring UploadGuestTextureData's layout.
+  const void* uploadSrc = texture->mappedMemory;
+  std::vector<uint8_t> untiled;
+  if (texture->guestTiled) {
+    uint32_t blockDim = 1;
+    uint32_t bytesPerBlock = FormatBytes(texture->format);
+    if (texture->format >= RenderFormat::BC1_TYPELESS &&
+        texture->format <= RenderFormat::BC7_UNORM_SRGB) {
+      blockDim = 4;
+      bytesPerBlock = (texture->format <= RenderFormat::BC1_UNORM_SRGB ||
+                       (texture->format >= RenderFormat::BC4_TYPELESS &&
+                        texture->format <= RenderFormat::BC4_SNORM))
+                          ? 8
+                          : 16;
+    }
+    const uint32_t wBlocks = (mipWidth + blockDim - 1) / blockDim;
+    const uint32_t hBlocks = (mipHeight + blockDim - 1) / blockDim;
+    untiled.resize(size_t(wBlocks) * hBlocks * bytesPerBlock);
+    const auto* src = reinterpret_cast<const uint8_t*>(texture->mappedMemory);
+    const uint32_t srcBytes = texture->mappedSizeBytes != 0 ? texture->mappedSizeBytes : slicePitch;
+    for (uint32_t by = 0; by < hBlocks; ++by) {
+      for (uint32_t bx = 0; bx < wBlocks; ++bx) {
+        const uint32_t element = TiledOffset2D(bx, by, wBlocks, bytesPerBlock);
+        // Bounds guard: TiledOffset2D can overshoot the staging footprint for
+        // small/odd dims (tile alignment) -> skip those blocks.
+        if (uint64_t(element) * bytesPerBlock + bytesPerBlock > srcBytes)
+          continue;
+        std::memcpy(untiled.data() + (size_t(by) * wBlocks + bx) * bytesPerBlock,
+                    src + size_t(element) * bytesPerBlock, bytesPerBlock);
+      }
+    }
+    // Re-pad rows back to the 256-aligned pitch the copy expects.
+    const uint32_t linearRow = wBlocks * bytesPerBlock;
+    if (linearRow == pitch / blockDim * blockDim && linearRow == pitch) {
+      uploadSrc = untiled.data();
+      slicePitch = uint32_t(untiled.size());
+    } else {
+      std::vector<uint8_t> padded(size_t(pitch) * hBlocks);
+      for (uint32_t by = 0; by < hBlocks; ++by) {
+        std::memcpy(padded.data() + size_t(by) * pitch, untiled.data() + size_t(by) * linearRow,
+                    std::min(linearRow, pitch));
+      }
+      untiled.swap(padded);
+      uploadSrc = untiled.data();
+      slicePitch = uint32_t(untiled.size());
+    }
+    static uint64_t untileCount = 0;
+    if (++untileCount <= 12 || untileCount % 300 == 1) {
+      REXGPU_INFO("UnlockTextureRect: untiled {}x{} mip={} fmt={} blocks={}x{}@{} (n={})", mipWidth,
+                  mipHeight, level, int(texture->format), wBlocks, hBlocks, bytesPerBlock,
+                  untileCount);
+    }
+  }
+
+  RenderBufferReference ref = UploadFrameData(uploadSrc, slicePitch, false);
   if (ref.ref == nullptr) {
     // Frame upload exhausted -- fall back to a dedicated staging buffer + copy queue.
     auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(slicePitch));
@@ -592,14 +684,14 @@ void ProcUnlockTextureRect(GuestBaseTexture* texture) {
     }
     void* mapped = upload->map();
     if (mapped == nullptr) return;
-    std::memcpy(mapped, texture->mappedMemory, slicePitch);
+    std::memcpy(mapped, uploadSrc, slicePitch);
     upload->unmap();
 
     // Already on the render thread (Dispatch); call Proc* directly so staging
     // stays live across the copy-queue submit without nested Run().
     ProcCopyTextureFromUpload(texture->texture, upload.get(), uint32_t(texture->format),
-                              texture->width, texture->height,
-                              pitch / FormatBytes(texture->format), 0, 0);
+                              mipWidth, mipHeight,
+                              pitch / FormatBytes(texture->format), level, 0);
     texture->hostInitialized = true;
     texture->layout = RenderTextureLayout::COPY_DEST;
     return;
@@ -610,9 +702,9 @@ void ProcUnlockTextureRect(GuestBaseTexture* texture) {
   cl->barriers(RenderBarrierStage::COPY,
                RenderTextureBarrier(texture->texture, RenderTextureLayout::COPY_DEST));
   cl->copyTextureRegion(
-      RenderTextureCopyLocation::Subresource(texture->texture, 0),
-      RenderTextureCopyLocation::PlacedFootprint(ref.ref, texture->format, texture->width,
-                                                 texture->height, 1,
+      RenderTextureCopyLocation::Subresource(texture->texture, level),
+      RenderTextureCopyLocation::PlacedFootprint(ref.ref, texture->format, mipWidth,
+                                                 mipHeight, 1,
                                                  pitch / FormatBytes(texture->format), ref.offset));
   texture->layout = RenderTextureLayout::COPY_DEST;
   texture->hostInitialized = true;
@@ -755,6 +847,7 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
       info.format = RenderFormat::R16G16B16A16_UNORM;
       info.bytesPerBlock = 8;
       break;
+    case 29:  // k_16_16_16_16_EXPAND
     case 32:  // k_16_16_16_16_FLOAT (scene-color resolve targets)
       info.format = RenderFormat::R16G16B16A16_FLOAT;
       info.bytesPerBlock = 8;
@@ -921,7 +1014,8 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
     return nullptr;
   }
 
-  if (uploadGuestData) UploadGuestTextureData(texture, info);
+  if (uploadGuestData && UploadGuestTextureData(texture, info))
+    texture->lastUploadFrame = CurrentFrameIndex();
 
   REXGPU_INFO(
       "TranslateGuestTexture: base=0x{:08X} {}x{} fmt={} tiled={} endian={} upload={} -> desc {}",
@@ -933,6 +1027,27 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
   g_guestTextureStorage.push_back(std::move(textureStorage));
   g_guestTextureAliases[info.baseAddress] = result;
   return result;
+}
+
+GuestTexture* FindAndRefreshGuestTexture(const XenosTextureInfo& info, bool uploadGuestData) {
+  GuestTexture* cached = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
+    auto it = g_guestTextureAliases.find(info.baseAddress);
+    if (it == g_guestTextureAliases.end() || it->second == nullptr)
+      return nullptr;
+    cached = it->second;
+    if (cached->width != info.width || cached->height != info.height ||
+        cached->format != info.format) {
+      g_guestTextureAliases.erase(it);
+      return nullptr;
+    }
+  }
+
+  const uint64_t frame = CurrentFrameIndex();
+  if (cached->NeedsGuestUpload(uploadGuestData, frame) && UploadGuestTextureData(cached, info))
+    cached->lastUploadFrame = frame;
+  return cached;
 }
 
 }  // namespace
@@ -958,27 +1073,8 @@ GuestTexture* TranslateGuestTextureFetch(const void* guestFetch, bool uploadGues
     return nullptr;
   }
 
-  GuestTexture* cached = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
-    auto it = g_guestTextureAliases.find(info.baseAddress);
-    if (it != g_guestTextureAliases.end() && it->second != nullptr) {
-      cached = it->second;
-      if (cached->width != info.width || cached->height != info.height ||
-          cached->format != info.format) {
-        g_guestTextureAliases.erase(it);
-        cached = nullptr;
-      }
-    }
-  }
-  if (cached != nullptr) {
-    const uint64_t frame = CurrentFrameIndex();
-    if (uploadGuestData && cached->lastUploadFrame != frame) {
-      UploadGuestTextureData(cached, info);
-      cached->lastUploadFrame = frame;
-    }
+  if (GuestTexture* cached = FindAndRefreshGuestTexture(info, uploadGuestData))
     return cached;
-  }
 
   return CreateAndRegisterGuestTexture(info, uploadGuestData);
 }
@@ -1011,19 +1107,8 @@ GuestTexture* TranslateGuestTexture(void* guestHeader, bool uploadGuestData) {
     return nullptr;
   }
 
-  {
-    std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
-    auto it = g_guestTextureAliases.find(info.baseAddress);
-    if (it != g_guestTextureAliases.end() && it->second != nullptr) {
-      GuestTexture* cached = it->second;
-      // Same memory redescribed with a different shape: drop the stale entry.
-      if (cached->width == info.width && cached->height == info.height &&
-          cached->format == info.format) {
-        return cached;
-      }
-      g_guestTextureAliases.erase(it);
-    }
-  }
+  if (GuestTexture* cached = FindAndRefreshGuestTexture(info, uploadGuestData))
+    return cached;
 
   return CreateAndRegisterGuestTexture(info, uploadGuestData);
 }
@@ -1075,13 +1160,15 @@ GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestE
       d.method = s.method;
       d.usage = s.usage;
       d.usageIndex = s.usageIndex;
-      d.padding = s.padding;
+      d.padding = 0;
     }
     if (i < count && d.stream < 16)
       decl->vertexStreams[d.stream] = true;
   }
-  // RenderInputElement translation + hashing happens at pipeline-build time
-  // (Phase 3).
+  // Match Unleashed's stable declaration identity: hash only canonical element
+  // bytes and exclude D3DDECL_END.
+  decl->hash = XXH3_64bits(decl->vertexElements.get(), count * sizeof(GuestVertexElement));
+  // RenderInputElement translation happens at pipeline-build time (Phase 3).
   {
     std::lock_guard<std::mutex> lock(g_gameDeclMutex);
     g_gameDeclarations.push_back(decl);

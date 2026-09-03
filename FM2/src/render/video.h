@@ -4,6 +4,10 @@
 
 #include <cstdint>
 
+namespace fm2::render {
+struct GuestBaseTexture;
+}
+
 struct Video {
   // Host viewport dimensions (backbuffer size).
   static inline uint32_t s_viewportWidth = 1280;
@@ -16,8 +20,9 @@ struct Video {
   // Has Init() succeeded?
   static bool IsInitialized();
 
-  // Acquire the next backbuffer, clear it, and present.
-  static void Present();
+  // Acquire the present gate, publish this frame's frontbuffer, and present.
+  // Returns false when the frame was dropped by the existing busy coalescer.
+  static bool Present(fm2::render::GuestBaseTexture* frontBuffer);
 
   // Record the guest's most recent D3DDevice_ClearF color, used as the
   // present-time clear color until real render-target tracking (resource

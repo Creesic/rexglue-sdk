@@ -423,4 +423,7 @@ CMakeUserPresets.json
 # Extracted game data (copyrighted, large) and codegen output for downstream
 # recompiled projects -- reproducible from the manifest given a local game copy.
 /assets/
-FM2/generated/
+FM2/generated/*
+!FM2/generated/shader_cache.cpp
+!FM2/generated/shader_cache.h
+FM2/assets/missed_shaders/

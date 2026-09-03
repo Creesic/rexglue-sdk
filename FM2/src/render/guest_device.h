@@ -39,9 +39,9 @@ struct GuestDevice {
   rex::be<uint32_t> vertexShaderIntConstants[0x10];  // device + 0x2720
   rex::be<uint32_t> pixelShaderIntConstants[0x10];   // device + 0x2760
 
-  uint8_t padding27A0[0x684];
+  uint8_t padding27A0[0x574];
   rex::be<uint32_t> vertexDeclaration;
-  uint8_t padding2E28[0x340];
+  uint8_t padding2D18[0x450];
   struct {
     rex::be<float> x;
     rex::be<float> y;
@@ -61,7 +61,7 @@ static_assert(offsetof(GuestDevice, vertexShaderBoolConstants) == 0x2700);
 static_assert(offsetof(GuestDevice, pixelShaderBoolConstants) == 0x2710);
 static_assert(offsetof(GuestDevice, vertexShaderIntConstants) == 0x2720);
 static_assert(offsetof(GuestDevice, pixelShaderIntConstants) == 0x2760);
-static_assert(offsetof(GuestDevice, vertexDeclaration) == 0x2E24);
+static_assert(offsetof(GuestDevice, vertexDeclaration) == 0x2D14);
 
 struct GuestViewport {
   rex::be<uint32_t> x;
@@ -106,8 +106,11 @@ enum GuestRenderState : uint32_t {
   D3DRS_ZENABLE = 40,
   D3DRS_ZFUNC = 44,
   D3DRS_ZWRITEENABLE = 48,
+  D3DRS_FILLMODE = 52,
   D3DRS_CULLMODE = 56,
   D3DRS_ALPHABLENDENABLE = 60,
+  D3DRS_SEPARATEALPHABLENDENABLE = 64,
+  D3DRS_BLENDFACTOR = 68,
   D3DRS_SRCBLEND = 72,
   D3DRS_DESTBLEND = 76,
   D3DRS_BLENDOP = 80,
@@ -116,10 +119,29 @@ enum GuestRenderState : uint32_t {
   D3DRS_BLENDOPALPHA = 92,
   D3DRS_ALPHATESTENABLE = 96,
   D3DRS_ALPHAREF = 100,
+  D3DRS_ALPHAFUNC = 104,
+  D3DRS_STENCILENABLE = 108,
+  D3DRS_TWOSIDEDSTENCILMODE = 112,
+  D3DRS_STENCILFAIL = 116,
+  D3DRS_STENCILZFAIL = 120,
+  D3DRS_STENCILPASS = 124,
+  D3DRS_STENCILFUNC = 128,
+  D3DRS_STENCILREF = 132,
+  D3DRS_STENCILMASK = 136,
+  D3DRS_STENCILWRITEMASK = 140,
+  D3DRS_CCWSTENCILFAIL = 144,
+  D3DRS_CCWSTENCILZFAIL = 148,
+  D3DRS_CCWSTENCILPASS = 152,
+  D3DRS_CCWSTENCILFUNC = 156,
+  D3DRS_CCWSTENCILREF = 160,
+  D3DRS_CCWSTENCILMASK = 164,
+  D3DRS_CCWSTENCILWRITEMASK = 168,
+  D3DRS_CLIPPLANEENABLE = 172,
   D3DRS_SCISSORTESTENABLE = 200,
   D3DRS_SLOPESCALEDEPTHBIAS = 204,
   D3DRS_DEPTHBIAS = 208,
   D3DRS_COLORWRITEENABLE = 212,
+  D3DRS_VIEWPORTENABLE = 304,
 };
 
 enum GuestCullMode : uint32_t {

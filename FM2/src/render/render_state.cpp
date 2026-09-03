@@ -1,25 +1,8 @@
 // render/render_state.cpp
 //
-// Phase 3 (render state + pipeline/shaders): state setters + dirty-state
-// tracking. Rebuilt fresh rather than ported verbatim from the reference --
-// that file also carried a large, admittedly-broken constant-transport/PM4
-// command-buffer-replay diagnostic subsystem (an interactive shader-probe
-// tool, EDRAM-tile-detection heuristics, dozens of hardcoded C:\temp log
-// writes) that a prior investigation already concluded needs a fresh design,
-// not a port. This file keeps only the solid, non-diagnostic state-tracking
-// logic; FlushRenderState (reading this dirty state + shader constants and
-// actually binding a PSO/buffers at draw time) is Phase 4 work.
-//
-// Deliberately deferred to Phase 4 (needs an actual draw/PSO-build path to
-// make sense of): vertex-declaration <-> shader-header matching, the
-// guest-data-ranged-snapshot draw path, StretchRect/resolve-snapshot
-// tracking, and full two-sided stencil-state hooking (SetStencilState is
-// implemented and ready below, matching D3D9 semantics exactly, but nothing
-// calls it yet -- FM2's stencil render-state setters are lower-value/higher-
-// risk to wire without a draw path to observe the effect against).
-// SetVertexShader/SetPixelShader/SetVertexDeclaration below only track
-// *which* shader/declaration is bound; resolving that into a real input
-// layout happens when a PSO is actually built.
+// Native D3D state, draw, and resource translation for FM2. The old diagnostic
+// object-pass replay, shader probing, EDRAM heuristics, and hardcoded trace
+// output are deliberately excluded; guest D3D state owns draw submission.
 
 #include <algorithm>
 #include <array>
@@ -27,6 +10,7 @@
 #include <bit>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -49,7 +33,6 @@
 #include "render/render_internal.h"
 #include "render/render_queue.h"
 #include "render/render_state.h"
-#include "render/shaders/placeholder_ps.hlsl.dxil.h"
 #include "render/video.h"
 
 // Spec-constant bits (XenosRecomp shared ABI -- must match the offline
@@ -85,6 +68,7 @@ struct PipelineState {
   RenderCullMode cullMode = RenderCullMode::NONE;
   RenderComparisonFunction zFunc = RenderComparisonFunction::LESS;
   bool alphaBlendEnable = false;
+  bool separateAlphaBlendEnable = false;
   RenderBlendOperation blendOp = RenderBlendOperation::ADD;
   float slopeScaledDepthBias = 0.0f;
   int32_t depthBias = 0;
@@ -99,7 +83,9 @@ struct PipelineState {
   bool depthClipEnabled = true;
   uint32_t specConstants = 0;
   bool stencilEnable = false;
-  uint8_t stencilReadMask = 0xFF, stencilWriteMask = 0xFF, stencilRef = 0;
+  bool twoSidedStencilMode = false;
+  uint8_t stencilFrontReadMask = 0xFF, stencilFrontWriteMask = 0xFF, stencilFrontRef = 0;
+  uint8_t stencilBackReadMask = 0xFF, stencilBackWriteMask = 0xFF, stencilBackRef = 0;
   RenderComparisonFunction stencilFrontFunc = RenderComparisonFunction::ALWAYS;
   RenderStencilOp stencilFrontFail = RenderStencilOp::KEEP;
   RenderStencilOp stencilFrontDepthFail = RenderStencilOp::KEEP;
@@ -125,7 +111,7 @@ struct SharedConstants {
   uint32_t texture3DIndices[16]{};
   uint32_t textureCubeIndices[16]{};
   uint32_t samplerIndices[16]{};  // Bindless indices populated from GuestSamplerState each draw.
-  uint32_t booleans = 0;          // bits 0-15 = VS bool constants, bits 16-31 = PS bool constants.
+  uint32_t booleans[8]{};         // VS words 0-3, PS words 4-7.
   uint32_t swappedTexcoords = 0;
   uint32_t swappedNormals = 0;
   uint32_t swappedBinormals = 0;
@@ -133,23 +119,30 @@ struct SharedConstants {
   uint32_t swappedBlendWeights = 0;
   float halfPixelOffsetX = 0.0f;
   float halfPixelOffsetY = 0.0f;
+  uint32_t halfPixelPadding = 0;
   float clipPlane[4]{};
   uint32_t clipPlaneEnabled = 0;
   float alphaThreshold = 0.0f;
   uint32_t conditionalSurveyIndex = 0;
   uint32_t conditionalRenderingIndex = 0;
   uint32_t vteFlags = 8;
-  // g_VteAndLoopConstants is a uint4 array beginning at c20. The remaining
-  // three components of c20 are padding; packed loop constants begin at c21.
-  uint32_t loopConstantPadding[3]{};
   uint32_t loopConstants[32]{};  // VS 0-15, PS 16-31; Xenos packed count/start/step.
+  uint32_t trailingPadding[3]{};
 };
-static_assert(sizeof(SharedConstants) == 464);
+static_assert(sizeof(SharedConstants) == 496);
+static_assert(offsetof(SharedConstants, texture2DIndices) == 0);
+static_assert(offsetof(SharedConstants, texture3DIndices) == 64);
+static_assert(offsetof(SharedConstants, textureCubeIndices) == 128);
+static_assert(offsetof(SharedConstants, samplerIndices) == 192);
 static_assert(offsetof(SharedConstants, booleans) == 256);
-static_assert(offsetof(SharedConstants, halfPixelOffsetX) == 280);
-static_assert(offsetof(SharedConstants, clipPlane) == 288);
-static_assert(offsetof(SharedConstants, vteFlags) == 320);
-static_assert(offsetof(SharedConstants, loopConstants) == 336);
+static_assert(offsetof(SharedConstants, swappedTexcoords) == 288);
+static_assert(offsetof(SharedConstants, halfPixelOffsetX) == 308);
+static_assert(offsetof(SharedConstants, halfPixelPadding) == 316);
+static_assert(offsetof(SharedConstants, clipPlane) == 320);
+static_assert(offsetof(SharedConstants, clipPlaneEnabled) == 336);
+static_assert(offsetof(SharedConstants, vteFlags) == 352);
+static_assert(offsetof(SharedConstants, loopConstants) == 356);
+static_assert(offsetof(SharedConstants, trailingPadding) == 484);
 
 struct DirtyStates {
   bool renderTargetAndDepthStencil;
@@ -207,7 +200,9 @@ RenderFramebuffer* g_framebuffer = nullptr;
 std::unordered_map<uint64_t, std::unique_ptr<RenderFramebuffer>> g_framebufferCache;
 std::unordered_map<uint64_t, std::pair<uint32_t, std::unique_ptr<RenderSampler>>> g_samplerStates;
 RenderViewport g_viewport{0.0f, 0.0f, 1280.0f, 720.0f, 0.0f, 1.0f};
+bool g_viewportEnabled = true;
 PipelineState g_pipelineState;
+GuestVertexDeclaration* g_boundVertexDeclaration = nullptr;
 SharedConstants g_sharedConstants;
 bool g_sharedConstantsInitialized = false;
 GuestTexture* g_textures[16]{};
@@ -221,17 +216,173 @@ RenderIndexBufferView g_indexBufferView{RenderBufferReference{}, 0, RenderFormat
 DirtyStates g_dirtyStates(true);
 uint64_t g_frameIndex = 0;
 
-alignas(16) uint32_t g_passVsConstants[0x400]{};
-uint64_t g_passVsConstantsCoverage[4]{};
-std::atomic<bool> g_passVsConstantsValid{false};
-alignas(16) uint32_t g_objPassWvp[48]{};
-std::atomic<bool> g_objPassWvpValid{false};
-alignas(16) uint32_t g_scene3dVsConstants[0x400]{};
-uint64_t g_scene3dVsCoverage[4]{};
-std::atomic<bool> g_scene3dVsValid{false};
-const uint32_t* g_liveVsFloatConstants = nullptr;
-const uint32_t* g_livePsFloatConstants = nullptr;
-uint32_t g_lastDrawCallerLr = 0;
+struct FrameTraceStats {
+  uint32_t attemptedDraws = 0;
+  uint32_t issuedDraws = 0;
+  uint32_t clears = 0;
+  uint32_t resolves = 0;
+  uint64_t shapeHash = 0xCBF29CE484222325ull;
+  uint64_t textureHash = 0x9E3779B97F4A7C15ull;
+  uint64_t sharedHash = 0x9E3779B97F4A7C15ull;
+  uint64_t vertexConstantHash = 0x9E3779B97F4A7C15ull;
+  uint64_t pixelConstantHash = 0x9E3779B97F4A7C15ull;
+  uint64_t vertexDataHash = 0x9E3779B97F4A7C15ull;
+  uint64_t clearHash = 0x9E3779B97F4A7C15ull;
+};
+
+FrameTraceStats g_frameTrace;
+uint64_t g_frameTraceIndex = 0;
+
+struct DrawDataTrace {
+  std::array<uint32_t, sizeof(SharedConstants) / sizeof(uint32_t)> shared{};
+  std::array<uint32_t, std::size(g_vertexShaderConstants)> vertexConstants{};
+  std::array<uint32_t, std::size(g_pixelShaderConstants)> pixelConstants{};
+};
+
+struct TraceDifference {
+  uint32_t draw = UINT32_MAX;
+  uint32_t dword = UINT32_MAX;
+  uint32_t before = 0;
+  uint32_t after = 0;
+};
+
+std::vector<DrawDataTrace> g_currentDrawDataTrace;
+std::vector<DrawDataTrace> g_previousDrawDataTrace;
+uint64_t g_previousFrameShapeHash = 0;
+
+void MixFrameTrace(uint64_t& hash, uint64_t value) {
+  hash ^= value + 0x9E3779B97F4A7C15ull + (hash << 6) + (hash >> 2);
+}
+
+void MixFrameTraceBytes(uint64_t& hash, const void* data, size_t size) {
+  MixFrameTrace(hash, XXH3_64bits(data, size));
+}
+
+uint64_t ShaderTraceId(const GuestShader* shader) {
+  return shader != nullptr && shader->shaderCacheEntry != nullptr ? shader->shaderCacheEntry->hash
+                                                                  : 0;
+}
+
+uint64_t VertexDeclarationTraceId(const GuestVertexDeclaration* declaration) {
+  if (declaration == nullptr)
+    return 0;
+  if (declaration->hash != 0)
+    return declaration->hash;
+  return declaration->vertexElements != nullptr
+             ? XXH3_64bits(declaration->vertexElements.get(),
+                           declaration->vertexElementCount * sizeof(GuestVertexElement))
+             : 0;
+}
+
+void MixTextureShape(uint64_t& hash, const GuestBaseTexture* texture) {
+  if (texture == nullptr) {
+    MixFrameTrace(hash, 0);
+    return;
+  }
+  MixFrameTrace(hash, uint32_t(texture->type));
+  MixFrameTrace(hash, uint64_t(texture->width) << 32 | texture->height);
+  MixFrameTrace(hash, uint32_t(texture->format));
+  if (texture->type == ResourceType::RenderTarget || texture->type == ResourceType::DepthStencil) {
+    MixFrameTrace(hash, uint32_t(static_cast<const GuestSurface*>(texture)->sampleCount));
+  }
+}
+
+template <size_t N>
+TraceDifference FindFirstTraceDifference(const std::vector<DrawDataTrace>& before,
+                                         const std::vector<DrawDataTrace>& after,
+                                         const std::array<uint32_t, N> DrawDataTrace::* member) {
+  for (uint32_t draw = 0; draw < before.size(); ++draw) {
+    const auto& oldValues = before[draw].*member;
+    const auto& newValues = after[draw].*member;
+    for (uint32_t dword = 0; dword < N; ++dword) {
+      if (oldValues[dword] != newValues[dword]) {
+        return {draw, dword, oldValues[dword], newValues[dword]};
+      }
+    }
+  }
+  return {};
+}
+
+void CaptureDrawDataTrace() {
+  if (g_frameTraceIndex >= 64)
+    return;
+  DrawDataTrace& trace = g_currentDrawDataTrace.emplace_back();
+  std::memcpy(trace.shared.data(), &g_sharedConstants, sizeof(g_sharedConstants));
+  std::copy(std::begin(g_vertexShaderConstants), std::end(g_vertexShaderConstants),
+            trace.vertexConstants.begin());
+  std::copy(std::begin(g_pixelShaderConstants), std::end(g_pixelShaderConstants),
+            trace.pixelConstants.begin());
+}
+
+void TraceIssuedDraw(uint32_t kind, const uint32_t* geometry, size_t geometryCount,
+                     const void* vertexData = nullptr, size_t vertexDataSize = 0) {
+  ++g_frameTrace.issuedDraws;
+  MixFrameTrace(g_frameTrace.shapeHash, kind);
+  PipelineState semanticPipeline = g_pipelineState;
+  semanticPipeline.vertexShader = nullptr;
+  semanticPipeline.pixelShader = nullptr;
+  semanticPipeline.vertexDeclaration = nullptr;
+  MixFrameTrace(g_frameTrace.shapeHash, ShaderTraceId(g_pipelineState.vertexShader));
+  MixFrameTrace(g_frameTrace.shapeHash, ShaderTraceId(g_pipelineState.pixelShader));
+  MixFrameTrace(g_frameTrace.shapeHash,
+                VertexDeclarationTraceId(g_pipelineState.vertexDeclaration));
+  MixFrameTraceBytes(g_frameTrace.shapeHash, &semanticPipeline, sizeof(semanticPipeline));
+  MixFrameTraceBytes(g_frameTrace.shapeHash, geometry, geometryCount * sizeof(*geometry));
+  MixFrameTraceBytes(g_frameTrace.shapeHash, &g_viewport, sizeof(g_viewport));
+  MixFrameTrace(g_frameTrace.shapeHash, g_scissorTestEnable);
+  MixFrameTraceBytes(g_frameTrace.shapeHash, &g_scissorRect, sizeof(g_scissorRect));
+  MixFrameTraceBytes(g_frameTrace.textureHash, g_textures, sizeof(g_textures));
+  MixFrameTraceBytes(g_frameTrace.sharedHash, &g_sharedConstants, sizeof(g_sharedConstants));
+  MixFrameTraceBytes(g_frameTrace.vertexConstantHash, g_vertexShaderConstants,
+                     sizeof(g_vertexShaderConstants));
+  MixFrameTraceBytes(g_frameTrace.pixelConstantHash, g_pixelShaderConstants,
+                     sizeof(g_pixelShaderConstants));
+  if (vertexData != nullptr && vertexDataSize != 0) {
+    MixFrameTraceBytes(g_frameTrace.vertexDataHash, vertexData, vertexDataSize);
+  }
+  CaptureDrawDataTrace();
+}
+
+void LogAndResetFrameTrace() {
+  ++g_frameTraceIndex;
+  if (g_frameTraceIndex <= 64 || g_frameTraceIndex % 300 == 1) {
+    REXGPU_INFO(
+        "FrameTrace: n={} draws={}/{} skipped={} clears={} resolves={} shape=0x{:016X} "
+        "tex=0x{:016X} shared=0x{:016X} vs=0x{:016X} ps=0x{:016X} "
+        "vertex=0x{:016X} clear=0x{:016X}",
+        g_frameTraceIndex, g_frameTrace.issuedDraws, g_frameTrace.attemptedDraws,
+        g_frameTrace.attemptedDraws - g_frameTrace.issuedDraws, g_frameTrace.clears,
+        g_frameTrace.resolves, g_frameTrace.shapeHash, g_frameTrace.textureHash,
+        g_frameTrace.sharedHash, g_frameTrace.vertexConstantHash, g_frameTrace.pixelConstantHash,
+        g_frameTrace.vertexDataHash, g_frameTrace.clearHash);
+  }
+  if (g_frameTraceIndex <= 64 && g_previousFrameShapeHash == g_frameTrace.shapeHash &&
+      !g_currentDrawDataTrace.empty() &&
+      g_previousDrawDataTrace.size() == g_currentDrawDataTrace.size()) {
+    const TraceDifference shared = FindFirstTraceDifference(
+        g_previousDrawDataTrace, g_currentDrawDataTrace, &DrawDataTrace::shared);
+    const TraceDifference vs = FindFirstTraceDifference(
+        g_previousDrawDataTrace, g_currentDrawDataTrace, &DrawDataTrace::vertexConstants);
+    const TraceDifference ps = FindFirstTraceDifference(
+        g_previousDrawDataTrace, g_currentDrawDataTrace, &DrawDataTrace::pixelConstants);
+    if (shared.draw != UINT32_MAX) {
+      REXGPU_INFO("FrameDelta: n={} shared draw={} dword={} 0x{:08X}->0x{:08X}", g_frameTraceIndex,
+                  shared.draw, shared.dword, shared.before, shared.after);
+    }
+    if (vs.draw != UINT32_MAX) {
+      REXGPU_INFO("FrameDelta: n={} vs draw={} c{}.{} 0x{:08X}->0x{:08X}", g_frameTraceIndex,
+                  vs.draw, vs.dword / 4, vs.dword % 4, vs.before, vs.after);
+    }
+    if (ps.draw != UINT32_MAX) {
+      REXGPU_INFO("FrameDelta: n={} ps draw={} c{}.{} 0x{:08X}->0x{:08X}", g_frameTraceIndex,
+                  ps.draw, ps.dword / 4, ps.dword % 4, ps.before, ps.after);
+    }
+  }
+  g_previousFrameShapeHash = g_frameTrace.shapeHash;
+  g_previousDrawDataTrace.swap(g_currentDrawDataTrace);
+  g_currentDrawDataTrace.clear();
+  g_frameTrace = {};
+}
 
 // Unleashed-style deferred StretchRect / Resolve: surfaces accumulate
 // destination textures, drained by FlushPendingStretchRectCommands before
@@ -256,9 +407,9 @@ class UploadAllocator {
 
   // Copies `size` bytes from `src` into the next aligned region of the
   // frame's upload buffer, returning a reference usable as a root CBV or a
-  // vertex/index buffer view. If `byteSwap`, treats src/size as an array of
-  // big-endian uint32_t (guest register file) and swaps into the buffer;
-  // otherwise does a plain copy (host-native structs, guest UP vertex data).
+  // vertex/index buffer view. If `byteSwap`, swaps complete big-endian dwords
+  // into the buffer and preserves any trailing bytes; otherwise does a plain
+  // copy for host-native data.
   // Grows in reusable chunks so large menu/resource upload bursts do not
   // create and retain one D3D12 upload resource for every guest Unlock.
   RenderBufferReference Upload(const void* src, uint64_t size, bool byteSwap) {
@@ -276,6 +427,11 @@ class UploadAllocator {
       uint32_t* d = reinterpret_cast<uint32_t*>(dst);
       for (uint64_t i = 0; i < size / sizeof(uint32_t); ++i)
         d[i] = std::byteswap(s[i]);
+      const uint64_t swappedBytes = size & ~uint64_t{3};
+      if (swappedBytes != size) {
+        std::memcpy(dst + swappedBytes, static_cast<const uint8_t*>(src) + swappedBytes,
+                    size - swappedBytes);
+      }
     } else {
       std::memcpy(dst, src, size);
     }
@@ -306,9 +462,7 @@ class UploadAllocator {
   static constexpr uint64_t kChunkSize = 64 * 1024 * 1024;
   static constexpr uint64_t kAlignment = 256;
 
-  static uint64_t Align(uint64_t value) {
-    return (value + kAlignment - 1) & ~(kAlignment - 1);
-  }
+  static uint64_t Align(uint64_t value) { return (value + kAlignment - 1) & ~(kAlignment - 1); }
 
   Chunk* AcquireChunk(uint64_t size) {
     for (size_t i = currentChunk_; i < chunks_.size(); ++i) {
@@ -321,8 +475,7 @@ class UploadAllocator {
 
     const uint64_t capacity = std::max(kChunkSize, Align(size));
     auto buffer = Device()->createBuffer(RenderBufferDesc::UploadBuffer(
-        capacity,
-        RenderBufferFlag::CONSTANT | RenderBufferFlag::VERTEX | RenderBufferFlag::INDEX));
+        capacity, RenderBufferFlag::CONSTANT | RenderBufferFlag::VERTEX | RenderBufferFlag::INDEX));
     if (buffer == nullptr) {
       REXGPU_ERROR("UploadAllocator: failed to create {}-byte upload chunk", capacity);
       return nullptr;
@@ -613,8 +766,7 @@ RenderSampleCounts GetSampleCount(GuestBaseTexture* texture) {
 bool AttachmentsCompatible(GuestBaseTexture* colorTarget, GuestSurface* depthTarget) {
   if (colorTarget == nullptr || depthTarget == nullptr)
     return true;
-  return colorTarget->width == depthTarget->width &&
-         colorTarget->height == depthTarget->height &&
+  return colorTarget->width == depthTarget->width && colorTarget->height == depthTarget->height &&
          GetSampleCount(colorTarget) == GetSampleCount(depthTarget);
 }
 
@@ -1030,7 +1182,6 @@ void SetAlphaTestMode(bool enable) {
 // guest device struct (this repo's GuestDevice is a byte-exact overlay of
 // the real object, so these offsets refer to real, live guest memory).
 constexpr uint32_t kGuestClipPlanesOffset = 0x2820;
-constexpr uint32_t kGuestClipPlaneEnableOffset = 0x2944;
 constexpr uint32_t kGuestClipPlaneMask = 0x3F;
 constexpr uint32_t kGuestScissorEnableOffset = 0x2E48;
 
@@ -1041,12 +1192,6 @@ struct GuestClipPlane {
 GuestClipPlane* ClipPlanes(GuestDevice* device) {
   return reinterpret_cast<GuestClipPlane*>(reinterpret_cast<uint8_t*>(device) +
                                            kGuestClipPlanesOffset);
-}
-
-uint32_t ClipPlaneEnableMask(GuestDevice* device) {
-  auto* value = reinterpret_cast<rex::be<uint32_t>*>(reinterpret_cast<uint8_t*>(device) +
-                                                     kGuestClipPlaneEnableOffset);
-  return value->get() & kGuestClipPlaneMask;
 }
 
 bool ScissorTestEnabled(GuestDevice* device) {
@@ -1339,19 +1484,93 @@ void ApplyRenderState(uint32_t state, uint32_t value) {
     case D3DRS_ALPHABLENDENABLE:
       SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.alphaBlendEnable, value != 0);
       break;
+    case D3DRS_SEPARATEALPHABLENDENABLE:
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.separateAlphaBlendEnable,
+                    value != 0);
+      break;
     case D3DRS_BLENDOP:
       SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.blendOp, ConvertBlendOp(value));
+      break;
+    case D3DRS_BLENDOPALPHA:
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.blendOpAlpha,
+                    ConvertBlendOp(value));
+      break;
+    case D3DRS_STENCILENABLE: {
+      const bool enabled = value != 0;
+      if (g_pipelineState.stencilEnable != enabled)
+        g_dirtyStates.renderTargetAndDepthStencil = true;
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilEnable, enabled);
+      break;
+    }
+    case D3DRS_TWOSIDEDSTENCILMODE:
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.twoSidedStencilMode, value != 0);
+      break;
+    case D3DRS_STENCILFUNC:
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFunc,
+                    ConvertCmpFunc(value));
+      break;
+    case D3DRS_STENCILFAIL:
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFail,
+                    ConvertStencilOp(value));
+      break;
+    case D3DRS_STENCILZFAIL:
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontDepthFail,
+                    ConvertStencilOp(value));
+      break;
+    case D3DRS_STENCILPASS:
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontPass,
+                    ConvertStencilOp(value));
+      break;
+    case D3DRS_CCWSTENCILFUNC:
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFunc,
+                    ConvertCmpFunc(value));
+      break;
+    case D3DRS_CCWSTENCILFAIL:
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFail,
+                    ConvertStencilOp(value));
+      break;
+    case D3DRS_CCWSTENCILZFAIL:
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackDepthFail,
+                    ConvertStencilOp(value));
+      break;
+    case D3DRS_CCWSTENCILPASS:
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackPass,
+                    ConvertStencilOp(value));
+      break;
+    case D3DRS_STENCILREF:
+      SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontRef,
+                             uint8_t(value));
+      break;
+    case D3DRS_STENCILMASK:
+      SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontReadMask,
+                             uint8_t(value));
+      break;
+    case D3DRS_STENCILWRITEMASK:
+      SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontWriteMask,
+                             uint8_t(value));
+      break;
+    case D3DRS_CCWSTENCILREF:
+      SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilBackRef,
+                             uint8_t(value));
+      break;
+    case D3DRS_CCWSTENCILMASK:
+      SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilBackReadMask,
+                             uint8_t(value));
+      break;
+    case D3DRS_CCWSTENCILWRITEMASK:
+      SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilBackWriteMask,
+                             uint8_t(value));
       break;
     case D3DRS_SCISSORTESTENABLE:
       SetDirtyValue(g_dirtyStates.scissorRect, g_scissorTestEnable, value != 0);
       break;
     case D3DRS_SLOPESCALEDEPTHBIAS:
       SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.slopeScaledDepthBias,
-                    *reinterpret_cast<float*>(&value));
+                    std::bit_cast<float>(value));
       break;
     case D3DRS_DEPTHBIAS:
       SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthBias,
-                    int32_t(*reinterpret_cast<float*>(&value) * (1 << 24)));
+                    int32_t(std::bit_cast<float>(value) * (1 << 24)));
       break;
     case D3DRS_SRCBLENDALPHA:
       SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.srcBlendAlpha,
@@ -1379,7 +1598,7 @@ void SetRenderState(GuestDevice* /*device*/, uint32_t state, uint32_t value) {
 }
 
 void SetViewportEnable(GuestDevice* /*device*/, uint32_t value) {
-  // The Xenos ViewportEnable render state maps to PA_CL_CLIP_CNTL.clip_disable.
+  // This controls PA_CL_VTE_CNTL's viewport scale/offset bits, not clipping.
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetViewportEnable;
   cmd.setViewportEnable.value = value;
@@ -1387,21 +1606,27 @@ void SetViewportEnable(GuestDevice* /*device*/, uint32_t value) {
 }
 
 void ProcSetViewportEnable(uint32_t value) {
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthClipEnabled, value != 0);
+  g_viewportEnabled = value != 0;
 }
 
-void UpdateClipPlaneConstants(GuestDevice* device) {
-  const uint32_t enabledMask = ClipPlaneEnableMask(device);
-  g_sharedConstants.clipPlaneEnabled = enabledMask != 0 ? 1 : 0;
-  if (enabledMask == 0)
-    return;
+void SetClipPlaneState(GuestDevice* device, uint32_t enabledMask) {
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::SetClipPlaneState;
+  enabledMask &= kGuestClipPlaneMask;
+  cmd.setClipPlaneState.enabled = enabledMask != 0 ? 1u : 0u;
+  if (enabledMask != 0) {
+    const GuestClipPlane& plane = ClipPlanes(device)[std::countr_zero(enabledMask)];
+    cmd.setClipPlaneState.plane[0] = plane.x.get();
+    cmd.setClipPlaneState.plane[1] = plane.y.get();
+    cmd.setClipPlaneState.plane[2] = plane.z.get();
+    cmd.setClipPlaneState.plane[3] = plane.w.get();
+  }
+  RenderQueue::Enqueue(cmd);
+}
 
-  const uint32_t planeIndex = std::countr_zero(enabledMask);
-  const GuestClipPlane& plane = ClipPlanes(device)[planeIndex];
-  g_sharedConstants.clipPlane[0] = plane.x.get();
-  g_sharedConstants.clipPlane[1] = plane.y.get();
-  g_sharedConstants.clipPlane[2] = plane.z.get();
-  g_sharedConstants.clipPlane[3] = plane.w.get();
+void ProcSetClipPlaneState(uint32_t enabled, const float* plane) {
+  g_sharedConstants.clipPlaneEnabled = enabled;
+  std::copy_n(plane, 4, g_sharedConstants.clipPlane);
 }
 
 void SetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc) {
@@ -1450,6 +1675,7 @@ void ProcSetStencilState(uint32_t enable, uint32_t twoSided, uint32_t frontFunc,
   if (g_pipelineState.stencilEnable != en)
     g_dirtyStates.renderTargetAndDepthStencil = true;
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilEnable, en);
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.twoSidedStencilMode, twoSided != 0);
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFunc,
                 ConvertCmpFunc(frontFunc));
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontFail,
@@ -1459,23 +1685,25 @@ void ProcSetStencilState(uint32_t enable, uint32_t twoSided, uint32_t frontFunc,
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontPass,
                 ConvertStencilOp(frontPass));
 
-  const uint32_t useBack = twoSided != 0;
-  const uint32_t bf = useBack ? backFunc : frontFunc;
-  const uint32_t bfail = useBack ? backFail : frontFail;
-  const uint32_t bdfail = useBack ? backDepthFail : frontDepthFail;
-  const uint32_t bpass = useBack ? backPass : frontPass;
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFunc, ConvertCmpFunc(bf));
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFunc,
+                ConvertCmpFunc(backFunc));
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackFail,
-                ConvertStencilOp(bfail));
+                ConvertStencilOp(backFail));
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackDepthFail,
-                ConvertStencilOp(bdfail));
+                ConvertStencilOp(backDepthFail));
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.stencilBackPass,
-                ConvertStencilOp(bpass));
+                ConvertStencilOp(backPass));
 
-  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilRef, uint8_t(ref));
-  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilReadMask,
+  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontRef,
+                         uint8_t(ref));
+  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilBackRef, uint8_t(ref));
+  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontReadMask,
                          uint8_t(readMask));
-  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilWriteMask,
+  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilBackReadMask,
+                         uint8_t(readMask));
+  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilFrontWriteMask,
+                         uint8_t(writeMask));
+  SetDirtyValue<uint8_t>(g_dirtyStates.pipelineState, g_pipelineState.stencilBackWriteMask,
                          uint8_t(writeMask));
 }
 
@@ -1568,6 +1796,7 @@ void ProcSetPixelShader(GuestShader* shader) {
 void ProcSetVertexDeclaration(GuestVertexDeclaration* declaration) {
   GuestVertexDeclaration* live =
       (declaration != nullptr && IsFm2Resource(declaration)) ? declaration : nullptr;
+  g_boundVertexDeclaration = live;
   // Tier A step 3: decl → swappedTexcoords / blendWeights + SPEC_CONSTANT_* bits.
   ApplyVertexDeclarationMetadata(live);
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexDeclaration, live);
@@ -1611,6 +1840,12 @@ void ProcSetIndices(GuestBuffer* buffer) {
 void ProcSetDrawGeometrySnapshot(const DrawGeometrySnapshot& snapshot) {
   for (uint32_t index = 0; index < std::size(snapshot.streams); ++index) {
     const DrawStreamSnapshot& stream = snapshot.streams[index];
+    MixFrameTrace(g_frameTrace.vertexDataHash, reinterpret_cast<uintptr_t>(stream.buffer));
+    MixFrameTrace(g_frameTrace.vertexDataHash, uint64_t(stream.offset) << 32 | stream.stride);
+    MixFrameTrace(g_frameTrace.vertexDataHash, stream.rawSize);
+    if (stream.rawData != nullptr && stream.rawSize != 0) {
+      MixFrameTraceBytes(g_frameTrace.vertexDataHash, stream.rawData, stream.rawSize);
+    }
     if (stream.rawData == nullptr || stream.rawSize == 0 || stream.stride == 0) {
       ProcSetStreamSource(index, stream.buffer, stream.offset, stream.stride);
       continue;
@@ -1630,6 +1865,12 @@ void ProcSetDrawGeometrySnapshot(const DrawGeometrySnapshot& snapshot) {
       g_dirtyStates.vertexStreamLast =
           std::max<uint8_t>(g_dirtyStates.vertexStreamLast, uint8_t(index));
     }
+  }
+  MixFrameTrace(g_frameTrace.vertexDataHash, reinterpret_cast<uintptr_t>(snapshot.indexBuffer));
+  MixFrameTrace(g_frameTrace.vertexDataHash,
+                uint64_t(snapshot.rawIndexSize) << 32 | snapshot.rawIndexStride);
+  if (snapshot.rawIndexData != nullptr && snapshot.rawIndexSize != 0) {
+    MixFrameTraceBytes(g_frameTrace.vertexDataHash, snapshot.rawIndexData, snapshot.rawIndexSize);
   }
   if (snapshot.rawIndexData != nullptr && snapshot.rawIndexSize != 0 &&
       (snapshot.rawIndexStride == 2u || snapshot.rawIndexStride == 4u)) {
@@ -1729,19 +1970,23 @@ void ProcDestructResource(GuestResource* resource) {
 
 }  // namespace
 
-void SetTexture(GuestDevice* /*device*/, uint32_t index, GuestTexture* texture) {
+void SetTexture(GuestDevice* /*device*/, uint32_t index, GuestTexture* texture,
+                uint32_t guestAddress) {
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetTexture;
   cmd.setTexture.index = index;
   cmd.setTexture.texture = texture;
+  cmd.setTexture.guestAddress = guestAddress;
   RenderQueue::Enqueue(cmd);
 }
 
-void SetTextureBase(GuestDevice* /*device*/, uint32_t index, GuestBaseTexture* texture) {
+void SetTextureBase(GuestDevice* /*device*/, uint32_t index, GuestBaseTexture* texture,
+                    uint32_t guestAddress) {
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetTextureBase;
   cmd.setTextureBase.index = index;
   cmd.setTextureBase.texture = texture;
+  cmd.setTextureBase.guestAddress = guestAddress;
   RenderQueue::Enqueue(cmd);
 }
 
@@ -1912,12 +2157,6 @@ GuestBaseTexture* GetCurrentColorRenderTarget() {
   return nullptr;
 }
 
-void PrepareFramePresent() {
-  // PresentImpl/ExecuteCommandList on the render thread snapshots g_renderTarget after prior
-  // Enqueue'd SetRT jobs (FIFO with Present's Run). Guest-side snapshot here
-  // would race async binds -- kept as a no-op hook for call-site compatibility.
-}
-
 void SetDepthStencilSurface(GuestDevice* /*device*/, GuestSurface* depthStencil) {
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetDepthStencilSurface;
@@ -1984,8 +2223,7 @@ void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint
   }
   cmd.resolveToTexture.postClearFlags = postClearFlags;
   for (uint32_t i = 0; i < std::size(cmd.resolveToTexture.postClearColor); ++i) {
-    cmd.resolveToTexture.postClearColor[i] =
-        postClearColor != nullptr ? postClearColor[i] : 0.0f;
+    cmd.resolveToTexture.postClearColor[i] = postClearColor != nullptr ? postClearColor[i] : 0.0f;
   }
   cmd.resolveToTexture.postClearZ = postClearZ;
   RenderQueue::Enqueue(cmd);
@@ -2005,6 +2243,39 @@ namespace {
 // guest_device.h's GuestDeclType enum are the exact dwords FM2 actually uses
 // (confirmed against the values' encoded k_* format field, not guessed).
 // ---------------------------------------------------------------------------
+
+// True when `type` is one of the exact GuestDeclType dwords listed in
+// guest_device.h (the instances FM2 was originally observed using). Variant
+// dwords still decode via the field fallback in ConvertDeclType.
+bool IsCanonicalDeclType(uint32_t type) {
+  switch (type) {
+    case D3DDECLTYPE_FLOAT1:
+    case D3DDECLTYPE_FLOAT2:
+    case D3DDECLTYPE_FLOAT3:
+    case D3DDECLTYPE_FLOAT4:
+    case D3DDECLTYPE_D3DCOLOR:
+    case D3DDECLTYPE_UBYTE4:
+    case D3DDECLTYPE_UBYTE4_2:
+    case D3DDECLTYPE_SHORT2:
+    case D3DDECLTYPE_SHORT4:
+    case D3DDECLTYPE_UBYTE4N:
+    case D3DDECLTYPE_UBYTE4N_2:
+    case D3DDECLTYPE_SHORT2N:
+    case D3DDECLTYPE_SHORT4N:
+    case D3DDECLTYPE_USHORT2N:
+    case D3DDECLTYPE_USHORT4N:
+    case D3DDECLTYPE_UINT1:
+    case D3DDECLTYPE_UDEC3:
+    case D3DDECLTYPE_DEC3N:
+    case D3DDECLTYPE_DEC3N_2:
+    case D3DDECLTYPE_DEC3N_3:
+    case D3DDECLTYPE_FLOAT16_2:
+    case D3DDECLTYPE_FLOAT16_4:
+      return true;
+    default:
+      return false;
+  }
+}
 
 RenderFormat ConvertDeclType(uint32_t type) {
   switch (type) {
@@ -2048,7 +2319,58 @@ RenderFormat ConvertDeclType(uint32_t type) {
     case D3DDECLTYPE_FLOAT16_4:
       return RenderFormat::R16G16B16A16_FLOAT;
     default:
-      return RenderFormat::UNKNOWN;
+      break;
+  }
+  // Fallback: decode the packed Xbox-360 GPUVERTEXFETCHFORMAT fields instead
+  // of failing the whole dword. The canonical GuestDeclType constants above are
+  // only one instance each -- real FM2 declarations vary in the upper bits
+  // (usage/stride metadata), so an exact-dword miss must not collapse a float3
+  // or color attribute to UNKNOWN (previously forced R32_UINT -> garbage
+  // attribute data). Field layout (matches ReXGlue080plume ConvertDeclType):
+  //   bits 0-5  = data format (GPUVERTEXFETCHFORMAT)
+  //   bits 8-9  = number format (0=UNORM, 1=SNORM, 2=UINT, 3=SINT)
+  //   bit  11   = BGRA component swap
+  {
+    const uint32_t fmt = type & 0x3Fu;
+    const uint32_t nf = (type >> 8) & 0x3u;
+    switch (fmt) {
+      case 0x06:  // k_8_8_8_8 (UBYTE4 / UBYTE4N / D3DCOLOR family)
+        if (nf == 2)
+          return RenderFormat::R8G8B8A8_UINT;
+        return ((type >> 11) & 1u) ? RenderFormat::B8G8R8A8_UNORM : RenderFormat::R8G8B8A8_UNORM;
+      case 0x07:  // k_2_10_10_10 -- shader bit-unpacks the raw dword.
+      case 0x10:  // k_10_11_11 (packed)
+      case 0x11:  // k_11_11_10 (packed)
+        return RenderFormat::R32_UINT;
+      case 0x19:  // k_16_16 (SHORT2 family)
+        return nf == 3   ? RenderFormat::R16G16_SINT
+               : nf == 1 ? RenderFormat::R16G16_SNORM
+                         : RenderFormat::R16G16_UNORM;
+      case 0x1A:  // k_16_16_16_16 (SHORT4 family)
+        return nf == 3   ? RenderFormat::R16G16B16A16_SINT
+               : nf == 1 ? RenderFormat::R16G16B16A16_SNORM
+                         : RenderFormat::R16G16B16A16_UNORM;
+      case 0x1F:  // k_16_16_FLOAT
+        return RenderFormat::R16G16_FLOAT;
+      case 0x20:  // k_16_16_16_16_FLOAT
+        return RenderFormat::R16G16B16A16_FLOAT;
+      case 0x21:  // k_32
+        return RenderFormat::R32_UINT;
+      case 0x22:  // k_32_32
+        return RenderFormat::R32G32_UINT;
+      case 0x23:  // k_32_32_32_32
+        return RenderFormat::R32G32B32A32_UINT;
+      case 0x24:  // k_32_FLOAT
+        return RenderFormat::R32_FLOAT;
+      case 0x25:  // k_32_32_FLOAT
+        return RenderFormat::R32G32_FLOAT;
+      case 0x39:  // k_32_32_32_FLOAT
+        return RenderFormat::R32G32B32_FLOAT;
+      case 0x26:  // k_32_32_32_32_FLOAT
+        return RenderFormat::R32G32B32A32_FLOAT;
+      default:
+        return RenderFormat::UNKNOWN;
+    }
   }
 }
 
@@ -2071,6 +2393,30 @@ RenderFormat ConvertPositionDeclType(uint32_t type, bool& outFloat16) {
       outFloat16 = true;
       return RenderFormat::R16G16_UINT;
     case D3DDECLTYPE_FLOAT16_4:
+      outFloat16 = true;
+      return RenderFormat::R16G16B16A16_UINT;
+    default:
+      break;
+  }
+  // Field-decode fallback for variant dwords (same rationale as
+  // ConvertDeclType): POSITION must expose raw bits, so map float fetches to
+  // the equally-sized UINT formats.
+  switch (type & 0x3Fu) {
+    case 0x24:  // k_32_FLOAT
+    case 0x21:  // k_32
+      return RenderFormat::R32_UINT;
+    case 0x25:  // k_32_32_FLOAT
+    case 0x22:  // k_32_32
+      return RenderFormat::R32G32_UINT;
+    case 0x39:  // k_32_32_32_FLOAT
+      return RenderFormat::R32G32B32_UINT;
+    case 0x26:  // k_32_32_32_32_FLOAT
+    case 0x23:  // k_32_32_32_32
+      return RenderFormat::R32G32B32A32_UINT;
+    case 0x1F:  // k_16_16_FLOAT
+      outFloat16 = true;
+      return RenderFormat::R16G16_UINT;
+    case 0x20:  // k_16_16_16_16_FLOAT
       outFloat16 = true;
       return RenderFormat::R16G16B16A16_UINT;
     default:
@@ -2245,6 +2591,19 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
       continue;
 
     RenderFormat format = ConvertDeclType(e.type);
+    if (!IsCanonicalDeclType(e.type)) {
+      // Variant fetch dword handled by the field-decode fallback (or UNKNOWN).
+      // Log the first few so unmapped formats become visible instead of
+      // silently degrading (mirrors 080plume's FM2_DECL_UNKNOWN_FMT logging).
+      static std::atomic<uint32_t> s_variantDeclLogs{0};
+      if (s_variantDeclLogs.fetch_add(1, std::memory_order_relaxed) < 16) {
+        REXGPU_WARN(
+            "CompleteVertexDeclaration: non-canonical decl type=0x{:X} fmt=0x{:X} nf={} "
+            "usage={} idx={} stream={} offset={} -> format={}",
+            e.type, e.type & 0x3Fu, (e.type >> 8) & 0x3u, uint32_t(e.usage), uint32_t(e.usageIndex),
+            uint32_t(e.stream), uint32_t(e.offset), uint32_t(format));
+      }
+    }
     if (e.usage == D3DDECLUSAGE_POSITION && e.usageIndex == 0) {
       bool isFloat16 = false;
       format = ConvertPositionDeclType(e.type, isFloat16);
@@ -2254,25 +2613,24 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
       decl->indexVertexStream = e.stream;
     } else if (e.usage == D3DDECLUSAGE_NORMAL || e.usage == D3DDECLUSAGE_TANGENT ||
                e.usage == D3DDECLUSAGE_BINORMAL) {
-      if (e.type == D3DDECLTYPE_UBYTE4 || e.type == D3DDECLTYPE_UBYTE4_2) {
+      // Classify by the fetch-format field (bits 0-5) so variant dwords take
+      // the same path as their canonical GuestDeclType instance.
+      const uint32_t fmt = e.type & 0x3Fu;
+      if (fmt == 0x06u) {  // k_8_8_8_8 (UBYTE4 family)
         // Already hardware-UNORM-converted to a float4 by the input
         // assembler -- NOT R11G11B10-packed, must not also set that flag.
         format = RenderFormat::R8G8B8A8_UNORM;
         decl->hasUByte4TangentBasis = true;
-      } else if (e.type != D3DDECLTYPE_FLOAT3 && e.type != D3DDECLTYPE_FLOAT4) {
+      } else if (fmt != 0x39u && fmt != 0x26u) {  // not FLOAT3 / FLOAT4
         format = RenderFormat::R32_UINT;  // packed DEC3N/UDEC3 family; shader bit-unpacks raw.
         decl->hasR11G11B10Normal = true;
       }
     } else if (e.usage == D3DDECLUSAGE_TEXCOORD) {
-      switch (e.type) {
-        case D3DDECLTYPE_SHORT2:
-        case D3DDECLTYPE_SHORT4:
-        case D3DDECLTYPE_SHORT2N:
-        case D3DDECLTYPE_SHORT4N:
-        case D3DDECLTYPE_USHORT2N:
-        case D3DDECLTYPE_USHORT4N:
-        case D3DDECLTYPE_FLOAT16_2:
-        case D3DDECLTYPE_FLOAT16_4:
+      switch (e.type & 0x3Fu) {
+        case 0x19:  // k_16_16 (SHORT2/SHORT2N/USHORT2N)
+        case 0x1A:  // k_16_16_16_16 (SHORT4/SHORT4N/USHORT4N)
+        case 0x1F:  // k_16_16_FLOAT (FLOAT16_2)
+        case 0x20:  // k_16_16_16_16_FLOAT (FLOAT16_4)
           decl->swappedTexcoords |= 1u << e.usageIndex;
           break;
         default:
@@ -2318,16 +2676,10 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
   }
 }
 
-// FM2 never binds a vertex declaration through the device field for real
-// (SetActivePassId's write there is a texture/shader pass token, not a
-// declaration address -- see d3d_hooks.cpp), so the real input layout has to
-// be recovered by matching the bound vertex shader's parsed header
-// usage/usageIndex set against every declaration FM2 has ever created,
-// picking the tightest-fitting exact-count match. Declarations must be a
-// superset of what the shader's header lists (order-independent); among
-// those, an exact element-count match wins decisively, then a stream-0
-// footprint that exactly equals the bound VB stride, with denser packs as a
-// tiebreak. Declarations whose stream-0 elements overflow the stride are
+// Fallback for low-level draw paths that do not reach the verified
+// SetVertexDeclaration wrapper. Match the bound shader's parsed inputs against
+// declarations FM2 created, preferring exact element counts and stream-0
+// footprints. Declarations whose elements overflow the live stride are
 // rejected outright.
 GuestVertexDeclaration* MatchDeclarationForShader(GuestShader* vs, uint32_t streamStride) {
   if (vs == nullptr || vs->headerElements.empty())
@@ -2413,32 +2765,85 @@ uint32_t EffectiveStream0Stride(GuestDevice* device) {
 GuestVertexDeclaration* ResolveVertexDeclaration(GuestDevice* device) {
   const uint32_t streamStride = EffectiveStream0Stride(device);
 
-  // Keep host stride mirrors coherent when we recovered stride from guest
-  // memory (e.g. object-pass replay restored ctx+0x2FD8 but skipped Bind).
+  // Keep host stride mirrors coherent when a low-level guest path wrote
+  // device+0x2FD8 without reaching the BindVertexStream wrapper.
   if (streamStride != 0 && g_inputSlots[0].stride == 0) {
     g_inputSlots[0].stride = streamStride;
     g_pipelineState.vertexStrides[0] = uint8_t(streamStride > 255u ? 255u : streamStride);
   }
 
-  // Always try shader-header matching first. SetActivePassId mirrors a pass
-  // token into device->vertexDeclaration; when that token happens to alias an
-  // FM2 GuestVertexDeclaration it short-circuits past the matcher and can lock
-  // in a stride-incompatible layout (fm2mmgrok6/7: 32B FLOAT3 decl + 8B VB).
+  // SetVertexDeclaration is ordered through the render queue. Reading the
+  // mutable guest device here can observe a later frame and override that
+  // draw-local bind.
+  if (g_boundVertexDeclaration != nullptr && IsFm2Resource(g_boundVertexDeclaration) &&
+      g_boundVertexDeclaration->type == ResourceType::VertexDeclaration &&
+      DeclarationFitsStreamStride(g_boundVertexDeclaration, streamStride)) {
+    return g_boundVertexDeclaration;
+  }
+
+  return MatchDeclarationForShader(g_pipelineState.vertexShader, streamStride);
+}
+
+void TraceVertexDeclarationChoice(GuestDevice* device, GuestVertexDeclaration* queued,
+                                  GuestVertexDeclaration* resolved) {
+  if (g_frameTraceIndex >= 64)
+    return;
+
+  const uint32_t draw = g_frameTrace.attemptedDraws - 1;
+  const uint32_t deviceAddress = device != nullptr ? device->vertexDeclaration.get() : 0;
+  GuestVertexDeclaration* deviceDeclaration =
+      deviceAddress != 0 ? ghp::ToHost<GuestVertexDeclaration>(deviceAddress) : nullptr;
+  const uint32_t streamStride = EffectiveStream0Stride(device);
   GuestVertexDeclaration* matched =
       MatchDeclarationForShader(g_pipelineState.vertexShader, streamStride);
-  if (matched != nullptr)
-    return matched;
+  if (draw != 0 && (queued == nullptr || queued == matched))
+    return;
+  const uint64_t vertexShaderHash = ShaderTraceId(g_pipelineState.vertexShader);
+  const char* source = resolved == nullptr             ? "none"
+                       : resolved == queued            ? "queued"
+                       : resolved == deviceDeclaration ? "device"
+                                                       : "matched";
+  const uint64_t hash = VertexDeclarationTraceId(resolved);
+  REXGPU_INFO(
+      "FrameDecl: n={} draw={} source={} queued=0x{:016X}/0x{:016X} "
+      "device=0x{:08X}/0x{:016X} resolved=0x{:016X}/0x{:016X} stride={} elements={} "
+      "swappedTexcoords=0x{:X} vs=0x{:016X} inputs={} matched=0x{:016X}/0x{:016X}",
+      g_frameTraceIndex + 1, draw, source, uint64_t(reinterpret_cast<uintptr_t>(queued)),
+      VertexDeclarationTraceId(queued), deviceAddress,
+      uint64_t(reinterpret_cast<uintptr_t>(deviceDeclaration)),
+      uint64_t(reinterpret_cast<uintptr_t>(resolved)), hash, streamStride,
+      resolved != nullptr ? resolved->vertexElementCount : 0,
+      resolved != nullptr ? resolved->swappedTexcoords : 0, vertexShaderHash,
+      g_pipelineState.vertexShader != nullptr ? g_pipelineState.vertexShader->headerElements.size()
+                                              : 0,
+      uint64_t(reinterpret_cast<uintptr_t>(matched)), VertexDeclarationTraceId(matched));
 
-  const uint32_t declAddr = device != nullptr ? device->vertexDeclaration.get() : 0;
-  if (declAddr != 0) {
-    auto* decl = ghp::ToHost<GuestVertexDeclaration>(declAddr);
-    if (IsFm2Resource(decl) && decl->type == ResourceType::VertexDeclaration &&
-        DeclarationFitsStreamStride(decl, streamStride)) {
-      return decl;
+  static std::unordered_set<uint64_t> loggedVertexShaders;
+  const uint64_t shaderLogKey =
+      vertexShaderHash != 0 ? vertexShaderHash
+                            : uint64_t(reinterpret_cast<uintptr_t>(g_pipelineState.vertexShader));
+  if (g_pipelineState.vertexShader != nullptr && loggedVertexShaders.insert(shaderLogKey).second) {
+    for (uint32_t i = 0; i < g_pipelineState.vertexShader->headerElements.size(); ++i) {
+      const ShaderHeaderElement& input = g_pipelineState.vertexShader->headerElements[i];
+      REXGPU_INFO("FrameDeclShaderInput: vs=0x{:016X} input={} usage={} usageIndex={}",
+                  vertexShaderHash, i, input.usage, input.usageIndex);
     }
   }
 
-  return nullptr;
+  static std::unordered_set<uint64_t> loggedDeclarations;
+  if (resolved == nullptr || resolved->vertexElements == nullptr ||
+      !loggedDeclarations.insert(hash).second) {
+    return;
+  }
+  for (uint32_t i = 0; i < resolved->vertexElementCount; ++i) {
+    const GuestVertexElement& element = resolved->vertexElements[i];
+    if (element.usage == D3DDECLUSAGE_TEXCOORD) {
+      REXGPU_INFO(
+          "FrameDeclTexcoord: hash=0x{:016X} element={} stream={} offset={} type=0x{:08X} "
+          "usageIndex={}",
+          hash, i, element.stream, element.offset, element.type, element.usageIndex);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2465,21 +2870,36 @@ void SanitizePipelineState(PipelineState& ps) {
     ps.slopeScaledDepthBias = 0.0f;
   }
   if (!ps.stencilEnable) {
+    ps.twoSidedStencilMode = false;
     ps.stencilFrontFunc = ps.stencilBackFunc = RenderComparisonFunction::ALWAYS;
     ps.stencilFrontFail = ps.stencilFrontDepthFail = ps.stencilFrontPass = RenderStencilOp::KEEP;
     ps.stencilBackFail = ps.stencilBackDepthFail = ps.stencilBackPass = RenderStencilOp::KEEP;
-    ps.stencilReadMask = ps.stencilWriteMask = 0xFF;
-    ps.stencilRef = 0;
+    ps.stencilFrontReadMask = ps.stencilBackReadMask = 0xFF;
+    ps.stencilFrontWriteMask = ps.stencilBackWriteMask = 0xFF;
+    ps.stencilFrontRef = ps.stencilBackRef = 0;
+  } else if (!ps.twoSidedStencilMode) {
+    ps.stencilBackFunc = ps.stencilFrontFunc;
+    ps.stencilBackFail = ps.stencilFrontFail;
+    ps.stencilBackDepthFail = ps.stencilFrontDepthFail;
+    ps.stencilBackPass = ps.stencilFrontPass;
+    ps.stencilBackReadMask = ps.stencilFrontReadMask;
+    ps.stencilBackWriteMask = ps.stencilFrontWriteMask;
+    ps.stencilBackRef = ps.stencilFrontRef;
   }
   if (!ps.zEnable && !ps.stencilEnable)
     ps.depthStencilFormat = RenderFormat::UNKNOWN;
   if (!ps.alphaBlendEnable) {
+    ps.separateAlphaBlendEnable = false;
     ps.srcBlend = RenderBlend::ONE;
     ps.destBlend = RenderBlend::ZERO;
     ps.blendOp = RenderBlendOperation::ADD;
     ps.srcBlendAlpha = RenderBlend::ONE;
     ps.destBlendAlpha = RenderBlend::ZERO;
     ps.blendOpAlpha = RenderBlendOperation::ADD;
+  } else if (!ps.separateAlphaBlendEnable) {
+    ps.srcBlendAlpha = ps.srcBlend;
+    ps.destBlendAlpha = ps.destBlend;
+    ps.blendOpAlpha = ps.blendOp;
   }
   if (ps.vertexDeclaration != nullptr) {
     for (uint32_t i = 0; i < 16; ++i) {
@@ -2495,15 +2915,6 @@ void SanitizePipelineState(PipelineState& ps) {
   ps.specConstants &= usableSpecMask;
 }
 
-// Lazily created, always-resident flat/unlit shader used in place of the
-// real pixel shader for draws issued while IsInsideRecordedBatch() -- see
-// render_state.h's comment on that flag for why.
-RenderShader* GetPlaceholderPixelShader() {
-  static std::unique_ptr<RenderShader> shader = Device()->createShader(
-      g_placeholder_ps_dxil, sizeof(g_placeholder_ps_dxil), "main", RenderShaderFormat::DXIL);
-  return shader.get();
-}
-
 // One-time diagnostic logging of *why* a PSO build was rejected -- these
 // paths used to fail completely silently, making an all-black screen
 // indistinguishable from "every draw's pipeline build is failing."
@@ -2514,8 +2925,7 @@ void LogPipelineRejectOnce(const char* reason) {
   }
 }
 
-std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps,
-                                                       bool placeholderShader) {
+std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps) {
   RenderShader* vertexShader = LoadShader(ps.vertexShader, ps.specConstants);
   if (vertexShader == nullptr) {
     if (ps.vertexShader == nullptr) {
@@ -2539,9 +2949,8 @@ std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps,
     return nullptr;
   }
 
-  RenderShader* pixelShader = placeholderShader ? GetPlaceholderPixelShader()
-                                                : LoadShader(ps.pixelShader, ps.specConstants);
-  if (!placeholderShader && ps.pixelShader != nullptr && pixelShader == nullptr) {
+  RenderShader* pixelShader = LoadShader(ps.pixelShader, ps.specConstants);
+  if (ps.pixelShader != nullptr && pixelShader == nullptr) {
     LogPipelineRejectOnce("pixel shader failed to load");
     return nullptr;
   }
@@ -2568,9 +2977,13 @@ std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps,
   desc.slopeScaledDepthBias = ps.slopeScaledDepthBias;
   desc.depthClipEnabled = ps.depthClipEnabled;
   desc.stencilEnabled = ps.stencilEnable;
-  desc.stencilReadMask = ps.stencilReadMask;
-  desc.stencilWriteMask = ps.stencilWriteMask;
-  desc.stencilReference = ps.stencilRef;
+  desc.independentStencilMasksAndReference = ps.twoSidedStencilMode;
+  desc.stencilReadMask = ps.stencilFrontReadMask;
+  desc.stencilWriteMask = ps.stencilFrontWriteMask;
+  desc.stencilReference = ps.stencilFrontRef;
+  desc.stencilBackReadMask = ps.stencilBackReadMask;
+  desc.stencilBackWriteMask = ps.stencilBackWriteMask;
+  desc.stencilBackReference = ps.stencilBackRef;
   desc.stencilFrontFace = {ps.stencilFrontPass, ps.stencilFrontFail, ps.stencilFrontDepthFail,
                            ps.stencilFrontFunc};
   desc.stencilBackFace = {ps.stencilBackPass, ps.stencilBackFail, ps.stencilBackDepthFail,
@@ -2624,7 +3037,7 @@ std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps,
   return pipeline;
 }
 
-RenderPipeline* GetPipeline(PipelineState ps, bool placeholderShader) {
+RenderPipeline* GetPipeline(PipelineState ps) {
   SanitizePipelineState(ps);
   if (ps.renderTargetFormat == RenderFormat::UNKNOWN &&
       ps.depthStencilFormat == RenderFormat::UNKNOWN) {
@@ -2637,14 +3050,12 @@ RenderPipeline* GetPipeline(PipelineState ps, bool placeholderShader) {
   }
 
   uint64_t hash = XXH3_64bits(&ps, sizeof(ps));
-  if (placeholderShader)
-    hash ^= 0x9E3779B97F4A7C15ull;
   if (g_failedPipelines.contains(hash)) {
     return nullptr;
   }
   auto& pipeline = g_pipelines[hash];
   if (pipeline == nullptr) {
-    pipeline = CreateGraphicsPipeline(ps, placeholderShader);
+    pipeline = CreateGraphicsPipeline(ps);
     if (pipeline == nullptr) {
       g_pipelines.erase(hash);
       g_failedPipelines.insert(hash);
@@ -2673,8 +3084,9 @@ constexpr uint32_t kPsFloatConstantBytes = 224 * 16;
 thread_local PendingShaderConstantFile t_pendingDrawVsConstants;
 thread_local PendingShaderConstantFile t_pendingDrawPsConstants;
 
-void ProcSetBooleans(uint32_t booleans) {
-  g_sharedConstants.booleans = booleans;
+void ProcSetBooleans(const uint32_t* words) {
+  if (words != nullptr)
+    std::memcpy(g_sharedConstants.booleans, words, sizeof(g_sharedConstants.booleans));
 }
 
 void ProcSetLoopConstants(const uint32_t* values) {
@@ -2760,11 +3172,7 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
     return;
 
   thread_local GuestDevice* lastDevice = nullptr;
-  // Replay temporarily points at a restored per-draw context file. Its dirty
-  // masks were already consumed by the original EmitDirty path, so the live
-  // window must force booleans/samplers as well as float constants.
-  const bool forceFullSnapshot = lastDevice != device || g_liveVsFloatConstants != nullptr ||
-                                 g_livePsFloatConstants != nullptr;
+  const bool forceFullSnapshot = lastDevice != device || RenderQueue::IsRecording();
   lastDevice = device;
 
   // Vertex/index bindings are mutable guest context state just like shader
@@ -2834,8 +3242,10 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   if (forceFullSnapshot || (booleanFlags & kBooleanDirtyMask) != 0) {
     RenderCommand& cmd = queue.Enqueue();
     cmd.type = RenderCommandType::SetBooleans;
-    cmd.setBooleans.booleans = (device->vertexShaderBoolConstants[0].get() & 0xFFFFu) |
-                               ((device->pixelShaderBoolConstants[0].get() & 0xFFFFu) << 16);
+    for (uint32_t i = 0; i < 4; ++i) {
+      cmd.setBooleans.words[i] = device->vertexShaderBoolConstants[i].get();
+      cmd.setBooleans.words[4 + i] = device->pixelShaderBoolConstants[i].get();
+    }
     device->dirtyFlags[4] = booleanFlags & ~kBooleanDirtyMask;
   }
 
@@ -2872,22 +3282,17 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
                            PendingShaderConstantFile::kDwordsPerRegister>
       mergedVsConstants;
   const bool hasPendingVs = !t_pendingDrawVsConstants.empty();
-  ConstantSnapshotRange vsRange =
-      (forceFullSnapshot || g_liveVsFloatConstants != nullptr || hasPendingVs)
-          ? ConstantSnapshotRange{0, kVsFloatConstantBytes}
-          : GetConstantSnapshotRange(vsFlags, 64);
-  const uint32_t* vsSource =
-      g_liveVsFloatConstants != nullptr
-          ? g_liveVsFloatConstants
-          : reinterpret_cast<const uint32_t*>(device->vertexShaderFloatConstants);
+  ConstantSnapshotRange vsRange = (forceFullSnapshot || hasPendingVs)
+                                      ? ConstantSnapshotRange{0, kVsFloatConstantBytes}
+                                      : GetConstantSnapshotRange(vsFlags, 64);
+  const uint32_t* vsSource = reinterpret_cast<const uint32_t*>(device->vertexShaderFloatConstants);
   if (hasPendingVs) {
     std::memcpy(mergedVsConstants.data(), vsSource, kVsFloatConstantBytes);
     t_pendingDrawVsConstants.OverlayAndClear(mergedVsConstants.data(), 256);
     vsSource = mergedVsConstants.data();
   }
   if (QueueConstantSnapshot(queue, RenderCommandType::SetVertexShaderConstants, vsSource,
-                            vsRange) &&
-      g_liveVsFloatConstants == nullptr) {
+                            vsRange)) {
     device->dirtyFlags[0] = 0;
   }
 
@@ -2896,21 +3301,16 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
                            PendingShaderConstantFile::kDwordsPerRegister>
       mergedPsConstants;
   const bool hasPendingPs = !t_pendingDrawPsConstants.empty();
-  ConstantSnapshotRange psRange =
-      (forceFullSnapshot || g_livePsFloatConstants != nullptr || hasPendingPs)
-          ? ConstantSnapshotRange{0, kPsFloatConstantBytes}
-          : GetConstantSnapshotRange(psFlags, 56);
-  const uint32_t* psSource =
-      g_livePsFloatConstants != nullptr
-          ? g_livePsFloatConstants
-          : reinterpret_cast<const uint32_t*>(device->pixelShaderFloatConstants);
+  ConstantSnapshotRange psRange = (forceFullSnapshot || hasPendingPs)
+                                      ? ConstantSnapshotRange{0, kPsFloatConstantBytes}
+                                      : GetConstantSnapshotRange(psFlags, 56);
+  const uint32_t* psSource = reinterpret_cast<const uint32_t*>(device->pixelShaderFloatConstants);
   if (hasPendingPs) {
     std::memcpy(mergedPsConstants.data(), psSource, kPsFloatConstantBytes);
     t_pendingDrawPsConstants.OverlayAndClear(mergedPsConstants.data(), 224);
     psSource = mergedPsConstants.data();
   }
-  if (QueueConstantSnapshot(queue, RenderCommandType::SetPixelShaderConstants, psSource, psRange) &&
-      g_livePsFloatConstants == nullptr) {
+  if (QueueConstantSnapshot(queue, RenderCommandType::SetPixelShaderConstants, psSource, psRange)) {
     device->dirtyFlags[1] = 0;
   }
 }
@@ -2938,7 +3338,6 @@ RenderPrimitiveTopology ConvertPrimitiveType(uint32_t type) {
   }
 }
 
-bool g_insideRecordedBatch = false;
 bool g_hasBoundPipeline = false;
 
 // QUADLIST / TRIANGLEFAN → triangle-list index expansion (SOURCE pattern).
@@ -3014,144 +3413,6 @@ void StageDrawShaderConstants(bool vertex, uint32_t startRegister, const void* b
   pending.Stage(startRegister, static_cast<const uint32_t*>(beDwords), registerCount);
 }
 
-void MirrorPassVsConstants(uint32_t startRegister, const void* src, uint32_t vector4fCount) {
-  if (src == nullptr || startRegister >= 0x100u || vector4fCount == 0)
-    return;
-  const uint32_t count = std::min(vector4fCount, 0x100u - startRegister);
-  std::memcpy(g_passVsConstants + startRegister * 4u, src, count * 16u);
-  for (uint32_t reg = startRegister; reg < startRegister + count; ++reg) {
-    g_passVsConstantsCoverage[reg >> 6] |= uint64_t{1} << (reg & 63u);
-  }
-  g_passVsConstantsValid.store(true, std::memory_order_relaxed);
-}
-
-void CaptureObjPassWvp(uint32_t startRegister, const void* src, uint32_t vector4fCount) {
-  if (src == nullptr || startRegister > 8u || vector4fCount == 0)
-    return;
-  const uint32_t count = std::min(vector4fCount, 12u - startRegister);
-  std::memcpy(g_objPassWvp + startRegister * 4u, src, count * 16u);
-  if (startRegister + count >= 12u) {
-    g_objPassWvpValid.store(true, std::memory_order_relaxed);
-  }
-}
-
-void SetLiveFloatConstantFiles(const void* vsFile, const void* psFile) {
-  g_liveVsFloatConstants = static_cast<const uint32_t*>(vsFile);
-  g_livePsFloatConstants = static_cast<const uint32_t*>(psFile);
-}
-
-void SetLastDrawCallerLr(uint32_t lr) {
-  g_lastDrawCallerLr = lr;
-}
-
-void SetScene3dVsOverlayFromDevice(const void* beDwords, uint32_t firstReg, uint32_t regCount) {
-  if (beDwords == nullptr || firstReg >= 0x100u || regCount == 0)
-    return;
-  regCount = std::min(regCount, 0x100u - firstReg);
-  std::memcpy(g_scene3dVsConstants + firstReg * 4u, beDwords, regCount * 16u);
-  for (uint32_t reg = firstReg; reg < firstReg + regCount; ++reg) {
-    g_scene3dVsCoverage[reg >> 6] |= uint64_t{1} << (reg & 63u);
-  }
-  g_scene3dVsValid.store(true, std::memory_order_relaxed);
-}
-
-GuestShader* GetPipelineVertexShader() {
-  return g_pipelineState.vertexShader;
-}
-GuestShader* GetPipelinePixelShader() {
-  return g_pipelineState.pixelShader;
-}
-GuestVertexDeclaration* GetPipelineVertexDeclaration() {
-  return g_pipelineState.vertexDeclaration;
-}
-
-void CaptureObjReplayRenderState(ObjReplayRenderState& out) {
-  const PipelineState& state = g_pipelineState;
-  out.zEnable = state.zEnable;
-  out.zWriteEnable = state.zWriteEnable;
-  out.zFunc = uint32_t(state.zFunc);
-  out.cullMode = uint32_t(state.cullMode);
-  out.alphaBlendEnable = state.alphaBlendEnable;
-  out.srcBlend = uint32_t(state.srcBlend);
-  out.destBlend = uint32_t(state.destBlend);
-  out.blendOp = uint32_t(state.blendOp);
-  out.srcBlendAlpha = uint32_t(state.srcBlendAlpha);
-  out.destBlendAlpha = uint32_t(state.destBlendAlpha);
-  out.blendOpAlpha = uint32_t(state.blendOpAlpha);
-  out.colorWriteEnable = state.colorWriteEnable;
-  out.stencilEnable = state.stencilEnable;
-  out.stencilReadMask = state.stencilReadMask;
-  out.stencilWriteMask = state.stencilWriteMask;
-  out.stencilRef = state.stencilRef;
-  out.stencilFrontFunc = uint32_t(state.stencilFrontFunc);
-  out.stencilFrontFail = uint32_t(state.stencilFrontFail);
-  out.stencilFrontDepthFail = uint32_t(state.stencilFrontDepthFail);
-  out.stencilFrontPass = uint32_t(state.stencilFrontPass);
-  out.stencilBackFunc = uint32_t(state.stencilBackFunc);
-  out.stencilBackFail = uint32_t(state.stencilBackFail);
-  out.stencilBackDepthFail = uint32_t(state.stencilBackDepthFail);
-  out.stencilBackPass = uint32_t(state.stencilBackPass);
-  out.slopeScaledDepthBias = state.slopeScaledDepthBias;
-  out.depthBias = state.depthBias;
-  out.depthClipEnabled = state.depthClipEnabled;
-  std::copy(std::begin(g_sharedConstants.clipPlane), std::end(g_sharedConstants.clipPlane),
-            std::begin(out.clipPlane));
-  out.clipPlaneEnabled = g_sharedConstants.clipPlaneEnabled;
-  out.alphaThreshold = g_sharedConstants.alphaThreshold;
-}
-
-void RestoreObjReplayRenderState(const ObjReplayRenderState& in) {
-  bool& dirty = g_dirtyStates.pipelineState;
-  SetDirtyValue(dirty, g_pipelineState.zEnable, in.zEnable);
-  SetDirtyValue(dirty, g_pipelineState.zWriteEnable, in.zWriteEnable);
-  SetDirtyValue(dirty, g_pipelineState.zFunc, static_cast<RenderComparisonFunction>(in.zFunc));
-  SetDirtyValue(dirty, g_pipelineState.cullMode, static_cast<RenderCullMode>(in.cullMode));
-  SetDirtyValue(dirty, g_pipelineState.alphaBlendEnable, in.alphaBlendEnable);
-  SetDirtyValue(dirty, g_pipelineState.srcBlend, static_cast<RenderBlend>(in.srcBlend));
-  SetDirtyValue(dirty, g_pipelineState.destBlend, static_cast<RenderBlend>(in.destBlend));
-  SetDirtyValue(dirty, g_pipelineState.blendOp, static_cast<RenderBlendOperation>(in.blendOp));
-  SetDirtyValue(dirty, g_pipelineState.srcBlendAlpha, static_cast<RenderBlend>(in.srcBlendAlpha));
-  SetDirtyValue(dirty, g_pipelineState.destBlendAlpha, static_cast<RenderBlend>(in.destBlendAlpha));
-  SetDirtyValue(dirty, g_pipelineState.blendOpAlpha,
-                static_cast<RenderBlendOperation>(in.blendOpAlpha));
-  SetDirtyValue(dirty, g_pipelineState.colorWriteEnable, in.colorWriteEnable);
-  SetDirtyValue(dirty, g_pipelineState.stencilEnable, in.stencilEnable);
-  SetDirtyValue(dirty, g_pipelineState.stencilReadMask, in.stencilReadMask);
-  SetDirtyValue(dirty, g_pipelineState.stencilWriteMask, in.stencilWriteMask);
-  SetDirtyValue(dirty, g_pipelineState.stencilRef, in.stencilRef);
-  SetDirtyValue(dirty, g_pipelineState.stencilFrontFunc,
-                static_cast<RenderComparisonFunction>(in.stencilFrontFunc));
-  SetDirtyValue(dirty, g_pipelineState.stencilFrontFail,
-                static_cast<RenderStencilOp>(in.stencilFrontFail));
-  SetDirtyValue(dirty, g_pipelineState.stencilFrontDepthFail,
-                static_cast<RenderStencilOp>(in.stencilFrontDepthFail));
-  SetDirtyValue(dirty, g_pipelineState.stencilFrontPass,
-                static_cast<RenderStencilOp>(in.stencilFrontPass));
-  SetDirtyValue(dirty, g_pipelineState.stencilBackFunc,
-                static_cast<RenderComparisonFunction>(in.stencilBackFunc));
-  SetDirtyValue(dirty, g_pipelineState.stencilBackFail,
-                static_cast<RenderStencilOp>(in.stencilBackFail));
-  SetDirtyValue(dirty, g_pipelineState.stencilBackDepthFail,
-                static_cast<RenderStencilOp>(in.stencilBackDepthFail));
-  SetDirtyValue(dirty, g_pipelineState.stencilBackPass,
-                static_cast<RenderStencilOp>(in.stencilBackPass));
-  SetDirtyValue(dirty, g_pipelineState.slopeScaledDepthBias, in.slopeScaledDepthBias);
-  SetDirtyValue(dirty, g_pipelineState.depthBias, in.depthBias);
-  SetDirtyValue(dirty, g_pipelineState.depthClipEnabled, in.depthClipEnabled);
-  std::copy(std::begin(in.clipPlane), std::end(in.clipPlane),
-            std::begin(g_sharedConstants.clipPlane));
-  g_sharedConstants.clipPlaneEnabled = in.clipPlaneEnabled;
-  g_sharedConstants.alphaThreshold = in.alphaThreshold;
-  g_dirtyStates.renderTargetAndDepthStencil = true;
-}
-
-void SetInsideRecordedBatch(bool inside) {
-  g_insideRecordedBatch = inside;
-}
-bool IsInsideRecordedBatch() {
-  return g_insideRecordedBatch;
-}
-
 bool HasBoundPipeline() {
   return g_hasBoundPipeline;
 }
@@ -3161,9 +3422,6 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   g_hasBoundPipeline = false;
   if (device == nullptr)
     return;
-
-  // Tier A steps 1–7: flush guards, samplers, decl SPEC, overlay merge,
-  // RAW feeders, and object-pass record/replay.
 
   // FM2's deferred draw-list nodes carry color-write state that the direct
   // D3D9 mirrors don't see. A bound pixel shader denotes a color pass; keep
@@ -3193,8 +3451,8 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
     // dropping disables depth testing for every scene draw (wrong occlusion).
     GuestSurface* rescue = nullptr;
     if (depthStencil != nullptr && renderTarget != nullptr) {
-      auto it = g_lastDepthBySize.find(DepthSizeKey(renderTarget->width, renderTarget->height,
-                                                    GetSampleCount(renderTarget)));
+      auto it = g_lastDepthBySize.find(
+          DepthSizeKey(renderTarget->width, renderTarget->height, GetSampleCount(renderTarget)));
       if (it != g_lastDepthBySize.end()) {
         GuestSurface* candidate = it->second;
         if (candidate != nullptr && candidate != depthStencil && IsLiveHostTexture(candidate) &&
@@ -3289,10 +3547,12 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   }
 
   {
+    GuestVertexDeclaration* queued = g_boundVertexDeclaration;
     GuestVertexDeclaration* decl = ResolveVertexDeclaration(device);
     // Completes the decl and applies SPEC_CONSTANT_POSITION_F16 / R11G11B10 /
     // UBYTE4 + shared swizzle metadata before PSO lookup.
     ApplyVertexDeclarationMetadata(decl);
+    TraceVertexDeclarationChoice(device, queued, decl);
     SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexDeclaration, decl);
   }
 
@@ -3308,8 +3568,7 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
     pipelineState.stencilEnable = false;
     pipelineState.depthStencilFormat = RenderFormat::UNKNOWN;
   }
-  RenderPipeline* pipeline =
-      GetPipeline(pipelineState, g_insideRecordedBatch && !kObjPassRecordReplay);
+  RenderPipeline* pipeline = GetPipeline(pipelineState);
   if (pipeline == nullptr)
     return;
   RenderPipelineLayout* layout = PipelineLayout();
@@ -3399,6 +3658,12 @@ void ProcClear(uint32_t flags, const float rgba[4], float z) {
   if (IsDeviceLost())
     return;
 
+  ++g_frameTrace.clears;
+  MixFrameTrace(g_frameTrace.shapeHash, flags);
+  MixTextureShape(g_frameTrace.shapeHash, g_renderTarget);
+  MixFrameTraceBytes(g_frameTrace.clearHash, rgba, sizeof(float) * 4);
+  MixFrameTraceBytes(g_frameTrace.clearHash, &z, sizeof(z));
+
   if (g_renderTarget != nullptr && !IsLiveHostTexture(g_renderTarget)) {
     g_renderTarget = nullptr;
   }
@@ -3454,6 +3719,10 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
                           bool hasSrc, const RenderRect& srcRect) {
   if (IsDeviceLost())
     return;
+  ++g_frameTrace.resolves;
+  MixTextureShape(g_frameTrace.shapeHash, destTexture);
+  MixFrameTrace(g_frameTrace.shapeHash, uint64_t(destX) << 32 | destY);
+  MixFrameTraceBytes(g_frameTrace.shapeHash, &srcRect, sizeof(srcRect));
   if (!IsLiveHostTexture(destTexture))
     return;
   // Swap/Resolve often run after the guest unbound the color RT. Unleashed keeps
@@ -3562,11 +3831,14 @@ void ProcDrawPrimitive(GuestDevice* device, uint32_t primitiveType, uint32_t sta
                        uint32_t vertexCount) {
   if (IsDeviceLost())
     return;
+  ++g_frameTrace.attemptedDraws;
   g_hasBoundPipeline = false;
   const uint32_t convertedIndexCount = PrepareConvertedIndices(primitiveType, vertexCount);
   FlushRenderState(device, primitiveType);
   if (!g_hasBoundPipeline)
     return;
+  const uint32_t geometry[] = {primitiveType, startVertex, vertexCount, convertedIndexCount};
+  TraceIssuedDraw(1, geometry, std::size(geometry));
   if (convertedIndexCount != 0) {
     CommandList()->drawIndexedInstanced(convertedIndexCount, 1, 0, int32_t(startVertex), 0);
   } else {
@@ -3578,9 +3850,12 @@ void ProcDrawIndexedPrimitive(GuestDevice* device, uint32_t primitiveType, int32
                               uint32_t startIndex, uint32_t indexCount) {
   if (IsDeviceLost())
     return;
+  ++g_frameTrace.attemptedDraws;
   FlushRenderState(device, primitiveType);
   if (!g_hasBoundPipeline)
     return;
+  const uint32_t geometry[] = {primitiveType, uint32_t(baseVertexIndex), startIndex, indexCount};
+  TraceIssuedDraw(2, geometry, std::size(geometry));
   CommandList()->drawIndexedInstanced(indexCount, 1, startIndex, baseVertexIndex, 0);
 }
 
@@ -3588,6 +3863,7 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
                          uint8_t* copy, uint32_t stride, uint32_t bytes) {
   if (IsDeviceLost())
     return;
+  ++g_frameTrace.attemptedDraws;
   g_hasBoundPipeline = false;
 
   const uint8_t savedStride0 = g_pipelineState.vertexStrides[0];
@@ -3597,8 +3873,19 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
   g_pipelineState.vertexStrides[0] = savedStride0;
   if (!g_hasBoundPipeline)
     return;
+  const uint32_t geometry[] = {primitiveType, vertexCount, stride, bytes, convertedIndexCount};
+  TraceIssuedDraw(3, geometry, std::size(geometry), copy, bytes);
 
-  RenderBufferReference ref = CurrentUploadAllocator().Upload(copy, bytes, false);
+  const uint8_t* uploadData = copy;
+  std::array<uint8_t, 4 * 20> normalizedQuad;
+  if (!g_viewportEnabled && primitiveType == D3DPT_TRIANGLESTRIP &&
+      bytes == normalizedQuad.size()) {
+    std::memcpy(normalizedQuad.data(), copy, bytes);
+    if (NormalizeUnitFullscreenUpQuad(normalizedQuad.data(), vertexCount, stride, bytes))
+      uploadData = normalizedQuad.data();
+  }
+
+  RenderBufferReference ref = CurrentUploadAllocator().Upload(uploadData, bytes, true);
   if (ref.ref == nullptr) {
     g_hasBoundPipeline = false;
     return;
@@ -3725,6 +4012,9 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
     case RenderCommandType::SetViewportEnable:
       ProcSetViewportEnable(cmd.setViewportEnable.value);
       break;
+    case RenderCommandType::SetClipPlaneState:
+      ProcSetClipPlaneState(cmd.setClipPlaneState.enabled, cmd.setClipPlaneState.plane);
+      break;
     case RenderCommandType::SetDepthState:
       ProcSetDepthState(cmd.setDepthState.zEnable, cmd.setDepthState.zWriteEnable,
                         cmd.setDepthState.cmpFunc);
@@ -3748,7 +4038,7 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
                           cmd.setSamplerState.data3, cmd.setSamplerState.data5);
       break;
     case RenderCommandType::SetBooleans:
-      ProcSetBooleans(cmd.setBooleans.booleans);
+      ProcSetBooleans(cmd.setBooleans.words);
       break;
     case RenderCommandType::SetLoopConstants:
       ProcSetLoopConstants(cmd.setLoopConstants.values);
@@ -3815,8 +4105,9 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
         } else {
           static uint64_t bandClearDeferred = 0;
           if (++bandClearDeferred <= 12 || bandClearDeferred % 300 == 1) {
-            REXGPU_INFO("ResolveToTexture: deferring post-clear past intermediate band destY={} (n={})",
-                        cmd.resolveToTexture.destY, bandClearDeferred);
+            REXGPU_INFO(
+                "ResolveToTexture: deferring post-clear past intermediate band destY={} (n={})",
+                cmd.resolveToTexture.destY, bandClearDeferred);
           }
         }
       }
@@ -3838,6 +4129,7 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
                           cmd.drawPrimitiveUP.stride, cmd.drawPrimitiveUP.bytes);
       break;
     case RenderCommandType::ExecuteCommandList:
+      LogAndResetFrameTrace();
       ProcExecuteCommandList();
       break;
     case RenderCommandType::BeginCommandList:
@@ -3882,6 +4174,102 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
     case RenderCommandType::CreateTranslatedTextureHost:
       break;  // handled above
   }
+}
+
+void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
+                                    const DeferredExecutionSnapshot* executionSnapshot) {
+  if (commands == nullptr || count == 0)
+    return;
+
+  std::lock_guard lock(RecordingMutex());
+  FlushPendingStretchRectCommands();
+
+  struct SavedState {
+    PipelineState pipelineState;
+    GuestBaseTexture* renderTarget;
+    GuestBaseTexture* implicitRenderTarget;
+    GuestSurface* depthStencil;
+    GuestSurface* implicitDepthStencil;
+    RenderViewport viewport;
+    bool viewportEnabled;
+    GuestVertexDeclaration* boundVertexDeclaration;
+    SharedConstants sharedConstants;
+    bool sharedConstantsInitialized;
+    std::array<GuestTexture*, 16> textures;
+    std::array<uint32_t, std::size(g_vertexShaderConstants)> vertexConstants;
+    std::array<uint32_t, std::size(g_pixelShaderConstants)> pixelConstants;
+    bool scissorTestEnable;
+    RenderRect scissorRect;
+    std::array<RenderVertexBufferView, 16> vertexBufferViews;
+    std::array<RenderInputSlot, 16> inputSlots;
+    RenderIndexBufferView indexBufferView;
+  } saved{g_pipelineState,
+          g_renderTarget,
+          g_implicitRenderTarget,
+          g_depthStencil,
+          g_implicitDepthStencil,
+          g_viewport,
+          g_viewportEnabled,
+          g_boundVertexDeclaration,
+          g_sharedConstants,
+          g_sharedConstantsInitialized,
+          {},
+          {},
+          {},
+          g_scissorTestEnable,
+          g_scissorRect,
+          {},
+          {},
+          g_indexBufferView};
+  std::copy(std::begin(g_textures), std::end(g_textures), saved.textures.begin());
+  std::copy(std::begin(g_vertexShaderConstants), std::end(g_vertexShaderConstants),
+            saved.vertexConstants.begin());
+  std::copy(std::begin(g_pixelShaderConstants), std::end(g_pixelShaderConstants),
+            saved.pixelConstants.begin());
+  std::copy(std::begin(g_vertexBufferViews), std::end(g_vertexBufferViews),
+            saved.vertexBufferViews.begin());
+  std::copy(std::begin(g_inputSlots), std::end(g_inputSlots), saved.inputSlots.begin());
+
+  for (size_t i = 0; i < count; ++i) {
+    const RenderCommandType type = commands[i].type;
+    const bool isDraw = type == RenderCommandType::DrawPrimitive ||
+                        type == RenderCommandType::DrawIndexedPrimitive ||
+                        type == RenderCommandType::DrawPrimitiveUP;
+    if (isDraw && executionSnapshot != nullptr) {
+      ProcSetShaderConstants(true, executionSnapshot->vertexConstants.data(), 0,
+                             uint32_t(executionSnapshot->vertexConstants.size()));
+      ProcSetShaderConstants(false, executionSnapshot->pixelConstants.data(), 0,
+                             uint32_t(executionSnapshot->pixelConstants.size()));
+      ProcSetBooleans(executionSnapshot->booleans.data());
+    }
+    DispatchRenderCommand(commands[i]);
+  }
+
+  g_pipelineState = saved.pipelineState;
+  g_renderTarget = saved.renderTarget;
+  g_implicitRenderTarget = saved.implicitRenderTarget;
+  g_depthStencil = saved.depthStencil;
+  g_implicitDepthStencil = saved.implicitDepthStencil;
+  g_viewport = saved.viewport;
+  g_viewportEnabled = saved.viewportEnabled;
+  g_boundVertexDeclaration = saved.boundVertexDeclaration;
+  g_sharedConstants = saved.sharedConstants;
+  g_sharedConstantsInitialized = saved.sharedConstantsInitialized;
+  std::copy(saved.textures.begin(), saved.textures.end(), std::begin(g_textures));
+  std::copy(saved.vertexConstants.begin(), saved.vertexConstants.end(),
+            std::begin(g_vertexShaderConstants));
+  std::copy(saved.pixelConstants.begin(), saved.pixelConstants.end(),
+            std::begin(g_pixelShaderConstants));
+  g_scissorTestEnable = saved.scissorTestEnable;
+  g_scissorRect = saved.scissorRect;
+  std::copy(saved.vertexBufferViews.begin(), saved.vertexBufferViews.end(),
+            std::begin(g_vertexBufferViews));
+  std::copy(saved.inputSlots.begin(), saved.inputSlots.end(), std::begin(g_inputSlots));
+  g_indexBufferView = saved.indexBufferView;
+  g_framebuffer = nullptr;
+  g_hasBoundPipeline = false;
+  g_pendingMsaaResolves.clear();
+  g_dirtyStates = DirtyStates(true);
 }
 
 }  // namespace fm2::render
