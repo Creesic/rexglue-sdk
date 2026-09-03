@@ -917,6 +917,11 @@ void Video::Shutdown() {
   if (!g_initialized) {
     return;
   }
+  // Cleared first, not last: the render_state.cpp entry points gate on
+  // IsInitialized(), and everything below this line tears down the device they
+  // would otherwise reach. A guest draw arriving from another thread (or from
+  // the vblank worker's interrupt) during the drain must see false already.
+  g_initialized = false;
   // Stop dispatching to (and drain/join) the render thread before the final
   // full-GPU drain below, so WaitForGPU()'s RenderQueue::Run falls back to
   // running inline once the queue is torn down (see its Init/Shutdown-edge
@@ -945,5 +950,4 @@ void Video::Shutdown() {
   g_device.reset();
   g_interface.reset();
   g_d3d12Backend = false;
-  g_initialized = false;
 }

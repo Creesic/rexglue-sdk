@@ -125,6 +125,8 @@ void OnResourceTraceFrame() {
   for (size_t i = 0; i < kCounterCount; ++i) {
     n += std::snprintf(line + n, sizeof(line) - n, " %s=%u", kCounterNames[i],
                        g_counters[i].exchange(0, std::memory_order_relaxed));
+    // snprintf returns the length it WOULD have written; clamp or sizeof-n wraps.
+    n = std::min<int>(n, int(sizeof(line)) - 1);
   }
   std::snprintf(line + n, sizeof(line) - n, " psoMiss=%u", TakePipelineMissCount());
   REXLOG_INFO("{}", line);
@@ -967,12 +969,15 @@ extern "C" REX_FUNC(D3DDevice_BeginVertices) {
   static uint32_t scratchAddr = 0;
   static uint32_t scratchSize = 0;
   {
+    // r3 must be read under the same lock: another thread growing the block
+    // frees the address this one is about to hand back to the guest.
     std::lock_guard lock(scratchMutex);
     if (bytes > scratchSize) {
       ghp::GuestFreeRaw(scratchAddr);
       scratchAddr = ghp::GuestAllocRaw(bytes, 0x10);
       scratchSize = scratchAddr != 0 ? bytes : 0;
     }
+    ctx.r3.u64 = scratchAddr;
   }
 
   // The real BeginVertices reserves ring space and parks the post-vertex ring
@@ -993,7 +998,6 @@ extern "C" REX_FUNC(D3DDevice_BeginVertices) {
       *saved = ring->get();
     }
   }
-  ctx.r3.u64 = scratchAddr;
 }
 
 // D3DDevice_Resolve(pDevice, Flags, pSourceRect, pDestTexture, ...) @0x822E2120:
