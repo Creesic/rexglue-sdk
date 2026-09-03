@@ -25,6 +25,13 @@ uint64_t CurrentFrameIndex();
 void NotifyRenderFrameBegin();
 
 void SetRenderState(GuestDevice* device, uint32_t state, uint32_t value);
+
+// Reads every render state the renderer tracks straight out of the guest
+// device's Xenos register shadows. FM4 leaves 11 of the 36 D3DDevice_
+// SetRenderState_* setters with no out-of-line body (hook map section 4.2), so
+// none of them is hooked; this runs once per draw at the top of FlushRenderState
+// instead.
+void SampleGuestRenderStates(const GuestDevice* device);
 void SetViewportEnable(GuestDevice* device, uint32_t value);
 void SetClipPlaneState(GuestDevice* device, uint32_t enabledMask);
 void SetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc);

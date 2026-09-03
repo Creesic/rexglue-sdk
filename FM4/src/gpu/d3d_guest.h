@@ -46,5 +46,6 @@ void TraceOnCreateShader(uint32_t function_va, bool pixel);
 void TraceOnDrawIndexed(bool up);
 void TraceOnBeginVertices();
 void TraceOnResolve(uint32_t flags);
+void TraceOnSetRenderTarget(uint32_t index);
 
 }  // namespace fm4::gpu

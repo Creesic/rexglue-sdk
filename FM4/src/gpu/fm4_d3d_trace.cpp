@@ -150,17 +150,18 @@ extern "C" REX_FUNC(D3DDevice_BeginTiling) {
   __imp__D3DDevice_BeginTiling(ctx, base);
 }
 
-// D3DDevice_SetRenderTarget(pDevice, RenderTargetIndex, pSurface): r4 = index.
-extern "C" REX_FUNC(D3DDevice_SetRenderTarget) {
-  if (Enabled() && ctx.r4.u32 != 0) Bump(kSetRenderTargetNonZero);
-  __imp__D3DDevice_SetRenderTarget(ctx, base);
-}
-
 // D3DDevice_CreateTexture / CreateVertexShader / CreatePixelShader are hooked
 // outright by render/d3d_hooks.cpp (two strong REX_FUNC definitions of the same
 // guest function cannot link), so the trace is driven from there instead.
 void fm4::gpu::TraceOnCreateTexture() {
   if (Enabled()) Bump(kCreateTexture);
+}
+
+// D3DDevice_SetRenderTarget(pDevice, RenderTargetIndex, pSurface): r4 = index.
+// render/d3d_hooks.cpp owns the hook now (it must not run the original under
+// the native path), so the counter is driven from there.
+void fm4::gpu::TraceOnSetRenderTarget(uint32_t index) {
+  if (Enabled() && index != 0) Bump(kSetRenderTargetNonZero);
 }
 
 void fm4::gpu::TraceOnCreateShader(uint32_t function_va, bool pixel) {

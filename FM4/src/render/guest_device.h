@@ -128,6 +128,93 @@ inline constexpr uint32_t kGuestBlendMirror2Offset = 0x295C;   // BlendControl2,
 inline constexpr uint32_t kGuestBlendMirror3Offset = 0x2960;   // BlendControl3, FM2 0x28E0
 inline constexpr uint32_t kGuestModeControlOffset = 0x2948;    // raster/cull, FM2 0x28C8
 
+// ---------------------------------------------------------------------------
+// Xenos register field positions, all derived in Task 6 against ida40. FM4
+// hooks no D3DDevice_SetRenderState_* at all: SampleGuestRenderStates
+// (render_state.cpp) reads these fields out of the shadows once per draw.
+// Every position below is measured from a real insrwi/extrwi, never assumed.
+//
+// `insrwi rA,rS,n,b` / `extrwi rA,rS,n,b` count b from the MSB, so the
+// host-side shift is 32 - b - n and the mask is (1 << n) - 1.
+// ---------------------------------------------------------------------------
+
+// RB_DEPTHCONTROL, the word at kGuestControlPacketOffset (0x2934).
+// Getter cluster 0x826DF7C0-0x826DF910 confirms nine of the thirteen; the
+// four single-bit fields come from their setters. Two corrections to hook map
+// section 4.2 fell out of this: 0x826DF7D8 is GetRenderState_TwoSidedStencilMode
+// (extrwi 1,24 -> bit 7), not a StencilEnable getter, and ZWriteEnable is NOT
+// inlined -- it is the unnamed 0x823548A8 (insrwi 1,29 -> bit 2), matching FM2's
+// 0x8236F1C0 `(4 * Value) & 4`.
+inline constexpr uint32_t kDepthCtlStencilEnableShift = 0;   // setter 0x82384230 insrwi 1,31
+inline constexpr uint32_t kDepthCtlZEnableShift = 1;         // setter 0x8234FB48 insrwi 1,30
+inline constexpr uint32_t kDepthCtlZWriteShift = 2;          // setter 0x823548A8 insrwi 1,29
+inline constexpr uint32_t kDepthCtlZFuncShift = 4;           // getter 0x826DF7C0 extrwi 3,25
+inline constexpr uint32_t kDepthCtlTwoSidedShift = 7;        // setter 0x823925E0 insrwi 1,24
+inline constexpr uint32_t kDepthCtlStencilFuncShift = 8;     // getter 0x826DF7E8 extrwi 3,21
+inline constexpr uint32_t kDepthCtlStencilFailShift = 11;    // getter 0x826DF820 extrwi 3,18
+inline constexpr uint32_t kDepthCtlStencilPassShift = 14;    // getter 0x826DF868 extrwi 3,15
+inline constexpr uint32_t kDepthCtlStencilZFailShift = 17;   // getter 0x826DF858 extrwi 3,12
+inline constexpr uint32_t kDepthCtlCcwStencilPassShift = 20; // getter 0x826DF878 extrwi 3,9
+inline constexpr uint32_t kDepthCtlCcwStencilFailShift = 23; // getter 0x826DF8B0 extrwi 3,6
+inline constexpr uint32_t kDepthCtlCcwStencilFuncShift = 26; // getter 0x826DF8F8 extrwi 3,3
+inline constexpr uint32_t kDepthCtlCcwStencilZFailShift = 29;// getter 0x826DF8E8 srwi 29
+
+// RB_BLENDCONTROL, the word at kGuestBlendControl0Offset (0x2938). The six
+// setters do not write 0x2938 directly: they insert their field into the
+// accumulator at 0x2FE0 and then copy the assembled word into 0x2938 and the
+// three mirrors, so the field positions are read off the 0x2FE0 inserts and
+// the layout of 0x2938 is identical. Confirmed to be the stock Xenos layout.
+inline constexpr uint32_t kBlendCtlFactorMask = 0x1F;
+inline constexpr uint32_t kBlendCtlSrcShift = 0;        // SrcBlend       0x823676F0 insrwi 5,27
+inline constexpr uint32_t kBlendCtlOpShift = 5;         // BlendOp        0x82392680 insrwi 3,24
+inline constexpr uint32_t kBlendCtlDestShift = 8;       // DestBlend      0x822D2E40 insrwi 5,19
+inline constexpr uint32_t kBlendCtlSrcAlphaShift = 16;  // SrcBlendAlpha  0x822CF228 insrwi 5,11
+inline constexpr uint32_t kBlendCtlOpAlphaShift = 21;   // BlendOpAlpha   0x826DF4D8 insrwi 3,8
+inline constexpr uint32_t kBlendCtlDestAlphaShift = 24; // DestBlendAlpha 0x822CF1C8 insrwi 5,3
+
+// The two blend *enables* are not in RB_BLENDCONTROL. Both live in the gate
+// word at 0x2FE4 that every blend setter tests before committing: bit 31 from
+// D3DDevice_SetRenderState_AlphaBlendEnable (0x82350618, insrwi 1,0) and bit 30
+// from _SeparateAlphaBlendEnable (0x8236E330, insrwi 1,1). With blending off
+// the library additionally stamps 0x00010001 (ONE/ZERO) into all four blend
+// words, so reading only 0x2938 would report "blend on, src=ONE dst=ZERO".
+inline constexpr uint32_t kGuestBlendEnableWordOffset = 0x2FE4;
+inline constexpr uint32_t kBlendEnableShift = 31;
+inline constexpr uint32_t kBlendSeparateAlphaShift = 30;
+
+// RB_COLORCONTROL, the word at kGuestColorControlOffset (0x293C). AlphaFunc has
+// no FM4 hook-map entry because it needs none: it is a field of the same word
+// AlphaTestEnable writes (setter 0x822B08B8 rlwimi 0,0,28 / getter 0x826DF5D8
+// clrlwi 29).
+inline constexpr uint32_t kColorCtlAlphaFuncShift = 0;  // getter 0x826DF5D8 clrlwi 29
+inline constexpr uint32_t kColorCtlAlphaTestShift = 3;  // getter 0x822CF1A0 extrwi 1,28
+
+// AlphaRef is not a byte in m_ValuesPacket: D3DDevice_SetRenderState_AlphaRef
+// (0x826DF578) converts the DWORD to float, multiplies by flt_82000D30
+// (0x3B808081 = 1/255) and stores `stfs f0,0x2904(r3)`. Scale back by 255 to
+// recover the guest's own 0..255 D3DRS_ALPHAREF.
+inline constexpr uint32_t kGuestAlphaRefOffset = 0x2904;
+inline constexpr float kGuestAlphaRefScale = 255.0f;
+
+// RB_COLOR_MASK. D3DDevice_SetRenderState_ColorWriteEnable (0x822BC9E0) is
+// `rlwimi r11,r9,0,0,27; stw r11,0x28DC(r3)`: render target 0's 4-bit write
+// mask is bits 0-3 of the dword at 0x28DC (D3DDevice_SetRenderTarget maintains
+// the other three nibbles).
+inline constexpr uint32_t kGuestColorMaskOffset = 0x28DC;
+
+// PA_SU_POLY_OFFSET_*, floats in m_ValuesPacket. _DepthBias (0x826DFA00) stores
+// the raw D3DRS float at 0x2A54/0x2A5C (front/back); _SlopeScaleDepthBias
+// (0x8235C600) stores value * flt_8200153C (0x41800000 = 16.0) at 0x2A50/0x2A58.
+inline constexpr uint32_t kGuestDepthBiasOffset = 0x2A54;
+inline constexpr uint32_t kGuestSlopeScaleDepthBiasOffset = 0x2A50;
+inline constexpr float kGuestSlopeScaleDepthBiasScale = 16.0f;
+
+// PA_CL_UCP_ENA. FM4's ClipPlaneEnable setter is the unnamed 0x826DF980
+// (`clrrwi r11,r11,6; or r11,r11,r4; stw r11,0x2944(r3)`) and its getter is
+// 0x826DF9C8 (`clrlwi r3,r11,26`): the six-plane mask is bits 0-5 of 0x2944.
+// FM2 kept the same mask at 0x28C4, i.e. the usual +0x80.
+inline constexpr uint32_t kGuestClipPlaneEnableOffset = 0x2944;
+
 // Derived in Task 4 step 3 against ida40.
 //
 // Viewport: D3D_SetViewport (0x822FEB28) stores its six float parameters at
@@ -166,6 +253,30 @@ inline bool GuestScissorEnable(const GuestDevice* device) {
   }
   return reinterpret_cast<const rex::be<uint32_t>*>(reinterpret_cast<const uint8_t*>(device) +
                                                     kGuestScissorEnableOffset)->get() != 0;
+}
+
+// PA_SU_SC_MODE_CNTL's cull field, which D3DDevice_SetRenderState_CullMode
+// (0x823505F8) writes as `[0x2948] = (old & ~7) | (Value & 7)` -- the identity,
+// with no remapping table -- so the three bits read back are literally the
+// D3DCULL_* the guest passed and the value can go straight to D3DRS_CULLMODE
+// without inventing an inverse mapping.
+// ponytail: bits 0-2 are really CULL_FRONT/CULL_BACK/FACE, so a raw
+// PA_SU_SC_MODE_CNTL writer could leave an odd value here that D3DCULL cannot
+// name; ApplyRenderState maps those to NONE (draws too much, never too little).
+inline uint32_t GuestCullModeFromModeControl(uint32_t modeControl) {
+  // 0 is D3DCULL_NONE (the enum itself is declared further down this header).
+  return kGuestModeControlOffset == 0 ? 0u : (modeControl & 0x7u);
+}
+
+// The six-plane PA_CL_UCP_ENA mask. Returns 0 (all planes off) when the offset
+// has not been located.
+inline uint32_t GuestClipPlaneMask(const GuestDevice* device) {
+  if (kGuestClipPlaneEnableOffset == 0 || device == nullptr) {
+    return 0;
+  }
+  return reinterpret_cast<const rex::be<uint32_t>*>(reinterpret_cast<const uint8_t*>(device) +
+                                                    kGuestClipPlaneEnableOffset)->get() &
+         kGuestClipPlaneMask;
 }
 
 struct GuestViewport {

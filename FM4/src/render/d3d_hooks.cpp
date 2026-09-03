@@ -383,7 +383,7 @@ extern "C" REX_FUNC(D3DSurface_GetDesc) {
 // XGGetTextureDesc down a branch that leaves _XGTEXTURE_DESC uninitialized and
 // made XGRAPHICS::TileSurface (UtilityTexture::Create @0x8285C4A8) scribble
 // past the lock staging until it hit an uncommitted guest page. Values 1/2/3/4
-// and 14 are confirmed from FM4's own creation functions and GetType's body;
+// and 17 are confirmed from FM4's own creation functions and GetType's body;
 // 5/6/7 are the XDK enum's.
 extern "C" REX_FUNC(D3DResource_GetType) {
   if (!Native()) {
@@ -450,6 +450,266 @@ extern "C" REX_FUNC(D3DResource_Release) {
     rr::ScheduleResourceDestruction(host);
   }
   ctx.r3.u64 = remaining;
+}
+
+// ---------------------------------------------------------------------------
+// State binds. No D3DDevice_SetRenderState_* is hooked anywhere in this tree:
+// FM4 leaves 11 of the 36 with no out-of-line body, and all 36 are sampled from
+// the guest's register shadows at draw time instead (render_state.cpp
+// SampleGuestRenderStates). The binds below cannot be recovered that way --
+// the shadow holds a Xenos fetch constant, not a host object pointer.
+//
+// D3DDevice_SetVertexShaderConstantB / SetPixelShaderConstantB are deliberately
+// NOT hooked either: the bool files live at device+0x2780 / +0x2790 and
+// QueueDrawStateSnapshots already reads them straight out of the device with
+// kBooleanDirtyMask. Nor are the nine D3DDevice_SetSamplerState_*:
+// ProcSetSamplerState decodes sampler state from the raw fetch-constant dwords
+// those setters write. They are named in the TOML only so a stack is readable.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The library keeps the bound surfaces at device+0x31F8 (colour 0..3) and
+// device+0x3208 (depth). Those slots are not just bookkeeping: they gate the
+// render-state setters the sampler then reads back --
+// D3DDevice_SetRenderState_ZEnable (0x8234FB48) and _StencilEnable (0x82384230)
+// force their bit to 0 while 0x3208 is null, and _ColorWriteEnable (0x822BC9E0)
+// zeroes the write mask while 0x31F8 is null. The originals that maintain them
+// also walk the surface header (D3DDevice_SetRenderTarget does `lwz r7,0x1C(r5)`
+// at 0x823563F0), which is host-shaped memory for our GuestSurface, so we store
+// the slot ourselves and skip the walk.
+void StoreBoundSurfaceSlot(uint32_t device, uint32_t offset, uint32_t surface) {
+  if (device == 0) {
+    return;
+  }
+  auto* slot = ghp::ToHost<rex::be<uint32_t>>(device + offset);
+  if (slot != nullptr) {
+    *slot = surface;
+  }
+}
+constexpr uint32_t kBoundColorSurfaceSlot0 = 0x31F8;
+constexpr uint32_t kBoundDepthSurfaceSlot = 0x3208;
+
+// Ported from FM2P: our own textures bind directly, render-target/depth
+// surfaces sampled as shader resources go through SetTextureBase (which forces
+// a 2D view), and a texture the guest built through the raw XG* header API
+// carries no kFm4ResourceMagic and is translated from its Xenos fetch constant
+// rather than binding null.
+struct ResolvedTextureBinding {
+  GuestBaseTexture* texture = nullptr;
+  bool baseTexture = false;
+};
+
+ResolvedTextureBinding ResolveTextureBinding(GuestBaseTexture* texture) {
+  if (texture == nullptr) {
+    return {};
+  }
+  if (!rr::IsFm4Resource(texture)) {
+    return {rr::TranslateGuestTexture(texture, true), false};
+  }
+  switch (texture->type) {
+    case fm4::render::ResourceType::Texture:
+    case fm4::render::ResourceType::VolumeTexture:
+      return {texture, false};
+    case fm4::render::ResourceType::RenderTarget:
+    case fm4::render::ResourceType::DepthStencil:
+      return {texture, true};
+    default:
+      return {};
+  }
+}
+
+}  // namespace
+
+// D3DDevice_SetTexture(pDevice, Sampler, pTexture, PendingMask3) @0x8233A9A8.
+// Pure replacement: the original reads pTexture->Format.dword[0..5] (the Xenos
+// fetch constant at +0x1C of a real D3DBaseTexture) and merges it into the
+// device's fetch-constant file. It deliberately preserves the sampler-state
+// bits ProcSetSamplerState decodes, so skipping it loses nothing there.
+extern "C" REX_FUNC(D3DDevice_SetTexture) {
+  if (!Native()) {
+    __imp__D3DDevice_SetTexture(ctx, base);
+    return;
+  }
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t sampler = ctx.r4.u32;
+  const uint32_t texture = ctx.r5.u32;
+  if (sampler >= 16u) {
+    return;  // Xenos exposes 16 unified sampler slots
+  }
+  auto* dev = ghp::ToHost<GuestDevice>(device);
+  auto* host = texture != 0 ? ghp::ToHost<GuestBaseTexture>(texture) : nullptr;
+  const ResolvedTextureBinding binding = ResolveTextureBinding(host);
+  if (binding.baseTexture) {
+    rr::SetTextureBase(dev, sampler, binding.texture, texture);
+  } else {
+    rr::SetTexture(dev, sampler, static_cast<GuestTexture*>(binding.texture), texture);
+  }
+}
+
+// D3DDevice_SetStreamSource(pDevice, StreamNumber, pStreamData, OffsetInBytes,
+// Stride, PendingMask3) @0x823445A0. The original still runs: it maintains
+// device->boundVertexStreams (0x320C) and device->streamStrideDwords (0x3250),
+// which QueueDrawStateSnapshots reads for every draw, and for a non-GuestBuffer
+// stream it also writes the vertex fetch constant the raw-buffer snapshot path
+// decodes. Everything it touches on one of our buffers is a read of the
+// guest-owned header bytes plus a write to +8, which GuestResource reserves for
+// exactly that.
+extern "C" REX_FUNC(D3DDevice_SetStreamSource) {
+  if (!Native()) {
+    __imp__D3DDevice_SetStreamSource(ctx, base);
+    return;
+  }
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t index = ctx.r4.u32;
+  const uint32_t buffer = ctx.r5.u32;
+  const uint32_t offset = ctx.r6.u32;
+  const uint32_t stride = ctx.r7.u32;
+  __imp__D3DDevice_SetStreamSource(ctx, base);
+  auto* host = buffer != 0 ? ghp::ToHost<GuestResource>(buffer) : nullptr;
+  rr::SetStreamSource(ghp::ToHost<GuestDevice>(device), index,
+                      rr::IsFm4Resource(host) ? static_cast<GuestBuffer*>(host) : nullptr, offset,
+                      stride);
+}
+
+// D3DDevice_SetIndices(pDevice, pIndexData) @0x8236E3B8: keeps
+// device->boundIndexBuffer (0x31F4) live for QueueDrawStateSnapshots.
+extern "C" REX_FUNC(D3DDevice_SetIndices) {
+  if (!Native()) {
+    __imp__D3DDevice_SetIndices(ctx, base);
+    return;
+  }
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t buffer = ctx.r4.u32;
+  __imp__D3DDevice_SetIndices(ctx, base);
+  auto* host = buffer != 0 ? ghp::ToHost<GuestResource>(buffer) : nullptr;
+  rr::SetIndices(ghp::ToHost<GuestDevice>(device),
+                 rr::IsFm4Resource(host) ? static_cast<GuestBuffer*>(host) : nullptr);
+}
+
+// D3DDevice_SetVertexDeclaration(pDevice, pDecl) @0x822F8728: two stores, no
+// dereference of pDecl at all -- keeps device->vertexDeclaration (0x2FB8) live.
+extern "C" REX_FUNC(D3DDevice_SetVertexDeclaration) {
+  if (!Native()) {
+    __imp__D3DDevice_SetVertexDeclaration(ctx, base);
+    return;
+  }
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t declaration = ctx.r4.u32;
+  __imp__D3DDevice_SetVertexDeclaration(ctx, base);
+  auto* host = declaration != 0 ? ghp::ToHost<GuestResource>(declaration) : nullptr;
+  rr::SetVertexDeclaration(
+      ghp::ToHost<GuestDevice>(device),
+      rr::IsFm4Resource(host) ? static_cast<GuestVertexDeclaration*>(host) : nullptr);
+}
+
+// D3DDevice_SetRenderTarget(pDevice, RenderTargetIndex, pSurface) @0x823563B8.
+// The milestone-1 trace measured rtIdxNon0 = 2700 per 300 frames, so FM4 really
+// does use MRT and the index is passed through -- render_state.cpp logs the
+// slots it cannot bind yet rather than dropping them silently.
+extern "C" REX_FUNC(D3DDevice_SetRenderTarget) {
+  const uint32_t index = ctx.r4.u32;
+  fm4::gpu::TraceOnSetRenderTarget(index);
+  if (!Native()) {
+    __imp__D3DDevice_SetRenderTarget(ctx, base);
+    return;
+  }
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t surface = ctx.r5.u32;
+  if (index < 4u) {
+    StoreBoundSurfaceSlot(device, kBoundColorSurfaceSlot0 + 4u * index, surface);
+  }
+  auto* host = surface != 0 ? ghp::ToHost<GuestResource>(surface) : nullptr;
+  rr::SetRenderTarget(ghp::ToHost<GuestDevice>(device), index,
+                      rr::IsFm4Resource(host) ? static_cast<GuestBaseTexture*>(host) : nullptr);
+}
+
+// D3DDevice_SetDepthStencilSurface(pDevice, pSurface) @0x822D9968: its own first
+// instruction is `stw r4,0x3208(r3)`, which is all of it we still want.
+extern "C" REX_FUNC(D3DDevice_SetDepthStencilSurface) {
+  if (!Native()) {
+    __imp__D3DDevice_SetDepthStencilSurface(ctx, base);
+    return;
+  }
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t surface = ctx.r4.u32;
+  StoreBoundSurfaceSlot(device, kBoundDepthSurfaceSlot, surface);
+  auto* host = surface != 0 ? ghp::ToHost<GuestResource>(surface) : nullptr;
+  rr::SetDepthStencilSurface(ghp::ToHost<GuestDevice>(device),
+                             rr::IsFm4Resource(host) ? static_cast<GuestSurface*>(host) : nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Shader state: PURE replacements, no passthrough. The original bodies read the
+// shader argument as a real 24-byte D3DVertexShader/D3DPixelShader and use its
+// ReadFence field (+0xC) as an offset into a compiled-state table. Our
+// GuestShader is a C++ object (mutex, unique_ptr, unordered_map), so that read
+// returns garbage, and the merge loop -- which decrements a uint16_t by 2 until
+// it hits zero -- never terminates on an odd garbage count. In FM2P this hung
+// the process for minutes at a time before the hooks were made pure.
+// ---------------------------------------------------------------------------
+
+extern "C" REX_FUNC(D3DDevice_SetVertexShader) {
+  if (!Native()) {
+    __imp__D3DDevice_SetVertexShader(ctx, base);
+    return;
+  }
+  auto* host = ctx.r4.u32 != 0 ? ghp::ToHost<GuestResource>(ctx.r4.u32) : nullptr;
+  rr::SetVertexShader(ghp::ToHost<GuestDevice>(ctx.r3.u32),
+                      rr::IsFm4Resource(host) ? static_cast<GuestShader*>(host) : nullptr);
+}
+
+extern "C" REX_FUNC(D3DDevice_SetPixelShader) {
+  if (!Native()) {
+    __imp__D3DDevice_SetPixelShader(ctx, base);
+    return;
+  }
+  auto* host = ctx.r4.u32 != 0 ? ghp::ToHost<GuestResource>(ctx.r4.u32) : nullptr;
+  rr::SetPixelShader(ghp::ToHost<GuestDevice>(ctx.r3.u32),
+                     rr::IsFm4Resource(host) ? static_cast<GuestShader*>(host) : nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Viewport / scissor. Full replacements: the originals pack hardware clip state
+// for a GPU that is not there, and both reach it by dereferencing the bound
+// surface. D3D_SetViewport reads device+0x31F8 / +0x3208 and then
+// `*(surface + 0x24)` to recover the target's pitch and height, then tail-calls
+// D3DDevice_SetScissorRect, which does the same again through
+// D3D::SetSurfaceClip -- the observed native fault at ~frame 900 (write of guest
+// 0x00000004 in sub_82310530 <- D3DDevice_SetScissorRect <- D3D_SetViewport).
+// ---------------------------------------------------------------------------
+
+// D3D_SetViewport(pDevice, X, Y, Width, Height, MinZ, MaxZ) @0x822FEB28: six
+// floats, FM4 having dropped FM2's trailing DWORD Flags. Both
+// D3DDevice_SetViewport (0x822FEAA8) and D3DDevice_SetViewportF (0x823925C0)
+// tail-call it, so hooking it alone covers both.
+extern "C" REX_FUNC(D3D_SetViewport) {
+  if (!Native()) {
+    __imp__D3D_SetViewport(ctx, base);
+    return;
+  }
+  rr::GuestViewport viewport{};
+  viewport.x = uint32_t(int32_t(ctx.f1.f64));
+  viewport.y = uint32_t(int32_t(ctx.f2.f64));
+  viewport.width = uint32_t(int32_t(ctx.f3.f64));
+  viewport.height = uint32_t(int32_t(ctx.f4.f64));
+  viewport.minZ = float(ctx.f5.f64);
+  viewport.maxZ = float(ctx.f6.f64);
+  rr::SetViewport(ghp::ToHost<GuestDevice>(ctx.r3.u32), &viewport);
+}
+
+// D3DDevice_SetScissorRect(pDevice, pRect) @0x822FF050. pRect is a guest RECT
+// shaped exactly like GuestRect (left/top/right/bottom).
+extern "C" REX_FUNC(D3DDevice_SetScissorRect) {
+  if (!Native()) {
+    __imp__D3DDevice_SetScissorRect(ctx, base);
+    return;
+  }
+  auto* rect = ctx.r4.u32 != 0 ? ghp::ToHost<rr::GuestRect>(ctx.r4.u32) : nullptr;
+  if (rect == nullptr) {
+    return;
+  }
+  rr::SetScissorRect(ghp::ToHost<GuestDevice>(ctx.r3.u32), rect);
 }
 
 // ---------------------------------------------------------------------------

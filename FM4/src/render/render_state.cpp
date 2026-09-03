@@ -1704,6 +1704,99 @@ void ProcSetStencilState(uint32_t enable, uint32_t twoSided, uint32_t frontFunc,
 }
 
 // ---------------------------------------------------------------------------
+// Draw-time render-state sampler.
+//
+// FM2P mirrors render state by hooking 34 individual D3DDevice_SetRenderState_*
+// setters. FM4 leaves 11 of them with no out-of-line body, so that model cannot
+// be reproduced: instead nothing in this tree hooks a render-state setter at
+// all, and all 36 states are read here out of the register shadows the setters
+// write. Every field position is a constant in guest_device.h with the
+// insrwi/extrwi it was measured from.
+//
+// Caveat: sampling at flush time sees state changes made between the guest's
+// enqueue and the render thread's flush, where FM2P's per-setter mirror
+// captured state at set time. FM4's job system sets state and draws from the
+// same thread in the same burst and EnqueueBulk keeps a thread's
+// snapshot+draw atomic, so the two agree today -- but if a later task shows
+// state bleeding between draws, move this call into QueueDrawStateSnapshots
+// and carry the sampled values in the RenderCommand.
+// ---------------------------------------------------------------------------
+
+void SampleGuestRenderStates(const GuestDevice* device) {
+  if (device == nullptr) {
+    return;
+  }
+  const auto* bytes = reinterpret_cast<const uint8_t*>(device);
+  const auto be32 = [bytes](uint32_t off) {
+    return reinterpret_cast<const rex::be<uint32_t>*>(bytes + off)->get();
+  };
+  const auto beFloat = [bytes](uint32_t off) {
+    return reinterpret_cast<const rex::be<float>*>(bytes + off)->get();
+  };
+  const auto field = [](uint32_t word, uint32_t shift, uint32_t mask) {
+    return (word >> shift) & mask;
+  };
+
+  // --- RB_DEPTHCONTROL: one word, thirteen fields ---
+  const uint32_t depth = be32(kGuestControlPacketOffset);
+  SetDepthState(field(depth, kDepthCtlZEnableShift, 1), field(depth, kDepthCtlZWriteShift, 1),
+                field(depth, kDepthCtlZFuncShift, 7));
+
+  GuestStencilState stencil{};
+  stencil.enable = field(depth, kDepthCtlStencilEnableShift, 1) != 0;
+  stencil.twoSided = field(depth, kDepthCtlTwoSidedShift, 1) != 0;
+  stencil.frontFunc = field(depth, kDepthCtlStencilFuncShift, 7);
+  stencil.frontFail = field(depth, kDepthCtlStencilFailShift, 7);
+  stencil.frontDepthFail = field(depth, kDepthCtlStencilZFailShift, 7);
+  stencil.frontPass = field(depth, kDepthCtlStencilPassShift, 7);
+  stencil.backFunc = field(depth, kDepthCtlCcwStencilFuncShift, 7);
+  stencil.backFail = field(depth, kDepthCtlCcwStencilFailShift, 7);
+  stencil.backDepthFail = field(depth, kDepthCtlCcwStencilZFailShift, 7);
+  stencil.backPass = field(depth, kDepthCtlCcwStencilPassShift, 7);
+  stencil.ref = bytes[kGuestStencilRefOffset];
+  stencil.readMask = bytes[kGuestStencilMaskOffset];
+  stencil.writeMask = bytes[kGuestStencilWriteMaskOffset];
+  SetStencilState(stencil);
+
+  // --- RB_COLORCONTROL: alpha test ---
+  const uint32_t color = be32(kGuestColorControlOffset);
+  SetRenderState(nullptr, D3DRS_ALPHATESTENABLE, field(color, kColorCtlAlphaTestShift, 1));
+  SetRenderState(nullptr, D3DRS_ALPHAFUNC, field(color, kColorCtlAlphaFuncShift, 7));
+  SetRenderState(nullptr, D3DRS_ALPHAREF,
+                 uint32_t(beFloat(kGuestAlphaRefOffset) * kGuestAlphaRefScale + 0.5f));
+
+  // --- RB_BLENDCONTROL (factors and ops) plus the two enables from 0x2FE4 ---
+  const uint32_t blend = be32(kGuestBlendControl0Offset);
+  const uint32_t blendEnables = be32(kGuestBlendEnableWordOffset);
+  SetRenderState(nullptr, D3DRS_ALPHABLENDENABLE, field(blendEnables, kBlendEnableShift, 1));
+  SetRenderState(nullptr, D3DRS_SEPARATEALPHABLENDENABLE,
+                 field(blendEnables, kBlendSeparateAlphaShift, 1));
+  SetRenderState(nullptr, D3DRS_SRCBLEND, field(blend, kBlendCtlSrcShift, kBlendCtlFactorMask));
+  SetRenderState(nullptr, D3DRS_DESTBLEND, field(blend, kBlendCtlDestShift, kBlendCtlFactorMask));
+  SetRenderState(nullptr, D3DRS_BLENDOP, field(blend, kBlendCtlOpShift, 7));
+  SetRenderState(nullptr, D3DRS_SRCBLENDALPHA,
+                 field(blend, kBlendCtlSrcAlphaShift, kBlendCtlFactorMask));
+  SetRenderState(nullptr, D3DRS_DESTBLENDALPHA,
+                 field(blend, kBlendCtlDestAlphaShift, kBlendCtlFactorMask));
+  SetRenderState(nullptr, D3DRS_BLENDOPALPHA, field(blend, kBlendCtlOpAlphaShift, 7));
+
+  // --- PA_SU_SC_MODE_CNTL, RB_COLOR_MASK, scissor, polygon offset ---
+  const uint32_t mode = be32(kGuestModeControlOffset);
+  SetRenderState(nullptr, D3DRS_CULLMODE, GuestCullModeFromModeControl(mode));
+  SetRenderState(nullptr, D3DRS_COLORWRITEENABLE, be32(kGuestColorMaskOffset) & 0xFu);
+  SetRenderState(nullptr, D3DRS_SCISSORTESTENABLE, GuestScissorEnable(device) ? 1u : 0u);
+  SetRenderState(nullptr, D3DRS_DEPTHBIAS,
+                 std::bit_cast<uint32_t>(beFloat(kGuestDepthBiasOffset)));
+  SetRenderState(nullptr, D3DRS_SLOPESCALEDEPTHBIAS,
+                 std::bit_cast<uint32_t>(beFloat(kGuestSlopeScaleDepthBiasOffset) /
+                                         kGuestSlopeScaleDepthBiasScale));
+
+  // Clip planes: SetClipPlaneState already reads the six planes at
+  // kGuestClipPlanesOffset; it only needs the PA_CL_UCP_ENA mask.
+  SetClipPlaneState(const_cast<GuestDevice*>(device), GuestClipPlaneMask(device));
+}
+
+// ---------------------------------------------------------------------------
 // Texture binding.
 // ---------------------------------------------------------------------------
 
@@ -2113,8 +2206,19 @@ void SetScissorRect(GuestDevice* device, GuestRect* rect) {
 }
 
 void SetRenderTarget(GuestDevice* /*device*/, uint32_t index, GuestBaseTexture* renderTarget) {
-  if (index != 0)
-    return;  // FM2 only ever uses a single color render target.
+  if (index != 0) {
+    // FM2 only ever used one color target; FM4 really does use MRT (the
+    // milestone-1 trace counted ~9 non-zero-index binds per frame). Only slot 0
+    // is plumbed through the framebuffer cache so far -- but never drop the
+    // others silently, or a missing attachment looks like a shader bug.
+    // ponytail: interim. Real fix is four g_renderTargets keyed into
+    // SetFramebuffer as extra RenderFramebufferDesc color attachments.
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true, std::memory_order_relaxed)) {
+      REXGPU_WARN("fm4render: MRT slot {} dropped; only render target 0 is bound", index);
+    }
+    return;
+  }
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetRenderTarget;
   cmd.setRenderTarget.renderTarget = renderTarget;
@@ -3420,6 +3524,10 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   g_hasBoundPipeline = false;
   if (device == nullptr)
     return;
+
+  // All 36 render states, straight off the guest's register shadows. Nothing
+  // hooks a D3DDevice_SetRenderState_* setter; this is the only mirror.
+  SampleGuestRenderStates(device);
 
   // FM2's deferred draw-list nodes carry color-write state that the direct
   // D3D9 mirrors don't see. A bound pixel shader denotes a color pass; keep
