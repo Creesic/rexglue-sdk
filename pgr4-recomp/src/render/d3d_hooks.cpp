@@ -89,8 +89,41 @@ void AdvanceGuestFrameCounters(u32 device_ptr) {
 // Phase 1 ignores the front buffer and scaler parameters: no guest resource
 // translation exists yet, so there is nothing to present but a cleared image.
 // The parameters are named for the real signature so Phase 2 has the shape.
+// Phase 2: read the front buffer's texture fetch constant. The original Swap
+// copies exactly these 6 dwords from front_buffer+28 into its swap packet, so
+// that is where the guest keeps them. Layout per xenos::xe_gpu_texture_fetch_t.
+bool DescribeFrontBuffer(u32 front_buffer_ptr, Video::GuestFrame& out) {
+  if (front_buffer_ptr == 0) {
+    return false;
+  }
+  auto* memory = REX_KERNEL_STATE()->memory();
+  const uint8_t* fetch = memory->TranslateVirtual<const uint8_t*>(front_buffer_ptr + 28);
+  const uint32_t d0 = rex::memory::load_and_swap<uint32_t>(fetch + 0);
+  const uint32_t d1 = rex::memory::load_and_swap<uint32_t>(fetch + 4);
+  const uint32_t d2 = rex::memory::load_and_swap<uint32_t>(fetch + 8);
+
+  out.tiled = (d0 >> 31) != 0;
+  out.pitch_pixels = ((d0 >> 22) & 0x1FF) * 32;  // pitch is in 32-texel units
+  out.format = d1 & 0x3F;
+  out.endian = (d1 >> 6) & 0x3;
+  const uint32_t base_physical = (d1 >> 12) << 12;
+  out.width = (d2 & 0x1FFF) + 1;
+  out.height = ((d2 >> 13) & 0x1FFF) + 1;
+  out.data = base_physical ? memory->TranslatePhysical<const uint8_t*>(base_physical) : nullptr;
+
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    REXLOG_INFO(
+        "PGR4 Plume: front buffer {}x{} pitch={} format={} endian={} tiled={} base={:08X} "
+        "(fetch {:08X} {:08X} {:08X})",
+        out.width, out.height, out.pitch_pixels, out.format, out.endian, out.tiled ? 1 : 0,
+        base_physical, d0, d1, d2);
+  }
+  return out.data != nullptr;
+}
+
 u32 SwapHook(u32 device_ptr, u32 front_buffer_ptr, u32 scaler_params_ptr) {
-  (void)front_buffer_ptr;
   (void)scaler_params_ptr;
 
   if (device_ptr != 0) {
@@ -104,7 +137,17 @@ u32 SwapHook(u32 device_ptr, u32 front_buffer_ptr, u32 scaler_params_ptr) {
     return 0;
   }
 
-  ReportSwapCadence(Video::Present());
+  // Present the guest's own front buffer when we can read it; otherwise fall
+  // back to the Phase 1 clear so the present cadence is preserved either way.
+  Video::GuestFrame frame;
+  bool presented = false;
+  if (DescribeFrontBuffer(front_buffer_ptr, frame)) {
+    presented = Video::PresentGuestFrame(frame);
+  }
+  if (!presented) {
+    presented = Video::Present();
+  }
+  ReportSwapCadence(presented);
   // The original returns the result of its trailing sub_82690AF8(device, 0)
   // call. Nothing in the decompile inspects it for failure, and returning
   // success is the conservative choice until Phase 2 learns what it means.

@@ -33,6 +33,25 @@ struct Video {
   // which is not an error -- a resize or a lost swapchain both land here.
   static bool Present();
 
+  // Phase 2: the guest's front buffer, as described by the texture fetch
+  // constant D3DDevice_Swap is handed. Host pointer into guest memory, guest
+  // geometry, and the Xenos encoding needed to read it back.
+  struct GuestFrame {
+    const uint8_t* data = nullptr;  // host pointer to the guest surface
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t pitch_pixels = 0;      // row pitch in texels
+    bool tiled = false;             // Xenos 2D macro/micro tiling
+    uint32_t endian = 0;            // xenos::Endian: 0 none, 1 8in16, 2 8in32, 3 16in32
+    uint32_t format = 0;            // xenos::TextureFormat
+  };
+
+  // Upload the guest front buffer, convert it to the swapchain format and copy
+  // it onto the acquired image, then flip. Returns false (caller should
+  // Present() a clear instead) when the format or size is not something this
+  // slice handles yet.
+  static bool PresentGuestFrame(const GuestFrame& frame);
+
   // Records the colour Present() clears to. Phase 2 replaces this with real
   // render-target tracking once resource hooks exist.
   static void SetClearColor(float r, float g, float b, float a);
