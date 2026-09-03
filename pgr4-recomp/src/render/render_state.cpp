@@ -43,6 +43,7 @@
 #define SPEC_CONSTANT_REVERSE_Z (1 << 4)
 #define SPEC_CONSTANT_UNPACK_UBYTE4_BASIS (1 << 6)
 #define SPEC_CONSTANT_POSITION_F16 (1 << 7)
+#define SPEC_CONSTANT_POSITION_INT16 (1 << 8)
 
 using namespace plume;
 
@@ -127,7 +128,10 @@ struct SharedConstants {
   uint32_t conditionalRenderingIndex = 0;
   uint32_t vteFlags = 8;
   uint32_t loopConstants[32]{};  // VS 0-15, PS 16-31; Xenos packed count/start/step.
-  uint32_t trailingPadding[3]{};
+  // PGR4: packed vertex element modes (XenosRecomp unpackVertexMode).
+  uint32_t packedTexcoordsLo = 0;
+  uint32_t packedTexcoordsHi = 0;
+  uint32_t packedBasis = 0;
   // PGR4: window-coordinate -> NDC transform applied in every vertex shader
   // epilogue (XenosRecomp g_NdcScale / g_NdcOffset). Identity while the guest
   // viewport is enabled; (2/W, -2/H), (-1, 1) of the bound target when
@@ -136,6 +140,8 @@ struct SharedConstants {
   float ndcOffset[2] = {0.0f, 0.0f};
 };
 static_assert(sizeof(SharedConstants) == 512);
+static_assert(offsetof(SharedConstants, packedTexcoordsLo) == 484);
+static_assert(offsetof(SharedConstants, packedBasis) == 492);
 static_assert(offsetof(SharedConstants, ndcScale) == 496);
 static_assert(offsetof(SharedConstants, ndcOffset) == 504);
 static_assert(offsetof(SharedConstants, texture2DIndices) == 0);
@@ -150,7 +156,7 @@ static_assert(offsetof(SharedConstants, clipPlane) == 320);
 static_assert(offsetof(SharedConstants, clipPlaneEnabled) == 336);
 static_assert(offsetof(SharedConstants, vteFlags) == 352);
 static_assert(offsetof(SharedConstants, loopConstants) == 356);
-static_assert(offsetof(SharedConstants, trailingPadding) == 484);
+static_assert(offsetof(SharedConstants, packedTexcoordsLo) == 484);
 
 struct DirtyStates {
   bool renderTargetAndDepthStencil;
@@ -1814,10 +1820,14 @@ void ApplyVertexDeclarationMetadata(GuestVertexDeclaration* declaration) {
   g_sharedConstants.swappedTexcoords = declaration != nullptr ? declaration->swappedTexcoords : 0;
   g_sharedConstants.swappedBlendWeights =
       declaration != nullptr ? declaration->swappedBlendWeights : 0;
+  g_sharedConstants.packedTexcoordsLo = declaration != nullptr ? declaration->packedTexcoordsLo : 0;
+  g_sharedConstants.packedTexcoordsHi = declaration != nullptr ? declaration->packedTexcoordsHi : 0;
+  g_sharedConstants.packedBasis = declaration != nullptr ? declaration->packedBasis : 0;
 
   constexpr uint32_t kDeclarationSpecConstants = SPEC_CONSTANT_R11G11B10_NORMAL |
                                                  SPEC_CONSTANT_UNPACK_UBYTE4_BASIS |
-                                                 SPEC_CONSTANT_POSITION_F16;
+                                                 SPEC_CONSTANT_POSITION_F16 |
+                                                 SPEC_CONSTANT_POSITION_INT16;
   uint32_t specConstants = g_pipelineState.specConstants & ~kDeclarationSpecConstants;
   if (declaration != nullptr) {
     if (declaration->hasR11G11B10Normal)
@@ -1826,6 +1836,8 @@ void ApplyVertexDeclarationMetadata(GuestVertexDeclaration* declaration) {
       specConstants |= SPEC_CONSTANT_UNPACK_UBYTE4_BASIS;
     if (declaration->hasFloat16Position)
       specConstants |= SPEC_CONSTANT_POSITION_F16;
+    if (declaration->hasInt16Position)
+      specConstants |= SPEC_CONSTANT_POSITION_INT16;
   }
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.specConstants, specConstants);
 }
@@ -2428,8 +2440,9 @@ RenderFormat ConvertDeclType(uint32_t type) {
 // (reinterpreted, never converted) regardless of its declared type -- a
 // FLOAT16 position read as a plain bitcast instead of unpacked half-float
 // collapses to near-zero instead of the real value.
-RenderFormat ConvertPositionDeclType(uint32_t type, bool& outFloat16) {
+RenderFormat ConvertPositionDeclType(uint32_t type, bool& outFloat16, bool& outInt16) {
   outFloat16 = false;
+  outInt16 = false;
   switch (type) {
     case D3DDECLTYPE_FLOAT1:
       return RenderFormat::R32_UINT;
@@ -2469,9 +2482,29 @@ RenderFormat ConvertPositionDeclType(uint32_t type, bool& outFloat16) {
     case 0x20:  // k_16_16_16_16_FLOAT
       outFloat16 = true;
       return RenderFormat::R16G16B16A16_UINT;
+    // PGR4 car meshes: SHORT4N / USHORT4N positions (k_16_16_16_16 with the
+    // normalized flag), scaled in the shader. The translated shader bitcasts
+    // the uint4 input to float, so the input assembler has to deliver the
+    // converted float bits (SNORM/UNORM), not the integers -- with SINT every
+    // vertex read as ~0 and the whole car collapsed to one point.
+    // Bit 8 of the decl type = signed, bit 9 = integer (non-normalized).
+    // Integer (non-normalized) SHORT4/USHORT4 -- PGR4's car meshes: the IA
+    // sign/zero-extends and the shader converts (SPEC_CONSTANT_POSITION_INT16).
+    case 0x19:  // k_16_16
+      if ((type & 0x200u) == 0)
+        return (type & 0x100u) ? RenderFormat::R16G16_SNORM : RenderFormat::R16G16_UNORM;
+      outInt16 = true;
+      return (type & 0x100u) ? RenderFormat::R16G16_SINT : RenderFormat::R16G16_UINT;
+    case 0x1A:  // k_16_16_16_16
+      if ((type & 0x200u) == 0)
+        return (type & 0x100u) ? RenderFormat::R16G16B16A16_SNORM
+                               : RenderFormat::R16G16B16A16_UNORM;
+      outInt16 = true;
+      return (type & 0x100u) ? RenderFormat::R16G16B16A16_SINT : RenderFormat::R16G16B16A16_UINT;
     default:
-      return ConvertDeclType(type);
+      break;
   }
+  return ConvertDeclType(type);
 }
 
 const char* ConvertDeclUsage(uint8_t usage) {
@@ -2628,6 +2661,22 @@ struct BuiltElement {
 // on an always-unbound slot (15) if this specific declaration doesn't supply
 // it, so PSO creation never fails just because one shader wants an attribute
 // a *different* shader's declaration happens to omit.
+// Xenos decl type -> unpackVertexMode code (0 = the input assembler converts
+// it). Bits 0-5 = fetch format, bit 8 = signed, bit 9 = integer.
+uint32_t PackedVertexMode(uint32_t type) {
+  uint32_t family;
+  switch (type & 0x3Fu) {
+    case 0x10: family = 0; break;  // k_10_11_11
+    case 0x11: family = 1; break;  // k_11_11_10
+    case 0x07: family = 2; break;  // k_2_10_10_10
+    default: return 0;
+  }
+  const bool isSigned = (type & 0x100u) != 0;
+  const bool isInteger = (type & 0x200u) != 0;
+  const uint32_t kind = isInteger ? 1u : (isSigned ? 2u : 0u);
+  return 1u + family * 3u + kind;
+}
+
 void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
   if (decl == nullptr || decl->inputElements != nullptr)
     return;
@@ -2656,9 +2705,12 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
     }
     if (e.usage == D3DDECLUSAGE_POSITION && e.usageIndex == 0) {
       bool isFloat16 = false;
-      format = ConvertPositionDeclType(e.type, isFloat16);
+      bool isInt16 = false;
+      format = ConvertPositionDeclType(e.type, isFloat16, isInt16);
       if (isFloat16)
         decl->hasFloat16Position = true;
+      if (isInt16)
+        decl->hasInt16Position = true;
     } else if (e.usage == D3DDECLUSAGE_POSITION && e.usageIndex == 1) {
       decl->indexVertexStream = e.stream;
     } else if (e.usage == D3DDECLUSAGE_NORMAL || e.usage == D3DDECLUSAGE_TANGENT ||
@@ -2666,16 +2718,32 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
       // Classify by the fetch-format field (bits 0-5) so variant dwords take
       // the same path as their canonical GuestDeclType instance.
       const uint32_t fmt = e.type & 0x3Fu;
+      const uint32_t packedMode = PackedVertexMode(e.type);
       if (fmt == 0x06u) {  // k_8_8_8_8 (UBYTE4 family)
         // Already hardware-UNORM-converted to a float4 by the input
         // assembler -- NOT R11G11B10-packed, must not also set that flag.
         format = RenderFormat::R8G8B8A8_UNORM;
         decl->hasUByte4TangentBasis = true;
+      } else if (packedMode != 0) {
+        // PGR4: exact per-element unpack in the shader (unpackBasis) instead
+        // of FM2's one-flavour spec-constant decode.
+        format = RenderFormat::R32_UINT;
+        const uint32_t slot =
+            (e.usage == D3DDECLUSAGE_NORMAL ? 0u : e.usage == D3DDECLUSAGE_TANGENT ? 2u : 4u) +
+            std::min<uint32_t>(e.usageIndex, 1u);
+        decl->packedBasis |= packedMode << (slot * 4u);
       } else if (fmt != 0x39u && fmt != 0x26u) {  // not FLOAT3 / FLOAT4
         format = RenderFormat::R32_UINT;  // packed DEC3N/UDEC3 family; shader bit-unpacks raw.
         decl->hasR11G11B10Normal = true;
       }
     } else if (e.usage == D3DDECLUSAGE_TEXCOORD) {
+      if (const uint32_t packedMode = PackedVertexMode(e.type); packedMode != 0) {
+        format = RenderFormat::R32_UINT;
+        if (e.usageIndex < 8)
+          decl->packedTexcoordsLo |= packedMode << (e.usageIndex * 4u);
+        else
+          decl->packedTexcoordsHi |= packedMode << ((e.usageIndex - 8u) * 4u);
+      }
       switch (e.type & 0x3Fu) {
         case 0x19:  // k_16_16 (SHORT2/SHORT2N/USHORT2N)
         case 0x1A:  // k_16_16_16_16 (SHORT4/SHORT4N/USHORT4N)
@@ -4017,6 +4085,35 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
 
 void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
                   uint32_t vertexCount) {
+  if (primitiveType == D3DPT_RECTLIST) {
+    // Rect lists from a vertex buffer: read stream 0 back on the guest thread
+    // and go through the user-pointer path, which expands each rectangle
+    // into two triangles (see ExpandRectList). Falls through (half
+    // rectangles) only if the stream cannot be read.
+    const uint32_t stride = uint32_t(device->streamStrideDwords[0]) * 4u;
+    const uint32_t address = device->streamSources[0].get();
+    const uint8_t* data = nullptr;
+    uint64_t size = 0;
+    if (address != 0 && stride != 0) {
+      auto* buffer = ghp::ToHost<GuestBuffer>(address);
+      if (IsFm2Resource(buffer)) {
+        data = static_cast<const uint8_t*>(buffer->mappedMemory);
+        size = buffer->dataSize;
+      } else {
+        const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
+            reinterpret_cast<const uint8_t*>(device) + 0x778u);
+        const auto* fetchSize = fetchBase + 1;
+        data = SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), 4u, false);
+        size = DecodeRawBufferSize(fetchSize->get());
+      }
+    }
+    const uint64_t needed = (uint64_t(startVertex) + vertexCount) * stride;
+    if (data != nullptr && needed <= size) {
+      DrawUserPointerVertices(device, primitiveType, vertexCount,
+                              data + size_t(startVertex) * stride, stride);
+      return;
+    }
+  }
   LocalRenderCommandQueue queue;
   QueueDrawStateSnapshots(device, queue);
   RenderCommand& cmd = queue.Enqueue();

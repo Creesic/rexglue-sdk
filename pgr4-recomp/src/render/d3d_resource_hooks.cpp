@@ -537,7 +537,9 @@ void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t heigh
   // texture at full 720p up front (no mid-CL recreate / DEVICE_REMOVED).
   uint32_t hostWidth = width;
   uint32_t hostHeight = height;
-  if (width == kPgr4FrameWidth && height == kPgr4TileHeight) {
+  // PGR4 tiles the 720p scene as 1280x480 + 1280x240 (FM2 used 1280x256), so
+  // grow any frame-wide surface shorter than the frame.
+  if (width == kPgr4FrameWidth && height < kPgr4FrameHeight && height >= 240u) {
     surface->tileGrownFromHeight = height;
     hostHeight = kPgr4FrameHeight;
     static uint64_t growAtCreate = 0;
@@ -812,6 +814,9 @@ struct XenosTextureInfo {
   uint32_t blockDim = 1;     // 4 for BC formats
   uint32_t bytesPerBlock = 4;
   uint32_t endian = 0;  // 0 none, 1 = 8-in-16, 2 = 8-in-32
+  // Guest formats plume cannot sample (k_1_5_5_5 = 4, k_5_6_5 = 5): the guest
+  // footprint is 16 bpp, the host texture is R8G8B8A8 and the upload expands.
+  uint32_t expand16From = 0;
   bool tiled = false;
   bool packedMips = false;
   bool valid = false;
@@ -863,6 +868,18 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
     case 10:  // k_8_8
       info.format = RenderFormat::R8G8_UNORM;
       info.bytesPerBlock = 2;
+      break;
+    case 4:  // k_1_5_5_5 (A1R5G5B5): frontend clouds
+    case 5:  // k_5_6_5 (R5G6B5)
+      info.format = RenderFormat::R8G8B8A8_UNORM;
+      info.bytesPerBlock = 2;  // guest footprint; UploadGuestTextureData expands to 4
+      info.expand16From = gpuFormat;
+      break;
+    case 23:  // k_24_8_FLOAT: shadow maps / scene depth resolved from the depth
+              // surface (ConvertFormat maps the surface the same way); never
+              // uploaded from guest memory.
+      info.format = RenderFormat::D32_FLOAT_S8_UINT;
+      info.bytesPerBlock = 4;
       break;
     case 18:  // k_DXT1
       info.format = RenderFormat::BC1_UNORM;
@@ -940,6 +957,8 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
       texture->format != info.format) {
     return false;
   }
+  if (RenderFormatIsDepth(info.format))
+    return true;  // content arrives through Resolve from the depth surface
 
   const uint32_t wBlocks = (info.width + info.blockDim - 1) / info.blockDim;
   const uint32_t hBlocks = (info.height + info.blockDim - 1) / info.blockDim;
@@ -1033,7 +1052,33 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
   }
   EndianSwapBuffer(linear.data(), linear.size(), info.endian);
 
-  const uint32_t srcRowPitch = wBlocks * info.bytesPerBlock;
+  uint32_t bytesPerBlock = info.bytesPerBlock;
+  if (info.expand16From != 0) {
+    // A1R5G5B5 / R5G6B5 -> RGBA8 with bit replication.
+    std::vector<uint8_t> expanded(size_t(wBlocks) * hBlocks * 4);
+    const auto* src16 = reinterpret_cast<const uint16_t*>(linear.data());
+    for (size_t i = 0; i < size_t(wBlocks) * hBlocks; ++i) {
+      const uint16_t v = src16[i];
+      uint8_t* d = expanded.data() + i * 4;
+      if (info.expand16From == 4) {
+        const uint32_t r = (v >> 10) & 0x1F, g = (v >> 5) & 0x1F, b = v & 0x1F;
+        d[0] = uint8_t((r << 3) | (r >> 2));
+        d[1] = uint8_t((g << 3) | (g >> 2));
+        d[2] = uint8_t((b << 3) | (b >> 2));
+        d[3] = (v & 0x8000) ? 0xFF : 0x00;
+      } else {
+        const uint32_t r = (v >> 11) & 0x1F, g = (v >> 5) & 0x3F, b = v & 0x1F;
+        d[0] = uint8_t((r << 3) | (r >> 2));
+        d[1] = uint8_t((g << 2) | (g >> 4));
+        d[2] = uint8_t((b << 3) | (b >> 2));
+        d[3] = 0xFF;
+      }
+    }
+    linear.swap(expanded);
+    bytesPerBlock = 4;
+  }
+
+  const uint32_t srcRowPitch = wBlocks * bytesPerBlock;
   const uint32_t dstRowPitch = (srcRowPitch + 255u) & ~255u;
   auto upload =
       Device()->createBuffer(RenderBufferDesc::UploadBuffer(size_t(dstRowPitch) * hBlocks));
@@ -1051,7 +1096,7 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
   }
   upload->unmap();
 
-  const uint32_t rowTexels = (dstRowPitch / info.bytesPerBlock) * info.blockDim;
+  const uint32_t rowTexels = (dstRowPitch / bytesPerBlock) * info.blockDim;
   RenderCommand cmd{};
   cmd.type = RenderCommandType::CopyTextureFromUpload;
   cmd.copyTextureFromUpload.dst = texture->texture;

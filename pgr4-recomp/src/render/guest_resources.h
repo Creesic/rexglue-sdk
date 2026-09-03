@@ -199,10 +199,17 @@ struct GuestVertexDeclaration : GuestResource {
   // Derived during input-layout translation (render_state.cpp).
   uint32_t swappedTexcoords = 0;
   uint32_t swappedBlendWeights = 0;
+  // PGR4: 4-bit unpack mode per texcoord index (0-7 / 8-15) and per basis
+  // slot (normal 0-1, tangent 0-1, binormal 0-1) for packed 10:11:11,
+  // 11:11:10 and 2:10:10:10 elements fed as raw uints; see unpackVertexMode.
+  uint32_t packedTexcoordsLo = 0;
+  uint32_t packedTexcoordsHi = 0;
+  uint32_t packedBasis = 0;
   uint32_t indexVertexStream = 0;
   bool hasR11G11B10Normal = false;
   bool hasUByte4TangentBasis = false;
   bool hasFloat16Position = false;
+  bool hasInt16Position = false;  // PGR4: SHORT4/USHORT4 positions (SPEC_CONSTANT_POSITION_INT16)
   bool vertexStreams[16]{};
 
   GuestVertexDeclaration() : GuestResource(ResourceType::VertexDeclaration) {}

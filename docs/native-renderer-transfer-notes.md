@@ -372,3 +372,44 @@ virtual-pad driver is the wrong layer.
   fall back to R8G8B8A8.
 - Keyboard input regression (`mnk_mode` default) not investigated.
 
+## Menu car and textures (2026-09-03, evening)
+
+RenderDoc capture of the main menu (`renderdoccmd capture` with
+`PGR4_RDOC_CAPTURE_AT=<present>`, then the renderdoc MCP) showed the frame
+structure: shadow map (512x512 depth), a 256x256 reflection pass, the menu
+scene into a 1280x480 tile target with ~2300 draws (that is where the car is),
+then the 720p UI/tonemap passes. Every car draw reported zero samples passed
+and `decode_post_vs_outputs` gave the same clip position for every vertex.
+
+- **Positions**: PGR4 car meshes use `SHORT4` positions (k_16_16_16_16,
+  signed, integer flag set; the shader scales them with its own constants).
+  FM2's `ConvertPositionDeclType` fell back to `R16G16B16A16_SINT` and the
+  translated shader bitcast its uint4 input to float, so the integers read
+  as ~0 and the whole mesh collapsed to one clip-space point (RenderDoc:
+  identical SV_Position for every vertex, zero samples passed). New
+  `SPEC_CONSTANT_POSITION_INT16` (bit 8, `hasInt16Position` on the decl):
+  `tfetchPos3N` converts the sign/zero-extended integers with the same
+  `.yxwz` half-order fix-up as the FLOAT16 path. Normalized 16-bit positions
+  (SHORT4N/USHORT4N) map to SNORM/UNORM instead, so the bitcast sees floats.
+- **Packed texcoords / basis vectors**: the car declarations carry
+  `UDHEN3N` (k_10_11_11 unsigned normalized) and `UHEND3` texcoords and a
+  `DEC4N` (k_2_10_10_10) tangent, which FM2 fed as raw `R32_UINT` with no
+  decode (texcoords) or the wrong decode (tangent). New generic path: the
+  host publishes a 4-bit mode per texcoord index (`packedTexcoordsLo/Hi`,
+  shared constants 484/488) and per basis slot (`packedBasis`, 492);
+  XenosRecomp wraps every fetched texcoord/normal/tangent/binormal input in
+  `unpackTexcoord` / `unpackBasis` (`unpackVertexMode` in shader_common.h:
+  mode = 1 + family*3 + kind, families 10:11:11 / 11:11:10 / 2:10:10:10,
+  kinds unorm / uint / snorm). Mode 0 is a passthrough, so FM2's paths are
+  unchanged. `PackedVertexMode` in render_state.cpp derives the mode from the
+  decl type (bits 0-5 format, bit 8 signed, bit 9 integer).
+- **Tile surfaces**: PGR4 tiles 720p as 1280x480 + 1280x240 (FM2: 1280x256);
+  `ProcCreateSurfaceHost` now grows any frame-wide surface shorter than the
+  frame.
+- **Texture formats**: 4 (k_1_5_5_5) and 5 (k_5_6_5) are expanded to
+  RGBA8 on upload (`expand16From`); 23 (k_24_8_FLOAT) becomes a
+  `D32_FLOAT_S8_UINT` texture filled by depth resolves, never uploaded.
+- **Vertex-buffer rect lists**: `DrawVertices` reads stream 0 back on the
+  guest thread and routes `D3DPT_RECTLIST` through the user-pointer path so
+  the CPU expansion applies there too.
+
