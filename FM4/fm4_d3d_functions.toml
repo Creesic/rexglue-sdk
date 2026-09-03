@@ -66,6 +66,14 @@
 0x822E5CB0 = { name = 'D3DResource_GetType' }
 0x826DE730 = { name = 'D3D_Lock2DSurface' }
 0x826DE658 = { name = 'D3D_LockSurface' }
+# D3D::UnlockResource: the single unlock leaf. Both wrappers tail-call it --
+# D3DTexture_Unlock 0x826DE3D8 (textures/surfaces) and D3DBuffer_Unlock
+# 0x822B9620 (vertex/index buffers) -- and it is the only caller of
+# D3D::FlushCachedMemory. Body matches FM2's ?UnlockResource@D3D@@ 1:1:
+# lock-count check (Common & 0xF00) == 0x100, flush descriptors at +0x14/+0x18,
+# then the lwarx/stwcx subtract of 0x100 from Common (which would corrupt our
+# kFm4ResourceMagic if it ever ran on one of our resources).
+0x822AFE48 = { name = 'D3D_UnlockResource' }
 
 # --- queries ---
 0x826EB2A8 = { name = 'D3DDevice_CreateQueryTiled' }

@@ -25,6 +25,7 @@ set(FM4_SOURCES
     src/render/render_state.cpp
     src/render/d3d_resources.cpp
     src/render/pipeline.cpp
+    src/render/d3d_hooks.cpp
     generated/shader_cache.cpp
 )
 

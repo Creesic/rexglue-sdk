@@ -58,6 +58,11 @@ inline constexpr uint32_t kGuestResourceHeaderBytes = 0x40;
 // dwords, then 24 bytes of fetch constant, total 52).
 inline constexpr uint32_t kGuestTextureFetchConstantOffset = 0x1C;
 
+// Offset of D3DSurface::Format inside the guest D3DSurface header (ida40 typed
+// struct: 6 header dwords, then SurfaceInfo/DepthInfo/HiControl/Parent, then
+// Format at +0x28 and Size at +0x2C). A surface carries no fetch constant.
+inline constexpr uint32_t kGuestSurfaceFormatOffset = 0x28;
+
 struct GuestResource {
   // Deliberately aliases the guest's D3DResource::Common; IsFm4Resource reads
   // it through an arbitrary guest pointer to identify our objects.

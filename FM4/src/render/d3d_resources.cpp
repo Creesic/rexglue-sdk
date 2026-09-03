@@ -310,7 +310,7 @@ GuestTexture* CreateTexture(uint32_t width, uint32_t height, uint32_t depth, uin
 // 0x8236A4D8. Publish format and dimensions (bit layout per
 // ParseTextureFetchConstant); base address is deliberately left 0.
 void PublishGuestFetchConstant(GuestBaseTexture* resource, uint32_t guestFormat, uint32_t width,
-                               uint32_t height) {
+                               uint32_t height, bool volume) {
   if (resource == nullptr) return;
   auto* fc = reinterpret_cast<rex::be<uint32_t>*>(reinterpret_cast<uint8_t*>(resource) +
                                                   kGuestTextureFetchConstantOffset);
@@ -318,12 +318,17 @@ void PublishGuestFetchConstant(GuestBaseTexture* resource, uint32_t guestFormat,
   fc[0] = pitchBlocks << 22;
   fc[1] = guestFormat & 0x3Fu;
   fc[2] = ((width ? width - 1u : 0u) & 0x1FFFu) | (((height ? height - 1u : 0u) & 0x1FFFu) << 13);
+  // Dimension, dword5 bits 9-10 (0 = 1D, 1 = 2D, 2 = 3D, 3 = cube). Leaving it
+  // at 0 made D3D::GetTextureDimensions (0x822E5B18) decode dword2 as a single
+  // 24-bit 1D width, so a 32x32 texture described itself as 253984x1 and
+  // XGRAPHICS::TileSurface ran off the end of the lock staging.
+  fc[5] = (volume ? 2u : 1u) << 9;
 }
 
 void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t height, uint32_t depth,
                            uint32_t levels, uint32_t usage, uint32_t format, bool volume) {
   if (texture == nullptr || IsDeviceLost()) return;
-  PublishGuestFetchConstant(texture, format, width, height);
+  PublishGuestFetchConstant(texture, format, width, height, volume);
   // D3DFORMAT bit 8: guest memory layout for this texture is tiled.
   texture->guestTiled = (format & 0x100u) != 0;
 
@@ -495,7 +500,13 @@ GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format,
 void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t height, uint32_t format,
                            uint32_t sampleCount, bool depth) {
   if (surface == nullptr || IsDeviceLost()) return;
-  PublishGuestFetchConstant(surface, format, width, height);
+  // A D3DSurface has no texture fetch constant: ida40's typed struct puts
+  // SurfaceInfo/DepthInfo/HiControl/Parent across +0x18..+0x27 and the real
+  // D3DFORMAT at +0x28, so PublishGuestFetchConstant's three dwords at +0x1C
+  // were fabricated data written over HiControl and Parent. Publish the one
+  // field the guest actually reads back off a surface header instead.
+  *reinterpret_cast<rex::be<uint32_t>*>(reinterpret_cast<uint8_t*>(surface) +
+                                        kGuestSurfaceFormatOffset) = format;
 
   // FM2 EDRAM tile surfaces are created as 1280x256. Hardware would replay the
   // recorded pass per band; we never see those replays, so allocate the host
@@ -580,9 +591,14 @@ void LockRect(GuestBaseTexture* texture, uint32_t level, uint32_t* outPitch, uin
   uint32_t pitch = ComputeTexturePitchForWidth(texture, mipWidth);
   if (texture->mappedMemory == nullptr) {
     // Allocate for mip 0 so one staging block serves every level of this
-    // texture (the guest locks levels one at a time).
+    // texture (the guest locks levels one at a time). The height is rounded up
+    // to a 32-row tile: the guest treats this pointer as a whole Xenos texture
+    // allocation and XG tiling writers (XGRAPHICS::TileSurface, reached from
+    // UtilityTexture::Create @0x8285C4A8) address the full 32x32-block
+    // footprint, which overran a height-exact block and faulted on the next
+    // guest page.
     const uint32_t fullPitch = ComputeTexturePitch(texture);
-    const uint32_t fullSize = fullPitch * std::max(texture->height, 1u);
+    const uint32_t fullSize = fullPitch * ((std::max(texture->height, 1u) + 31u) & ~31u);
     uint32_t addr = GuestAllocRaw(fullSize, 0x10);
     texture->mappedMemory = ToHost<void>(addr);
     texture->mappedSizeBytes = fullSize;

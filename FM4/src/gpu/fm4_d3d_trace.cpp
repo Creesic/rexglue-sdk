@@ -14,6 +14,7 @@
 #include <rex/logging.h>
 
 #include "gpu/d3d_guest.h"
+#include "render/guest_heap.h"
 
 REXCVAR_DEFINE_BOOL(fm4_d3d_trace, false, "FM4",
                     "Count D3D entry points per 300 frames and dump shader bytecode to <cwd>/shaders. Works under both GPU paths");
@@ -160,25 +161,17 @@ extern "C" REX_FUNC(D3DDevice_SetRenderTarget) {
   __imp__D3DDevice_SetRenderTarget(ctx, base);
 }
 
-extern "C" REX_FUNC(D3DDevice_CreateTexture) {
+// D3DDevice_CreateTexture / CreateVertexShader / CreatePixelShader are hooked
+// outright by render/d3d_hooks.cpp (two strong REX_FUNC definitions of the same
+// guest function cannot link), so the trace is driven from there instead.
+void fm4::gpu::TraceOnCreateTexture() {
   if (Enabled()) Bump(kCreateTexture);
-  __imp__D3DDevice_CreateTexture(ctx, base);
 }
 
-// D3DDevice_CreateVertexShader(const DWORD* pFunction): r3 = container.
-extern "C" REX_FUNC(D3DDevice_CreateVertexShader) {
-  if (Enabled()) {
-    Bump(kCreateVS);
-    DumpShader(base, ctx.r3.u32, "vso");
+void fm4::gpu::TraceOnCreateShader(uint32_t function_va, bool pixel) {
+  if (!Enabled()) {
+    return;
   }
-  __imp__D3DDevice_CreateVertexShader(ctx, base);
-}
-
-// D3DDevice_CreatePixelShader(const DWORD* pFunction): r3 = container.
-extern "C" REX_FUNC(D3DDevice_CreatePixelShader) {
-  if (Enabled()) {
-    Bump(kCreatePS);
-    DumpShader(base, ctx.r3.u32, "pso");
-  }
-  __imp__D3DDevice_CreatePixelShader(ctx, base);
+  Bump(pixel ? kCreatePS : kCreateVS);
+  DumpShader(fm4::ghp::GuestBase(), function_va, pixel ? "pso" : "vso");
 }

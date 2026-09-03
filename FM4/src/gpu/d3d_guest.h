@@ -38,4 +38,10 @@ static_assert(Fnv1a64(kFnvProbe, 3) == 0xE71FA2190541574Bull);  // FNV-1a("abc")
 // fm4_d3d_trace is set. Called by the D3DDevice_Swap hook in fm4_d3d_hooks.cpp.
 void TraceOnSwap();
 
+// Same hand-off for the three creation entry points the native renderer now
+// owns outright (render/d3d_hooks.cpp): the trace cannot define its own hook
+// for a guest function another translation unit already replaces.
+void TraceOnCreateTexture();
+void TraceOnCreateShader(uint32_t function_va, bool pixel);
+
 }  // namespace fm4::gpu

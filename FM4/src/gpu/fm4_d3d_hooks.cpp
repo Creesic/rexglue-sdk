@@ -14,21 +14,13 @@ namespace {
 
 bool Native() { return fm4::gpu::NativeRequested(); }
 
-uint32_t GuestLoad32(uint8_t* base, uint32_t va) {
-  return __builtin_bswap32(*reinterpret_cast<volatile uint32_t*>(base + va));
-}
-
 }  // namespace
 
-// Let the library build the device; nothing else to do under native.
-extern "C" REX_FUNC(Direct3D_CreateDevice) {
-  const uint32_t out_device_va = ctx.r8.u32;  // read before the call clobbers r8
-  __imp__Direct3D_CreateDevice(ctx, base);
-  if (!Native() || ctx.r3.u32 != 0) {
-    return;
-  }
-  const uint32_t device = GuestLoad32(base, out_device_va);
-  REXLOG_INFO("native gpu: guest D3DDevice at 0x{:08X}", device);
+// Direct3D_CreateDevice is owned by render/d3d_hooks.cpp, which latches the
+// device for the ported renderer.
+
+namespace fm4::render {
+void OnResourceTraceFrame();
 }
 
 // GPU waits: nothing to wait for.
@@ -69,6 +61,7 @@ extern "C" REX_FUNC(D3DDevice_Swap) {
   // to run (VdSwap is ignored by the kernel without a GPU plugin). Present after.
   __imp__D3DDevice_Swap(ctx, base);
   if (Native()) {
+    fm4::render::OnResourceTraceFrame();
     fm4::gpu::Video::Present();
   }
 }
