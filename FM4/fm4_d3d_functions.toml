@@ -1,5 +1,6 @@
 [functions]
 0x822B0858 = { name = 'D3DDevice_BlockOnFence' }
+0x822B95D8 = { name = 'D3DDevice_DrawVerticesUP' }
 0x822C5260 = { name = 'D3DDevice_InsertFence' }
 0x822D0C98 = { name = 'D3DDevice_Release' }
 0x822D42A8 = { name = 'D3DDevice_DrawIndexedVerticesUP' }
@@ -13,6 +14,7 @@
 0x82310818 = { name = 'D3DDevice_RunCommandBuffer' }
 0x82311080 = { name = 'D3DDevice_DrawIndexedVertices' }
 0x8233A9A8 = { name = 'D3DDevice_SetTexture' }
+0x8233AC60 = { name = 'D3DDevice_DrawVertices' }
 0x823445A0 = { name = 'D3DDevice_SetStreamSource' }
 0x8234D278 = { name = 'D3DDevice_BeginVertices' }
 0x8234DA50 = { name = 'D3D_CDevice_BlockOnSecondaryPosition' }
@@ -192,9 +194,8 @@
 # --- likely, confirmed by the task that first uses them ---
 # 0x8236D900: per-rect body D3DDevice_Clear hoists out (hook map section 1).
 0x8236D900 = { name = 'D3DDevice_ClearRects' }
-# deep dive section 4.1 marks these "?." = unconfirmed. Task 7 confirms
-# D3D_DrawVertices_Core; Task 8 confirms the tiling wrapper.
-0x8233AC60 = { name = 'D3D_DrawVertices_Core' }
+# deep dive section 4.1 marks these "?." = unconfirmed. Task 8 confirms the
+# tiling wrapper; 0x8233AC60 is confirmed by Task 7 and promoted above.
 0x823813B0 = { name = 'D3DDevice_BeginTiling_Wrapper' }
 0x82310FC8 = { name = 'Gfx_RunCommandBufferOrRecord' }
 0x822AF9D8 = { name = 'TileBuffer_SwapImpl' }

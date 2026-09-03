@@ -2306,6 +2306,8 @@ void ScheduleResourceDestruction(GuestResource* resource) {
 // ---------------------------------------------------------------------------
 
 void Clear(GuestDevice* /*device*/, uint32_t flags, const float* color, float z) {
+  if (!::Video::IsInitialized())
+    return;
   RenderCommand cmd{};
   cmd.type = RenderCommandType::Clear;
   cmd.clear.flags = flags;
@@ -2320,6 +2322,8 @@ void Clear(GuestDevice* /*device*/, uint32_t flags, const float* color, float z)
 void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint,
                       const GuestRect* sourceRect, uint32_t postClearFlags,
                       const float* postClearColor, float postClearZ) {
+  if (!::Video::IsInitialized())
+    return;
   // Unleashed StretchRect pattern: link dest to the current RT and defer the
   // copy/MSAA resolve until FlushPendingStretchRectCommands (before Present /
   // draw). Immediate path kept for non-texture destinations or region copies.
@@ -3189,6 +3193,8 @@ RenderPipeline* GetPipeline(PipelineState ps) {
   return pipeline.get();
 }
 
+std::atomic<uint32_t> g_pipelineMisses{0};
+
 // ---------------------------------------------------------------------------
 // Constant upload sizes. See UploadAllocator (declared near the other
 // per-frame tracking globals above) for the actual upload mechanics.
@@ -3535,6 +3541,13 @@ bool HasBoundPipeline() {
   return g_hasBoundPipeline;
 }
 
+// Draws that reached FlushRenderState but got no pipeline out of GetPipeline --
+// a missing shader, an unresolved vertex declaration, or no attachment bound.
+// Drained into the per-300-frame [fm4render] line by d3d_hooks.cpp.
+uint32_t TakePipelineMissCount() {
+  return g_pipelineMisses.exchange(0, std::memory_order_relaxed);
+}
+
 void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   std::lock_guard lock(RecordingMutex());
   g_hasBoundPipeline = false;
@@ -3691,8 +3704,10 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
     pipelineState.depthStencilFormat = RenderFormat::UNKNOWN;
   }
   RenderPipeline* pipeline = GetPipeline(pipelineState);
-  if (pipeline == nullptr)
+  if (pipeline == nullptr) {
+    g_pipelineMisses.fetch_add(1, std::memory_order_relaxed);
     return;
+  }
   RenderPipelineLayout* layout = PipelineLayout();
   RenderCommandList* commandList = CommandList();
   if (layout == nullptr || commandList == nullptr)
@@ -4036,6 +4051,8 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
 
 void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
                   uint32_t vertexCount) {
+  if (!::Video::IsInitialized())
+    return;
   LocalRenderCommandQueue queue;
   QueueDrawStateSnapshots(device, queue);
   RenderCommand& cmd = queue.Enqueue();
@@ -4049,6 +4066,8 @@ void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVer
 
 void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
                          uint32_t startIndex, uint32_t indexCount) {
+  if (!::Video::IsInitialized())
+    return;
   LocalRenderCommandQueue queue;
   QueueDrawStateSnapshots(device, queue);
   RenderCommand& cmd = queue.Enqueue();
@@ -4063,6 +4082,11 @@ void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t ba
 
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                              const void* data, uint32_t stride) {
+  // A vblank interrupt can drive guest draw calls before ::Video::Init has run
+  // (and after Shutdown); RenderQueue dispatches inline while its thread is
+  // stopped, which would reach a null Plume device.
+  if (!::Video::IsInitialized())
+    return;
   if (data == nullptr || vertexCount == 0 || stride == 0)
     return;
   const uint32_t bytes = vertexCount * stride;

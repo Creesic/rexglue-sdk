@@ -25,6 +25,7 @@
 #include "render/guest_device.h"
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
+#include "render/render_queue.h"
 #include "render/render_state.h"
 
 namespace rr = fm4::render;
@@ -59,6 +60,8 @@ uint32_t LockIndexBuffer(GuestBuffer* buffer, uint32_t flags);
 void LockRect(GuestBaseTexture* texture, uint32_t level, uint32_t* outPitch, uint32_t* outBits);
 void UnlockGuestResource(GuestResource* resource);
 void GetSurfaceDesc(const GuestSurface* surface, GuestSurfaceDesc* desc);
+// render_state.cpp: draws that reached FlushRenderState but found no pipeline.
+uint32_t TakePipelineMissCount();
 }  // namespace fm4::render
 
 namespace {
@@ -78,10 +81,17 @@ enum Counter : size_t {
   kLock,
   kUnlock,
   kPassCalls,
+  kDrawIdx,
+  kDrawNonIdx,
+  kDrawUP,
+  kDrawIdxUP,
+  kDrawOtherDevice,
   kCounterCount
 };
-constexpr const char* kCounterNames[kCounterCount] = {"vb",  "ib", "tex",  "surf",   "decl",
-                                                      "vs",  "ps", "lock", "unlock", "passcalls"};
+constexpr const char* kCounterNames[kCounterCount] = {
+    "vb",      "ib",         "tex",     "surf",       "decl",   "vs",        "ps",
+    "lock",    "unlock",     "passcalls", "drawIdx",  "drawNonIdx", "drawUP", "drawIdxUP",
+    "drawOtherDev"};
 std::atomic<uint32_t> g_counters[kCounterCount]{};
 void Bump(Counter c) { g_counters[c].fetch_add(1, std::memory_order_relaxed); }
 
@@ -110,12 +120,13 @@ void OnResourceTraceFrame() {
   if ((frames.fetch_add(1, std::memory_order_relaxed) % 300) != 299) {
     return;
   }
-  char line[256];
+  char line[384];
   int n = std::snprintf(line, sizeof(line), "[fm4render] frames=300");
   for (size_t i = 0; i < kCounterCount; ++i) {
     n += std::snprintf(line + n, sizeof(line) - n, " %s=%u", kCounterNames[i],
                        g_counters[i].exchange(0, std::memory_order_relaxed));
   }
+  std::snprintf(line + n, sizeof(line) - n, " psoMiss=%u", TakePipelineMissCount());
   REXLOG_INFO("{}", line);
 }
 
@@ -782,55 +793,168 @@ extern "C" REX_FUNC(D3DDevice_SetScissorRect) {
 }
 
 // ---------------------------------------------------------------------------
-// temporary until Tasks 7/8 replace these with the real hooks
+// Draw dispatch. Full replacements: the guest submitters walk the bound
+// D3DVertexDeclaration and vertex/index buffer headers to build fetch constants
+// and flush pending state (D3D::SetPending_Shaders / SetPending_FetchConstants),
+// and those objects are ours now, with host members from +0x40 on -- the walk
+// reads garbage and faults (observed: read AV of guest 0x38D83030 inside
+// D3DDevice_DrawVertices). The original still runs while a command buffer is
+// being recorded, so the guest's own compiled clone stays structurally valid for
+// Task 8's replay path; nothing calls RenderQueue::BeginRecording yet.
 //
-// The guest's own draw submitters walk the bound D3DVertexDeclaration and
-// vertex/index buffer headers to build fetch constants and flush pending state
-// (D3D::SetPending_Shaders / SetPending_HiZEnable). Those objects are ours now,
-// with host members from +0x40 on, so the walk reads garbage and faults --
-// observed as a read AV of guest 0x38D83030 inside D3D_DrawVertices_Core.
-// Under the native path they are no-ops so the title still boots to the clear
-// colour; under xenos they are untouched. FM4's D3D library exposes exactly
-// these three submitters (ida40 symbol sweep for /draw/): there is no separate
-// D3DDevice_DrawVertices or D3DDevice_DrawVerticesUP symbol -- game code calls
-// D3D_DrawVertices_Core directly for un-indexed draws.
+// The complete set of guest draw emitters is the nine callers of
+// D3D::SetPending_FetchConstants (0x8230FA40): D3DDevice_DrawIndexedVertices,
+// D3DDevice_DrawVertices, D3DDevice_BeginVertices, sub_8234DAE8 (the indexed
+// BeginVertices that DrawIndexedVerticesUP uses), D3DDevice_RunCommandBuffer
+// (Task 8), three command-buffer state flushers that take no primitive at all
+// (sub_823712F8 / sub_826E35F8 / sub_826E4050), and SetPendingState_NoInline.
+// There is no FM4 counterpart to FM2's DrawIndexedVertices_WithVertexFormatSetup.
+//
+// Draws submitted on a device other than the latched DeviceType=1 one belong to
+// the command-buffer devices; they are counted and skipped (Task 8 owns replay).
+//
+// There is deliberately no FM2P-style DrainDeferredDrawShaderConstants call in
+// front of these draws. FM2P needs one because FM2 links
+// D3DDevice_GpuBeginShaderConstantF4 (sub_82803358), which hands the caller a
+// ring pointer it fills *after* the call, so those values never enter the
+// device's constant files. FM4 does not link that function: it has no symbol,
+// none of the fifteen callers of D3D::CDevice::BeginRingBig (0x823913D0) has its
+// shape (BeginRingBig(dev, 4*count+5), three 0x80000000 stores, a 0xC0002D00
+// packet word), and 0x2D00 does not occur as an immediate anywhere in the image.
+// Every FM4 shader-constant write therefore lands in the device's own float
+// files at +0x780 (VS) / +0x1780 (PS) -- exactly what the draw bodies above hand
+// to SetPending_AluConstants -- and QueueDrawStateSnapshots already reads them
+// every draw. Nothing to drain, and nothing that can go stale.
 // ---------------------------------------------------------------------------
 
-extern "C" REX_FUNC(D3D_DrawVertices_Core) {
-  if (!Native()) {
-    __imp__D3D_DrawVertices_Core(ctx, base);
-    return;
+namespace {
+
+// Null unless `device` is the latched main device.
+GuestDevice* DrawDevice(uint32_t device) {
+  auto* host = ghp::ToHost<GuestDevice>(device);
+  if (host != nullptr && host != rr::GetActiveGuestDevice()) {
+    Bump(kDrawOtherDevice);
+    return nullptr;
   }
-  ctx.r3.u64 = 0;
+  return host;
 }
 
+}  // namespace
+
+// D3DDevice_DrawVertices(pDevice, PrimitiveType, StartVertex, VertexCount)
+// @0x8233AC60. FM4 has no separate public wrapper -- game code calls this body
+// directly (26 xrefs, e.g. `li r4,8; li r5,0; mulli r6,r11,3` at 0x828749D0 for
+// a RECTLIST). Confirmed non-indexed: it emits VGT_DRAW_INITIATOR with source
+// select AUTO_INDEX (`| 0x80` at 0x8233B01C) and never reads an index buffer.
+extern "C" REX_FUNC(D3DDevice_DrawVertices) {
+  if (!Native()) {
+    __imp__D3DDevice_DrawVertices(ctx, base);
+    return;
+  }
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t primitiveType = ctx.r4.u32;
+  const uint32_t startVertex = ctx.r5.u32;
+  const uint32_t vertexCount = ctx.r6.u32;
+  if (rr::RenderQueue::IsRecording()) {
+    __imp__D3DDevice_DrawVertices(ctx, base);
+  }
+  ctx.r3.u64 = 0;
+  if (auto* dev = DrawDevice(device)) {
+    Bump(kDrawNonIdx);
+    rr::DrawVertices(dev, primitiveType, startVertex, vertexCount);
+  }
+}
+
+// D3DDevice_DrawIndexedVertices(pDevice, PrimitiveType, BaseVertexIndex,
+// StartIndex, IndexCount) @0x82311080 -- the XDK signature, typed in ida40.
 extern "C" REX_FUNC(D3DDevice_DrawIndexedVertices) {
   fm4::gpu::TraceOnDrawIndexed(/*up=*/false);
   if (!Native()) {
     __imp__D3DDevice_DrawIndexedVertices(ctx, base);
     return;
   }
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t primitiveType = ctx.r4.u32;
+  const int32_t baseVertexIndex = int32_t(ctx.r5.u32);
+  const uint32_t startIndex = ctx.r6.u32;
+  const uint32_t indexCount = ctx.r7.u32;
+  if (rr::RenderQueue::IsRecording()) {
+    __imp__D3DDevice_DrawIndexedVertices(ctx, base);
+  }
   ctx.r3.u64 = 0;
+  if (auto* dev = DrawDevice(device)) {
+    Bump(kDrawIdx);
+    rr::DrawIndexedVertices(dev, primitiveType, baseVertexIndex, startIndex, indexCount);
+  }
 }
 
+// D3DDevice_DrawVerticesUP(pDevice, PrimitiveType, VertexCount,
+// pVertexStreamZeroData, VertexStreamZeroStride) @0x822B95D8. The original is
+//     void* p = D3DDevice_BeginVertices(dev, prim, count, stride);
+//     if (p) { CopyToWriteCombinedMemory(p, src, count*stride);
+//              dev->m_pRing = *(dev + 0x3604); }
+// so replacing it outright skips BeginVertices entirely -- both the ring
+// reservation and the +0x3604 restore -- and the vertex data is read straight
+// from the guest pointer instead. DrawUserPointerVertices copies on this thread.
+extern "C" REX_FUNC(D3DDevice_DrawVerticesUP) {
+  if (!Native()) {
+    __imp__D3DDevice_DrawVerticesUP(ctx, base);
+    return;
+  }
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t primitiveType = ctx.r4.u32;
+  const uint32_t vertexCount = ctx.r5.u32;
+  const uint32_t vertexData = ctx.r6.u32;
+  const uint32_t stride = ctx.r7.u32;
+  if (rr::RenderQueue::IsRecording()) {
+    __imp__D3DDevice_DrawVerticesUP(ctx, base);
+  }
+  if (auto* dev = DrawDevice(device)) {
+    Bump(kDrawUP);
+    rr::DrawUserPointerVertices(dev, primitiveType, vertexCount,
+                                ghp::ToHost<const uint8_t>(vertexData), stride);
+  }
+}
+
+// D3DDevice_DrawIndexedVerticesUP(pDevice, PrimitiveType, MinVertexIndex,
+// NumVertices, IndexCount, pIndexData, IndexDataFormat, pVertexStreamZeroData,
+// VertexStreamZeroStride) @0x822D42A8 -- nine arguments, the ninth on the
+// caller's stack at r1+0x54 (`lwz r30, 0xB0+arg_54(r1)` at 0x822D42B4). It has
+// exactly one code caller in the image (sub_822C4E80) and the renderer has no
+// indexed user-pointer path, so it stays a no-op under the native path and the
+// counter says whether that ever costs geometry.
 extern "C" REX_FUNC(D3DDevice_DrawIndexedVerticesUP) {
   fm4::gpu::TraceOnDrawIndexed(/*up=*/true);
   if (!Native()) {
     __imp__D3DDevice_DrawIndexedVerticesUP(ctx, base);
     return;
   }
+  Bump(kDrawIdxUP);
+  static std::atomic<bool> warned{false};
+  if (!warned.exchange(true, std::memory_order_relaxed)) {
+    REXLOG_WARN(
+        "fm4render: D3DDevice_DrawIndexedVerticesUP reached; indexed user-pointer draws are "
+        "dropped on the native path");
+  }
   ctx.r3.u64 = 0;
 }
 
 // D3DDevice_BeginVertices(pDevice, PrimitiveType, VertexCount, VertexSize)
-// returns the ring pointer the guest then fills with vertices, so it cannot be
-// a plain no-op -- but its body flushes pending state through the same
-// SetPending_* table that faults on our resources (observed: read AV of guest
-// 0x38E22030, D3DDevice_BeginVertices -> SetPending_Shaders ->
-// SetPending_HiZEnable). Hand back a scratch block instead; what the guest
-// writes there is never read, because the three submitters above are no-ops.
-// ponytail: one shared grow-only block, no per-call lifetime -- correct only
-// while every draw is a no-op, and Task 7 replaces this hook outright.
+// @0x8234D278 returns the ring pointer the guest then fills with vertices, so
+// it cannot be a plain no-op -- but its body flushes pending state through the
+// same SetPending_* table that faults on our resources (observed: read AV of
+// guest 0x38E22030, D3DDevice_BeginVertices -> SetPending_Shaders ->
+// SetPending_HiZEnable). Hand back a scratch block instead.
+//
+// D3DDevice_DrawVerticesUP no longer reaches this hook (it is a full
+// replacement above), but thirteen other call sites do -- library helpers and
+// XGRAPHICS utilities that fill the returned block and rely on BeginVertices
+// having already emitted the draw. Those produce no geometry on the native
+// path; beginVerts in the [d3dtrace] line counts them, and it was 300 per 300
+// frames before this task purely because of the DrawVerticesUP wait animation,
+// so the expectation is that it now reads ~0.
+// ponytail: one shared grow-only block, no per-call lifetime -- correct while
+// the block's contents are never consumed.
 extern "C" REX_FUNC(D3DDevice_BeginVertices) {
   fm4::gpu::TraceOnBeginVertices();
   if (!Native()) {
@@ -856,7 +980,8 @@ extern "C" REX_FUNC(D3DDevice_BeginVertices) {
   // they have copied their vertices -- D3DDevice_DrawVerticesUP (0x822B95D8) is
   //     lwz r11, 0x3604(r31)   ; 0x822B9610
   //     stw r11, 0x30(r31)     ; 0x822B9614
-  // Handing back a scratch block instead never writes 0x3604, so it stays 0 and
+  // and sub_8234DAE8 / D3DDevice_DrawIndexedVerticesUP do the same. Handing back
+  // a scratch block instead never writes 0x3604, so it stays 0 and
   // that restore stores 0 into m_pRing. After that EVERY ring emitter faults
   // writing guest 0x00000004, because they all guard with
   // `if (m_pRing > m_pRingLimit) RingMakeSpace()` and 0 is never greater --
