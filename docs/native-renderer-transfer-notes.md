@@ -11,6 +11,7 @@ of what actually went wrong so nobody re-derives it.
 | `7f0aba8` | Minimal PM4 executor in `guest_gpu.cpp`; guest reaches `D3DDevice_Swap` at ~144/sec |
 | `c68633e` | Front-buffer read-back path (decode fetch constant, untile, upload, copy to swapchain). Proven end to end; buffer is empty because draws don't execute yet |
 | `919186a` | FM2's full renderer ported, builds and links (37 of 83 hooks live). **Crashes in guest D3D init: write to guest `0x000FE000` on the main thread.** Not diagnosed |
+| 2026-09-02 evening | Functional port (see section below): no faults, 922/922 shaders from the regenerated cache, draws execute, XDK swap machine cycles (`submitted == retired`), frames presented at ~22/s. Boot video still a flat colour: Bink plane headers parse as `fmt=0` and bind null |
 
 Next step is bisecting that crash: dormant the resource-creation hooks
 (`CreateTexture` / `CreateSurface` / `CreateVertexBuffer`) first, or sample the
@@ -148,3 +149,93 @@ second fault lives in {`SetTexture`, `ClearF`, `Resolve`, `SetScissorRect`,
 dereferenced as a pointer, i.e. a hook whose PGR4 signature differs from
 FM2's. Next: halve that set (state/binding vs the three draws), then compare
 the culprit's PGR4 prototype in IDA against the hook's argument list.
+
+## Functional port (2026-09-02, after the bisect)
+
+Root cause of the bisect's "read of guest `0x2`": FM2's `GuestDevice` layout
+applied to PGR4's `D3DDevice`. The two XDK builds differ; every offset below
+was taken from PGR4's own setters in IDA and is pinned by `static_assert` in
+`guest_device.h`.
+
+| Field | FM2 | PGR4 | Source |
+|---|---|---|---|
+| VS / PS float files | `0x700` / `0x1700` | `0x780` / `0x1780` | `Set*ShaderConstantFN` |
+| bool / int files | `0x2700..0x2760` | `0x2780..0x27E0` | `Set*ShaderConstantB/I` |
+| bool/int dirty bit | `m_Mask[4]` bit 56 | bit 24 | same |
+| vertex declaration | `0x2D14` | `0x2E24` | `D3DDevice_SetVertexDeclaration` @ `0x82694E38` |
+| index buffer | `0x2F7C` | `0x308C` | `SetIndices` |
+| stream ptrs / strides | `0x2F94` / `0x2FD8` | `0x30A4` / `0x30E8` | `SetStreamSource` |
+| vertex fetch consts | `0x6F8 - 8N` | `0x778 - 8N` | same |
+| PS / VS handle | -- | `0x318C` / `0x3190` | `SetPending_Shaders` |
+| viewport | `0x3168` | `0x3160` | `D3D::SetViewport` |
+
+The "write of guest `0x000FE000`" was `D3DIndexBuffer_Lock` (`0x8269A3B0`,
+not in the manifest): the original ran on an FM2 `GuestBuffer` whose
+`Address` field is zero, returned guest pointer 0, and the game wrote index
+data upward from address 0 until the first unmapped page.
+
+Corrections to earlier notes:
+
+- **`REX_HOOK` does fall through.** `DEFINE_REX_FUNC(name)` emits the body as
+  `__imp__name` with `name` as a weak alias, so `REX_IMPORT(__imp__X, ...)`
+  reaches the original from inside a hook. The "no fall-through" claim above
+  is wrong; a runtime renderer switch and observe-only hooks are both possible.
+- `func_profile.caller_count` remains unreliable; `xrefs_to` is not.
+
+What PGR4 does differently from FM2 (all now hooked at the XDK level, no
+engine-level render context exists):
+
+- Shaders come from shader packs through `XGRegisterVertexShader` /
+  `XGRegisterPixelShader` (`0x82694B28` / `0x826948E8`); `D3DDevice_Create*Shader`
+  is never reached. VS object: cached part at `+872`, ucode pointer at `+32`;
+  PS: `+40` / `+24`. The hook reassembles the contiguous container and aliases
+  the raw handle (`RegisterShaderAlias`).
+- Every frame is XDK predicated tiling (`D3DDevice_BeginTiling` `0x8269C6D0`,
+  `D3DDevice_EndTiling` `0x8269CB68`, tile count `dword_82A60FB0`). The per-tile
+  clear and the EDRAM -> frontbuffer resolve live there, not in
+  `ClearF`/`Resolve`; the single-tile path (`PGR4_EndTilingOrResolve`) is the
+  only one that calls `D3DDevice_Resolve` with the frontbuffer.
+- The main backbuffer / depth surfaces are raw `XGSetSurfaceHeader` objects
+  (`dword_82A60EDC`), bound through `D3DDevice_SetRenderTarget`.
+  `TranslateRawSurface` decodes `+0x18` (msaa bits 16-17), `+0x24` (packed
+  size), `+0x28` (D3DFORMAT) and creates a native surface once per header.
+- Vertex declarations, shaders, stream/index sources and render targets are
+  bound through `D3DDevice_Set*` directly (hooks call the original, then
+  mirror into `rr::`).
+- Boot renders Bink video: `PGR4_Bink_DrawFrameQuad` (`0x82825510`) binds 3-4
+  planes and draws a 4-vertex strip through `DrawVerticesUP`.
+
+XenosRecomp (fork branch `PGR4`) needed two fixes for PGR4's 922 dumped
+shaders: TANGENT0-3 added to the VS->PS interpolator ABI, and the `s16..s31`
+vertex-texture aliases now resolve to a reflected sampler's constant-table
+name instead of `s<N>` (which is undeclared when `<N>` is reflected).
+
+State after the functional port (run 042, 20 s): 0 access violations, 0
+`WAIT_REG_MEM` timeouts, 922 shader-cache hits / 0 misses, every frame draws
+the Bink quad and resolves, `D3DDevice_Swap` runs the original after
+presenting (XDK swap bookkeeping: `submitted 446 == retired 446`), and the
+present fallback shows the last resolve destination.
+
+Ring executor additions that made the swap machine work: `WAIT_REG_MEM` on
+guest memory now blocks (bounded 50 ms) while delivering pending source-1
+interrupts *and* due vblanks -- the XDK's `D3D::InsertCallback` protocol has
+the CP wait for the CPU handler's ack before resetting the `0x0BADF00D`
+sentinel, and the swap-pending word is cleared by the vblank handler.
+`SCRATCH_ADDR` is the interrupt block's GPU address; the SDK's `0xE0000000`
+4 KB offset is why `*(device+10900)` prints as `FFB9B000` while the writeback
+page is `1FB9C000`.
+
+Open:
+
+- Bink Y/Cb/Cr planes: `SetTexture` gets raw headers at `*(obj+16+32*frame)`
+  (`PGR4_Bink_DrawFrameQuad`) whose fetch constant parses as `fmt=0`,
+  `1024x2048` -- wrong object layout or a format we mis-decode; they bind null
+  so the video shows as one colour.
+- The `Swap` present fallback (`LookupLastResolveDestination`) is a heuristic
+  for the boot phase; the frontend's real composite (`EndTiling` into the
+  frontbuffer) has not been observed yet.
+- `ConvertFormat` lacks `0x182800B6` (gpu 54, the 10:10:10:2 main RT) and
+  `0x2DA2ABA4` (gpu 36, R32F); both default to RGBA8.
+- One shader (`CC80228A287F34B7`) faults inside XenosRecomp and is skipped.
+- The ~10-20 s self-exit (a window-close event, not the guest) has not
+  recurred since the interrupt/wait changes; cause still unknown.

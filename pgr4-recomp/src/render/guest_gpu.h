@@ -88,6 +88,21 @@ class Pgr4GraphicsSystem final : public rex::system::IGraphicsSystem {
   void ExecuteRing(uint32_t write_index);
   void ApplyRegisterWrite(uint32_t reg, uint32_t value);
 
+  // Runs the guest's source=1 interrupt handler for every CPU the ring raised
+  // PM4_INTERRUPT for, once the callback slot no longer holds the sentinel.
+  void DeliverPendingCpuInterrupts();
+  // PM4_WAIT_REG_MEM on guest memory: the D3D library's CPU-callback protocol
+  // (D3D::InsertCallback) has the CP wait for the interrupt handler's ack
+  // before it resets the callback slot, so the wait has to block here while
+  // the handler gets a chance to run. Bounded; returns false on timeout.
+  bool WaitOnGuestMemory(uint32_t wait_info, uint32_t poll, uint32_t ref, uint32_t mask);
+
+  // One vsync interrupt (source 0) to the guest. Also called from inside a
+  // WAIT_REG_MEM spin: the swap-pending word that wait polls is cleared by
+  // the guest's vblank handler, which cannot run if this thread stops
+  // delivering vblanks while it waits.
+  void DeliverVblank();
+
   void WorkerMain();
 
   rex::runtime::FunctionDispatcher* function_dispatcher_ = nullptr;
@@ -126,6 +141,11 @@ class Pgr4GraphicsSystem final : public rex::system::IGraphicsSystem {
   // Only touched from the guest thread that stores CP_RB_WPTR (execution runs
   // synchronously inside that MMIO write), so no atomic needed.
   uint32_t read_ptr_index_ = 0;
+
+  // Worker-thread only: the vblank schedule shared by WorkerMain and the
+  // WAIT_REG_MEM spin.
+  uint64_t next_vblank_tick_ = 0;
+  uint64_t vblank_period_ = 0;
 
   std::atomic<bool> worker_running_{false};
   bool has_presentation_ = false;

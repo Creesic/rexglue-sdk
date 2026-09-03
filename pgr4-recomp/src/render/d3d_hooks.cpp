@@ -82,6 +82,7 @@ GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size);
 GuestShader* CreateVertexShader(const uint32_t* function);
 GuestShader* CreatePixelShader(const uint32_t* function);
 GuestShader* LookupShaderAlias(uint32_t guestAddress);
+void RegisterShaderAlias(uint32_t guestAddress, GuestShader* shader);
 }  // namespace pgr4::render
 
 namespace {
@@ -144,6 +145,15 @@ void Swap(uint32_t device, uint32_t arg4, uint32_t /*arg5*/, uint32_t caller) {
       presentSource = nullptr;
     }
   }
+  // ponytail: PGR4's boot frames resolve into the video player's own texture
+  // and never into the swapped frontbuffer (the composite that would happen
+  // through EndTiling isn't running yet), so fall back to the most recent
+  // resolve destination. Revisit once the frontend's own passes are seen.
+  if (presentSource == nullptr) {
+    presentSource = pgr4::render::LookupLastResolveDestination();
+    if (presentSource != nullptr)
+      kind = "last-resolve";
+  }
 
   const bool accepted = Video::Present(presentSource);
   if (swapIndex <= 64 || swapIndex % 300 == 1) {
@@ -181,8 +191,15 @@ void PresentAndUpdateStatus(uint32_t presentChain) {
 }  // namespace
 
 REX_HOOK(D3DDevice_ClearF, ClearF);
+// PGR4: unlike FM2, the XDK swap state machine has to keep running -- the
+// guest GPU layer (guest_gpu.cpp) consumes the ring the original writes, and
+// the game's frame manager paces itself on the submitted/retired frame counters
+// and swap fences the original maintains. Present first, then let the original
+// run with the untouched register state.
+REX_IMPORT(__imp__D3DDevice_Swap, g_origD3DSwap, void(uint32_t, uint32_t, uint32_t));
 REX_HOOK_RAW(D3DDevice_Swap) {
   Swap(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.lr);
+  g_origD3DSwap.fn(ctx, base);
 }
 REX_HOOK(PGR4_D3D_TryPresentAndUpdateStatus, PresentAndUpdateStatus);
 
@@ -246,17 +263,17 @@ uint32_t CreatePixelShaderHook(const uint32_t* function) {
 // and the original guest body still runs for anything we didn't create.
 REX_IMPORT(__imp__D3DVertexBuffer_Lock, g_origVertexBufferLock,
            uint32_t(uint32_t, uint32_t, uint32_t, uint32_t));
-// PGR4: PGR4_D3D_LockGpuBufferRaw is FM2-engine or not yet located in this IDB; the guest import is
-// stubbed so the ported code links. Its hook (if any) is dormant until mapped.
-[[maybe_unused]] static Pgr4NoopGuestFn g_origIndexBufferLock;
+REX_IMPORT(__imp__D3DIndexBuffer_Lock, g_origIndexBufferLock,
+           uint32_t(uint32_t, uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__D3DSurface_LockRect, g_origSurfaceLockRect,
            void(uint32_t, uint32_t, uint32_t, uint32_t));
-// PGR4: PGR4_D3DTexture_LockRect is FM2-engine or not yet located in this IDB; the guest import is
-// stubbed so the ported code links. Its hook (if any) is dormant until mapped.
-[[maybe_unused]] static Pgr4NoopGuestFn g_origTextureLockRect;
-// PGR4: PGR4_D3DResource_UnlockResource is FM2-engine or not yet located in this IDB; the guest import is
-// stubbed so the ported code links. Its hook (if any) is dormant until mapped.
-[[maybe_unused]] static Pgr4NoopGuestFn g_origUnlockResource;
+// D3DTexture_LockRect @ 0x82693348 takes (texture, level, lockedRect, rect);
+// the trailing flags slot is kept for the shared hook signature.
+REX_IMPORT(__imp__D3DTexture_LockRect, g_origTextureLockRect,
+           void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+// D3D::UnlockResource @ 0x82699F80 (resource, baseAddress, mipAddress) --
+// every D3D*_Unlock wrapper funnels through it.
+REX_IMPORT(__imp__D3D_UnlockResource, g_origUnlockResource, void(uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__D3DSurface_GetDesc, g_origSurfaceGetDesc, void(uint32_t, uint32_t));
 // Guest D3DResource_AddRef @ 0x82369D90 / Release @ 0x82369E08 -- BE atomics
 // on ReferenceCount (+4). FM2 GuestResource stores host-LE refCount there.
@@ -400,10 +417,10 @@ REX_HOOK(D3DDevice_CreateVertexDeclaration, CreateVertexDeclarationHook);
 REX_HOOK(D3DDevice_CreateVertexShader, CreateVertexShaderHook);
 REX_HOOK(D3DDevice_CreatePixelShader, CreatePixelShaderHook);
 REX_HOOK(D3DVertexBuffer_Lock, VertexBufferLockHook);
-REX_HOOK(PGR4_D3D_LockGpuBufferRaw, IndexBufferLockHook);
+REX_HOOK(D3DIndexBuffer_Lock, IndexBufferLockHook);
 REX_HOOK(D3DSurface_LockRect, SurfaceLockRectHook);
-REX_HOOK(PGR4_D3DTexture_LockRect, TextureLockRectHook);
-REX_HOOK(PGR4_D3DResource_UnlockResource, UnlockResourceHook);
+REX_HOOK(D3DTexture_LockRect, TextureLockRectHook);
+REX_HOOK(D3D_UnlockResource, UnlockResourceHook);
 REX_HOOK(D3DSurface_GetDesc, SurfaceGetDescHook);
 REX_HOOK(PGR4_D3D_CreateTextureFromMemoryBuffer, CreateTextureFromMemoryBufferHook);
 REX_HOOK(D3DResource_AddRef, D3DResourceAddRefHook);    // @ 0x82369D90
@@ -674,6 +691,26 @@ void Pgr4SetVertexDeclaration(uint32_t renderContext, uint32_t declarationAddres
 
 REX_HOOK(PGR4_RenderContext_SetVertexDeclaration, Pgr4SetVertexDeclaration);
 
+// PGR4 binds declarations through the XDK entry point itself
+// (D3DDevice_SetVertexDeclaration @ 0x82694E38 stores device+0x2E24 and sets
+// the m_Pending.m_Mask[2] shader-patch bit). Let the original keep the device
+// state coherent, then mirror the binding into the native pipeline.
+REX_IMPORT(__imp__D3DDevice_SetVertexDeclaration, g_origD3DSetVertexDeclaration,
+           void(uint32_t, uint32_t));
+
+namespace {
+
+void D3DSetVertexDeclarationHook(GuestDevice* device, uint32_t declarationAddress) {
+  g_origD3DSetVertexDeclaration(ghp::ToGuest(device), declarationAddress);
+  rr::SetVertexDeclaration(device, declarationAddress != 0
+                                       ? ghp::ToHost<rr::GuestVertexDeclaration>(declarationAddress)
+                                       : nullptr);
+}
+
+}  // namespace
+
+REX_HOOK(D3DDevice_SetVertexDeclaration, D3DSetVertexDeclarationHook);
+
 // ---------------------------------------------------------------------------
 // Vertex/index stream + surface binding.
 // ---------------------------------------------------------------------------
@@ -690,15 +727,47 @@ REX_HOOK(PGR4_RenderContext_SetVertexDeclaration, Pgr4SetVertexDeclaration);
 
 namespace {
 
+// PGR4 builds its main backbuffer / depth surfaces itself (XGSetSurfaceHeader
+// on game memory, e.g. dword_82A60EDC) and binds them through
+// D3DDevice_SetRenderTarget, so a raw XDK D3DSurface header has to be
+// materialized as a native surface once and reused. Layout (IDA D3DSurface,
+// D3DSurface_GetDesc @ 0x82693730): +0x18 GPU_SURFACEINFO (msaa samples
+// bits 16-17), +0x24 packed size (width-1 << 18 | height-1 << 3), +0x28
+// D3DFORMAT. Common bit 30 marks a texture-level surface, whose parent
+// texture lives at +0x18 instead -- not handled yet.
+rr::GuestBaseTexture* TranslateRawSurface(uint32_t surfaceAddr) {
+  static std::mutex s_mutex;
+  static std::unordered_map<uint32_t, rr::GuestBaseTexture*> s_translated;
+  std::lock_guard lock(s_mutex);
+  if (auto it = s_translated.find(surfaceAddr); it != s_translated.end())
+    return it->second;
+
+  const uint32_t common = ReadGuestU32At(surfaceAddr);
+  rr::GuestBaseTexture* surface = nullptr;
+  if ((common & 0x40000000u) == 0) {
+    const uint32_t surfaceInfo = ReadGuestU32At(surfaceAddr + 0x18u);
+    const uint32_t size = ReadGuestU32At(surfaceAddr + 0x24u);
+    const uint32_t format = ReadGuestU32At(surfaceAddr + 0x28u);
+    const uint32_t width = (size >> 18) + 1u;
+    const uint32_t height = ((size >> 3) & 0x7FFFu) + 1u;
+    const uint32_t multiSample = 1u << ((surfaceInfo >> 16) & 3u);  // 1/2/4 samples
+    surface = rr::CreateSurface(width, height, format, multiSample > 1u ? multiSample : 0u);
+    REXGPU_INFO("TranslateRawSurface: 0x{:08X} {}x{} format=0x{:08X} msaa={} -> {}", surfaceAddr,
+                width, height, format, multiSample, static_cast<const void*>(surface));
+  } else {
+    REXGPU_WARN("TranslateRawSurface: 0x{:08X} is a texture-level surface -- not bound",
+                surfaceAddr);
+  }
+  s_translated.emplace(surfaceAddr, surface);
+  return surface;
+}
+
 rr::GuestBaseTexture* TranslateSurfaceForBind(uint32_t surfaceAddr) {
   auto* gs = ghp::ToHost<GuestSurface>(surfaceAddr);
-  // Unlike Lock/GetDesc/Unlock (which fall back to the original guest
-  // function for a non-FM2 address), there's no "original" render-target-bind
-  // path to fall back to here -- this is the only caller. Reject a garbage
-  // address instead of handing back a wild pointer that SetRenderTargetInternal
-  // would later store into g_renderTarget and dereference at present time.
-  if (!rr::IsFm2Resource(gs))
+  if (gs == nullptr)
     return nullptr;
+  if (!rr::IsFm2Resource(gs))
+    return TranslateRawSurface(surfaceAddr);
   return gs;
 }
 
@@ -774,6 +843,46 @@ REX_HOOK(PGR4_RenderContext_BindIndexBuffer, Pgr4BindIndexBuffer);
 REX_HOOK(PGR4_RenderContext_SetBoundSurface, Pgr4SetBoundSurface);
 REX_HOOK(sub_823716F8, Pgr4BindSurface);
 
+// PGR4 has no engine-level render context: surfaces are bound through the XDK
+// entry points (D3DDevice_SetRenderTarget @ 0x82690FA0 (device, index,
+// surface), D3DDevice_SetDepthStencilSurface @ 0x82691308 (device, surface)).
+// Run the originals so the guest's surface-info / pending state stays
+// coherent, then mirror the binding natively.
+REX_IMPORT(__imp__D3DDevice_SetRenderTarget, g_origD3DSetRenderTarget,
+           void(uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetDepthStencilSurface, g_origD3DSetDepthStencilSurface,
+           void(uint32_t, uint32_t));
+
+namespace {
+
+void D3DSetRenderTargetHook(GuestDevice* device, uint32_t index, uint32_t surfaceAddr) {
+  g_origD3DSetRenderTarget(ghp::ToGuest(device), index, surfaceAddr);
+  static std::atomic<uint32_t> s_logged{0};
+  if (s_logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+    REXGPU_INFO("D3DDevice_SetRenderTarget: index={} surface=0x{:08X} pgr4={}", index, surfaceAddr,
+                surfaceAddr != 0 && rr::IsFm2Resource(ghp::ToHost<void>(surfaceAddr)));
+  }
+  rr::SetRenderTarget(device, index,
+                      surfaceAddr != 0 ? TranslateSurfaceForBind(surfaceAddr) : nullptr);
+}
+
+void D3DSetDepthStencilSurfaceHook(GuestDevice* device, uint32_t surfaceAddr) {
+  g_origD3DSetDepthStencilSurface(ghp::ToGuest(device), surfaceAddr);
+  static std::atomic<uint32_t> s_logged{0};
+  if (s_logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+    REXGPU_INFO("D3DDevice_SetDepthStencilSurface: surface=0x{:08X} pgr4={}", surfaceAddr,
+                surfaceAddr != 0 && rr::IsFm2Resource(ghp::ToHost<void>(surfaceAddr)));
+  }
+  rr::SetDepthStencilSurface(
+      device, surfaceAddr != 0 ? static_cast<GuestSurface*>(TranslateSurfaceForBind(surfaceAddr))
+                               : nullptr);
+}
+
+}  // namespace
+
+REX_HOOK(D3DDevice_SetRenderTarget, D3DSetRenderTargetHook);
+REX_HOOK(D3DDevice_SetDepthStencilSurface, D3DSetDepthStencilSurfaceHook);
+
 // ---------------------------------------------------------------------------
 // Shader state.
 // ---------------------------------------------------------------------------
@@ -820,6 +929,115 @@ void Pgr4SetVertexShaderState(uint32_t renderContext, uint32_t shaderAddr) {
 
 REX_HOOK(PGR4_RenderContext_SetPixelShaderState, Pgr4SetPixelShaderState);
 REX_HOOK(PGR4_RenderContext_SetVertexShaderState, Pgr4SetVertexShaderState);
+
+// PGR4 binds shaders through the XDK entry points directly. Same pure
+// replacement as above (the originals parse the handle as a real
+// D3DVertexShader/D3DPixelShader and would read our GuestShader's C++
+// members as a state table); only the device bookkeeping the originals
+// perform is mirrored: the handle slot and the m_Pending.m_Mask[2]
+// shader-patch bit (0x80000).
+namespace {
+
+void MarkShaderPending(GuestDevice* device) {
+  device->dirtyFlags[2] = device->dirtyFlags[2].get() | 0x80000u;
+}
+
+void D3DSetVertexShaderHook(GuestDevice* device, uint32_t shaderAddr) {
+  device->vertexShader = shaderAddr;
+  MarkShaderPending(device);
+  rr::SetVertexShader(device, shaderAddr != 0 ? ResolveShader(shaderAddr) : nullptr);
+}
+
+void D3DSetPixelShaderHook(GuestDevice* device, uint32_t shaderAddr) {
+  device->pixelShader = shaderAddr;
+  MarkShaderPending(device);
+  rr::SetPixelShader(device, shaderAddr != 0 ? ResolveShader(shaderAddr) : nullptr);
+}
+
+}  // namespace
+
+REX_HOOK(D3DDevice_SetVertexShader, D3DSetVertexShaderHook);
+REX_HOOK(D3DDevice_SetPixelShader, D3DSetPixelShaderHook);
+
+// PGR4 registers its precompiled shader packs straight through
+// XGRegisterVertexShader / XGRegisterPixelShader (D3DDevice_Create*Shader is
+// never reached), so ResolveShader would find nothing for those handles. Let
+// the original build the raw XDK object, then reassemble the ShaderContainer
+// the parser expects ([cached part][physical part], contiguous -- exactly what
+// D3DDevice_CreateVertexShader receives) and alias the raw handle to it.
+//   VS object: 0x368-byte runtime struct, cached part at +872, ucode ptr at +32
+//   PS object: 0x28-byte runtime struct,  cached part at +40,  ucode ptr at +24
+// (XGGetMicrocodeShaderParts @ 0x82694898, XGRegister* @ 0x82694B28/0x826948E8)
+REX_IMPORT(__imp__XGRegisterVertexShader, g_origXGRegisterVertexShader, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__XGRegisterPixelShader, g_origXGRegisterPixelShader, void(uint32_t, uint32_t));
+
+namespace {
+
+void RegisterRawShader(uint32_t shaderAddr, uint32_t physicalPart, uint32_t cachedOffset,
+                       bool pixel) {
+  const auto* cached = ghp::ToHost<const rex::be<uint32_t>>(shaderAddr + cachedOffset);
+  const auto* physical = ghp::ToHost<const uint8_t>(physicalPart);
+  if (cached == nullptr || physical == nullptr)
+    return;
+  const uint32_t cachedSize = cached[1].get();
+  const uint32_t physicalSize = cached[2].get();
+  if (cachedSize < 12u || cachedSize > 0x10000u || physicalSize == 0u || physicalSize > 0x40000u) {
+    REXGPU_WARN("XGRegister{}Shader: 0x{:08X} implausible container sizes {}/{}",
+                pixel ? "Pixel" : "Vertex", shaderAddr, cachedSize, physicalSize);
+    return;
+  }
+  // Guest-resident so the ucode index can key it by guest address.
+  auto* container = ghp::ToHost<uint8_t>(ghp::GuestAllocRaw(cachedSize + physicalSize, 0x10));
+  if (container == nullptr)
+    return;
+  std::memcpy(container, cached, cachedSize);
+  std::memcpy(container + cachedSize, physical, physicalSize);
+  const auto* function = reinterpret_cast<const uint32_t*>(container);
+  rr::RegisterShaderAlias(shaderAddr,
+                          pixel ? rr::CreatePixelShader(function) : rr::CreateVertexShader(function));
+}
+
+void XGRegisterVertexShaderHook(uint32_t shaderAddr, uint32_t physicalPart) {
+  g_origXGRegisterVertexShader(shaderAddr, physicalPart);
+  RegisterRawShader(shaderAddr, physicalPart, 872u, false);
+}
+
+void XGRegisterPixelShaderHook(uint32_t shaderAddr, uint32_t physicalPart) {
+  g_origXGRegisterPixelShader(shaderAddr, physicalPart);
+  RegisterRawShader(shaderAddr, physicalPart, 40u, true);
+}
+
+}  // namespace
+
+REX_HOOK(XGRegisterVertexShader, XGRegisterVertexShaderHook);
+REX_HOOK(XGRegisterPixelShader, XGRegisterPixelShaderHook);
+
+// Stream / index binding also goes through the XDK entry points in PGR4
+// (D3DDevice_SetStreamSource @ 0x82690618 (device, stream, buffer, offset,
+// stride, pendingMask), D3DDevice_SetIndices @ 0x826907C0 (device, buffer)).
+// The originals keep the device slots QueueDrawStateSnapshots reads; the
+// native binding adds the byte offset the slots do not carry.
+REX_IMPORT(__imp__D3DDevice_SetStreamSource, g_origD3DSetStreamSource,
+           void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__D3DDevice_SetIndices, g_origD3DSetIndices, void(uint32_t, uint32_t));
+
+namespace {
+
+void D3DSetStreamSourceHook(GuestDevice* device, uint32_t stream, uint32_t bufferAddr,
+                            uint32_t offset, uint32_t stride, uint32_t pendingMask) {
+  g_origD3DSetStreamSource(ghp::ToGuest(device), stream, bufferAddr, offset, stride, pendingMask);
+  rr::SetStreamSource(device, stream, ghp::ToHost<GuestBuffer>(bufferAddr), offset, stride);
+}
+
+void D3DSetIndicesHook(GuestDevice* device, uint32_t bufferAddr) {
+  g_origD3DSetIndices(ghp::ToGuest(device), bufferAddr);
+  rr::SetIndices(device, ghp::ToHost<GuestBuffer>(bufferAddr));
+}
+
+}  // namespace
+
+REX_HOOK(D3DDevice_SetStreamSource, D3DSetStreamSourceHook);
+REX_HOOK(D3DDevice_SetIndices, D3DSetIndicesHook);
 
 // ---------------------------------------------------------------------------
 // Viewport / scissor. Full replacements: the originals pack hardware-specific
@@ -1064,6 +1282,45 @@ REX_HOOK_RAW(D3DDevice_Resolve) {
   }
   rex::ppc::HostToGuestFunction<ResolveHook>(ctx, base);
 }
+
+// PGR4 renders every frame through XDK predicated tiling (2+ tiles at 720p,
+// tile count in dword_82A60FB0). The per-tile clear and the final EDRAM ->
+// frontbuffer copy live inside D3DDevice_BeginTiling / D3DDevice_EndTiling
+// (@ 0x8269C6D0 / 0x8269CB68), not in ClearF / Resolve, so both are pure
+// replacements built from the same native primitives: one clear at
+// BeginTiling, one resolve-with-clear at EndTiling. The originals only build
+// PM4 for a ring that is not executed here.
+namespace {
+
+// D3DDevice_BeginTiling(pDevice, Flags, Count, pTilingRects, pClearColor,
+// ClearZ (f1), ClearStencil)
+void BeginTilingHook(GuestDevice* device, uint32_t /*flags*/, uint32_t /*count*/,
+                     uint32_t /*rects*/, const uint32_t* clearColor, uint32_t /*clearStencil*/,
+                     float clearZ) {
+  float rgba[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+  uint32_t flags = rr::D3DCLEAR_ZBUFFER | rr::D3DCLEAR_STENCIL;
+  if (clearColor != nullptr) {
+    flags |= rr::D3DCLEAR_TARGET;
+    for (int i = 0; i < 4; ++i)
+      rgba[i] = std::bit_cast<float>(std::byteswap(clearColor[i]));
+  }
+  rr::Clear(device, flags, rgba, clearZ);
+}
+
+// D3DDevice_EndTiling(pDevice, ResolveFlags, pResolveRects, pDestTexture,
+// pClearColor, ClearZ (f1), ClearStencil, pParameters) -- same flag semantics
+// as D3DDevice_Resolve (the game passes the identical flags to both paths).
+void EndTilingHook(GuestDevice* device, uint32_t flags, uint32_t /*rects*/,
+                   uint32_t destTextureAddr, const uint32_t* clearColor, uint32_t clearStencil,
+                   uint32_t /*params*/, float clearZ) {
+  ResolveHook(device, flags, nullptr, destTextureAddr, nullptr, 0, 0, clearColor, clearZ,
+              clearStencil, nullptr);
+}
+
+}  // namespace
+
+REX_HOOK(D3DDevice_BeginTiling, BeginTilingHook);
+REX_HOOK(D3DDevice_EndTiling, EndTilingHook);
 
 // ---------------------------------------------------------------------------
 // Phase 4: draw dispatch. Direct draws are full replacements because the
@@ -1447,8 +1704,6 @@ REX_HOOK(D3D_CBlocker_Check, CBlockerCheckHook);
 
 PGR4_D3D_GPU_NOOP(D3DDevice_SetGammaRamp);
 PGR4_D3D_GPU_NOOP(D3DDevice_SetShaderGPRAllocation);
-PGR4_D3D_GPU_NOOP(D3DDevice_BeginTiling);
-PGR4_D3D_GPU_NOOP(D3DDevice_EndTiling);
 PGR4_D3D_GPU_NOOP(D3DDevice_SetPredication);
 PGR4_D3D_GPU_NOOP(D3DDevice_Release);
 

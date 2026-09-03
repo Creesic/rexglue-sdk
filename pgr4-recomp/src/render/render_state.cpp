@@ -1245,6 +1245,7 @@ struct SurfaceApertureEntry {
 };
 std::unordered_map<uint32_t, SurfaceApertureEntry> g_surfaceAperture;
 std::atomic<GuestBaseTexture*> g_frontbufferPresentSource{nullptr};
+GuestBaseTexture* g_lastResolveDestination = nullptr;  // guarded by g_surfaceApertureMutex
 
 }  // namespace
 
@@ -1258,6 +1259,13 @@ void RegisterResolveSurfaceAperture(uint32_t guestAddr, GuestBaseTexture* host) 
   SurfaceApertureEntry& e = g_surfaceAperture[guestAddr & ~0xFFFu];
   e.tex = host;
   e.resolveDest = true;
+  g_lastResolveDestination = host;
+}
+
+GuestBaseTexture* LookupLastResolveDestination() {
+  std::lock_guard<std::mutex> lk(g_surfaceApertureMutex);
+  GuestBaseTexture* tex = g_lastResolveDestination;
+  return (tex != nullptr && tex->texture != nullptr) ? tex : nullptr;
 }
 
 GuestBaseTexture* LookupResolveSurfaceAperture(uint32_t guestAddr) {
@@ -1277,6 +1285,8 @@ void ClearResolveSurfaceAperture(GuestBaseTexture* host) {
   std::lock_guard<std::mutex> lk(g_surfaceApertureMutex);
   for (auto it = g_surfaceAperture.begin(); it != g_surfaceAperture.end();) {
     if (it->second.tex == host) {
+      if (g_lastResolveDestination == host)
+        g_lastResolveDestination = nullptr;
       it = g_surfaceAperture.erase(it);
     } else {
       ++it;
@@ -3185,9 +3195,8 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
       geometry = it->second;
   }
   for (uint32_t index = 0; index < std::size(geometry.streams); ++index) {
-    const auto* address = reinterpret_cast<const rex::be<uint32_t>*>(
-        reinterpret_cast<const uint8_t*>(device) + 0x2F94u + index * 4u);
-    const uint8_t strideDwords = *(reinterpret_cast<const uint8_t*>(device) + 0x2FD8u + index);
+    const auto* address = &device->streamSources[index];
+    const uint8_t strideDwords = device->streamStrideDwords[index];
     GuestBuffer* liveBuffer =
         address->get() != 0 ? ghp::ToHost<GuestBuffer>(address->get()) : nullptr;
     const uint32_t liveStride = uint32_t(strideDwords) * 4u;
@@ -3195,8 +3204,9 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
     if (liveBuffer == nullptr || liveStride == 0) {
       stream = {};
     } else if (!IsFm2Resource(liveBuffer)) {
+      // Vertex fetch constants count down from Fetch[31] (see GuestDevice).
       const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
-          reinterpret_cast<const uint8_t*>(device) + 0x6F8u - index * 8u);
+          reinterpret_cast<const uint8_t*>(device) + 0x778u - index * 8u);
       const auto* fetchSize = fetchBase + 1;
       const uint32_t rawSize = DecodeRawBufferSize(fetchSize->get());
       uint8_t* rawData = SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), 4u, false);
@@ -3205,8 +3215,7 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
       stream = {liveBuffer, 0, liveStride};
     }
   }
-  const auto* indexAddress = reinterpret_cast<const rex::be<uint32_t>*>(
-      reinterpret_cast<const uint8_t*>(device) + 0x2F7Cu);
+  const auto* indexAddress = &device->indexBuffer;
   geometry.indexBuffer = nullptr;
   geometry.rawIndexData = nullptr;
   geometry.rawIndexSize = 0;
@@ -3235,7 +3244,9 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   geometryCommand.type = RenderCommandType::SetDrawGeometrySnapshot;
   geometryCommand.setDrawGeometrySnapshot = geometry;
 
-  constexpr uint64_t kBooleanDirtyMask = uint64_t{1} << 56;
+  // PGR4's Set*ShaderConstantB/I OR 0x01000000 into the low word of
+  // m_Pending.m_Mask[4] (IDA 0x82694608 / 0x82694758).
+  constexpr uint64_t kBooleanDirtyMask = uint64_t{1} << 24;
   uint64_t booleanFlags = device->dirtyFlags[4].get();
   if (forceFullSnapshot || (booleanFlags & kBooleanDirtyMask) != 0) {
     RenderCommand& cmd = queue.Enqueue();

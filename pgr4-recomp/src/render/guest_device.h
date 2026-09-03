@@ -14,34 +14,43 @@ struct GuestSamplerState {
 };
 
 struct GuestDevice {
+  // D3DDevice::m_Pending (D3DTAGCOLLECTION, 5 x u64) + m_Predicated_PendingMask2
+  // + ring pointers. Dirty masks the guest's own setters maintain: [0] VS
+  // float file, [1] PS float file, [2] shader/decl/viewport, [3] fetch
+  // constants (sampler i = bit 31-i), [4] bool/int constants (bit 24).
   rex::be<uint64_t> dirtyFlags[8];
 
-  rex::be<uint32_t> setRenderStateFunctions[0x65];
-  uint32_t setSamplerStateFunctions[0x14];
+  rex::be<uint32_t> setRenderStateFunctions[0x65];  // m_SetRenderStateCall
+  uint32_t setSamplerStateFunctions[0x14];          // m_SetSamplerStateCall
 
-  uint8_t padding224[0x25C];
+  uint8_t padding224[0x25C];  // m_GetRenderStateCall / m_GetSamplerStateCall
 
-  // Xenos exposes 16 unified sampler slots. Keeping 32 entries here shifted
-  // every shader constant file by 0x80 bytes, so direct draws uploaded c8 as
-  // c0 while object-pass replay (which used raw +0x700/+0x1700 pointers) did
-  // not. The two paths must describe the same guest-device layout.
+  // m_Constants (D3DConstants), PGR4 XDK layout confirmed against the D3D
+  // library in IDA (SetTexture / SetStreamSource / Set*ShaderConstant*):
+  //   +0x480 Fetch[32], 24 bytes each. Textures use Fetch[0..15]; vertex
+  //          stream N lives at +0x778 - 8N (base) / +0x77C - 8N (size).
+  //   +0x780 VertexShaderF[256]  +0x1780 PixelShaderF[256]
+  //   +0x2780 VS bool  +0x2790 PS bool  +0x27A0 VS int  +0x27E0 PS int
   GuestSamplerState samplerStates[0x10];
-  uint8_t padding600[0x100];
+  uint8_t padding600[0x180];
 
-  // Raw host-endian shader constant register files used by the Xbox D3D
-  // runtime. Boolean and loop files immediately follow the VS/PS float files.
-  uint32_t vertexShaderFloatConstants[0x400];  // device + 0x700
-  uint32_t pixelShaderFloatConstants[0x400];   // device + 0x1700
+  uint32_t vertexShaderFloatConstants[0x400];  // device + 0x780
+  uint32_t pixelShaderFloatConstants[0x400];   // device + 0x1780
 
   rex::be<uint32_t> vertexShaderBoolConstants[0x4];
   rex::be<uint32_t> pixelShaderBoolConstants[0x4];
 
-  rex::be<uint32_t> vertexShaderIntConstants[0x10];  // device + 0x2720
-  rex::be<uint32_t> pixelShaderIntConstants[0x10];   // device + 0x2760
+  rex::be<uint32_t> vertexShaderIntConstants[0x10];  // device + 0x27A0
+  rex::be<uint32_t> pixelShaderIntConstants[0x10];   // device + 0x27E0
 
-  uint8_t padding27A0[0x574];
-  rex::be<uint32_t> vertexDeclaration;
-  uint8_t padding2D18[0x450];
+  uint8_t padding2820[0x604];
+  rex::be<uint32_t> vertexDeclaration;  // D3DDevice_SetVertexDeclaration @ 0x82694E38
+  uint8_t padding2E28[0x264];
+  rex::be<uint32_t> indexBuffer;  // D3DDevice_SetIndices @ 0x826907C0
+  uint8_t padding3090[0x14];
+  rex::be<uint32_t> streamSources[17];  // D3DDevice_SetStreamSource @ 0x82690618
+  uint8_t streamStrideDwords[17];       // stride / 4, same setter
+  uint8_t padding30F9[0x67];
   struct {
     rex::be<float> x;
     rex::be<float> y;
@@ -49,19 +58,28 @@ struct GuestDevice {
     rex::be<float> height;
     rex::be<float> minZ;
     rex::be<float> maxZ;
-  } viewport;
-  uint8_t padding3180[0x2C80];
+  } viewport;  // D3D::SetViewport @ 0x82690BF0
+  uint8_t padding3178[0x14];
+  rex::be<uint32_t> pixelShader;   // D3DDevice_SetPixelShader @ 0x82694920
+  rex::be<uint32_t> vertexShader;  // D3DDevice_SetVertexShader @ 0x82694C20
+  uint8_t padding3194[0x2C6C];
 };
 
 static_assert(sizeof(GuestDevice) == 0x5E00);
 static_assert(offsetof(GuestDevice, samplerStates) == 0x480);
-static_assert(offsetof(GuestDevice, vertexShaderFloatConstants) == 0x700);
-static_assert(offsetof(GuestDevice, pixelShaderFloatConstants) == 0x1700);
-static_assert(offsetof(GuestDevice, vertexShaderBoolConstants) == 0x2700);
-static_assert(offsetof(GuestDevice, pixelShaderBoolConstants) == 0x2710);
-static_assert(offsetof(GuestDevice, vertexShaderIntConstants) == 0x2720);
-static_assert(offsetof(GuestDevice, pixelShaderIntConstants) == 0x2760);
-static_assert(offsetof(GuestDevice, vertexDeclaration) == 0x2D14);
+static_assert(offsetof(GuestDevice, vertexShaderFloatConstants) == 0x780);
+static_assert(offsetof(GuestDevice, pixelShaderFloatConstants) == 0x1780);
+static_assert(offsetof(GuestDevice, vertexShaderBoolConstants) == 0x2780);
+static_assert(offsetof(GuestDevice, pixelShaderBoolConstants) == 0x2790);
+static_assert(offsetof(GuestDevice, vertexShaderIntConstants) == 0x27A0);
+static_assert(offsetof(GuestDevice, pixelShaderIntConstants) == 0x27E0);
+static_assert(offsetof(GuestDevice, vertexDeclaration) == 0x2E24);
+static_assert(offsetof(GuestDevice, indexBuffer) == 0x308C);
+static_assert(offsetof(GuestDevice, streamSources) == 0x30A4);
+static_assert(offsetof(GuestDevice, streamStrideDwords) == 0x30E8);
+static_assert(offsetof(GuestDevice, viewport) == 0x3160);
+static_assert(offsetof(GuestDevice, pixelShader) == 0x318C);
+static_assert(offsetof(GuestDevice, vertexShader) == 0x3190);
 
 struct GuestViewport {
   rex::be<uint32_t> x;

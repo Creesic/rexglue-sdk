@@ -418,12 +418,14 @@ void Pgr4GraphicsSystem::ExecutePackets(const uint8_t* buffer, uint32_t dword_co
         // is honoured: a native renderer has no GPU caches, so "flush" is
         // simply "done", which the real command processor expresses by
         // zeroing COHER_STATUS_HOST after MakeCoherent.
-        if (i + 2 < dword_count) {
+        if (i + 4 < dword_count) {
           const uint32_t wait_info = rd(i + 1);
           const uint32_t poll = rd(i + 2);
           const bool is_memory = (wait_info & 0x10) != 0;
           if (!is_memory && poll == kRegCoherStatusHost) {
             g_registers[kRegCoherStatusHost] = 0;
+          } else if (is_memory) {
+            WaitOnGuestMemory(wait_info, poll, rd(i + 3), rd(i + 4));
           }
         }
         break;
@@ -489,8 +491,136 @@ X_STATUS Pgr4GraphicsSystem::SetupGuestGpu(rex::runtime::FunctionDispatcher* fun
   return X_STATUS_SUCCESS;
 }
 
+void Pgr4GraphicsSystem::DeliverPendingCpuInterrupts() {
+  const uint32_t callback = interrupt_callback_.load(std::memory_order_acquire);
+  if (callback == 0 || function_dispatcher_ == nullptr || !worker_thread_) {
+    return;
+  }
+  uint32_t mask = pending_cpu_interrupts_.exchange(0, std::memory_order_acq_rel);
+
+  // The guest's source=1 handler reads its callback from
+  // *(*(device+10900)+16) and traps if it still holds the 0x0BADF00D
+  // sentinel. On hardware the CP trails the CPU far enough that the slot
+  // is always installed first; here, hold delivery until it is, and log
+  // where the slot actually lives so a mis-modelled writer shows up.
+  if (mask != 0) {
+    const uint32_t device = interrupt_user_data_.load(std::memory_order_relaxed);
+    auto rd32 = [&](uint32_t addr) {
+      return rex::memory::load_and_swap<uint32_t>(
+          memory_->TranslateVirtual<const uint8_t*>(addr));
+    };
+    const uint32_t blk = device ? rd32(device + 10900) : 0;
+    const uint32_t cb = blk ? rd32(blk + 16) : 0;
+    static std::atomic<bool> probed{false};
+    if (!probed.exchange(true, std::memory_order_relaxed)) {
+      REXLOG_INFO("PGR4 guest GPU: cpu-interrupt block={:08X} pending={:08X} callback={:08X} arg={:08X}",
+                  blk, blk ? rd32(blk) : 0, cb, blk ? rd32(blk + 20) : 0);
+    }
+    if (cb == 0x0BADF00D || cb == 0) {
+      static std::atomic<bool> deferred{false};
+      if (!deferred.exchange(true, std::memory_order_relaxed)) {
+        REXLOG_INFO("PGR4 guest GPU: deferring CPU interrupt: callback slot {:08X} = {:08X}",
+                    blk + 16, cb);
+      }
+      pending_cpu_interrupts_.fetch_or(mask, std::memory_order_acq_rel);
+      mask = 0;
+    }
+  }
+
+  for (uint32_t cpu = 0; mask != 0; ++cpu, mask >>= 1) {
+    if ((mask & 1) == 0) {
+      continue;
+    }
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true, std::memory_order_relaxed)) {
+      REXLOG_INFO("PGR4 guest GPU: delivering first CPU interrupt (source=1) to cpu {}", cpu);
+    }
+    uint64_t cpu_args[] = {1, interrupt_user_data_.load(std::memory_order_relaxed)};
+    worker_thread_->SetActiveCpu(static_cast<uint8_t>(cpu));
+    function_dispatcher_->ExecuteInterrupt(worker_thread_->thread_state(), callback, cpu_args,
+                                           rex::countof(cpu_args));
+  }
+}
+
+bool Pgr4GraphicsSystem::WaitOnGuestMemory(uint32_t wait_info, uint32_t poll, uint32_t ref,
+                                           uint32_t mask) {
+  if (memory_ == nullptr) {
+    return false;
+  }
+  const uint32_t function = wait_info & 0x7;
+  const auto endian = static_cast<rex::graphics::xenos::Endian>(poll & 0x3);
+  const uint32_t address = poll & ~0x3u & 0x1FFFFFFFu;
+  auto satisfied = [&]() {
+    const uint32_t raw =
+        *reinterpret_cast<const uint32_t*>(memory_->TranslatePhysical<const uint8_t*>(address));
+    const uint32_t value = rex::graphics::xenos::GpuSwap(raw, endian) & mask;
+    switch (function) {
+      case 0: return false;
+      case 1: return value < ref;
+      case 2: return value <= ref;
+      case 3: return value == ref;
+      case 4: return value != ref;
+      case 5: return value >= ref;
+      case 6: return value > ref;
+      default: return true;
+    }
+  };
+  const uint64_t freq = rex::chrono::Clock::QueryHostTickFrequency();
+  const uint64_t deadline = rex::chrono::Clock::QueryHostTickCount() + (freq ? freq / 20 : 0);
+  while (!satisfied()) {
+    // The other side of this handshake is the guest's source=1 handler, which
+    // only runs when the interrupt the CP raised just before is delivered.
+    DeliverPendingCpuInterrupts();
+    if (satisfied()) {
+      break;
+    }
+    const uint64_t now = rex::chrono::Clock::QueryHostTickCount();
+    if (vblank_period_ != 0 && now >= next_vblank_tick_) {
+      DeliverVblank();
+      next_vblank_tick_ += vblank_period_;
+      continue;
+    }
+    if (now >= deadline) {
+      static std::atomic<bool> logged{false};
+      if (!logged.exchange(true, std::memory_order_relaxed)) {
+        REXLOG_WARN("PGR4 guest GPU: WAIT_REG_MEM timed out: [{:08X}] fn={} ref={:08X} mask={:08X}",
+                    address, function, ref, mask);
+      }
+      return false;
+    }
+    rex::thread::Sleep(std::chrono::microseconds(50));
+  }
+  return true;
+}
+
+void Pgr4GraphicsSystem::DeliverVblank() {
+  const uint32_t callback = interrupt_callback_.load(std::memory_order_acquire);
+  if (callback == 0 || function_dispatcher_ == nullptr || !worker_thread_) {
+    return;
+  }
+  uint64_t args[] = {kInterruptSourceVsync,
+                     interrupt_user_data_.load(std::memory_order_relaxed)};
+
+  // Bring-up instrumentation. Without this there is no way to tell a worker
+  // that never fires from a guest callback that returns without advancing the
+  // frame loop -- the two look identical from outside.
+  static bool logged_first = false;
+  if (!logged_first) {
+    logged_first = true;
+    REXLOG_INFO("PGR4 guest GPU: dispatching first interrupt to {:08X}", callback);
+  }
+
+  // Same delivery the xenos plugin uses: pin the dispatching thread to the
+  // CPU the guest expects (2 for vblank), and run the callback through the
+  // interrupt entry rather than a plain call. The source=1 handler takes
+  // spinlocks at raised IRQL and assumes interrupt context.
+  worker_thread_->SetActiveCpu(2);
+  function_dispatcher_->ExecuteInterrupt(worker_thread_->thread_state(), callback, args,
+                                         rex::countof(args));
+  event_counter_.fetch_add(1, std::memory_order_acq_rel);
+}
+
 void Pgr4GraphicsSystem::WorkerMain() {
-  uint64_t next_tick = 0;
 
   while (worker_running_.load(std::memory_order_acquire)) {
     const uint32_t callback = interrupt_callback_.load(std::memory_order_acquire);
@@ -512,26 +642,7 @@ void Pgr4GraphicsSystem::WorkerMain() {
     // progress even between its own submissions.
     PublishReadPointer();
 
-    uint64_t args[] = {kInterruptSourceVsync,
-                       interrupt_user_data_.load(std::memory_order_relaxed)};
-
-    // Bring-up instrumentation. Without this there is no way to tell a worker
-    // that never fires from a guest callback that returns without advancing the
-    // frame loop -- the two look identical from outside.
-    static bool logged_first = false;
-    if (!logged_first) {
-      logged_first = true;
-      REXLOG_INFO("PGR4 guest GPU: dispatching first interrupt to {:08X}", callback);
-    }
-
-    // Same delivery the xenos plugin uses: pin the dispatching thread to the
-    // CPU the guest expects (2 for vblank), and run the callback through the
-    // interrupt entry rather than a plain call. The source=1 handler takes
-    // spinlocks at raised IRQL and assumes interrupt context.
-    worker_thread_->SetActiveCpu(2);
-    function_dispatcher_->ExecuteInterrupt(worker_thread_->thread_state(), callback, args,
-                                           rex::countof(args));
-    event_counter_.fetch_add(1, std::memory_order_acq_rel);
+    DeliverVblank();
 
     {
       static uint64_t fires = 0;
@@ -642,10 +753,11 @@ void Pgr4GraphicsSystem::WorkerMain() {
     }
     const uint64_t now = rex::chrono::Clock::QueryHostTickCount();
     const uint64_t period = freq / static_cast<uint64_t>(hz);
-    if (next_tick == 0 || now > next_tick + period) {
-      next_tick = now;  // first pass, or we fell far enough behind to resync
+    if (next_vblank_tick_ == 0 || now > next_vblank_tick_ + period) {
+      next_vblank_tick_ = now;  // first pass, or we fell far enough behind to resync
     }
-    next_tick += period;
+    next_vblank_tick_ += period;
+    vblank_period_ = period;
 
     // Sleep towards the next vblank in short slices, delivering any CPU
     // interrupts PM4_INTERRUPT queued in between. On hardware those fire the
@@ -661,55 +773,12 @@ void Pgr4GraphicsSystem::WorkerMain() {
         PublishReadPointer();
       }
 
-      uint32_t mask = pending_cpu_interrupts_.exchange(0, std::memory_order_acq_rel);
-
-      // The guest's source=1 handler reads its callback from
-      // *(*(device+10900)+16) and traps if it still holds the 0x0BADF00D
-      // sentinel. On hardware the CP trails the CPU far enough that the slot
-      // is always installed first; here, hold delivery until it is, and log
-      // where the slot actually lives so a mis-modelled writer shows up.
-      if (mask != 0) {
-        const uint32_t device = interrupt_user_data_.load(std::memory_order_relaxed);
-        auto rd32 = [&](uint32_t addr) {
-          return rex::memory::load_and_swap<uint32_t>(
-              memory_->TranslateVirtual<const uint8_t*>(addr));
-        };
-        const uint32_t blk = device ? rd32(device + 10900) : 0;
-        const uint32_t cb = blk ? rd32(blk + 16) : 0;
-        static std::atomic<bool> probed{false};
-        if (!probed.exchange(true, std::memory_order_relaxed)) {
-          REXLOG_INFO("PGR4 guest GPU: cpu-interrupt block={:08X} pending={:08X} callback={:08X} arg={:08X}",
-                      blk, blk ? rd32(blk) : 0, cb, blk ? rd32(blk + 20) : 0);
-        }
-        if (cb == 0x0BADF00D || cb == 0) {
-          static std::atomic<bool> deferred{false};
-          if (!deferred.exchange(true, std::memory_order_relaxed)) {
-            REXLOG_INFO("PGR4 guest GPU: deferring CPU interrupt: callback slot {:08X} = {:08X}",
-                        blk + 16, cb);
-          }
-          pending_cpu_interrupts_.fetch_or(mask, std::memory_order_acq_rel);
-          mask = 0;
-        }
-      }
-
-      for (uint32_t cpu = 0; mask != 0; ++cpu, mask >>= 1) {
-        if ((mask & 1) == 0) {
-          continue;
-        }
-        static std::atomic<bool> logged{false};
-        if (!logged.exchange(true, std::memory_order_relaxed)) {
-          REXLOG_INFO("PGR4 guest GPU: delivering first CPU interrupt (source=1) to cpu {}", cpu);
-        }
-        uint64_t cpu_args[] = {1, interrupt_user_data_.load(std::memory_order_relaxed)};
-        worker_thread_->SetActiveCpu(static_cast<uint8_t>(cpu));
-        function_dispatcher_->ExecuteInterrupt(worker_thread_->thread_state(), callback, cpu_args,
-                                               rex::countof(cpu_args));
-      }
+      DeliverPendingCpuInterrupts();
       const uint64_t t = rex::chrono::Clock::QueryHostTickCount();
-      if (t >= next_tick) {
+      if (t >= next_vblank_tick_) {
         break;
       }
-      const uint64_t remaining_us = (next_tick - t) * 1000000ULL / freq;
+      const uint64_t remaining_us = (next_vblank_tick_ - t) * 1000000ULL / freq;
       rex::thread::Sleep(std::chrono::microseconds(remaining_us < 1000 ? remaining_us : 1000));
     }
   }

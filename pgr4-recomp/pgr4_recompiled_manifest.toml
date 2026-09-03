@@ -42,6 +42,15 @@ includes = []
 # Resource locking
 0x826937C8 = { name = "D3DSurface_LockRect" }
 0x8269A2A0 = { name = "D3DVertexBuffer_Lock" }
+0x8269A3B0 = { name = "D3DIndexBuffer_Lock" }
+0x82693348 = { name = "D3DTexture_LockRect" }
+0x82699F80 = { name = "D3D_UnlockResource" }
+0x82694E38 = { name = "D3DDevice_SetVertexDeclaration" }
+0x82694B28 = { name = "XGRegisterVertexShader" }
+0x826948E8 = { name = "XGRegisterPixelShader" }
+0x8269C6D0 = { name = "D3DDevice_BeginTiling" }
+0x8269CB68 = { name = "D3DDevice_EndTiling" }
+0x8268E190 = { name = "D3DDevice_SetRenderState_CullMode" }
 
 # Binding / state
 0x82693850 = { name = "D3DDevice_SetTexture" }

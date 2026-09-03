@@ -51,6 +51,8 @@ void SetPresentSource(GuestBaseTexture* frontBuffer);
 // from the frontbuffer fetch; Present prefers it over sticky color RTs.
 void RegisterResolveSurfaceAperture(uint32_t guestAddr, GuestBaseTexture* host);
 GuestBaseTexture* LookupResolveSurfaceAperture(uint32_t guestAddr);
+// Most recent resolve destination (PGR4 present fallback, see d3d_hooks Swap).
+GuestBaseTexture* LookupLastResolveDestination();
 void ClearResolveSurfaceAperture(GuestBaseTexture* host);
 void SetFrontbufferPresentSource(GuestBaseTexture* tex);
 GuestBaseTexture* ConsumeFrontbufferPresentSource();
