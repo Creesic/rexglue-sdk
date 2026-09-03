@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
+#include <tuple>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -452,8 +454,42 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   if (createdOut != nullptr) *createdOut = true;
 }
 
+// EDRAM aliasing (PGR4, 2026-09-03). On hardware every render target is a
+// window onto the 10 MB EDRAM, so two surfaces with the same tile base and
+// layout ARE the same memory: PGR4 creates several 1280x720 colour targets at
+// base 0 (the Bink video quad's target among them) and resolves the front
+// buffer from whichever one was drawn last. Model that by handing out one host
+// surface per (base, width, height, msaa, depth?). The registry holds its own
+// reference so a guest Release of one alias cannot destroy the shared surface.
+// ponytail: surfaces registered here live for the process; a handful of
+// layouts exist, so no eviction.
+static std::map<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>, GuestSurface*>
+    g_surfacesByEdram;
+static std::mutex g_surfacesByEdramMutex;
+
 GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format,
-                            uint32_t multiSample) {
+                            uint32_t multiSample, uint32_t edramBase) {
+  if (edramBase != kNoEdramBase && !IsDeviceLost()) {
+    // The format is deliberately not part of the key: PGR4 draws the Bink
+    // video into an A8R8G8B8 header at tile 0 and resolves the front buffer
+    // from an X8R8G8B8/7e3 surface at the same tile, so the first format seen
+    // decides the host format. Depth and colour never share a tile in PGR4's
+    // layouts but are kept apart in case.
+    const auto key = std::make_tuple(edramBase, width, height,
+                                     multiSample > 1u ? multiSample : 0u,
+                                     RenderFormatIsDepth(ConvertFormat(format)) ? 1u : 0u);
+    std::lock_guard lock(g_surfacesByEdramMutex);
+    if (auto it = g_surfacesByEdram.find(key); it != g_surfacesByEdram.end()) {
+      it->second->refCount.fetch_add(1, std::memory_order_acq_rel);
+      return it->second;
+    }
+    GuestSurface* surface = CreateSurface(width, height, format, multiSample, kNoEdramBase);
+    surface->refCount.fetch_add(1, std::memory_order_acq_rel);  // registry's own reference
+    g_surfacesByEdram.emplace(key, surface);
+    REXGPU_INFO("CreateSurface: {}x{} format={} msaa={} edram=0x{:03X} -> host {}", width, height,
+                format, multiSample, edramBase, static_cast<void*>(surface));
+    return surface;
+  }
   if (IsDeviceLost()) {
     const bool depth = RenderFormatIsDepth(ConvertFormat(format));
     auto* surface =
@@ -842,6 +878,19 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
       info.format = RenderFormat::BC3_UNORM;
       info.blockDim = 4;
       info.bytesPerBlock = 16;
+      break;
+    case 7:   // k_2_10_10_10
+    case 54:  // k_2_10_10_10_AS_16_16_16_16: PGR4's frontbuffer / main RT.
+      // ponytail: plume has no 10:10:10:2 texture format; the matching RT
+      // surface already defaults to RGBA8 (ConvertFormat), so resolves stay
+      // exact-format. Guest-memory uploads of this format would need a
+      // 10-bit unpack -- add when a sampled 2:10:10:10 texture shows up.
+      info.format = RenderFormat::R8G8B8A8_UNORM;
+      info.bytesPerBlock = 4;
+      break;
+    case 36:  // k_32_FLOAT (1x1 luminance / exposure textures)
+      info.format = RenderFormat::R32_FLOAT;
+      info.bytesPerBlock = 4;
       break;
     case 49:  // k_DXN (BC5: two-channel normal maps, PGR4 car/track normals)
       info.format = RenderFormat::BC5_UNORM;

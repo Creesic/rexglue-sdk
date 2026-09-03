@@ -157,6 +157,9 @@ struct GuestBuffer : GuestResource {
   explicit GuestBuffer(ResourceType t) : GuestResource(t) {}
 };
 
+// CreateSurface edramBase value meaning "not an EDRAM alias" (XDK-allocated).
+inline constexpr uint32_t kNoEdramBase = 0xFFFFFFFFu;
+
 // Render target / depth-stencil surface.
 struct GuestSurface : GuestBaseTexture {
   uint32_t guestFormat = 0;

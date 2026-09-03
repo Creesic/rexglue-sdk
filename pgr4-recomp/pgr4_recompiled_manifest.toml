@@ -31,6 +31,9 @@ includes = []
 0x8269A9F0 = { name = "D3DDevice_DrawVertices" }
 0x8269ADD8 = { name = "D3DDevice_DrawIndexedVertices" }
 0x8269A9A8 = { name = "D3DDevice_DrawVerticesUP" }
+# PGR4 immediate-mode path (Begin fills a ring slot, End commits it).
+0x8269A4F8 = { name = "D3DDevice_BeginVertices" }
+0x8269A998 = { name = "D3DDevice_EndVertices" }
 
 # Resource creation
 0x826934E8 = { name = "D3DDevice_CreateTexture" }
@@ -134,3 +137,7 @@ includes = []
 0x82704E30 = {}
 0x82746C84 = {}
 0x822C5970 = {}
+
+# Input: the game's XInputGetState wrapper (tail-calls XamInputGetState); hooked
+# by src/pad_script.cpp to inject scripted presses for unattended testing.
+0x82673A90 = { name = "XInputGetState" }

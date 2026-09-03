@@ -22,6 +22,7 @@ option(PGR4_ENABLE_PLUME "Build the native Plume renderer instead of the xenos G
 # Sources
 set(PGR4RECOMPILED_SOURCES
     src/main.cpp
+    src/pad_script.cpp
 )
 
 if(PGR4_ENABLE_PLUME)

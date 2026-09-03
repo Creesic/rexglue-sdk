@@ -243,6 +243,9 @@ uint64_t g_frameIndex = 0;
 
 struct FrameTraceStats {
   uint32_t attemptedDraws = 0;
+  // Why draws were dropped this frame (PGR4 diagnostics): no attachments,
+  // no vertex declaration, PSO previously failed, PSO creation failed.
+  uint32_t skipReasons[4] = {};
   uint32_t issuedDraws = 0;
   uint32_t clears = 0;
   uint32_t resolves = 0;
@@ -372,11 +375,13 @@ void LogAndResetFrameTrace() {
   ++g_frameTraceIndex;
   if (g_frameTraceIndex <= 64 || g_frameTraceIndex % 300 == 1) {
     REXGPU_INFO(
-        "FrameTrace: n={} draws={}/{} skipped={} clears={} resolves={} shape=0x{:016X} "
+        "FrameTrace: n={} draws={}/{} skipped={} [nores={} nodecl={} psofail={} psocreate={}] clears={} resolves={} shape=0x{:016X} "
         "tex=0x{:016X} shared=0x{:016X} vs=0x{:016X} ps=0x{:016X} "
         "vertex=0x{:016X} clear=0x{:016X}",
         g_frameTraceIndex, g_frameTrace.issuedDraws, g_frameTrace.attemptedDraws,
-        g_frameTrace.attemptedDraws - g_frameTrace.issuedDraws, g_frameTrace.clears,
+        g_frameTrace.attemptedDraws - g_frameTrace.issuedDraws, g_frameTrace.skipReasons[0],
+        g_frameTrace.skipReasons[1], g_frameTrace.skipReasons[2], g_frameTrace.skipReasons[3],
+        g_frameTrace.clears,
         g_frameTrace.resolves, g_frameTrace.shapeHash, g_frameTrace.textureHash,
         g_frameTrace.sharedHash, g_frameTrace.vertexConstantHash, g_frameTrace.pixelConstantHash,
         g_frameTrace.vertexDataHash, g_frameTrace.clearHash);
@@ -2946,6 +2951,24 @@ void SanitizePipelineState(PipelineState& ps) {
     ps.destBlendAlpha = ps.destBlend;
     ps.blendOpAlpha = ps.blendOp;
   }
+  // Xbox D3D accepts colour factors in the alpha slots (PGR4's UI sets
+  // D3DRS_DESTBLENDALPHA = D3DBLEND_SRCCOLOR); D3D12 rejects the pipeline
+  // ("DestBlendAlpha is trying to use a D3D11_BLEND value that manipulates
+  // color"), which silently dropped ~750 menu draws per frame. In the alpha
+  // channel a colour factor means the corresponding alpha factor.
+  auto alphaFactor = [](RenderBlend b) {
+    switch (b) {
+      case RenderBlend::SRC_COLOR: return RenderBlend::SRC_ALPHA;
+      case RenderBlend::INV_SRC_COLOR: return RenderBlend::INV_SRC_ALPHA;
+      case RenderBlend::DEST_COLOR: return RenderBlend::DEST_ALPHA;
+      case RenderBlend::INV_DEST_COLOR: return RenderBlend::INV_DEST_ALPHA;
+      case RenderBlend::SRC1_COLOR: return RenderBlend::SRC1_ALPHA;
+      case RenderBlend::INV_SRC1_COLOR: return RenderBlend::INV_SRC1_ALPHA;
+      default: return b;
+    }
+  };
+  ps.srcBlendAlpha = alphaFactor(ps.srcBlendAlpha);
+  ps.destBlendAlpha = alphaFactor(ps.destBlendAlpha);
   if (ps.vertexDeclaration != nullptr) {
     for (uint32_t i = 0; i < 16; ++i) {
       if (!ps.vertexDeclaration->vertexStreams[i])
@@ -3048,14 +3071,34 @@ std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps) 
   }
   desc.depthTargetFormat = ps.depthStencilFormat;
   desc.multisampling.sampleCount = ps.sampleCount;
-  desc.inputElements = decl->inputElements.get();
-  desc.inputElementsCount = decl->inputElementCount;
+  // D3D12 refuses the input layout when the vertex shader reads a semantic
+  // the declaration lacks (PGR4's menu clouds: NORMAL1/NORMAL2 with a decl
+  // that has neither). CompleteVertexDeclaration only adds a fixed set of
+  // dummies; complete the rest per pipeline from the shader's own header
+  // element list, on the zero-stride slot 15 like the fixed ones.
+  std::vector<RenderInputElement> elements(decl->inputElements.get(),
+                                           decl->inputElements.get() + decl->inputElementCount);
+  for (const ShaderHeaderElement& he : ps.vertexShader->headerElements) {
+    const char* semantic = ConvertDeclUsage(he.usage);
+    bool present = false;
+    for (const RenderInputElement& e : elements) {
+      if (e.semanticIndex == he.usageIndex && std::strcmp(e.semanticName, semantic) == 0) {
+        present = true;
+        break;
+      }
+    }
+    if (present || elements.size() >= 32) continue;
+    elements.emplace_back(semantic, he.usageIndex, uint32_t(elements.size()),
+                          RenderFormat::R32_UINT, 15, 0);
+  }
+  desc.inputElements = elements.data();
+  desc.inputElementsCount = uint32_t(elements.size());
 
   RenderInputSlot slots[16];
   uint32_t slotCount = 0;
   bool slotSeen[16]{};
-  for (uint32_t i = 0; i < decl->inputElementCount; ++i) {
-    const uint32_t slot = decl->inputElements[i].slotIndex;
+  for (uint32_t i = 0; i < elements.size(); ++i) {
+    const uint32_t slot = elements[i].slotIndex;
     if (slot >= 16 || slotSeen[slot])
       continue;
     slotSeen[slot] = true;
@@ -3077,6 +3120,18 @@ std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps) 
                         std::chrono::steady_clock::now() - pipelineStart)
                         .count();
   REXGPU_INFO("CreateGraphicsPipeline: Device()->createGraphicsPipeline took {} ms", pipelineMs);
+  if (pipeline == nullptr) {
+    // PGR4: plume fails silently here; the menu frames lose ~750 draws to this.
+    REXGPU_WARN("CreateGraphicsPipeline: backend returned null (vs=0x{:016X} ps=0x{:016X} rt={} ds={} "
+                "samples={} spec=0x{:X} topology={}) -- this draw will be skipped",
+                ps.vertexShader != nullptr && ps.vertexShader->shaderCacheEntry != nullptr
+                    ? ps.vertexShader->shaderCacheEntry->hash : 0ull,
+                ps.pixelShader != nullptr && ps.pixelShader->shaderCacheEntry != nullptr
+                    ? ps.pixelShader->shaderCacheEntry->hash : 0ull,
+                uint32_t(ps.renderTargetFormat), uint32_t(ps.depthStencilFormat),
+                uint32_t(ps.sampleCount), ps.specConstants, uint32_t(desc.primitiveTopology));
+    Video::DumpD3D12InfoQueue("createGraphicsPipeline", 8);
+  }
   return pipeline;
 }
 
@@ -3085,15 +3140,18 @@ RenderPipeline* GetPipeline(PipelineState ps) {
   if (ps.renderTargetFormat == RenderFormat::UNKNOWN &&
       ps.depthStencilFormat == RenderFormat::UNKNOWN) {
     LogPipelineRejectOnce("no color or depth attachment bound");
+    ++g_frameTrace.skipReasons[0];
     return nullptr;
   }
   if (ps.vertexDeclaration == nullptr) {
     LogPipelineRejectOnce("no vertex declaration resolved (GetPipeline)");
+    ++g_frameTrace.skipReasons[1];
     return nullptr;
   }
 
   uint64_t hash = XXH3_64bits(&ps, sizeof(ps));
   if (g_failedPipelines.contains(hash)) {
+    ++g_frameTrace.skipReasons[2];
     return nullptr;
   }
   auto& pipeline = g_pipelines[hash];
@@ -3102,6 +3160,7 @@ RenderPipeline* GetPipeline(PipelineState ps) {
     if (pipeline == nullptr) {
       g_pipelines.erase(hash);
       g_failedPipelines.insert(hash);
+      ++g_frameTrace.skipReasons[3];
       return nullptr;
     }
     static bool loggedFirstSuccess = false;
@@ -3983,10 +4042,98 @@ void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t ba
   queue.Submit();
 }
 
+// Xbox D3DPT_RECTLIST: three vertices per rectangle (v0, v1, v2), the fourth
+// corner is implied as v1 + v2 - v0. Drawing it as a triangle list loses that
+// second triangle (PGR4's menu backgrounds showed up cut along the diagonal),
+// so expand each rectangle into two triangles here, synthesising the corner
+// per vertex element: float elements get the linear combination, everything
+// else a per-byte saturating one (right for packed colours, which is all the
+// UI rectangles carry besides positions and texcoords).
+// ponytail: only the user-pointer path; vertex-buffer rect lists are logged.
+static std::vector<uint8_t> ExpandRectList(GuestDevice* device, const uint8_t* data,
+                                           uint32_t vertexCount, uint32_t stride) {
+  const uint32_t rects = vertexCount / 3;
+  std::vector<uint8_t> out(size_t(rects) * 6 * stride);
+  const auto* decl = ghp::ToHost<GuestVertexDeclaration>(device->vertexDeclaration.get());
+  for (uint32_t r = 0; r < rects; ++r) {
+    const uint8_t* v0 = data + size_t(r * 3 + 0) * stride;
+    const uint8_t* v1 = v0 + stride;
+    const uint8_t* v2 = v1 + stride;
+    uint8_t* dst = out.data() + size_t(r) * 6 * stride;
+    uint8_t* v3 = dst + 5 * stride;  // scratch slot, filled below
+    // The rectangle's three vertices come in any order; the missing corner is
+    // opposite the vertex whose two edges are perpendicular (xenia's rect-list
+    // geometry shader does the same test). With that corner vc and the other
+    // two va, vb: v3 = va + vb - vc.
+    auto readFloat = [](const uint8_t* v, uint32_t o) {
+      rex::be<float> f; std::memcpy(&f, v + o, 4); return f.get();
+    };
+    uint32_t cornerIndex = 0;
+    if (decl != nullptr && IsFm2Resource(decl)) {
+      for (uint32_t e = 0; e < decl->vertexElementCount; ++e) {
+        const GuestVertexElement& el = decl->vertexElements[e];
+        if (el.stream != 0 || el.usage != 0 /*POSITION*/ || el.offset + 8 > stride) continue;
+        const float x0 = readFloat(v0, el.offset), y0 = readFloat(v0, el.offset + 4);
+        const float x1 = readFloat(v1, el.offset), y1 = readFloat(v1, el.offset + 4);
+        const float x2 = readFloat(v2, el.offset), y2 = readFloat(v2, el.offset + 4);
+        const float d0 = (x1 - x0) * (x2 - x0) + (y1 - y0) * (y2 - y0);  // corner at v0?
+        const float d1 = (x0 - x1) * (x2 - x1) + (y0 - y1) * (y2 - y1);  // corner at v1?
+        const float d2 = (x0 - x2) * (x1 - x2) + (y0 - y2) * (y1 - y2);  // corner at v2?
+        cornerIndex = std::fabs(d0) <= std::fabs(d1) && std::fabs(d0) <= std::fabs(d2) ? 0
+                    : std::fabs(d1) <= std::fabs(d2) ? 1 : 2;
+        break;
+      }
+    }
+    const uint8_t* vc = cornerIndex == 0 ? v0 : cornerIndex == 1 ? v1 : v2;
+    const uint8_t* va = cornerIndex == 0 ? v1 : v0;
+    const uint8_t* vb = cornerIndex == 2 ? v1 : v2;
+    // Per-byte saturating va + vb - vc as the default for every byte.
+    for (uint32_t b = 0; b < stride; ++b)
+      v3[b] = uint8_t(std::clamp(int(va[b]) + int(vb[b]) - int(vc[b]), 0, 255));
+    if (decl != nullptr && IsFm2Resource(decl)) {
+      for (uint32_t e = 0; e < decl->vertexElementCount; ++e) {
+        const GuestVertexElement& el = decl->vertexElements[e];
+        uint32_t floats = 0;
+        switch (el.type) {
+          case D3DDECLTYPE_FLOAT1: floats = 1; break;
+          case D3DDECLTYPE_FLOAT2: floats = 2; break;
+          case D3DDECLTYPE_FLOAT3: floats = 3; break;
+          case D3DDECLTYPE_FLOAT4: floats = 4; break;
+          default: break;
+        }
+        if (el.stream != 0 || floats == 0 || el.offset + floats * 4 > stride) continue;
+        for (uint32_t f = 0; f < floats; ++f) {
+          const uint32_t o = el.offset + f * 4;
+          const rex::be<float> d(readFloat(va, o) + readFloat(vb, o) - readFloat(vc, o));
+          std::memcpy(v3 + o, &d, 4);
+        }
+      }
+    }
+    // Triangles (v0, v1, v2) and (va, v3, vb): the second shares edge va-vb
+    // with the first, so its winding is kept by ordering it (va, v3, vb) when
+    // (va, vb) appear in that order in the first triangle.
+    std::memcpy(dst + 0 * stride, v0, stride);
+    std::memcpy(dst + 1 * stride, v1, stride);
+    std::memcpy(dst + 2 * stride, v2, stride);
+    // Slot 5 currently holds v3; move it to slot 4 and place va/vb around it.
+    std::memcpy(dst + 4 * stride, v3, stride);
+    std::memcpy(dst + 3 * stride, cornerIndex == 0 ? v2 : cornerIndex == 1 ? v0 : v1, stride);
+    std::memcpy(dst + 5 * stride, cornerIndex == 0 ? v1 : cornerIndex == 1 ? v2 : v0, stride);
+  }
+  return out;
+}
+
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                              const void* data, uint32_t stride) {
   if (data == nullptr || vertexCount == 0 || stride == 0)
     return;
+  std::vector<uint8_t> expanded;
+  if (primitiveType == D3DPT_RECTLIST) {
+    expanded = ExpandRectList(device, static_cast<const uint8_t*>(data), vertexCount, stride);
+    data = expanded.data();
+    vertexCount = uint32_t(expanded.size() / stride);
+    primitiveType = D3DPT_TRIANGLELIST;
+  }
   const uint32_t bytes = vertexCount * stride;
   // Copy on the guest thread so Enqueue can return before the guest reuses
   // its stack/heap buffer (Unleashed intermediary upload pattern).

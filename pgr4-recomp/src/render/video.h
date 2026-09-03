@@ -29,6 +29,10 @@ struct Video {
   // hooks) lands.
   static void SetFallbackClearColor(float r, float g, float b, float a);
 
+  // With PGR4_GPU_DEBUG=1: log up to maxMessages warning/error entries from
+  // the D3D12 info queue (newest last) and clear it. No-op otherwise.
+  static void DumpD3D12InfoQueue(const char* context, uint32_t maxMessages);
+
   // Block until the GPU has finished all submitted work.
   static void WaitForGPU();
 

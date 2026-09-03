@@ -27,7 +27,9 @@
 #include <bit>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <mutex>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -37,6 +39,7 @@
 #include <rex/types.h>
 
 #include "render/guest_device.h"
+#include "render/guest_gpu.h"
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
 #include "render/render_internal.h"
@@ -73,7 +76,8 @@ uint32_t LockIndexBuffer(GuestBuffer* buffer, uint32_t flags);
 void UnlockIndexBuffer(GuestBuffer* buffer);
 GuestTexture* CreateTexture(uint32_t width, uint32_t height, uint32_t depth, uint32_t levels,
                             uint32_t usage, uint32_t format, uint32_t pool, uint32_t type);
-GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format, uint32_t multiSample);
+GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format, uint32_t multiSample,
+                            uint32_t edramBase = kNoEdramBase);
 void LockRect(GuestBaseTexture* texture, uint32_t level, uint32_t* outPitch, uint32_t* outBits);
 void UnlockGuestResource(GuestResource* resource);
 GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestElements);
@@ -86,6 +90,14 @@ void RegisterShaderAlias(uint32_t guestAddress, GuestShader* shader);
 }  // namespace pgr4::render
 
 namespace {
+
+// Bring-up frame trace: every state event during swaps [598, 600] is logged so
+// one frontend frame's render-target / resolve sequence can be read back.
+std::atomic<uint64_t> g_pgr4SwapIndex{0};
+bool InTraceWindow() {
+  const uint64_t n = g_pgr4SwapIndex.load(std::memory_order_relaxed);
+  return n >= 598 && n <= 600;
+}
 
 uint32_t ReadGuestU32At(uint32_t guestAddress) {
   if (guestAddress == 0)
@@ -106,6 +118,8 @@ namespace {
 // Video::Present() blits before any real render target is ever bound.
 void ClearF(GuestDevice* device, uint32_t flags, void* /*rect*/, const uint32_t* color, float z,
             uint32_t /*d3dColor*/) {
+  if (InTraceWindow())
+    REXGPU_INFO("TRACE clear flags=0x{:X}", flags);
   float rgba[4] = {0.0f, 0.0f, 0.0f, 1.0f};
   if (color != nullptr) {
     for (int i = 0; i < 4; ++i) {
@@ -129,6 +143,9 @@ void ClearF(GuestDevice* device, uint32_t flags, void* /*rect*/, const uint32_t*
 void Swap(uint32_t device, uint32_t arg4, uint32_t /*arg5*/, uint32_t caller) {
   static std::atomic<uint64_t> swapCallCount{0};
   const uint64_t swapIndex = swapCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+  g_pgr4SwapIndex.store(swapIndex, std::memory_order_relaxed);
+  if (InTraceWindow())
+    REXGPU_INFO("TRACE swap n={} descriptor=0x{:08X}", swapIndex, arg4);
   const char* callerKind = caller == 0x82381DDCu   ? "xps-timeout"
                            : caller == 0x825ADE54u ? "tile-buffer"
                                                    : "other";
@@ -160,11 +177,12 @@ void Swap(uint32_t device, uint32_t arg4, uint32_t /*arg5*/, uint32_t caller) {
     REXGPU_INFO(
         "D3DDevice_Swap: n={} caller={} lr=0x{:08X} device=0x{:08X} "
         "descriptor=0x{:08X} defaultDescriptor={} fbBase=0x{:08X} source={:p} kind={} "
-        "{}x{} accepted={}",
+        "{}x{} accepted={} pm4draws={}",
         swapIndex, callerKind, caller, device, arg4, arg4 == device + 0x3884u, fbBase,
         static_cast<const void*>(presentSource), kind,
         presentSource != nullptr ? presentSource->width : 0,
-        presentSource != nullptr ? presentSource->height : 0, accepted);
+        presentSource != nullptr ? presentSource->height : 0, accepted,
+        pgr4::render::g_pm4DrawPackets.exchange(0, std::memory_order_relaxed));
   }
   // Frame bookkeeping is covered by Present's BeginCommandList /
   // OnRecordingFrameReady. An extra sync BeginRenderStateFrame Run here
@@ -229,8 +247,16 @@ uint32_t CreateTextureHook(uint32_t width, uint32_t height, uint32_t depth, uint
 }
 
 uint32_t CreateSurfaceHook(uint32_t width, uint32_t height, uint32_t format, uint32_t multiSample,
-                           const void* /*parameters*/) {
-  return ghp::ToGuest(rr::CreateSurface(width, height, format, multiSample));
+                           const rex::be<uint32_t>* parameters) {
+  // D3DSURFACE_PARAMETERS { Base, HierarchicalZBase, ColorExpBias }: EDRAM
+  // tile base the game chose (NULL = XDK allocates). Logged while the EDRAM
+  // aliasing model is being built.
+  // NULL parameters: the XDK's first-fit EDRAM allocator (D3D::AllocateEdram-
+  // Memory) only sees NULL-parameter surfaces, and PGR4 keeps a single one
+  // alive (the 720p X8R8G8B8 target), so it lands at tile 0.
+  // ponytail: model the allocator if a second NULL-parameter surface shows up.
+  const uint32_t edramBase = parameters != nullptr ? (parameters[0].get() & 0xFFFu) : 0u;
+  return ghp::ToGuest(rr::CreateSurface(width, height, format, multiSample, edramBase));
 }
 
 uint32_t CreateVertexDeclarationHook(const GuestVertexElement* elements) {
@@ -746,14 +772,18 @@ rr::GuestBaseTexture* TranslateRawSurface(uint32_t surfaceAddr) {
   rr::GuestBaseTexture* surface = nullptr;
   if ((common & 0x40000000u) == 0) {
     const uint32_t surfaceInfo = ReadGuestU32At(surfaceAddr + 0x18u);
+    const uint32_t colorInfo = ReadGuestU32At(surfaceAddr + 0x1Cu);
     const uint32_t size = ReadGuestU32At(surfaceAddr + 0x24u);
     const uint32_t format = ReadGuestU32At(surfaceAddr + 0x28u);
     const uint32_t width = (size >> 18) + 1u;
     const uint32_t height = ((size >> 3) & 0x7FFFu) + 1u;
     const uint32_t multiSample = 1u << ((surfaceInfo >> 16) & 3u);  // 1/2/4 samples
-    surface = rr::CreateSurface(width, height, format, multiSample > 1u ? multiSample : 0u);
-    REXGPU_INFO("TranslateRawSurface: 0x{:08X} {}x{} format=0x{:08X} msaa={} -> {}", surfaceAddr,
-                width, height, format, multiSample, static_cast<const void*>(surface));
+    // EDRAM aliasing: PGR4's video player draws into its own surface headers
+    // that sit on the same EDRAM tiles as the main backbuffer, and the frame's
+    // final resolve reads the backbuffer. Surfaces with the same tile base,
+    // size and format share one host surface so that resolve sees the draw.
+    surface = rr::CreateSurface(width, height, format, multiSample > 1u ? multiSample : 0u,
+                                colorInfo & 0xFFFu);
   } else {
     REXGPU_WARN("TranslateRawSurface: 0x{:08X} is a texture-level surface -- not bound",
                 surfaceAddr);
@@ -858,9 +888,13 @@ namespace {
 void D3DSetRenderTargetHook(GuestDevice* device, uint32_t index, uint32_t surfaceAddr) {
   g_origD3DSetRenderTarget(ghp::ToGuest(device), index, surfaceAddr);
   static std::atomic<uint32_t> s_logged{0};
-  if (s_logged.fetch_add(1, std::memory_order_relaxed) < 16) {
-    REXGPU_INFO("D3DDevice_SetRenderTarget: index={} surface=0x{:08X} pgr4={}", index, surfaceAddr,
-                surfaceAddr != 0 && rr::IsFm2Resource(ghp::ToHost<void>(surfaceAddr)));
+  if (s_logged.fetch_add(1, std::memory_order_relaxed) < 16 || InTraceWindow()) {
+    auto* fm2 = surfaceAddr != 0 && rr::IsFm2Resource(ghp::ToHost<void>(surfaceAddr))
+                    ? ghp::ToHost<rr::GuestSurface>(surfaceAddr)
+                    : nullptr;
+    REXGPU_INFO("D3DDevice_SetRenderTarget: index={} surface=0x{:08X} pgr4={} {}x{} fmt=0x{:08X} host={}",
+                index, surfaceAddr, fm2 != nullptr, fm2 ? fm2->width : 0u, fm2 ? fm2->height : 0u,
+                fm2 ? fm2->guestFormat : 0u, static_cast<const void*>(fm2));
   }
   rr::SetRenderTarget(device, index,
                       surfaceAddr != 0 ? TranslateSurfaceForBind(surfaceAddr) : nullptr);
@@ -869,7 +903,7 @@ void D3DSetRenderTargetHook(GuestDevice* device, uint32_t index, uint32_t surfac
 void D3DSetDepthStencilSurfaceHook(GuestDevice* device, uint32_t surfaceAddr) {
   g_origD3DSetDepthStencilSurface(ghp::ToGuest(device), surfaceAddr);
   static std::atomic<uint32_t> s_logged{0};
-  if (s_logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+  if (s_logged.fetch_add(1, std::memory_order_relaxed) < 16 || InTraceWindow()) {
     REXGPU_INFO("D3DDevice_SetDepthStencilSurface: surface=0x{:08X} pgr4={}", surfaceAddr,
                 surfaceAddr != 0 && rr::IsFm2Resource(ghp::ToHost<void>(surfaceAddr)));
   }
@@ -1178,6 +1212,11 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
                  uint32_t destTextureAddr, rr::GuestPoint* destPoint, uint32_t /*destLevel*/,
                  uint32_t /*destSliceOrFace*/, const uint32_t* clearColor, float clearZ,
                  uint32_t /*clearStencil*/, const void* /*parameters*/) {
+  if (InTraceWindow()) {
+    REXGPU_INFO("TRACE resolve flags=0x{:X} dest=0x{:08X} base=0x{:08X} lr=0x{:08X}", flags,
+                destTextureAddr,
+                destTextureAddr != 0 ? ReadGuestU32At(destTextureAddr + 32u) : 0u, g_resolveCaller);
+  }
   uint32_t postClearFlags = 0;
   float postClearColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   if ((flags & kResolveClearColor) != 0) {
@@ -1199,6 +1238,11 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
   };
 
   if (destTextureAddr == 0) {
+    static std::atomic<uint32_t> s_nullDest{0};
+    if (s_nullDest.fetch_add(1, std::memory_order_relaxed) < 8) {
+      REXGPU_INFO("Resolve: null destination (flags=0x{:X} lr=0x{:08X}) -- clear only", flags,
+                  g_resolveCaller);
+    }
     queueClearOnly();
     return;
   }
@@ -1313,6 +1357,11 @@ void BeginTilingHook(GuestDevice* device, uint32_t /*flags*/, uint32_t /*count*/
 void EndTilingHook(GuestDevice* device, uint32_t flags, uint32_t /*rects*/,
                    uint32_t destTextureAddr, const uint32_t* clearColor, uint32_t clearStencil,
                    uint32_t /*params*/, float clearZ) {
+  static std::atomic<uint32_t> s_logged{0};
+  if (s_logged.fetch_add(1, std::memory_order_relaxed) < 12 || InTraceWindow()) {
+    REXGPU_INFO("D3DDevice_EndTiling: flags=0x{:X} dest=0x{:08X} clearColor={}", flags,
+                destTextureAddr, clearColor != nullptr);
+  }
   ResolveHook(device, flags, nullptr, destTextureAddr, nullptr, 0, 0, clearColor, clearZ,
               clearStencil, nullptr);
 }
@@ -1487,6 +1536,41 @@ void DrawVerticesUPHook(GuestDevice* device, uint32_t primitiveType, uint32_t ve
                               vertexStreamZeroStride);
 }
 
+// PGR4's own immediate-mode layer (sub_8229CF38 / sub_8229CFE0 / sub_8229D040,
+// and the screen manager via sub_82837F70) bypasses DrawVerticesUP: it calls
+// D3DDevice_BeginVertices, which emits the draw packet into the ring and hands
+// back the write-combined slot for the vertices, fills that slot, then
+// D3DDevice_EndVertices (sub_8269A998) merely commits the ring write pointer.
+// Neither reaches the renderer, so the draw is emulated here: Begin hands out
+// a guest scratch buffer and End issues it as a user-pointer draw (which
+// copies the vertices on the guest thread, so one buffer suffices).
+uint32_t g_immVertices = 0;  // guest scratch buffer for the vertex data
+uint32_t g_immCapacity = 0;
+uint32_t g_immPrimitiveType = 0;
+uint32_t g_immVertexCount = 0;
+uint32_t g_immStride = 0;
+
+uint32_t BeginVerticesHook(GuestDevice* /*device*/, uint32_t primitiveType, uint32_t vertexCount,
+                           uint32_t vertexStreamZeroStride) {
+  const uint32_t bytes = vertexCount * vertexStreamZeroStride;
+  if (bytes > g_immCapacity) {
+    if (g_immVertices != 0) ghp::GuestFreeRaw(g_immVertices);
+    g_immCapacity = std::max(bytes, 256u * 1024u);
+    g_immVertices = ghp::GuestAllocRaw(g_immCapacity, 0x100);
+  }
+  g_immPrimitiveType = primitiveType;
+  g_immVertexCount = vertexCount;
+  g_immStride = vertexStreamZeroStride;
+  return g_immVertices;
+}
+
+void EndVerticesHook(GuestDevice* device) {
+  if (g_immVertexCount == 0 || g_immVertices == 0) return;
+  DrawVerticesUPHook(device, g_immPrimitiveType, g_immVertexCount,
+                     ghp::ToHost<const void>(g_immVertices), g_immStride);
+  g_immVertexCount = 0;
+}
+
 }  // namespace
 
 REX_HOOK_RAW(sub_82803358) {
@@ -1579,6 +1663,8 @@ REX_HOOK(D3DDevice_DrawIndexedVertices, DrawIndexedVerticesHook);
 REX_HOOK(D3DDevice_DrawIndexedVertices_WithVertexFormatSetup,
          DrawIndexedVerticesWithVertexFormatHook);
 REX_HOOK(D3DDevice_DrawVerticesUP, DrawVerticesUPHook);
+REX_HOOK(D3DDevice_BeginVertices, BeginVerticesHook);
+REX_HOOK(D3DDevice_EndVertices, EndVerticesHook);
 
 REX_HOOK_RAW(PGR4_D3D_BeginCommandBufferBatch) {
   pgr4::render::RenderQueue::BeginRecording();

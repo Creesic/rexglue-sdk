@@ -264,3 +264,111 @@ Three defects sat between the first presented frame and a correct picture:
 Also: the present fallback only accepts frame-sized resolve destinations
 (the bloom chain resolves into 64x64..4x4), DXN (49) decodes to BC5, and Xenos
 format 54 (10:10:10:2) has no plume texture format yet.
+
+## Intro videos and menus on screen (2026-09-03)
+
+State: legal warning, title, Bink intro videos (Microsoft, Bizarre, New York
+intro) and the main menu all present through the real front-buffer path
+(`Swap kind=aperture`), with the menu's blend-state pipeline failure fixed
+(see open items for what is left).
+
+### EDRAM aliasing (the "intros went black" regression)
+
+The front-buffer aperture path resolves `0x400D22FC` from whichever surface
+is bound at `PGR4_EndFrame_ResolveAndSwap`; the Bink quad is drawn into the raw
+backbuffer header `0x4082D1E0` (A8R8G8B8, tile 0) but the end-of-frame resolve
+reads an `X8R8G8B8` surface the game created with NULL parameters, also at tile
+0. On hardware both are the same EDRAM; on the host they were two textures, so
+the front buffer stayed black.
+
+- `rr::CreateSurface(w, h, format, msaa, edramBase)` now keeps a registry keyed
+  by `(base, w, h, msaa, depth?)` and hands out one host surface per key; the
+  registry holds its own refcount so a guest `Release` of one alias cannot
+  free the shared surface. The format is deliberately not in the key: the
+  first format seen decides the host format (PGR4's 720p HDR target
+  `0x1A2201BF` = `D3DFMT_A2B10G10R10F_EDRAM`, 32 bpp, maps to 16F on the host
+  and gets aliased by the 8-bit backbuffer and video target).
+- `CreateSurfaceHook` passes `D3DSURFACE_PARAMETERS::Base` (game surfaces all
+  carry explicit bases: colour at 0, depth at `XGSurfaceSize` = 0x2D0 for
+  720p). NULL parameters go through the XDK's first-fit allocator
+  (`D3D::AllocateEdramMemory`), which only ever sees NULL-parameter surfaces;
+  PGR4 keeps one alive so it lands at tile 0 -- modelled as base 0.
+- `TranslateRawSurface` (XGSetSurfaceHeader surfaces) feeds the same registry
+  with `colorInfo & 0xFFF`.
+
+### Immediate-mode draws (the missing UI)
+
+The frame trace showed one hooked draw per frame while the ring carried 24-39
+`DRAW_INDX` packets (counted by the PM4 executor and printed as `pm4draws=`
+on the Swap line). PGR4's own immediate-mode layer
+(`PGR4_ImmBeginVertices_WithDecl` 0x8229CF38, `PGR4_ImmBeginVertices`
+0x8229CFE0, `PGR4_ImmAddVertex` 0x8229D0B8, `PGR4_ImmEndVertices` 0x8229D040,
+and the screen manager via `j_D3DDevice_EndVertices` 0x82837F70) calls
+`D3DDevice_BeginVertices` (0x8269A4F8), which emits the draw packet into the
+ring and returns the write-combined slot, then `D3DDevice_EndVertices`
+(0x8269A998) which only commits the ring write pointer. Neither reached the
+renderer. Both are now in the manifest and hooked: Begin hands out a guest
+scratch buffer and records (prim, count, stride); End issues the buffer
+through `DrawVerticesUPHook`. That is what put the warning box, title and
+menu text on screen.
+
+### Rectangle lists
+
+`D3DPT_RECTLIST` (3 vertices per rectangle) was drawn as a triangle list, so
+every UI rectangle lost its second triangle (the menu cloud was cut along the
+diagonal). `DrawUserPointerVertices` now expands rect lists on the CPU: the
+right-angle corner is found from the POSITION element (perpendicular edges),
+the fourth vertex is `va + vb - vc` per float element and per byte
+(saturating) for everything else. Vertex-buffer rect lists (`DrawVertices`
+with primitive 8) are not expanded -- a wedge in the title/menu background
+(lower-left) is probably one of those.
+
+### Scripted controller input for unattended runs
+
+`--pgr4_pad_script=14:START,18:START,30:A` (src/pad_script.cpp) hooks the
+game's `XInputGetState` wrapper (0x82673A90, manifest name `XInputGetState`)
+with fall-through and ORs scripted presses into the returned state (200 ms
+holds, seconds since the first poll). Needed because keyboard emulation
+(`mnk_mode`, default off in this SDK) is not driving the game any more and a
+virtual-pad driver is the wrong layer.
+
+### XenosRecomp
+
+- Vertex shader `CC80228A287F34B7` (writes r63) fails only when compiled in
+  the multi-threaded batch (structured exception or NUL bytes inside the HLSL
+  handed to DXC), passes alone and with `--jobs 1`; ASan finds nothing. The
+  tool now retries failed shaders serially after the parallel pass
+  (`Retried N shaders serially`), so the cache is complete (953/953). Root
+  cause still open. The SEH filter now reports code/address.
+- The thread-local recompiler reuse was replaced by a fresh instance per
+  shader on the way (harmless either way).
+- `--dump-hlsl` and the batch path share `tryRecompile(..., failure)`; on a
+  DXC failure the batch path writes `failed_<hash>.hlsl` next to the cache.
+
+### Diagnostics added
+
+- FrameTrace prints `skipped=N [nores nodecl psofail psocreate]`; Swap prints
+  `pm4draws=`; `D3DDevice_SetRenderTarget` logs the FM2 surface size/format/
+  host pointer; `CreateGraphicsPipeline` warns when plume returns null with
+  the VS/PS hashes and formats.
+
+### Open items
+
+- (fixed) ~750 menu draws per frame were skipped because
+  `Device()->createGraphicsPipeline` returned null: with `PGR4_GPU_DEBUG=1`
+  the info queue (now drained on that path via `Video::DumpD3D12InfoQueue`)
+  said "DestBlendAlpha is trying to use a D3D11_BLEND value (0x3) that
+  manipulates color". PGR4's UI sets `D3DRS_DESTBLENDALPHA = SRCCOLOR`, legal
+  on Xbox; `SanitizePipelineState` now maps colour factors in the alpha slots
+  to their alpha equivalents. The second cause, "input signature expects
+  NORMAL/1 ... but the declaration doesn't provide a matching name" (the
+  menu cloud shader `C197ACCF5468DF05`), is handled in
+  `CreateGraphicsPipeline`: any semantic in the vertex shader's header
+  element list missing from the declaration gets a dummy element on the
+  zero-stride slot 15 for that pipeline.
+- Vertex-buffer `RECTLIST` draws are still half rectangles.
+- Unsupported texture formats seen in the frontend: 4 (1_5_5_5), 5 (5_6_5),
+  23 (24_8_FLOAT); surface formats 0x182800B6 (gpu 54) and 0x2DA2ABA4 (gpu 36)
+  fall back to R8G8B8A8.
+- Keyboard input regression (`mnk_mode` default) not investigated.
+

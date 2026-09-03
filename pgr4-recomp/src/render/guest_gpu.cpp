@@ -430,6 +430,10 @@ void Pgr4GraphicsSystem::ExecutePackets(const uint8_t* buffer, uint32_t dword_co
         }
         break;
       }
+      case 0x22:  // PM4_DRAW_INDX
+      case 0x36:  // PM4_DRAW_INDX_2
+        g_pm4DrawPackets.fetch_add(1, std::memory_order_relaxed);
+        break;
       default:
         // ME_INIT, draws, constants, events, swaps: no side effect the guest
         // polls for at this stage, and everything renderable is intercepted at

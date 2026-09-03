@@ -43,6 +43,11 @@ class Memory;
 
 namespace pgr4::render {
 
+// PM4 DRAW_INDX / DRAW_INDX_2 packets seen in the ring since the last swap.
+// Diagnostic: compared against the draws the D3D hooks issued per frame to
+// expose any draw entry point the guest reaches that is not hooked.
+inline std::atomic<uint32_t> g_pm4DrawPackets{0};
+
 class Pgr4GraphicsSystem final : public rex::system::IGraphicsSystem {
  public:
   Pgr4GraphicsSystem() = default;

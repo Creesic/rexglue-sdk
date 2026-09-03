@@ -882,6 +882,37 @@ bool Video::Present(pgr4::render::GuestBaseTexture* frontBuffer) {
   return true;
 }
 
+void Video::DumpD3D12InfoQueue(const char* context, uint32_t maxMessages) {
+#if defined(_WIN32)
+  if (std::getenv("PGR4_GPU_DEBUG") == nullptr || g_device == nullptr) return;
+  auto* device = static_cast<plume::D3D12Device*>(g_device.get());
+  ID3D12InfoQueue* infoQueue = nullptr;
+  if (device == nullptr || device->d3d == nullptr ||
+      FAILED(device->d3d->QueryInterface(IID_PPV_ARGS(&infoQueue))) || infoQueue == nullptr) {
+    return;
+  }
+  const UINT64 messageCount = infoQueue->GetNumStoredMessages();
+  const UINT64 start = messageCount > maxMessages ? messageCount - maxMessages : 0;
+  for (UINT64 index = start; index < messageCount; ++index) {
+    SIZE_T messageSize = 0;
+    infoQueue->GetMessage(index, nullptr, &messageSize);
+    std::vector<uint8_t> bytes(messageSize);
+    auto* message = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
+    if (FAILED(infoQueue->GetMessage(index, message, &messageSize)) ||
+        message->Severity > D3D12_MESSAGE_SEVERITY_WARNING) {
+      continue;
+    }
+    REXGPU_WARN("D3D12 InfoQueue[{}] id={} severity={}: {}", context, uint32_t(message->ID),
+                uint32_t(message->Severity), message->pDescription);
+  }
+  infoQueue->ClearStoredMessages();
+  infoQueue->Release();
+#else
+  (void)context;
+  (void)maxMessages;
+#endif
+}
+
 void Video::WaitForGPU() {
   if (!g_initialized) {
     return;
