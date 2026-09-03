@@ -412,4 +412,30 @@ and `decode_post_vs_outputs` gave the same clip position for every vertex.
 - **Vertex-buffer rect lists**: `DrawVertices` reads stream 0 back on the
   guest thread and routes `D3DPT_RECTLIST` through the user-pointer path so
   the CPU expansion applies there too.
+- **Exposure**: the 1x1 luminance target (D3DFORMAT 0x2DA2ABA4, gpu 36) was
+  created as RGBA8 while its texture view is R32_FLOAT, so the tonemapper read
+  garbage exposure. `ConvertFormat` maps it to R32_FLOAT (and 0x182800B6 /
+  gpu 54 explicitly to RGBA8). The exposure now reads ~0.01 for the menu.
+- **Cube maps**: fetch dimension 3 (`fc[5]` bits 9-10) now creates a 6-slice
+  texture with a `TEXTURE_CUBE` view and uploads the six consecutive faces
+  (`UploadGuestTextureFace`, subresource == face). Not yet observed to change
+  the menu, kept because cube slots were all on the null descriptor before.
+
+### What the RenderDoc traces say about the remaining look
+
+- The car renders (SHORT4 positions fixed). The title/menu background
+  buildings and sky are drawn with a constant-colour pixel shader
+  (`SV_Target = c20`, alpha-tested) and the game sets c20 to black for the
+  front end, so the black skyline is the game's own look, not a texture
+  failure.
+- What still differs: the auto-exposure blows out the car and the grey
+  backdrop wedges. The scene target's mean is dark (mostly black), the 1x1
+  exposure value is ~0.01 and the tonemap scales the 0.13 grey backdrop to
+  ~2.2. Whether hardware ends up at the same exposure is unverified; the
+  luminance downsample chain (64/16/4/1 targets) and the tonemap constants
+  are the next things to compare against a reference capture.
+- `debug_pixel` in the renderdoc MCP cannot attach to these bindless draws;
+  `pixel_history`, `decode_post_vs_outputs`, `debug_vertex`,
+  `read_constant_buffer` and `get_shader` (disassembly) worked and were
+  enough.
 

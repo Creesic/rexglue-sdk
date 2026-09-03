@@ -76,6 +76,12 @@ RenderFormat ConvertFormat(uint32_t d3dFormat) {
     case 22:  // k_24_8 (D24S8 variants)
     case 23:  // k_24_8_FLOAT (D24FS8 variants)
       return RenderFormat::D32_FLOAT_S8_UINT;
+    case 36:  // k_32_FLOAT: PGR4's 1x1 luminance / exposure targets. Their
+              // texture view is R32_FLOAT; an RGBA8 surface here made the
+              // resolve copy hand the tonemapper garbage exposure.
+      return RenderFormat::R32_FLOAT;
+    case 54:  // k_2_10_10_10_AS_16_16_16_16 (0x182800B6): no 10:10:10:2 in plume.
+      return RenderFormat::R8G8B8A8_UNORM;
   }
 
   static std::unordered_set<uint32_t> s_warnedFormats;
@@ -404,18 +410,21 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   if (texture == nullptr || IsDeviceLost()) return;
 
   const auto fmt = static_cast<RenderFormat>(format);
+  // PGR4: cube maps (sky / environment lighting). The caller pre-sets
+  // viewDimension to TEXTURE_CUBE; six array slices, one face each.
+  const bool cube = texture->viewDimension == RenderTextureViewDimension::TEXTURE_CUBE;
   RenderTextureDesc desc;
   desc.dimension = RenderTextureDimension::TEXTURE_2D;
   desc.width = width;
   desc.height = height;
   desc.depth = 1;
   desc.mipLevels = 1;
-  desc.arraySize = 1;
+  desc.arraySize = cube ? 6 : 1;
   desc.format = fmt;
   // Only request RT for formats that can actually be render targets. BC/etc.
   // translated textures must stay COPY_DEST+SRV — marking them RT removes the
   // device. Aperture/frontbuffer (BGRA8) needs RT for format-mismatch shader blit.
-  const bool colorRt = !RenderFormatIsDepth(fmt) && fmt != RenderFormat::UNKNOWN &&
+  const bool colorRt = !cube && !RenderFormatIsDepth(fmt) && fmt != RenderFormat::UNKNOWN &&
                        fmt < RenderFormat::BC1_TYPELESS;
   desc.flags = colorRt ? RenderTextureFlag::RENDER_TARGET : RenderTextureFlag::NONE;
   texture->textureHolder = Device()->createTexture(desc);
@@ -432,7 +441,8 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
 
   RenderTextureViewDesc viewDesc;
   viewDesc.format = fmt;
-  viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
+  viewDesc.dimension = cube ? RenderTextureViewDimension::TEXTURE_CUBE
+                            : RenderTextureViewDimension::TEXTURE_2D;
   viewDesc.mipLevels = 1;
   if (fmt == RenderFormat::R8_UNORM) {
     viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R,
@@ -447,7 +457,7 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   texture->requiresHostInitialization = false;
   texture->hostInitialized = true;
   texture->hostRenderTargetCapable = colorRt;
-  texture->viewDimension = RenderTextureViewDimension::TEXTURE_2D;
+  texture->viewDimension = viewDesc.dimension;
   texture->descriptorIndex = AllocTextureDescriptor();
   TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
                                      RenderTextureLayout::SHADER_READ, texture->textureView.get());
@@ -817,6 +827,7 @@ struct XenosTextureInfo {
   // Guest formats plume cannot sample (k_1_5_5_5 = 4, k_5_6_5 = 5): the guest
   // footprint is 16 bpp, the host texture is R8G8B8A8 and the upload expands.
   uint32_t expand16From = 0;
+  bool cube = false;  // fetch dimension 3: six faces stored consecutively
   bool tiled = false;
   bool packedMips = false;
   bool valid = false;
@@ -855,6 +866,7 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
   info.width = (fc2 & 0x1FFF) + 1;
   info.height = ((fc2 >> 13) & 0x1FFF) + 1;
   info.packedMips = ((fc[5].get() >> 11) & 0x1) != 0;
+  info.cube = ((fc[5].get() >> 9) & 0x3) == 3;  // dimension: 0 1D, 1 2D, 2 3D, 3 cube
 
   switch (gpuFormat) {
     case 2:  // k_8 (L8/A8)
@@ -950,7 +962,19 @@ void EndianSwapBuffer(uint8_t* data, size_t size, uint32_t endian) {
   }
 }
 
+bool UploadGuestTextureFace(GuestTexture* texture, const XenosTextureInfo& info, uint32_t face);
+
 bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info) {
+  // Cube maps: six faces stored consecutively, each laid out like a 2D level
+  // (rows aligned to the 32-texel tile); face i is array slice i.
+  const uint32_t faces = info.cube ? 6u : 1u;
+  bool ok = true;
+  for (uint32_t face = 0; face < faces; ++face)
+    ok = UploadGuestTextureFace(texture, info, face) && ok;
+  return ok;
+}
+
+bool UploadGuestTextureFace(GuestTexture* texture, const XenosTextureInfo& info, uint32_t face) {
   if (texture == nullptr || texture->texture == nullptr || !info.valid)
     return false;
   if (texture->width != info.width || texture->height != info.height ||
@@ -983,7 +1007,8 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
   // texture data through its physical-memory aliases, so gate readability on
   // the physical heap's commit state, not the virtual one.
   auto* mem = ghp::GuestMemory();
-  const uint32_t physBase = ghp::HeaderBaseToPhysical(info.baseAddress);
+  const uint32_t physBase =
+      ghp::HeaderBaseToPhysical(info.baseAddress) + uint32_t(face * footprint);
   const bool sizeOk = footprint != 0 && footprint <= 0x4000000ull;
   // Page-granular: PGR4's Bink planes sit back to back in physical memory and
   // the whole-range query rejects one of them although every row it needs is
@@ -1105,7 +1130,7 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
   cmd.copyTextureFromUpload.width = info.width;
   cmd.copyTextureFromUpload.height = info.height;
   cmd.copyTextureFromUpload.rowTexels = rowTexels;
-  cmd.copyTextureFromUpload.mip = 0;
+  cmd.copyTextureFromUpload.mip = face;  // single mip: subresource index == array slice
   cmd.copyTextureFromUpload.srcOffset = 0;
   RenderQueue::Run(cmd);
   texture->hostInitialized = true;
@@ -1128,6 +1153,8 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
   auto textureStorage = std::make_unique<GuestTexture>();
   GuestTexture* texture = textureStorage.get();
   texture->type = ResourceType::Texture;
+  texture->viewDimension = info.cube ? RenderTextureViewDimension::TEXTURE_CUBE
+                                     : RenderTextureViewDimension::TEXTURE_2D;
 
   bool created = false;
   RenderCommand cmd{};
