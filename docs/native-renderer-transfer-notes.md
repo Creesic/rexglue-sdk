@@ -239,3 +239,28 @@ Open:
 - One shader (`CC80228A287F34B7`) faults inside XenosRecomp and is skipped.
 - The ~10-20 s self-exit (a window-close event, not the guest) has not
   recurred since the interrupt/wait changes; cause still unknown.
+
+## Boot video on screen (2026-09-03)
+
+Three defects sat between the first presented frame and a correct picture:
+
+- **Window-coordinate draws.** PGR4 draws its 2D passes with
+  `D3DRS_VIEWPORTENABLE = 0` and vertex positions in pixels; the vertex shader
+  is a passthrough, so the host saw NDC 0..1 (one quadrant). FM2's port only
+  special-cased unit quads. Fix: a 16-byte extension of the shared-constants
+  ABI (`g_NdcScale`/`g_NdcOffset` at bytes 496/504, `c31`) applied in every VS
+  epilogue by XenosRecomp, set to `(2/W, -2/H), (-1, 1)` of the bound target
+  while the viewport is disabled. Any ABI change means regenerating the cache.
+- **Header bases are CPU virtual aliases.** A D3D texture / buffer header
+  stores the `0xA/0xC/0xE` virtual address; the `0xE0000000` range has a 4 KB
+  offset that the SDK emulates (`Memory::GetPhysicalAddress`), so masking with
+  `& 0x1FFFFFFF` reads one page early -- the Bink luma plane came out rotated by
+  4096 mod 1280 = 256 texels. `ghp::HeaderBaseToPhysical` is the one conversion;
+  device vertex fetch constants are already physical (the XDK converts).
+- **Linear texture footprints.** The readability check rounded the height to
+  32 rows, which overran the Bink chroma allocation and skipped its upload
+  (green cast). Uploads are now page-granular.
+
+Also: the present fallback only accepts frame-sized resolve destinations
+(the bloom chain resolves into 64x64..4x4), DXN (49) decodes to BC5, and Xenos
+format 54 (10:10:10:2) has no plume texture format yet.

@@ -28,6 +28,20 @@ inline uint32_t ToGuest(const void* host) {
                                reinterpret_cast<uintptr_t>(GuestBase()));
 }
 
+// Base address out of a D3D texture / buffer header -> guest physical. The
+// XDK stores the CPU virtual alias (0xA/0xC/0xE ranges) there and converts
+// when it builds GPU fetch constants; the 0xE0000000 range carries a 4 KB
+// offset (SDK Memory::GetPhysicalAddress), so a plain & 0x1FFFFFFF mask lands
+// one page early (PGR4's Bink planes came out rotated by 4096 mod pitch).
+inline uint32_t HeaderBaseToPhysical(uint32_t guestAddress) {
+  if (guestAddress < 0xA0000000u)
+    return guestAddress & 0x1FFFFFFFu;  // already a GPU physical address
+  const uint32_t physical = GuestMemory()->GetPhysicalAddress(guestAddress & ~0xFFFu);
+  if (physical == UINT32_MAX)
+    return guestAddress & 0x1FFFFFFFu;
+  return physical | (guestAddress & 0xFFFu);
+}
+
 // guest virtual address -> host pointer.
 template <typename T>
 inline T* ToHost(uint32_t guestAddress) {

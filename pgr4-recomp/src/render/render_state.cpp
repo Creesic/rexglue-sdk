@@ -128,8 +128,16 @@ struct SharedConstants {
   uint32_t vteFlags = 8;
   uint32_t loopConstants[32]{};  // VS 0-15, PS 16-31; Xenos packed count/start/step.
   uint32_t trailingPadding[3]{};
+  // PGR4: window-coordinate -> NDC transform applied in every vertex shader
+  // epilogue (XenosRecomp g_NdcScale / g_NdcOffset). Identity while the guest
+  // viewport is enabled; (2/W, -2/H), (-1, 1) of the bound target when
+  // D3DRS_VIEWPORTENABLE is off and the guest emits pixel positions.
+  float ndcScale[2] = {1.0f, 1.0f};
+  float ndcOffset[2] = {0.0f, 0.0f};
 };
-static_assert(sizeof(SharedConstants) == 496);
+static_assert(sizeof(SharedConstants) == 512);
+static_assert(offsetof(SharedConstants, ndcScale) == 496);
+static_assert(offsetof(SharedConstants, ndcOffset) == 504);
 static_assert(offsetof(SharedConstants, texture2DIndices) == 0);
 static_assert(offsetof(SharedConstants, texture3DIndices) == 64);
 static_assert(offsetof(SharedConstants, textureCubeIndices) == 128);
@@ -204,6 +212,23 @@ bool g_viewportEnabled = true;
 PipelineState g_pipelineState;
 GuestVertexDeclaration* g_boundVertexDeclaration = nullptr;
 SharedConstants g_sharedConstants;
+
+uint32_t g_ndcTargetWidth = 0;
+uint32_t g_ndcTargetHeight = 0;
+
+void UpdateNdcTransform() {
+  if (g_viewportEnabled || g_ndcTargetWidth == 0 || g_ndcTargetHeight == 0) {
+    g_sharedConstants.ndcScale[0] = 1.0f;
+    g_sharedConstants.ndcScale[1] = 1.0f;
+    g_sharedConstants.ndcOffset[0] = 0.0f;
+    g_sharedConstants.ndcOffset[1] = 0.0f;
+    return;
+  }
+  g_sharedConstants.ndcScale[0] = 2.0f / float(g_ndcTargetWidth);
+  g_sharedConstants.ndcScale[1] = -2.0f / float(g_ndcTargetHeight);
+  g_sharedConstants.ndcOffset[0] = -1.0f;
+  g_sharedConstants.ndcOffset[1] = 1.0f;
+}
 bool g_sharedConstantsInitialized = false;
 GuestTexture* g_textures[16]{};
 alignas(16) uint32_t g_vertexShaderConstants[0x400]{};
@@ -1208,6 +1233,9 @@ void SetFramebuffer(GuestBaseTexture* colorTarget, GuestSurface* depthTarget, bo
   if (dimensionSource != nullptr && dimensionSource->width != 0 && dimensionSource->height != 0) {
     g_sharedConstants.halfPixelOffsetX = 1.0f / float(dimensionSource->width);
     g_sharedConstants.halfPixelOffsetY = -1.0f / float(dimensionSource->height);
+    g_ndcTargetWidth = dimensionSource->width;
+    g_ndcTargetHeight = dimensionSource->height;
+    UpdateNdcTransform();
   }
 
   // Don't shift away the high half of 64-bit host pointers.
@@ -1259,7 +1287,10 @@ void RegisterResolveSurfaceAperture(uint32_t guestAddr, GuestBaseTexture* host) 
   SurfaceApertureEntry& e = g_surfaceAperture[guestAddr & ~0xFFFu];
   e.tex = host;
   e.resolveDest = true;
-  g_lastResolveDestination = host;
+  // Bloom / luminance chains resolve into 64x64..4x4 textures; only a
+  // frame-sized destination can stand in for the frontbuffer.
+  if (IsFramebufferSizedPresentSource(host))
+    g_lastResolveDestination = host;
 }
 
 GuestBaseTexture* LookupLastResolveDestination() {
@@ -1617,6 +1648,7 @@ void SetViewportEnable(GuestDevice* /*device*/, uint32_t value) {
 
 void ProcSetViewportEnable(uint32_t value) {
   g_viewportEnabled = value != 0;
+  UpdateNdcTransform();
 }
 
 void SetClipPlaneState(GuestDevice* device, uint32_t enabledMask) {
@@ -2034,7 +2066,10 @@ uint8_t* SnapshotRawPhysicalBuffer(uint32_t fetchBase, uint32_t fetchSize,
                                    uint32_t swapElementBytes, bool preserveBaseLowBits) {
   auto* memory = ghp::GuestMemory();
   const uint32_t size = DecodeRawBufferSize(fetchSize);
-  const uint32_t physicalAddress = fetchBase & (preserveBaseLowBits ? 0x1FFFFFFFu : 0x1FFFFFFCu);
+  // Device vertex fetch constants are GPU physical already; raw index-buffer
+  // headers hand us the CPU virtual alias (see ghp::HeaderBaseToPhysical).
+  const uint32_t physicalAddress =
+      ghp::HeaderBaseToPhysical(fetchBase) & (preserveBaseLowBits ? 0x1FFFFFFFu : 0x1FFFFFFCu);
   if (memory == nullptr || size == 0 || size > 4u * 1024u * 1024u ||
       uint64_t(physicalAddress) + size > 0x20000000ull ||
       memory->GetPhysicalHeap()->QueryRangeAccess(physicalAddress, physicalAddress + size - 1u) ==

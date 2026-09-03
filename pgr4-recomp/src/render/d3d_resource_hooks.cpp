@@ -843,6 +843,11 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
       info.blockDim = 4;
       info.bytesPerBlock = 16;
       break;
+    case 49:  // k_DXN (BC5: two-channel normal maps, PGR4 car/track normals)
+      info.format = RenderFormat::BC5_UNORM;
+      info.blockDim = 4;
+      info.bytesPerBlock = 16;
+      break;
     case 26:  // k_16_16_16_16
       info.format = RenderFormat::R16G16B16A16_UNORM;
       info.bytesPerBlock = 8;
@@ -899,18 +904,47 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
   // command stream point at raw GPU memory that may not be heap-backed. A
   // tiled texture's footprint spans pitchBlocks * align(hBlocks,32) blocks;
   // require the whole conservative footprint to be readable or we'd fault.
-  const uint32_t alignedHBlocks = (hBlocks + packedY + 31u) & ~31u;
+  // Linear textures are allocated at their real row count (PGR4's Bink planes:
+  // 768x360 bytes, not 768x384) -- the 32-row alignment only exists in the
+  // tiled layout, and applying it here pushed the footprint past the guest
+  // allocation and skipped the upload entirely.
+  const uint32_t alignedHBlocks =
+      info.tiled ? ((hBlocks + packedY + 31u) & ~31u) : (hBlocks + packedY);
   const uint64_t footprint = uint64_t(pitchBlocks + packedX) * alignedHBlocks * info.bytesPerBlock;
   // Fetch-constant bases are guest PHYSICAL addresses -- the game writes
   // texture data through its physical-memory aliases, so gate readability on
   // the physical heap's commit state, not the virtual one.
   auto* mem = ghp::GuestMemory();
-  const uint32_t physBase = info.baseAddress & 0x1FFFFFFFu;
+  const uint32_t physBase = ghp::HeaderBaseToPhysical(info.baseAddress);
   const bool sizeOk = footprint != 0 && footprint <= 0x4000000ull;
-  const bool readable =
-      sizeOk && (physBase + footprint) <= 0x20000000ull &&
-      mem->GetPhysicalHeap()->QueryRangeAccess(physBase, uint32_t(physBase + footprint - 1)) !=
-          rex::memory::PageAccess::kNoAccess;
+  // Page-granular: PGR4's Bink planes sit back to back in physical memory and
+  // the whole-range query rejects one of them although every row it needs is
+  // mapped. Copy the mapped pages and leave the rest zero.
+  const uint32_t pageCount = sizeOk ? uint32_t((footprint + 0xFFFu) >> 12) : 0u;
+  std::vector<uint8_t> pageReadable(pageCount, 0);
+  uint32_t readablePages = 0;
+  if (sizeOk && (physBase + footprint) <= 0x20000000ull) {
+    for (uint32_t page = 0; page < pageCount; ++page) {
+      const uint32_t start = (physBase & ~0xFFFu) + (page << 12);
+      pageReadable[page] = mem->GetPhysicalHeap()->QueryRangeAccess(start, start + 0xFFFu) !=
+                           rex::memory::PageAccess::kNoAccess;
+      readablePages += pageReadable[page];
+    }
+  }
+  auto spanReadable = [&](uint64_t offset, uint64_t length) {
+    if (length == 0)
+      return true;
+    const uint64_t first = ((physBase & 0xFFFu) + offset) >> 12;
+    const uint64_t last = ((physBase & 0xFFFu) + offset + length - 1) >> 12;
+    if (last >= pageCount)
+      return false;
+    for (uint64_t page = first; page <= last; ++page) {
+      if (!pageReadable[page])
+        return false;
+    }
+    return true;
+  };
+  const bool readable = readablePages != 0;
   if (!readable) {
     static std::unordered_set<uint32_t> s_warned;
     if (s_warned.insert(info.baseAddress).second) {
@@ -923,7 +957,7 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
   }
 
   std::vector<uint8_t> linear(size_t(wBlocks) * hBlocks * info.bytesPerBlock);
-  const uint8_t* src = mem->TranslatePhysical<const uint8_t*>(info.baseAddress);
+  const uint8_t* src = mem->TranslatePhysical<const uint8_t*>(physBase);
 
   if (info.tiled) {
     for (uint32_t by = 0; by < hBlocks; ++by) {
@@ -932,7 +966,8 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
             TiledOffset2D(bx + packedX, by + packedY, pitchBlocks, info.bytesPerBlock);
         // Bounds guard: TiledOffset2D can overshoot the committed footprint
         // for small/odd dims -> OOB read/crash. Skip if so.
-        if (uint64_t(element) * info.bytesPerBlock + info.bytesPerBlock > footprint)
+        if (uint64_t(element) * info.bytesPerBlock + info.bytesPerBlock > footprint ||
+            !spanReadable(uint64_t(element) * info.bytesPerBlock, info.bytesPerBlock))
           continue;
         std::memcpy(linear.data() + (size_t(by) * wBlocks + bx) * info.bytesPerBlock,
                     src + size_t(element) * info.bytesPerBlock, info.bytesPerBlock);
@@ -940,8 +975,10 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
     }
   } else {
     for (uint32_t by = 0; by < hBlocks; ++by) {
-      std::memcpy(linear.data() + size_t(by) * wBlocks * info.bytesPerBlock,
-                  src + (size_t(by + packedY) * pitchBlocks + packedX) * info.bytesPerBlock,
+      const uint64_t rowOffset = (uint64_t(by + packedY) * pitchBlocks + packedX) * info.bytesPerBlock;
+      if (!spanReadable(rowOffset, uint64_t(wBlocks) * info.bytesPerBlock))
+        continue;
+      std::memcpy(linear.data() + size_t(by) * wBlocks * info.bytesPerBlock, src + rowOffset,
                   size_t(wBlocks) * info.bytesPerBlock);
     }
   }
@@ -1018,9 +1055,9 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
     texture->lastUploadFrame = CurrentFrameIndex();
 
   REXGPU_INFO(
-      "TranslateGuestTexture: base=0x{:08X} {}x{} fmt={} tiled={} endian={} upload={} -> desc {}",
+      "TranslateGuestTexture: base=0x{:08X} {}x{} fmt={} tiled={} endian={} pitch={} upload={} -> desc {}",
       info.baseAddress, info.width, info.height, int(info.format), info.tiled, info.endian,
-      uploadGuestData, texture->descriptorIndex);
+      info.pitchTexels, uploadGuestData, texture->descriptorIndex);
 
   GuestTexture* result = texture;
   std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
@@ -1101,8 +1138,13 @@ GuestTexture* TranslateGuestTexture(void* guestHeader, bool uploadGuestData) {
     static std::unordered_set<uint32_t> s_warned;
     if (s_warned.insert(guestAddress).second) {
       REXGPU_WARN(
-          "TranslateGuestTexture: 0x{:08X} invalid fetch constant ({}x{} fmt={} base=0x{:08X})",
-          guestAddress, info.width, info.height, int(info.format), info.baseAddress);
+          "TranslateGuestTexture: 0x{:08X} invalid fetch constant ({}x{} fmt={} base=0x{:08X}) "
+          "header={:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} | fetch {:08X} {:08X} {:08X} "
+          "{:08X} {:08X} {:08X}",
+          guestAddress, info.width, info.height, int(info.format), info.baseAddress,
+          header[0].get(), header[1].get(), header[2].get(), header[3].get(), header[4].get(),
+          header[5].get(), header[6].get(), header[7].get(), header[8].get(), header[9].get(),
+          header[10].get(), header[11].get(), header[12].get());
     }
     return nullptr;
   }

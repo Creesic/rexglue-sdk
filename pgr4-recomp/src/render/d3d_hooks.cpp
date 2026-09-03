@@ -137,7 +137,7 @@ void Swap(uint32_t device, uint32_t arg4, uint32_t /*arg5*/, uint32_t caller) {
   const char* kind = "none";
   uint32_t fbBase = 0;
   if (arg4 != 0) {
-    fbBase = ReadGuestU32At(arg4 + 28u + 4u) & 0x1FFFFFFFu & ~0xFFFu;
+    fbBase = pgr4::ghp::HeaderBaseToPhysical(ReadGuestU32At(arg4 + 28u + 4u)) & ~0xFFFu;
     presentSource = pgr4::render::LookupResolveSurfaceAperture(fbBase);
     if (presentSource != nullptr && presentSource->texture != nullptr) {
       kind = "aperture";
@@ -1214,7 +1214,7 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
     // the header's resolve copy-dest base (dword at +32) so Swap's frontbuffer
     // fetch can find the composited frame.
     reo = rr::TranslateGuestTexture(destHost, /*uploadGuestData=*/false);
-    dataBase = ReadGuestU32At(destTextureAddr + 32u) & 0x1FFFFFFFu & ~0xFFFu;
+    dataBase = ghp::HeaderBaseToPhysical(ReadGuestU32At(destTextureAddr + 32u)) & ~0xFFFu;
   }
 
   if (reo == nullptr || reo->texture == nullptr) {
