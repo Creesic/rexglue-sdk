@@ -126,3 +126,25 @@ two-sided-stencil plume patch is not on `Creesic/plume` `PGR4` yet.
   end-of-frame present is `sub_82293828`.
 - The guest's real vblank/swap callback is `rex_SwapCallback_D3D` at
   `0x826955A0` (arrives via `SCRATCH_REG4`).
+
+## Init-crash bisect (2026-09-02, after 919186a)
+
+Method: rename a hook's `REX_HOOK(<name>` to `REX_HOOK(PGR4_Dormant_<name>`
+(dead symbol), rebuild, run 15 s, check the log for "access violation".
+
+| Live hooks | Result |
+|---|---|
+| All 37 | write of guest `0x000FE000` (main thread) |
+| All but the 4 creation hooks (`CreateTexture/Surface/VertexBuffer/IndexBuffer`) | write gone; **read of guest `0x00000002`** appears instead |
+| Only `D3DDevice_Swap` | clean |
+| `Swap` + all `SetRenderState_*` | clean |
+| All but `AddRef`/`Release` | read of `0x2` persists — not them |
+| All but `D3D_SetViewport` | read of `0x2` persists — not it |
+
+So: the creation hooks are one fault (FM2 allocation/layout assumptions), and a
+second fault lives in {`SetTexture`, `ClearF`, `Resolve`, `SetScissorRect`,
+`SetViewport`, `D3D_CBlocker_Check`, `DrawVertices`, `DrawIndexedVertices`,
+`DrawVerticesUP`}. A read of exactly `0x2` looks like a small integer argument
+dereferenced as a pointer, i.e. a hook whose PGR4 signature differs from
+FM2's. Next: halve that set (state/binding vs the three draws), then compare
+the culprit's PGR4 prototype in IDA against the hook's argument list.
