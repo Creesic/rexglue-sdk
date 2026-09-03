@@ -209,6 +209,14 @@ inline constexpr uint32_t kGuestDepthBiasOffset = 0x2A54;
 inline constexpr uint32_t kGuestSlopeScaleDepthBiasOffset = 0x2A50;
 inline constexpr float kGuestSlopeScaleDepthBiasScale = 16.0f;
 
+// PA_CL_VTE_CNTL. D3DDevice_SetRenderState_ViewportEnable (0x822EB508) is
+//   li r11,0x43F / li r11,0x400 ; stw r11,0x294C(r3)
+//   cntlzw+extrwi+insrwi r10,r11,1,15 ; stw r10,0x2944(r3)
+// i.e. 0x43F with the viewport transform on and 0x400 with it off, plus an
+// inverted copy in bit 16 of the clip word. 0x400 is the "off" sentinel.
+inline constexpr uint32_t kGuestViewportEnableOffset = 0x294C;
+inline constexpr uint32_t kGuestViewportEnableOff = 0x400;
+
 // PA_CL_UCP_ENA. FM4's ClipPlaneEnable setter is the unnamed 0x826DF980
 // (`clrrwi r11,r11,6; or r11,r11,r4; stw r11,0x2944(r3)`) and its getter is
 // 0x826DF9C8 (`clrlwi r3,r11,26`): the six-plane mask is bits 0-5 of 0x2944.
@@ -264,14 +272,13 @@ inline bool GuestScissorEnable(const GuestDevice* device) {
 // PA_SU_SC_MODE_CNTL writer could leave an odd value here that D3DCULL cannot
 // name; ApplyRenderState maps those to NONE (draws too much, never too little).
 inline uint32_t GuestCullModeFromModeControl(uint32_t modeControl) {
-  // 0 is D3DCULL_NONE (the enum itself is declared further down this header).
-  return kGuestModeControlOffset == 0 ? 0u : (modeControl & 0x7u);
+  return modeControl & 0x7u;
 }
 
 // The six-plane PA_CL_UCP_ENA mask. Returns 0 (all planes off) when the offset
 // has not been located.
 inline uint32_t GuestClipPlaneMask(const GuestDevice* device) {
-  if (kGuestClipPlaneEnableOffset == 0 || device == nullptr) {
+  if (device == nullptr) {
     return 0;
   }
   return reinterpret_cast<const rex::be<uint32_t>*>(reinterpret_cast<const uint8_t*>(device) +

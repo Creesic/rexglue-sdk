@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <unordered_set>
 
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -478,17 +479,62 @@ namespace {
 // also walk the surface header (D3DDevice_SetRenderTarget does `lwz r7,0x1C(r5)`
 // at 0x823563F0), which is host-shaped memory for our GuestSurface, so we store
 // the slot ourselves and skip the walk.
+rex::be<uint32_t>* DeviceWord(uint32_t device, uint32_t offset) {
+  return device != 0 ? ghp::ToHost<rex::be<uint32_t>>(device + offset) : nullptr;
+}
+
 void StoreBoundSurfaceSlot(uint32_t device, uint32_t offset, uint32_t surface) {
-  if (device == 0) {
-    return;
-  }
-  auto* slot = ghp::ToHost<rex::be<uint32_t>>(device + offset);
-  if (slot != nullptr) {
+  if (auto* slot = DeviceWord(device, offset)) {
     *slot = surface;
   }
 }
 constexpr uint32_t kBoundColorSurfaceSlot0 = 0x31F8;
 constexpr uint32_t kBoundDepthSurfaceSlot = 0x3208;
+constexpr uint32_t kDepthControlOffset = 0x2934;
+constexpr uint32_t kColorMaskOffset = 0x28DC;
+constexpr uint32_t kRawZEnableOffset = 0x2FFC;
+constexpr uint32_t kRawStencilEnableOffset = 0x3000;
+constexpr uint32_t kRawColorWriteEnableSlot0 = 0x2FEC;
+
+// Both skipped library bodies end by *re-applying* a render state they had
+// previously forced to zero, now that a surface is bound again. Storing the
+// gate slot is not enough on its own -- the shadow only reaches the register
+// here -- which is why colorWriteEnable sampled as 0 for the whole run.
+//
+// D3DDevice_SetDepthStencilSurface tail @0x822D9BAC:
+//   r10 = (*(dev+0x3208) != 0) ? 0xFFFFFFFF : 0        (subfic/subfe idiom)
+//   DepthControl bit 1 = (r10 & *(dev+0x2FFC)) & 1     insrwi r11,r10,1,30
+//   DepthControl bit 0 = (r10 & *(dev+0x3000)) & 1     rlwimi r11,r10,0,0,30
+void ReapplyDepthStencilGatedStates(uint32_t device) {
+  auto* depthControl = DeviceWord(device, kDepthControlOffset);
+  auto* slot = DeviceWord(device, kBoundDepthSurfaceSlot);
+  auto* rawZ = DeviceWord(device, kRawZEnableOffset);
+  auto* rawStencil = DeviceWord(device, kRawStencilEnableOffset);
+  if (depthControl == nullptr || slot == nullptr || rawZ == nullptr || rawStencil == nullptr) {
+    return;
+  }
+  const bool bound = slot->get() != 0;
+  const uint32_t zEnable = bound ? (rawZ->get() & 1u) : 0u;
+  const uint32_t stencilEnable = bound ? (rawStencil->get() & 1u) : 0u;
+  *depthControl = (depthControl->get() & ~0x3u) | (zEnable << 1) | stencilEnable;
+}
+
+// D3DDevice_SetRenderTarget tail @0x82356674/0x823566A8/0x823566D4/0x82356700,
+// one arm per slot and identical apart from the offsets:
+//   r11 = (*(dev+0x31F8+4*N) != 0) ? 0xFFFFFFFF : 0
+//   ColorMask nibble N = (r11 & *(dev+0x2FEC+4*N)) & 0xF
+//     insrwi 4,28 / 4,24 / 4,20 / 4,16  ->  shift 0 / 4 / 8 / 12
+void ReapplyRenderTargetColorMask(uint32_t device, uint32_t slotIndex) {
+  auto* colorMask = DeviceWord(device, kColorMaskOffset);
+  auto* slot = DeviceWord(device, kBoundColorSurfaceSlot0 + 4u * slotIndex);
+  auto* raw = DeviceWord(device, kRawColorWriteEnableSlot0 + 4u * slotIndex);
+  if (colorMask == nullptr || slot == nullptr || raw == nullptr) {
+    return;
+  }
+  const uint32_t nibble = slot->get() != 0 ? (raw->get() & 0xFu) : 0u;
+  const uint32_t shift = 4u * slotIndex;
+  *colorMask = (colorMask->get() & ~(0xFu << shift)) | (nibble << shift);
+}
 
 // Ported from FM2P: our own textures bind directly, render-target/depth
 // surfaces sampled as shader resources go through SetTextureBase (which forces
@@ -505,7 +551,20 @@ ResolvedTextureBinding ResolveTextureBinding(GuestBaseTexture* texture) {
     return {};
   }
   if (!rr::IsFm4Resource(texture)) {
-    return {rr::TranslateGuestTexture(texture, true), false};
+    GuestTexture* translated = rr::TranslateGuestTexture(texture, true);
+    if (translated == nullptr) {
+      // Once per distinct header, as in FM2P: a raw XG texture whose fetch
+      // constant we cannot parse binds null, and a silently null sampler is
+      // indistinguishable from a shader bug.
+      static std::mutex warnMutex;
+      static std::unordered_set<const void*> warned;
+      std::lock_guard lock(warnMutex);
+      if (warned.insert(texture).second) {
+        REXLOG_WARN("D3DDevice_SetTexture: texture {} untranslatable (XG header?) -- bound null",
+                    static_cast<const void*>(texture));
+      }
+    }
+    return {translated, false};
   }
   switch (texture->type) {
     case fm4::render::ResourceType::Texture:
@@ -618,6 +677,7 @@ extern "C" REX_FUNC(D3DDevice_SetRenderTarget) {
   const uint32_t surface = ctx.r5.u32;
   if (index < 4u) {
     StoreBoundSurfaceSlot(device, kBoundColorSurfaceSlot0 + 4u * index, surface);
+    ReapplyRenderTargetColorMask(device, index);
   }
   auto* host = surface != 0 ? ghp::ToHost<GuestResource>(surface) : nullptr;
   rr::SetRenderTarget(ghp::ToHost<GuestDevice>(device), index,
@@ -634,6 +694,7 @@ extern "C" REX_FUNC(D3DDevice_SetDepthStencilSurface) {
   const uint32_t device = ctx.r3.u32;
   const uint32_t surface = ctx.r4.u32;
   StoreBoundSurfaceSlot(device, kBoundDepthSurfaceSlot, surface);
+  ReapplyDepthStencilGatedStates(device);
   auto* host = surface != 0 ? ghp::ToHost<GuestResource>(surface) : nullptr;
   rr::SetDepthStencilSurface(ghp::ToHost<GuestDevice>(device),
                              rr::IsFm4Resource(host) ? static_cast<GuestSurface*>(host) : nullptr);
@@ -707,6 +768,10 @@ extern "C" REX_FUNC(D3DDevice_SetScissorRect) {
   }
   auto* rect = ctx.r4.u32 != 0 ? ghp::ToHost<rr::GuestRect>(ctx.r4.u32) : nullptr;
   if (rect == nullptr) {
+    // A null RECT means "scissor = the whole render target". rr::SetScissorRect
+    // dereferences its rect, and the tracked rect is only consulted when
+    // scissor testing is enabled, so dropping the call leaves the last rect in
+    // place -- which is what the disabled-scissor path already ignores.
     return;
   }
   rr::SetScissorRect(ghp::ToHost<GuestDevice>(ctx.r3.u32), rect);

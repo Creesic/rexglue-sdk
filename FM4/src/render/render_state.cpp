@@ -1758,6 +1758,16 @@ void SampleGuestRenderStates(const GuestDevice* device) {
   stencil.writeMask = bytes[kGuestStencilWriteMaskOffset];
   SetStencilState(stencil);
 
+  // SetStencilState mirrors one ref/mask/writemask onto BOTH faces (Task 3's
+  // plume stencil-field collapse), so the guest's separate back-face bytes have
+  // to be re-applied on top or two-sided stencil silently uses the front values.
+  // Bytes confirmed by their own getters/setters: 0x28FF ref (getter 0x826DF938),
+  // 0x28FE mask (setter 0x826DF940, getter 0x826DF958), 0x28FD write mask
+  // (setter 0x826DF960, getter 0x826DF978).
+  SetRenderState(nullptr, D3DRS_CCWSTENCILREF, bytes[kGuestCcwStencilRefOffset]);
+  SetRenderState(nullptr, D3DRS_CCWSTENCILMASK, bytes[kGuestCcwStencilMaskOffset]);
+  SetRenderState(nullptr, D3DRS_CCWSTENCILWRITEMASK, bytes[kGuestCcwStencilWriteMaskOffset]);
+
   // --- RB_COLORCONTROL: alpha test ---
   const uint32_t color = be32(kGuestColorControlOffset);
   SetRenderState(nullptr, D3DRS_ALPHATESTENABLE, field(color, kColorCtlAlphaTestShift, 1));
@@ -1790,6 +1800,12 @@ void SampleGuestRenderStates(const GuestDevice* device) {
   SetRenderState(nullptr, D3DRS_SLOPESCALEDEPTHBIAS,
                  std::bit_cast<uint32_t>(beFloat(kGuestSlopeScaleDepthBiasOffset) /
                                          kGuestSlopeScaleDepthBiasScale));
+
+  // PA_CL_VTE_CNTL. The one render state with a live out-of-line setter that is
+  // still not a D3DRS_* the sampler can route through ApplyRenderState: it has
+  // its own entry point (SetViewportEnable), which was dead until now.
+  SetViewportEnable(const_cast<GuestDevice*>(device),
+                    be32(kGuestViewportEnableOffset) != kGuestViewportEnableOff);
 
   // Clip planes: SetClipPlaneState already reads the six planes at
   // kGuestClipPlanesOffset; it only needs the PA_CL_UCP_ENA mask.
