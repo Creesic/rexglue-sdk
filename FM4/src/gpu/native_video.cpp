@@ -48,6 +48,32 @@ std::atomic<uint32_t> g_swaps_to_ack{0};  // presented frames awaiting a source-
 std::mutex g_vsync_mutex;
 rex::system::object_ref<rex::system::XHostThread> g_vsync_thread;
 
+// Thread contract for the native path:
+//
+//  * Guest job threads call the D3D hooks. Those enqueue RenderCommands and
+//    return; only Present, resource creation and WaitForGPU use the blocking
+//    RenderQueue::Run.
+//  * The render-queue thread (render_queue.cpp ThreadMain) is the only thread
+//    that touches Plume. It is started at the end of ::Video::Init and stopped
+//    at the top of ::Video::Shutdown, BEFORE the GPU drain, so a WaitForGPU
+//    issued during shutdown falls back to inline dispatch on the caller
+//    (render/video.cpp: RenderQueue::Stop() then WaitForGPU()).
+//  * The vblank worker (VsyncThreadMain, below) runs guest code through the
+//    function dispatcher. It must NEVER call into fm4::render or ::Video: the
+//    guest interrupt handler it invokes can itself call D3D entry points, and
+//    those go through the ordinary hook path from that thread like any other
+//    guest thread. A direct renderer call here would deadlock against
+//    RecordingMutex.
+//  * Start order: OnGraphicsInterruptRegistered (vblank worker) may fire before
+//    or after ::Video::Init. Both orders are safe: the worker only raises guest
+//    interrupts, and the draw/clear/resolve entry points in render_state.cpp
+//    return immediately until ::Video::IsInitialized().
+//  * Stop order: Video::Shutdown stops the vblank worker first, so no guest
+//    interrupt can arrive while the render thread is being joined.
+//  * Lock order: g_vsync_mutex is outermost. Never take a render-side mutex
+//    (::Video's s.mutex, RecordingMutex, the render queue's) while holding it --
+//    the vsync thread's ExecuteInterrupt can re-enter Present -> RenderQueue::Run,
+//    and StopVsyncThread joins that thread while holding g_vsync_mutex.
 int VsyncThreadMain() {
   auto* kernel_state = REX_KERNEL_STATE();
   auto* thread = rex::system::XThread::GetCurrentThread();
