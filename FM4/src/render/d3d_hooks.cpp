@@ -490,6 +490,10 @@ void StoreBoundSurfaceSlot(uint32_t device, uint32_t offset, uint32_t surface) {
 }
 constexpr uint32_t kBoundColorSurfaceSlot0 = 0x31F8;
 constexpr uint32_t kBoundDepthSurfaceSlot = 0x3208;
+// m_pRing, and the slot D3DDevice_BeginVertices parks the post-vertex ring
+// pointer in (see the BeginVertices hook).
+constexpr uint32_t kGuestRingPointerOffset = 0x30;
+constexpr uint32_t kGuestBeginVerticesRingSaveOffset = 0x3604;
 constexpr uint32_t kDepthControlOffset = 0x2934;
 constexpr uint32_t kColorMaskOffset = 0x28DC;
 constexpr uint32_t kRawZEnableOffset = 0x2FFC;
@@ -833,15 +837,36 @@ extern "C" REX_FUNC(D3DDevice_BeginVertices) {
     __imp__D3DDevice_BeginVertices(ctx, base);
     return;
   }
+  const uint32_t device = ctx.r3.u32;
   const uint32_t bytes = std::max(ctx.r5.u32 * ctx.r6.u32, 0x1000u);
   static std::mutex scratchMutex;
   static uint32_t scratchAddr = 0;
   static uint32_t scratchSize = 0;
-  std::lock_guard lock(scratchMutex);
-  if (bytes > scratchSize) {
-    ghp::GuestFreeRaw(scratchAddr);
-    scratchAddr = ghp::GuestAllocRaw(bytes, 0x10);
-    scratchSize = scratchAddr != 0 ? bytes : 0;
+  {
+    std::lock_guard lock(scratchMutex);
+    if (bytes > scratchSize) {
+      ghp::GuestFreeRaw(scratchAddr);
+      scratchAddr = ghp::GuestAllocRaw(bytes, 0x10);
+      scratchSize = scratchAddr != 0 ? bytes : 0;
+    }
+  }
+
+  // The real BeginVertices reserves ring space and parks the post-vertex ring
+  // pointer at device+0x3604. Its callers restore m_pRing from that field once
+  // they have copied their vertices -- D3DDevice_DrawVerticesUP (0x822B95D8) is
+  //     lwz r11, 0x3604(r31)   ; 0x822B9610
+  //     stw r11, 0x30(r31)     ; 0x822B9614
+  // Handing back a scratch block instead never writes 0x3604, so it stays 0 and
+  // that restore stores 0 into m_pRing. After that EVERY ring emitter faults
+  // writing guest 0x00000004, because they all guard with
+  // `if (m_pRing > m_pRingLimit) RingMakeSpace()` and 0 is never greater --
+  // this is the D3D::SetSurfaceClip / D3DDevice_SetShaderGPRAllocation crash.
+  // We do not move the ring, so publish the unchanged m_pRing and the caller's
+  // restore becomes a no-op.
+  if (auto* ring = ghp::ToHost<rex::be<uint32_t>>(device + kGuestRingPointerOffset)) {
+    if (auto* saved = ghp::ToHost<rex::be<uint32_t>>(device + kGuestBeginVerticesRingSaveOffset)) {
+      *saved = ring->get();
+    }
   }
   ctx.r3.u64 = scratchAddr;
 }
