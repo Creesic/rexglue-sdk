@@ -126,9 +126,12 @@ void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t ba
 // directly by the guest for this one draw. Uploads it to a scratch buffer
 // and binds it at stream 0 for just this call -- callers must not rely on
 // stream 0's tracked GuestBuffer binding surviving a call to this function.
+// EndVertices requests a full live snapshot because its original Begin already
+// consumed the guest dirty flags; recorded constants still use the saved masks.
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                              const void* data, uint32_t stride,
                              uint64_t recordedVsDirtyFlags = 0,
-                             uint64_t recordedPsDirtyFlags = 0);
+                             uint64_t recordedPsDirtyFlags = 0,
+                             bool guestConsumedDirtyFlags = false);
 
 }  // namespace fm2::render

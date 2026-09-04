@@ -9,12 +9,14 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <rex/kernel/xam/game_region.h>
 #include <rex/kernel/xam/module.h>
 #include <rex/kernel/xam/private.h>
 #include <rex/logging.h>
 #include <rex/hook.h>
 #include <rex/types.h>
 #include <rex/string.h>
+#include <rex/system/flags.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/user_module.h>
 #include <rex/system/xenumerator.h>
@@ -175,7 +177,7 @@ u32 XGetAVPack_entry() {
 }
 
 uint32_t xeXGetGameRegion() {
-  return 0xFFFFu;
+  return GameRegionFromCountry(REXCVAR_GET(user_country));
 }
 
 u32 XGetGameRegion_entry() {

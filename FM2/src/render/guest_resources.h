@@ -142,8 +142,13 @@ struct GuestBaseTexture : GuestResource {
   // Frame index of the last guest-memory upload; lets us upload a sampled
   // texture at most once per frame instead of once per draw (huge perf win).
   uint64_t lastUploadFrame = ~0ull;
+  // Resolves update host storage, not guest RAM. Keep that stale RAM out of
+  // implicit bind-time refreshes even after a deferred resolve has completed.
+  // Explicit UnlockRect uploads carry their own data and bypass this gate.
+  std::atomic<bool> guestMemoryStale{false};
   bool NeedsGuestUpload(bool requested, uint64_t frame) const {
-    return requested && lastUploadFrame != frame;
+    return requested && !guestMemoryStale.load(std::memory_order_relaxed) &&
+           lastUploadFrame != frame;
   }
   GuestBaseTexture* sourceTexture = nullptr;
   uint32_t pendingResolveCount = 0;

@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -186,8 +187,7 @@ namespace ghp = fm2::ghp;
 
 REX_IMPORT(__imp__D3DDevice_CreateVertexShader, g_origCreateVertexShader,
            uint32_t(const uint32_t*));
-REX_IMPORT(__imp__D3DDevice_CreatePixelShader, g_origCreatePixelShader,
-           uint32_t(const uint32_t*));
+REX_IMPORT(__imp__D3DDevice_CreatePixelShader, g_origCreatePixelShader, uint32_t(const uint32_t*));
 
 uint32_t CreateVertexBufferHook(uint32_t length, uint32_t /*usage*/, uint32_t /*pool*/) {
   return ghp::ToGuest(rr::CreateVertexBuffer(length));
@@ -231,8 +231,8 @@ uint32_t CreatePixelShaderHook(const uint32_t* function) {
                               ? nativeShader->shaderCacheEntry->hash
                               : 0;
     if (hash == 0x95DD7C99779DD08Bull || hash == 0xE1B2891B7D112A0Dull) {
-      REXGPU_INFO("MR2ShaderAlias: object=0x{:08X} native=0x{:08X} hash=0x{:016X}",
-                  guestShader, ghp::ToGuest(nativeShader), hash);
+      REXGPU_INFO("MR2ShaderAlias: object=0x{:08X} native=0x{:08X} hash=0x{:016X}", guestShader,
+                  ghp::ToGuest(nativeShader), hash);
     }
   }
   return guestShader;
@@ -651,8 +651,12 @@ REX_HOOK(sub_8236DB68, Fm2SetVertexShaderConstantB);
 
 REX_IMPORT(__imp__FM2_RenderContext_SetVertexDeclaration, g_origSetVertexDeclaration,
            void(uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236E738, g_origSetFvf, void(uint32_t, uint32_t));
 
 namespace {
+
+std::mutex g_fvfDeclarationMutex;
+std::unordered_map<uint32_t, rr::GuestVertexDeclaration*> g_fvfDeclarations;
 
 void Fm2SetVertexDeclaration(uint32_t renderContext, uint32_t declarationAddress) {
   g_origSetVertexDeclaration(renderContext, declarationAddress);
@@ -664,9 +668,33 @@ void Fm2SetVertexDeclaration(uint32_t renderContext, uint32_t declarationAddress
                                        : nullptr);
 }
 
+// D3DDevice_SetFVF builds a complete D3DVERTEXELEMENT9 array in the render
+// context. Copy that short-lived array into the native declaration path now;
+// otherwise FVF draws fall through to an inferred shader/stride match.
+void Fm2SetFvf(uint32_t renderContext, uint32_t fvf) {
+  g_origSetFvf(renderContext, fvf);
+  GuestDevice* device = DeviceForRenderContext(renderContext);
+  if (device == nullptr)
+    return;
+
+  rr::GuestVertexDeclaration* declaration;
+  {
+    std::lock_guard lock(g_fvfDeclarationMutex);
+    auto [it, inserted] = g_fvfDeclarations.try_emplace(fvf, nullptr);
+    if (inserted) {
+      constexpr uint32_t kGeneratedElementsOffset = 11912u + 52u;
+      it->second = rr::CreateVertexDeclaration(
+          ghp::ToHost<const GuestVertexElement>(renderContext + kGeneratedElementsOffset));
+    }
+    declaration = it->second;
+  }
+  rr::SetVertexDeclaration(device, declaration);
+}
+
 }  // namespace
 
 REX_HOOK(FM2_RenderContext_SetVertexDeclaration, Fm2SetVertexDeclaration);
+REX_HOOK(sub_8236E738, Fm2SetFvf);  // D3DDevice_SetFVF
 
 // ---------------------------------------------------------------------------
 // Vertex/index stream + surface binding.
@@ -790,9 +818,8 @@ void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shaderAddr) {
   if (device == nullptr)
     return;
   rr::SetPixelShader(device, shader);
-  const uint64_t hash = shader != nullptr && shader->shaderCacheEntry != nullptr
-                            ? shader->shaderCacheEntry->hash
-                            : 0;
+  const uint64_t hash =
+      shader != nullptr && shader->shaderCacheEntry != nullptr ? shader->shaderCacheEntry->hash : 0;
   if (hash == 0x95DD7C99779DD08Bull || hash == 0xE1B2891B7D112A0Dull) {
     static std::atomic<uint32_t> traceCount{0};
     const uint32_t index = traceCount.fetch_add(1, std::memory_order_relaxed);
@@ -879,6 +906,9 @@ struct ResolvedTextureBinding {
   bool baseTexture = false;
 };
 
+thread_local uint32_t g_textureCaller = 0;
+std::atomic<bool> g_savingTextureSeen{false};
+
 ResolvedTextureBinding ResolveTextureBinding(rr::GuestBaseTexture* texture) {
   if (texture == nullptr)
     return {};
@@ -902,6 +932,46 @@ void SetTextureHook(GuestDevice* device, uint32_t sampler, rr::GuestBaseTexture*
   const uint32_t guestAddress = ghp::ToGuest(texture);
   const bool rawTexture = texture != nullptr && !rr::IsFm2Resource(texture);
   const ResolvedTextureBinding binding = ResolveTextureBinding(texture);
+  const rr::GuestBaseTexture* resolved = binding.texture;
+  // Start at the saving movie's exact input/output sizes. Startup null binds
+  // previously exhausted the trace before this chain ever ran.
+  const bool savingTexture = resolved != nullptr &&
+      ((resolved->width == 168 && resolved->height == 48) ||
+       (resolved->width == 88 && resolved->height == 24) ||
+       (resolved->width == 163 && resolved->height == 47));
+  if (savingTexture && !g_savingTextureSeen.exchange(true, std::memory_order_relaxed)) {
+    REXGPU_INFO("SavingTrace: armed guest=0x{:08X} lr=0x{:08X} size={}x{}",
+                guestAddress, g_textureCaller, resolved->width, resolved->height);
+  }
+  if (sampler < 4 && g_savingTextureSeen.load(std::memory_order_relaxed)) {
+    static std::atomic<uint32_t> traceCount{0};
+    const uint32_t index = traceCount.fetch_add(1, std::memory_order_relaxed);
+    if (index < 4096) {
+      REXGPU_INFO(
+          "SavingBind: n={} lr=0x{:08X} device=0x{:08X} sampler={} "
+          "guest=0x{:08X} input=0x{:016X} raw={} "
+          "translated={} base={} resolved=0x{:016X} host=0x{:016X} type={} size={}x{} "
+          "desc={} recording={} fetchWrite={}",
+          index + 1, g_textureCaller, ghp::ToGuest(device),
+          sampler, guestAddress, uint64_t(reinterpret_cast<uintptr_t>(texture)),
+          rawTexture, rawTexture && resolved != nullptr, binding.baseTexture,
+          uint64_t(reinterpret_cast<uintptr_t>(resolved)),
+          uint64_t(reinterpret_cast<uintptr_t>(resolved != nullptr ? resolved->texture : nullptr)),
+          resolved != nullptr ? uint32_t(resolved->type) : UINT32_MAX,
+          resolved != nullptr ? resolved->width : 0, resolved != nullptr ? resolved->height : 0,
+          resolved != nullptr ? resolved->descriptorIndex : 0,
+          fm2::render::RenderQueue::IsRecording(), texture != nullptr);
+      if (index == 4095)
+        REXGPU_INFO("SavingTrace: guest bind limit reached (4096)");
+    }
+  }
+  // Xbox SetTexture branches from 0x8236C228 to 0x8236C308 for null:
+  // it releases resource tracking but does NOT overwrite the fetch words or
+  // dirty their GPU state. In particular, a null material parameter may follow
+  // a direct texture bind before the draw. Preserve that ordered native bind,
+  // including while recording. A failed non-null translation still binds null.
+  if (texture == nullptr)
+    return;
   if (rawTexture && binding.texture == nullptr) {
     static std::unordered_set<const void*> s_warned;
     if (s_warned.insert(texture).second) {
@@ -921,7 +991,10 @@ void SetTextureHook(GuestDevice* device, uint32_t sampler, rr::GuestBaseTexture*
 
 }  // namespace
 
-REX_HOOK(D3DDevice_SetTexture, SetTextureHook);
+REX_HOOK_RAW(D3DDevice_SetTexture) {
+  g_textureCaller = uint32_t(ctx.lr);
+  rex::ppc::HostToGuestFunction<SetTextureHook>(ctx, base);
+}
 
 // ---------------------------------------------------------------------------
 // D3DDevice_Resolve. Full replacement: the original body is a raw
@@ -992,6 +1065,24 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
     // fetch can find the composited frame.
     reo = rr::TranslateGuestTexture(destHost, /*uploadGuestData=*/false);
     dataBase = ReadGuestU32At(destTextureAddr + 32u) & 0x1FFFFFFFu & ~0xFFFu;
+  }
+
+  if (reo != nullptr && reo->width == 163 && reo->height == 47) {
+    g_savingTextureSeen.store(true, std::memory_order_relaxed);
+    REXGPU_INFO(
+        "SavingResolve: lr=0x{:08X} parentLr=0x{:08X} owner=0x{:08X} "
+        "guest=0x{:08X} object=0x{:016X} host=0x{:016X} desc={} dataBase=0x{:08X} "
+        "flags=0x{:X} postClear=0x{:X} destPt={},{} srcRect={},{},{},{} recording={}",
+        g_resolveCaller, g_resolveParentCaller, g_resolveOwner,
+        destTextureAddr, uint64_t(reinterpret_cast<uintptr_t>(reo)),
+        uint64_t(reinterpret_cast<uintptr_t>(reo->texture)), reo->descriptorIndex, dataBase,
+        flags, postClearFlags, destPoint != nullptr ? destPoint->x.get() : 0,
+        destPoint != nullptr ? destPoint->y.get() : 0,
+        sourceRect != nullptr ? sourceRect->left.get() : -1,
+        sourceRect != nullptr ? sourceRect->top.get() : -1,
+        sourceRect != nullptr ? sourceRect->right.get() : -1,
+        sourceRect != nullptr ? sourceRect->bottom.get() : -1,
+        fm2::render::RenderQueue::IsRecording());
   }
 
   if (reo == nullptr || reo->texture == nullptr) {
@@ -1091,6 +1182,9 @@ REX_IMPORT(__imp__D3DDevice_DrawIndexedVertices_WithVertexFormatSetup,
            void(GuestDevice*, uint32_t, int32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__D3DDevice_DrawVerticesUP, g_origDrawVerticesUP,
            void(GuestDevice*, uint32_t, uint32_t, const void*, uint32_t));
+REX_IMPORT(__imp__sub_827308A8, g_origBeginVertices,
+           uint32_t(uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_82730D40, g_origEndVertices, void(uint32_t));
 REX_IMPORT(__imp__FM2_D3D_BeginCommandBufferBatch, g_origBeginCommandBufferBatch,
            uint32_t(uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__FM2_D3D_FinalizeCommandBufferBatch, g_origFinalizeCommandBufferBatch,
@@ -1187,7 +1281,7 @@ void DrawIndexedVerticesWithVertexFormatHook(GuestDevice* device, uint32_t primi
   const uint64_t psDirtyFlags = recording && device != nullptr ? device->dirtyFlags[1].get() : 0;
   if (recording)
     g_origDrawIndexedVerticesWithVertexFormat(device, primitiveType, baseVertexIndex, startIndex,
-                                               indexCount);
+                                              indexCount);
   rr::DrawIndexedVertices(device, primitiveType, baseVertexIndex, startIndex, indexCount,
                           vsDirtyFlags, psDirtyFlags);
 }
@@ -1200,13 +1294,62 @@ void DrawVerticesUPHook(GuestDevice* device, uint32_t primitiveType, uint32_t ve
   const uint64_t psDirtyFlags = recording && device != nullptr ? device->dirtyFlags[1].get() : 0;
   if (recording) {
     g_origDrawVerticesUP(device, primitiveType, vertexCount, vertexStreamZeroData,
-                          vertexStreamZeroStride);
+                         vertexStreamZeroStride);
   }
   rr::DrawUserPointerVertices(device, primitiveType, vertexCount, vertexStreamZeroData,
-                               vertexStreamZeroStride, vsDirtyFlags, psDirtyFlags);
+                              vertexStreamZeroStride, vsDirtyFlags, psDirtyFlags);
 }
 
 }  // namespace
+
+namespace {
+thread_local fm2::render::PendingVertexWrites t_pendingVertexWrites;
+}
+
+REX_HOOK_RAW(sub_827308A8) {  // D3DDevice_BeginVertices
+  const uint32_t deviceAddress = ctx.r3.u32;
+  const uint32_t caller = ctx.lr;
+  auto* device = fm2::ghp::ToHost<GuestDevice>(deviceAddress);
+  fm2::render::PendingVertexWrite write{
+      nullptr, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32,
+      device != nullptr ? device->dirtyFlags[0].get() : 0,
+      device != nullptr ? device->dirtyFlags[1].get() : 0};
+  g_origBeginVertices.fn(ctx, base);
+  // DrawVerticesUP inlines EndVertices and already owns its native upload.
+  // Its internal Begin must not leave a second pending draw behind.
+  if (caller == 0x82730D84u || ctx.r3.u32 == 0)
+    return;
+  write.data = fm2::ghp::ToHost<const void>(ctx.r3.u32);
+  if (!t_pendingVertexWrites.Begin(deviceAddress, write)) {
+    REXGPU_WARN("BeginVertices: invalid or overlapping write device=0x{:08X}", deviceAddress);
+    return;
+  }
+  static std::atomic<uint32_t> begins{0};
+  if (const uint32_t n = ++begins; n <= 32) {
+    REXGPU_INFO("BeginVertices: n={} lr=0x{:08X} device=0x{:08X} data=0x{:08X} "
+                "primitive={} count={} stride={} recording={}",
+                n, caller, deviceAddress, ctx.r3.u32, write.primitiveType,
+                write.vertexCount, write.stride, rr::RenderQueue::IsRecording());
+  }
+}
+
+REX_HOOK_RAW(sub_82730D40) {  // D3DDevice_EndVertices
+  const uint32_t deviceAddress = ctx.r3.u32;
+  const auto write = t_pendingVertexWrites.End(deviceAddress);
+  if (write) {
+    DrainDeferredDrawShaderConstants();
+    // Begin's original XDK emitter consumed the dirty masks. Snapshot all
+    // live non-recorded state, keeping sparse pre-Begin masks for recordings.
+    rr::DrawUserPointerVertices(fm2::ghp::ToHost<GuestDevice>(deviceAddress),
+                                write->primitiveType, write->vertexCount, write->data,
+                                write->stride, write->vsDirtyFlags, write->psDirtyFlags, true);
+    static std::atomic<uint32_t> ends{0};
+    if (const uint32_t n = ++ends; n <= 32)
+      REXGPU_INFO("EndVertices: n={} lr=0x{:08X} device=0x{:08X} submitted count={} stride={}",
+                  n, uint32_t(ctx.lr), deviceAddress, write->vertexCount, write->stride);
+  }
+  g_origEndVertices.fn(ctx, base);
+}
 
 REX_HOOK_RAW(sub_82382CC8) {
   const uint64_t dirtyMask = ctx.r4.u64;
@@ -1336,11 +1479,55 @@ REX_HOOK_RAW(sub_82376830) {
   }
 }
 
-REX_HOOK(D3DDevice_DrawVertices, DrawVerticesHook);
-REX_HOOK(D3DDevice_DrawIndexedVertices, DrawIndexedVerticesHook);
-REX_HOOK(D3DDevice_DrawIndexedVertices_WithVertexFormatSetup,
-         DrawIndexedVerticesWithVertexFormatHook);
-REX_HOOK(D3DDevice_DrawVerticesUP, DrawVerticesUPHook);
+namespace {
+
+void TraceSavingGuestDraw(const PPCContext& ctx, uint32_t kind, uint32_t count) {
+  if (!g_savingTextureSeen.load(std::memory_order_relaxed) || ctx.r3.u32 == 0)
+    return;
+  static std::atomic<uint32_t> traceCount{0};
+  const uint32_t index = traceCount.fetch_add(1, std::memory_order_relaxed);
+  if (index >= 128)
+    return;
+
+  const auto* device = ghp::ToHost<const GuestDevice>(ctx.r3.u32);
+  REXGPU_INFO(
+      "SavingGuestDraw: n={} lr=0x{:08X} device=0x{:08X} kind={} primitive={} "
+      "count={} fetchDirty=0x{:016X} recording={}",
+      index + 1, uint32_t(ctx.lr), ctx.r3.u32, kind, ctx.r4.u32,
+      count, device->dirtyFlags[3].get(), fm2::render::RenderQueue::IsRecording());
+  for (uint32_t sampler = 0; sampler < 4; ++sampler) {
+    const auto& fetch = device->samplerStates[sampler].data;
+    // The original SetTexture stores r5 at device + (3066 + slot) * 4.
+    // Observe it only: this trace must not manufacture guest texture state.
+    const uint32_t shadow = ReadGuestU32At(ctx.r3.u32 + (3066u + sampler) * 4u);
+    REXGPU_INFO(
+        "SavingGuestFetch: draw={} sampler={} shadow=0x{:08X} "
+        "words={:08X},{:08X},{:08X},{:08X},{:08X},{:08X}",
+        index + 1, sampler, shadow, fetch[0].get(), fetch[1].get(), fetch[2].get(),
+        fetch[3].get(), fetch[4].get(), fetch[5].get());
+  }
+  if (index == 127)
+    REXGPU_INFO("SavingTrace: guest draw limit reached (128)");
+}
+
+}  // namespace
+
+REX_HOOK_RAW(D3DDevice_DrawVertices) {
+  TraceSavingGuestDraw(ctx, 1, ctx.r6.u32);
+  rex::ppc::HostToGuestFunction<DrawVerticesHook>(ctx, base);
+}
+REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
+  TraceSavingGuestDraw(ctx, 2, ctx.r7.u32);
+  rex::ppc::HostToGuestFunction<DrawIndexedVerticesHook>(ctx, base);
+}
+REX_HOOK_RAW(D3DDevice_DrawIndexedVertices_WithVertexFormatSetup) {
+  TraceSavingGuestDraw(ctx, 2, ctx.r7.u32);
+  rex::ppc::HostToGuestFunction<DrawIndexedVerticesWithVertexFormatHook>(ctx, base);
+}
+REX_HOOK_RAW(D3DDevice_DrawVerticesUP) {
+  TraceSavingGuestDraw(ctx, 3, ctx.r5.u32);
+  rex::ppc::HostToGuestFunction<DrawVerticesUPHook>(ctx, base);
+}
 
 REX_HOOK_RAW(FM2_D3D_BeginCommandBufferBatch) {
   fm2::render::RenderQueue::BeginRecording();

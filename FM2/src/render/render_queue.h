@@ -9,11 +9,45 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
+#include <unordered_map>
 #include <vector>
 
 #include "render/render_commands.h"
 
 namespace fm2::render {
+
+// BeginVertices returns writable guest memory. Do not copy or submit it until
+// EndVertices; the normal UP upload/recording path owns the copy from then on.
+struct PendingVertexWrite {
+  const void* data;
+  uint32_t primitiveType;
+  uint32_t vertexCount;
+  uint32_t stride;
+  uint64_t vsDirtyFlags;
+  uint64_t psDirtyFlags;
+};
+
+class PendingVertexWrites {
+ public:
+  bool Begin(uint32_t device, const PendingVertexWrite& write) {
+    if (device == 0 || write.data == nullptr || write.vertexCount == 0 ||
+        write.stride == 0 || write.vertexCount > UINT32_MAX / write.stride) {
+      return false;
+    }
+    return writes_.emplace(device, write).second;
+  }
+
+  std::optional<PendingVertexWrite> End(uint32_t device) {
+    auto entry = writes_.extract(device);
+    if (entry.empty())
+      return std::nullopt;
+    return entry.mapped();
+  }
+
+ private:
+  std::unordered_map<uint32_t, PendingVertexWrite> writes_;
+};
 
 // Persistent copy of the ordinary D3D commands emitted while FM2 compiles a
 // reusable guest command buffer. Pointer-backed draw payloads are owned here;

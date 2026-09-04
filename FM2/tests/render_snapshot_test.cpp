@@ -5,6 +5,7 @@
 #include <array>
 #include <bit>
 #include <cstring>
+#include <rex/kernel/xam/game_region.h>
 
 #define NOMINMAX
 #include <plume_render_interface_types.h>
@@ -15,6 +16,7 @@
 #include "render/render_internal.h"
 #include "render/render_queue.h"
 #include "render/render_state.h"
+#include "render/shaders/rectangle_list.hlsli"
 
 namespace {
 
@@ -26,6 +28,75 @@ void Check(bool condition) {
 }  // namespace
 
 int main() {
+  {
+    using fm2::render::RectangleFirstVertex;
+    using fm2::render::RectangleFourthComponent;
+    // Oracle saving E228: first rectangle after the VS and generated corner
+    // after the GS. Rotate the input order so all three diagonals are tested.
+    const float corners[3][4] = {{-1, 1, 0, 1}, {-0.75f, 1, 0, 1}, {-1, -1, 0, 1}};
+    const float uv[3][4] = {{0, 0, 0, 0}, {0.125f, 0, 160, 0}, {0, 1, 0, 720}};
+    const float expectedPosition[4] = {-0.75f, -1, 0, 1};
+    const float expectedUv[4] = {0.125f, 1, 160, 720};
+    for (int rotation = 0; rotation < 3; ++rotation) {
+      float edges[3];
+      for (int i = 0; i < 3; ++i) {
+        const auto& a = corners[(rotation + i + 1) % 3];
+        const auto& b = corners[(rotation + i + 2) % 3];
+        const float dx = b[0] - a[0], dy = b[1] - a[1];
+        edges[i] = dx * dx + dy * dy;
+      }
+      const int first = (RectangleFirstVertex(edges[0], edges[1], edges[2]) + rotation) % 3;
+      Check(first == 0);
+      for (int lane = 0; lane < 4; ++lane) {
+        Check(RectangleFourthComponent(corners[first][lane], corners[(first + 1) % 3][lane],
+                                       corners[(first + 2) % 3][lane]) == expectedPosition[lane]);
+        Check(RectangleFourthComponent(uv[first][lane], uv[(first + 1) % 3][lane],
+                                       uv[(first + 2) % 3][lane]) == expectedUv[lane]);
+      }
+    }
+    Check(RectangleFirstVertex(0, 0, 0) == 2);
+    Check(RectangleFirstVertex(2, 2, 1) == 1);
+    Check(RectangleFourthComponent(0.2f, 0.4f, 0.3f) == 0.5f);
+  }
+
+  {
+    // Begin/End vertices: data is filled after Begin, consumed once at End,
+    // then owned by the existing recorded UP-command path.
+    fm2::render::PendingVertexWrites pending;
+    std::array<uint8_t, 72> vertices{};
+    fm2::render::PendingVertexWrite write{vertices.data(), 4, 6, 12, 0x10, 0x20};
+    Check(!pending.Begin(0, write));
+    auto invalid = write;
+    invalid.data = nullptr;
+    Check(!pending.Begin(1, invalid));
+    invalid = write;
+    invalid.vertexCount = UINT32_MAX;
+    Check(!pending.Begin(1, invalid));
+    invalid = write;
+    invalid.stride = 0;
+    Check(!pending.Begin(1, invalid));
+    Check(pending.Begin(1, write));
+    Check(!pending.Begin(1, write));
+    Check(pending.Begin(2, write));
+    Check(!pending.End(3));
+    vertices[0] = 42;
+    const auto ready = pending.End(1);
+    Check(ready.has_value());
+    Check(ready->primitiveType == 4 && ready->vertexCount == 6 && ready->stride == 12);
+    Check(ready->vsDirtyFlags == 0x10 && ready->psDirtyFlags == 0x20);
+    Check(static_cast<const uint8_t*>(ready->data)[0] == 42);
+    Check(!pending.End(1));
+    Check(pending.End(2).has_value());
+    fm2::render::RenderCommand command{};
+    command.type = fm2::render::RenderCommandType::DrawPrimitiveUP;
+    command.drawPrimitiveUP.vertexData = vertices.data();
+    command.drawPrimitiveUP.bytes = ready->vertexCount * ready->stride;
+    fm2::render::RecordedRenderBatch batch;
+    batch.Append(command);
+    vertices[0] = 99;
+    Check(batch.commands()[0].drawPrimitiveUP.vertexData[0] == 42);
+  }
+
   using fm2::render::CaptureDeferredExecutionSnapshot;
   using fm2::render::ConstantSnapshotRange;
   using fm2::render::DeferredExecutionSnapshot;
@@ -152,6 +223,27 @@ int main() {
   uploadState.lastUploadFrame = 7;
   Check(!uploadState.NeedsGuestUpload(true, 7));
   Check(!uploadState.NeedsGuestUpload(false, 8));
+  Check(uploadState.NeedsGuestUpload(true, 8));  // Movies still refresh next frame.
+  uploadState.guestMemoryStale.store(true, std::memory_order_relaxed);
+  Check(!uploadState.NeedsGuestUpload(true, 8));
+  // Completing the deferred copy clears sourceSurface, not GPU ownership.
+  Check(uploadState.sourceSurface == nullptr);
+  Check(!uploadState.NeedsGuestUpload(true, 100));
+  fm2::render::GuestTexture resolveBeforeFirstUpload;
+  resolveBeforeFirstUpload.guestMemoryStale.store(true, std::memory_order_relaxed);
+  Check(!resolveBeforeFirstUpload.NeedsGuestUpload(true, 0));
+  {
+    using rex::kernel::xam::GameRegionFromCountry;
+    Check(GameRegionFromCountry(103) == 0x00FF);  // USA; FM2 ShowESRB.
+    Check(GameRegionFromCountry(16) == 0x00FF);   // Canada.
+    Check(GameRegionFromCountry(53) == 0x0101);   // Japan.
+    Check(GameRegionFromCountry(35) == 0x02FE);   // UK.
+    Check(GameRegionFromCountry(0) == 0xFFFF);
+    Check(GameRegionFromCountry(17) == 0xFFFF);   // Unassigned country.
+    Check(GameRegionFromCountry(110) == 0x03FF);  // Last table entry.
+    Check(GameRegionFromCountry(111) == 0xFFFF);
+    Check(GameRegionFromCountry(UINT32_MAX) == 0xFFFF);
+  }
   Check(fm2::render::D3DRS_CULLMODE == 56);
   Check(fm2::render::D3DRS_BLENDOPALPHA == 92);
   Check(fm2::render::D3DRS_STENCILENABLE == 108);

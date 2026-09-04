@@ -34,6 +34,7 @@
 #include "render/render_queue.h"
 #include "render/render_state.h"
 #include "render/video.h"
+#include "render/shaders/rectangle_gs.hlsl.dxil.h"
 
 // Spec-constant bits (XenosRecomp shared ABI -- must match the offline
 // shader-translation tool's bit layout exactly).
@@ -61,6 +62,7 @@ struct PipelineState {
   GuestShader* pixelShader = nullptr;
   GuestVertexDeclaration* vertexDeclaration = nullptr;
   RenderPrimitiveTopology primitiveTopology = RenderPrimitiveTopology::TRIANGLE_LIST;
+  bool rectangleList = false;
   bool zEnable = true;
   bool zWriteEnable = true;
   RenderBlend srcBlend = RenderBlend::ONE;
@@ -1760,6 +1762,34 @@ void ProcSetTextureBase(uint32_t index, GuestBaseTexture* texture) {
   g_textures[index] = nullptr;
 }
 
+void TraceSavingAppliedBinding(uint32_t index, uint32_t guestAddress,
+                               GuestBaseTexture* texture) {
+  if (index >= 4)
+    return;
+  static bool armed = false;
+  static uint32_t traceCount = 0;
+  if (texture != nullptr &&
+      ((texture->width == 168 && texture->height == 48) ||
+       (texture->width == 88 && texture->height == 24) ||
+       (texture->width == 163 && texture->height == 47))) {
+    armed = true;
+  }
+  if (!armed || traceCount >= 4096)
+    return;
+  REXGPU_INFO(
+      "SavingApply: n={} frame={} sampler={} guest=0x{:08X} object=0x{:016X} "
+      "host=0x{:016X} size={}x{} desc={}/{}/{} tracked=0x{:016X}",
+      ++traceCount, CurrentFrameIndex(), index, guestAddress,
+      uint64_t(reinterpret_cast<uintptr_t>(texture)),
+      uint64_t(reinterpret_cast<uintptr_t>(texture != nullptr ? texture->texture : nullptr)),
+      texture != nullptr ? texture->width : 0, texture != nullptr ? texture->height : 0,
+      g_sharedConstants.texture2DIndices[index], g_sharedConstants.texture3DIndices[index],
+      g_sharedConstants.textureCubeIndices[index],
+      uint64_t(reinterpret_cast<uintptr_t>(g_textures[index])));
+  if (traceCount == 4096)
+    REXGPU_INFO("SavingTrace: applied bind limit reached (4096)");
+}
+
 void CompleteVertexDeclaration(GuestVertexDeclaration* decl);
 
 void ApplyVertexDeclarationMetadata(GuestVertexDeclaration* declaration) {
@@ -2220,6 +2250,13 @@ void Clear(GuestDevice* /*device*/, uint32_t flags, const float* color, float z)
 void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint,
                       const GuestRect* sourceRect, uint32_t postClearFlags,
                       const float* postClearColor, float postClearZ) {
+  // Publish before enqueue: a later SetTexture must not schedule a stale CPU
+  // upload while this resolve is still waiting for the render thread.
+  if (destTexture != nullptr &&
+      !destTexture->guestMemoryStale.exchange(true, std::memory_order_relaxed)) {
+    REXGPU_INFO("ResolveToTexture: preserving GPU contents from guest refresh (desc={} {}x{})",
+                destTexture->descriptorIndex, destTexture->width, destTexture->height);
+  }
   // Unleashed StretchRect pattern: link dest to the current RT and defer the
   // copy/MSAA resolve until FlushPendingStretchRectCommands (before Present /
   // draw). Immediate path kept for non-texture destinations or region copies.
@@ -2900,6 +2937,7 @@ void TraceVertexDeclarationChoice(GuestDevice* device, GuestVertexDeclaration* q
 // ---------------------------------------------------------------------------
 
 std::unordered_map<uint64_t, std::unique_ptr<RenderPipeline>> g_pipelines;
+std::unique_ptr<RenderShader> g_rectangleGeometryShader;
 
 // PSO creation can fail for reasons that will never change on retry (a
 // permanently-mismatched/uncompilable shader in the cache) -- without this,
@@ -2913,6 +2951,9 @@ std::unordered_set<uint64_t> g_failedPipelines;
 // zeroed first, or two draws that only differ in "don't-care" bits would
 // wastefully build (and leak descriptor-table-consuming) separate PSOs.
 void SanitizePipelineState(PipelineState& ps) {
+  // Xenos rectangle lists are non-polygonal and ignore face culling.
+  if (ps.rectangleList)
+    ps.cullMode = RenderCullMode::NONE;
   if (!ps.zEnable) {
     ps.zFunc = RenderComparisonFunction::ALWAYS;
     ps.depthBias = 0;
@@ -3019,6 +3060,21 @@ std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps) 
   desc.pipelineLayout = PipelineLayout();
   desc.vertexShader = vertexShader;
   desc.pixelShader = pixelShader;
+  if (ps.rectangleList) {
+    if (!Device()->getCapabilities().geometryShader) {
+      LogPipelineRejectOnce("rectangle lists require geometry shader support");
+      return nullptr;
+    }
+    if (g_rectangleGeometryShader == nullptr) {
+      g_rectangleGeometryShader = Device()->createShader(
+          g_rectangle_gs_dxil, sizeof(g_rectangle_gs_dxil), "main", RenderShaderFormat::DXIL);
+    }
+    if (g_rectangleGeometryShader == nullptr) {
+      LogPipelineRejectOnce("rectangle geometry shader failed to load");
+      return nullptr;
+    }
+    desc.geometryShader = g_rectangleGeometryShader.get();
+  }
   desc.depthFunction = ps.zFunc;
   desc.depthEnabled = ps.zEnable;
   desc.depthWriteEnabled = ps.zWriteEnable;
@@ -3223,8 +3279,7 @@ bool QueueConstantGroupSnapshots(LocalRenderCommandQueue& queue, RenderCommandTy
                                  uint32_t maxGroupCount) {
   bool queued = false;
   while (dirtyGroups != 0) {
-    const ConstantSnapshotRange range =
-        PopConstantSnapshotRange(dirtyGroups, maxGroupCount);
+    const ConstantSnapshotRange range = PopConstantSnapshotRange(dirtyGroups, maxGroupCount);
     if (range.size == 0)
       break;
     if (!QueueConstantSnapshot(queue, type, source, range))
@@ -3235,15 +3290,16 @@ bool QueueConstantGroupSnapshots(LocalRenderCommandQueue& queue, RenderCommandTy
 }
 
 void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue,
-                             uint64_t recordedVsDirtyFlags,
-                             uint64_t recordedPsDirtyFlags) {
+                             uint64_t recordedVsDirtyFlags, uint64_t recordedPsDirtyFlags,
+                             bool guestConsumedDirtyFlags = false) {
   if (device == nullptr)
     return;
 
   thread_local GuestDevice* lastDevice = nullptr;
   const bool recording = RenderQueue::IsRecording();
-  const bool forceFullSnapshot = lastDevice != device || recording;
-  const bool forceFullConstantSnapshot = lastDevice != device && !recording;
+  const bool forceFullSnapshot = lastDevice != device || recording || guestConsumedDirtyFlags;
+  const bool forceFullConstantSnapshot =
+      (lastDevice != device || guestConsumedDirtyFlags) && !recording;
   lastDevice = device;
 
   // Vertex/index bindings are mutable guest context state just like shader
@@ -3360,12 +3416,11 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
     t_pendingDrawVsConstants.OverlayAndClear(mergedVsConstants.data(), 256);
     vsSource = mergedVsConstants.data();
   }
-  const bool queuedVs = recording
-                            ? QueueConstantGroupSnapshots(
-                                  queue, RenderCommandType::SetVertexShaderConstants, vsSource,
-                                  vsFlags | pendingVsGroups, 64)
-                            : QueueConstantSnapshot(
-                                  queue, RenderCommandType::SetVertexShaderConstants, vsSource,
+  const bool queuedVs =
+      recording
+          ? QueueConstantGroupSnapshots(queue, RenderCommandType::SetVertexShaderConstants,
+                                        vsSource, vsFlags | pendingVsGroups, 64)
+          : QueueConstantSnapshot(queue, RenderCommandType::SetVertexShaderConstants, vsSource,
                                   (forceFullConstantSnapshot || hasPendingVs)
                                       ? ConstantSnapshotRange{0, kVsFloatConstantBytes}
                                       : GetConstantSnapshotRange(vsFlags, 64));
@@ -3385,24 +3440,21 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
     t_pendingDrawPsConstants.OverlayAndClear(mergedPsConstants.data(), 224);
     psSource = mergedPsConstants.data();
   }
-  const bool queuedPs = recording
-                            ? QueueConstantGroupSnapshots(
-                                  queue, RenderCommandType::SetPixelShaderConstants, psSource,
-                                  psFlags | pendingPsGroups, 56)
-                            : QueueConstantSnapshot(
-                                  queue, RenderCommandType::SetPixelShaderConstants, psSource,
-                                  (forceFullConstantSnapshot || hasPendingPs)
-                                      ? ConstantSnapshotRange{0, kPsFloatConstantBytes}
-                                      : GetConstantSnapshotRange(psFlags, 56));
+  const bool queuedPs =
+      recording ? QueueConstantGroupSnapshots(queue, RenderCommandType::SetPixelShaderConstants,
+                                              psSource, psFlags | pendingPsGroups, 56)
+                : QueueConstantSnapshot(queue, RenderCommandType::SetPixelShaderConstants, psSource,
+                                        (forceFullConstantSnapshot || hasPendingPs)
+                                            ? ConstantSnapshotRange{0, kPsFloatConstantBytes}
+                                            : GetConstantSnapshotRange(psFlags, 56));
   if (queuedPs && !recording) {
     device->dirtyFlags[1] = 0;
   }
 }
 
 RenderPrimitiveTopology ConvertPrimitiveType(uint32_t type) {
-  // Match SOURCE / Unleashed: unknown Xbox types (e.g. D3DPT_RECTLIST=8) still
-  // attempt a triangle-list draw rather than skipping the entire draw (which
-  // left UI/compositing black). QUADLIST/FAN use TRIANGLE_LIST + re-index.
+  // RECTLIST feeds three corners to the geometry shader, which completes the
+  // rectangle after vertex shading. QUADLIST/FAN use TRIANGLE_LIST + re-index.
   switch (type) {
     case D3DPT_POINTLIST:
       return RenderPrimitiveTopology::POINT_LIST;
@@ -3507,15 +3559,8 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   if (device == nullptr)
     return;
 
-  // FM2's deferred draw-list nodes carry color-write state that the direct
-  // D3D9 mirrors don't see. A bound pixel shader denotes a color pass; keep
-  // stale zero write masks from turning it into an accidental depth prepass.
-  if (g_pipelineState.pixelShader != nullptr && g_pipelineState.colorWriteEnable == 0 &&
-      g_renderTarget != nullptr) {
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.colorWriteEnable, 0xFu);
-    g_dirtyStates.renderTargetAndDepthStencil = true;
-  }
-
+  // A pixel shader may accompany a stencil-only draw (the font clip mask).
+  // Honor the ordered ColorWriteEnable value even when a PS is bound.
   GuestBaseTexture* renderTarget = g_pipelineState.colorWriteEnable != 0 ? g_renderTarget : nullptr;
   GuestSurface* depthStencil =
       (g_pipelineState.zEnable || g_pipelineState.stencilEnable) ? g_depthStencil : nullptr;
@@ -3575,6 +3620,8 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
 
   const RenderPrimitiveTopology topology = ConvertPrimitiveType(primitiveType);
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.primitiveTopology, topology);
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.rectangleList,
+                primitiveType == D3DPT_RECTLIST);
 
   // Drain deferred Resolve/StretchRect (incl. MSAA) before we bind RTs for
   // drawing -- mirrors Unleashed FlushRenderStateForRenderThread.
@@ -3641,6 +3688,8 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   }
 
   PipelineState pipelineState = g_pipelineState;
+  pipelineState.renderTargetFormat =
+      renderTarget != nullptr ? renderTarget->format : RenderFormat::UNKNOWN;
   // Surface creation preserves the Xbox MSAA count. D3D12 requires the PSO
   // SampleDesc to match the bound attachments exactly; forcing COUNT_1 here
   // made draws disappear and eventually removed the device.
@@ -3674,10 +3723,9 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   g_sharedConstants.swappedTexcoords = g_pipelineState.vertexDeclaration != nullptr
                                            ? g_pipelineState.vertexDeclaration->swappedTexcoords
                                            : 0;
-  g_sharedConstants.r11g11b10Texcoords =
-      g_pipelineState.vertexDeclaration != nullptr
-          ? g_pipelineState.vertexDeclaration->r11g11b10Texcoords
-          : 0;
+  g_sharedConstants.r11g11b10Texcoords = g_pipelineState.vertexDeclaration != nullptr
+                                             ? g_pipelineState.vertexDeclaration->r11g11b10Texcoords
+                                             : 0;
 
   // Snapshot commands already copied the exact guest-thread state into these
   // persistent render-thread files. Never dereference mutable guest state here:
@@ -3820,6 +3868,19 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
   if (!IsLiveHostTexture(source)) {
     source = g_lastPresentableRenderTarget;
   }
+  if (destTexture->width == 163 && destTexture->height == 47) {
+    REXGPU_INFO(
+        "SavingResolveApply: frame={} dest=0x{:016X}/0x{:016X} desc={} "
+        "source=0x{:016X}/0x{:016X}/{}x{} sourceLive={} destPt={},{} "
+        "hasSrc={} srcRect={},{},{},{}",
+        CurrentFrameIndex(), uint64_t(reinterpret_cast<uintptr_t>(destTexture)),
+        uint64_t(reinterpret_cast<uintptr_t>(destTexture->texture)), destTexture->descriptorIndex,
+        uint64_t(reinterpret_cast<uintptr_t>(source)),
+        uint64_t(reinterpret_cast<uintptr_t>(source != nullptr ? source->texture : nullptr)),
+        source != nullptr ? source->width : 0, source != nullptr ? source->height : 0,
+        IsLiveHostTexture(source), destX, destY, hasSrc, srcRect.left, srcRect.top,
+        srcRect.right, srcRect.bottom);
+  }
   if (!IsLiveHostTexture(source) || source == destTexture) {
     static uint64_t resolveNoSrc = 0;
     if (++resolveNoSrc <= 24) {
@@ -3915,6 +3976,68 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
   g_stretchRectPresentOverride.store(nullptr, std::memory_order_relaxed);
 }
 
+void TraceSavingDraw(uint32_t kind, uint32_t primitiveType, uint32_t count, uint32_t stride) {
+  const uint64_t vs = ShaderTraceId(g_pipelineState.vertexShader);
+  const uint64_t ps = ShaderTraceId(g_pipelineState.pixelShader);
+  const bool relevant =
+      (g_renderTarget != nullptr && g_renderTarget->width == 163 &&
+       g_renderTarget->height == 47) ||
+      (g_viewport.width == 163.0f && g_viewport.height == 47.0f) ||
+      (vs == 0x292FF29403B1DDF8ull && ps == 0xA4AF88D4CCD7FF2Bull) ||
+      (vs == 0x082CFF6201F560C1ull && ps == 0x05A43916BBD6C20Aull) ||
+      (vs == 0x11460356B7C40577ull && ps == 0x4A548329074CC3CAull);
+  if (!relevant)
+    return;
+
+  static uint32_t traceCount = 0;
+  if (traceCount >= 4096)
+    return;
+  ++traceCount;
+
+  const auto object = [](uint32_t index) {
+    return uint64_t(reinterpret_cast<uintptr_t>(g_textures[index]));
+  };
+  const auto host = [](uint32_t index) {
+    return uint64_t(reinterpret_cast<uintptr_t>(
+        g_textures[index] != nullptr ? g_textures[index]->texture : nullptr));
+  };
+  const auto width = [](uint32_t index) {
+    return g_textures[index] != nullptr ? g_textures[index]->width : 0;
+  };
+  const auto height = [](uint32_t index) {
+    return g_textures[index] != nullptr ? g_textures[index]->height : 0;
+  };
+  REXGPU_INFO(
+      "SavingDraw: n={} frame={} draw={} kind={} primitive={} count={} stride={} vs=0x{:016X} "
+      "ps=0x{:016X} rt=0x{:016X}/0x{:016X}/{}x{} "
+      "viewport={},{},{},{} scissorEnable={} scissor={},{},{},{} "
+      "colorWrite=0x{:X} stencil={}/{}/{}/{} "
+      "s0={}/{}/{}:0x{:016X}/0x{:016X}/{}x{} "
+      "s1={}/{}/{}:0x{:016X}/0x{:016X}/{}x{} "
+      "s2={}/{}/{}:0x{:016X}/0x{:016X}/{}x{} "
+      "s3={}/{}/{}:0x{:016X}/0x{:016X}/{}x{}",
+      traceCount, CurrentFrameIndex(), g_frameTrace.attemptedDraws, kind, primitiveType, count,
+      stride, vs, ps,
+      uint64_t(reinterpret_cast<uintptr_t>(g_renderTarget)),
+      uint64_t(reinterpret_cast<uintptr_t>(g_renderTarget != nullptr ? g_renderTarget->texture
+                                                                     : nullptr)),
+      g_renderTarget != nullptr ? g_renderTarget->width : 0,
+      g_renderTarget != nullptr ? g_renderTarget->height : 0, g_viewport.x, g_viewport.y,
+      g_viewport.width, g_viewport.height, g_scissorTestEnable, g_scissorRect.left,
+      g_scissorRect.top, g_scissorRect.right, g_scissorRect.bottom,
+      g_pipelineState.colorWriteEnable, g_pipelineState.stencilEnable,
+      g_pipelineState.stencilFrontRef, uint32_t(g_pipelineState.stencilFrontFunc),
+      uint32_t(g_pipelineState.stencilFrontPass),
+      g_sharedConstants.texture2DIndices[0], g_sharedConstants.texture3DIndices[0],
+      g_sharedConstants.textureCubeIndices[0], object(0), host(0), width(0), height(0),
+      g_sharedConstants.texture2DIndices[1], g_sharedConstants.texture3DIndices[1],
+      g_sharedConstants.textureCubeIndices[1], object(1), host(1), width(1), height(1),
+      g_sharedConstants.texture2DIndices[2], g_sharedConstants.texture3DIndices[2],
+      g_sharedConstants.textureCubeIndices[2], object(2), host(2), width(2), height(2),
+      g_sharedConstants.texture2DIndices[3], g_sharedConstants.texture3DIndices[3],
+      g_sharedConstants.textureCubeIndices[3], object(3), host(3), width(3), height(3));
+}
+
 void ProcDrawPrimitive(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
                        uint32_t vertexCount) {
   if (IsDeviceLost())
@@ -3925,6 +4048,7 @@ void ProcDrawPrimitive(GuestDevice* device, uint32_t primitiveType, uint32_t sta
   FlushRenderState(device, primitiveType);
   if (!g_hasBoundPipeline)
     return;
+  TraceSavingDraw(1, primitiveType, vertexCount, g_pipelineState.vertexStrides[0]);
   const uint32_t geometry[] = {primitiveType, startVertex, vertexCount, convertedIndexCount};
   TraceIssuedDraw(1, geometry, std::size(geometry));
   if (convertedIndexCount != 0) {
@@ -3942,6 +4066,7 @@ void ProcDrawIndexedPrimitive(GuestDevice* device, uint32_t primitiveType, int32
   FlushRenderState(device, primitiveType);
   if (!g_hasBoundPipeline)
     return;
+  TraceSavingDraw(2, primitiveType, indexCount, g_pipelineState.vertexStrides[0]);
   const uint32_t geometry[] = {primitiveType, uint32_t(baseVertexIndex), startIndex, indexCount};
   TraceIssuedDraw(2, geometry, std::size(geometry));
   CommandList()->drawIndexedInstanced(indexCount, 1, startIndex, baseVertexIndex, 0);
@@ -3961,6 +4086,7 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
   g_pipelineState.vertexStrides[0] = savedStride0;
   if (!g_hasBoundPipeline)
     return;
+  TraceSavingDraw(3, primitiveType, vertexCount, stride);
   const uint32_t geometry[] = {primitiveType, vertexCount, stride, bytes, convertedIndexCount};
   TraceIssuedDraw(3, geometry, std::size(geometry), copy, bytes);
 
@@ -4015,8 +4141,8 @@ void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVer
 }
 
 void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
-                         uint32_t startIndex, uint32_t indexCount,
-                         uint64_t recordedVsDirtyFlags, uint64_t recordedPsDirtyFlags) {
+                         uint32_t startIndex, uint32_t indexCount, uint64_t recordedVsDirtyFlags,
+                         uint64_t recordedPsDirtyFlags) {
   LocalRenderCommandQueue queue;
   QueueDrawStateSnapshots(device, queue, recordedVsDirtyFlags, recordedPsDirtyFlags);
   RenderCommand& cmd = queue.Enqueue();
@@ -4031,8 +4157,8 @@ void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t ba
 
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                              const void* data, uint32_t stride, uint64_t recordedVsDirtyFlags,
-                             uint64_t recordedPsDirtyFlags) {
-  if (data == nullptr || vertexCount == 0 || stride == 0)
+                             uint64_t recordedPsDirtyFlags, bool guestConsumedDirtyFlags) {
+  if (data == nullptr || vertexCount == 0 || stride == 0 || vertexCount > UINT32_MAX / stride)
     return;
   const uint32_t bytes = vertexCount * stride;
   // Copy on the guest thread so Enqueue can return before the guest reuses
@@ -4043,7 +4169,8 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
     return;
   }
   LocalRenderCommandQueue queue;
-  QueueDrawStateSnapshots(device, queue, recordedVsDirtyFlags, recordedPsDirtyFlags);
+  QueueDrawStateSnapshots(device, queue, recordedVsDirtyFlags, recordedPsDirtyFlags,
+                          guestConsumedDirtyFlags);
   RenderCommand& cmd = queue.Enqueue();
   cmd.type = RenderCommandType::DrawPrimitiveUP;
   cmd.drawPrimitiveUP.device = device;
@@ -4071,8 +4198,7 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
         cmd.createTranslatedTextureHost.texture, cmd.createTranslatedTextureHost.width,
         cmd.createTranslatedTextureHost.height, cmd.createTranslatedTextureHost.format,
         cmd.createTranslatedTextureHost.baseAddress, cmd.createTranslatedTextureHost.levels,
-        cmd.createTranslatedTextureHost.cube,
-        cmd.createTranslatedTextureHost.createdOut);
+        cmd.createTranslatedTextureHost.cube, cmd.createTranslatedTextureHost.createdOut);
     return;
   }
 
@@ -4122,9 +4248,13 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
       break;
     case RenderCommandType::SetTexture:
       ProcSetTexture(cmd.setTexture.index, cmd.setTexture.texture);
+      TraceSavingAppliedBinding(cmd.setTexture.index, cmd.setTexture.guestAddress,
+                                cmd.setTexture.texture);
       break;
     case RenderCommandType::SetTextureBase:
       ProcSetTextureBase(cmd.setTextureBase.index, cmd.setTextureBase.texture);
+      TraceSavingAppliedBinding(cmd.setTextureBase.index, cmd.setTextureBase.guestAddress,
+                                cmd.setTextureBase.texture);
       break;
     case RenderCommandType::SetSamplerState:
       ProcSetSamplerState(cmd.setSamplerState.index, cmd.setSamplerState.data0,
@@ -4275,11 +4405,11 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
                                 cmd.copyTextureFromUpload.srcOffset);
       break;
     case RenderCommandType::CopyTextureSubresourcesFromUpload:
-      ProcCopyTextureSubresourcesFromUpload(
-          cmd.copyTextureSubresourcesFromUpload.dst, cmd.copyTextureSubresourcesFromUpload.src,
-          cmd.copyTextureSubresourcesFromUpload.format,
-          cmd.copyTextureSubresourcesFromUpload.regions,
-          cmd.copyTextureSubresourcesFromUpload.regionCount);
+      ProcCopyTextureSubresourcesFromUpload(cmd.copyTextureSubresourcesFromUpload.dst,
+                                            cmd.copyTextureSubresourcesFromUpload.src,
+                                            cmd.copyTextureSubresourcesFromUpload.format,
+                                            cmd.copyTextureSubresourcesFromUpload.regions,
+                                            cmd.copyTextureSubresourcesFromUpload.regionCount);
       break;
     case RenderCommandType::CreateTranslatedTextureHost:
       break;  // handled above
@@ -4306,8 +4436,7 @@ void TraceMr2BodyDraw(size_t commandIndex, const RenderCommand& command,
                 commandIndex, static_cast<uint32_t>(command.type), elementCount, pixelShader);
   }
 
-  const uint64_t vertexSignature =
-      XXH3_64bits(g_vertexShaderConstants, kVsFloatConstantBytes);
+  const uint64_t vertexSignature = XXH3_64bits(g_vertexShaderConstants, kVsFloatConstantBytes);
   const uint64_t pixelSignature = XXH3_64bits(g_pixelShaderConstants, kPsFloatConstantBytes);
   const uint64_t sharedSignature = XXH3_64bits(&g_sharedConstants, sizeof(g_sharedConstants));
   const std::array<uint64_t, 3> signatures{vertexSignature, pixelSignature, sharedSignature};
@@ -4320,8 +4449,9 @@ void TraceMr2BodyDraw(size_t commandIndex, const RenderCommand& command,
   const auto& vertexCoverage = executionSnapshot != nullptr
                                    ? executionSnapshot->vertexExecutionConstants.coverage
                                    : noCoverage;
-  const auto& pixelCoverage =
-      executionSnapshot != nullptr ? executionSnapshot->pixelExecutionConstants.coverage : noCoverage;
+  const auto& pixelCoverage = executionSnapshot != nullptr
+                                  ? executionSnapshot->pixelExecutionConstants.coverage
+                                  : noCoverage;
   const auto* c120 = g_pixelShaderConstants + 120 * 4;
   const auto* c122 = g_pixelShaderConstants + 122 * 4;
   const auto* c127 = g_pixelShaderConstants + 127 * 4;
@@ -4334,10 +4464,9 @@ void TraceMr2BodyDraw(size_t commandIndex, const RenderCommand& command,
       "vsOverlay={:016X}/{:016X}/{:016X}/{:016X} "
       "psOverlay={:016X}/{:016X}/{:016X}/{:016X} psBool={:08X}/{:08X}/{:08X}/{:08X}",
       loggedStates.size(), ShaderTraceId(g_pipelineState.vertexShader), stateSignature,
-      vertexSignature, pixelSignature, sharedSignature,
-      vertexCoverage[0], vertexCoverage[1], vertexCoverage[2], vertexCoverage[3],
-      pixelCoverage[0], pixelCoverage[1], pixelCoverage[2], pixelCoverage[3],
-      g_sharedConstants.booleans[4], g_sharedConstants.booleans[5],
+      vertexSignature, pixelSignature, sharedSignature, vertexCoverage[0], vertexCoverage[1],
+      vertexCoverage[2], vertexCoverage[3], pixelCoverage[0], pixelCoverage[1], pixelCoverage[2],
+      pixelCoverage[3], g_sharedConstants.booleans[4], g_sharedConstants.booleans[5],
       g_sharedConstants.booleans[6], g_sharedConstants.booleans[7]);
   REXGPU_INFO(
       "MR2BodyVertex: c12={:08X},{:08X},{:08X},{:08X} "
@@ -4365,9 +4494,8 @@ void TraceMr2BodyDraw(size_t commandIndex, const RenderCommand& command,
       "MR2BodyConstants: c120={:08X},{:08X},{:08X},{:08X} "
       "c122={:08X},{:08X},{:08X},{:08X} c127={:08X},{:08X},{:08X},{:08X} "
       "c128={:08X},{:08X},{:08X},{:08X} c171={:08X},{:08X},{:08X},{:08X}",
-      c120[0], c120[1], c120[2], c120[3], c122[0], c122[1], c122[2], c122[3], c127[0],
-      c127[1], c127[2], c127[3], c128[0], c128[1], c128[2], c128[3], c171[0], c171[1],
-      c171[2], c171[3]);
+      c120[0], c120[1], c120[2], c120[3], c122[0], c122[1], c122[2], c122[3], c127[0], c127[1],
+      c127[2], c127[3], c128[0], c128[1], c128[2], c128[3], c171[0], c171[1], c171[2], c171[3]);
   REXGPU_INFO(
       "MR2BodyMaterial: c180={:08X},{:08X},{:08X},{:08X} "
       "c184={:08X},{:08X},{:08X},{:08X} c188={:08X},{:08X},{:08X},{:08X} "
