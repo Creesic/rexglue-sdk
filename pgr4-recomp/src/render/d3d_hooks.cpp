@@ -1153,7 +1153,9 @@ ResolvedTextureBinding ResolveTextureBinding(rr::GuestBaseTexture* texture) {
 }
 
 void SetTextureHook(GuestDevice* device, uint32_t sampler, rr::GuestBaseTexture* texture) {
-  if (sampler >= 16u)
+  // Samplers 16..19 are D3DVERTEXTEXTURESAMPLER0..3 (bone palettes, instance
+  // data); they bind into the vertex texture slots of SharedConstants.
+  if (sampler >= 20u)
     return;
 
   const uint32_t guestAddress = ghp::ToGuest(texture);

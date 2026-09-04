@@ -139,8 +139,17 @@ struct SharedConstants {
   // D3DRS_VIEWPORTENABLE is off and the guest emits pixel positions.
   float ndcScale[2] = {1.0f, 1.0f};
   float ndcOffset[2] = {0.0f, 0.0f};
+  // PGR4: vertex-shader texture slots (D3DVERTEXTEXTURESAMPLER0..3 = samplers
+  // 16..19). XenosRecomp routes vertex-shader samplers here (512/528/544/560)
+  // instead of aliasing them onto the pixel slots.
+  uint32_t vertexTexture2DIndices[4]{};
+  uint32_t vertexTexture3DIndices[4]{};
+  uint32_t vertexTextureCubeIndices[4]{};
+  uint32_t vertexSamplerIndices[4]{};
 };
-static_assert(sizeof(SharedConstants) == 512);
+static_assert(sizeof(SharedConstants) == 576);
+static_assert(offsetof(SharedConstants, vertexTexture2DIndices) == 512);
+static_assert(offsetof(SharedConstants, vertexSamplerIndices) == 560);
 static_assert(offsetof(SharedConstants, packedTexcoordsLo) == 484);
 static_assert(offsetof(SharedConstants, packedBasis) == 492);
 static_assert(offsetof(SharedConstants, ndcScale) == 496);
@@ -851,6 +860,9 @@ void BindTextureDescriptor(uint32_t index, GuestBaseTexture* texture,
           : kNullTextureCubeDescriptor;
 }
 
+void BindVertexTextureDescriptor(uint32_t slot, GuestBaseTexture* texture,
+                                 RenderTextureViewDimension viewDimension);
+
 GuestSurface* AsSurface(GuestBaseTexture* texture) {
   if (texture == nullptr)
     return nullptr;
@@ -1471,6 +1483,12 @@ void ProcBeginRenderStateFrame() {
   // slot's fence retires -- do not Reset() here (would clobber in-flight
   // uploads from the other pipelined frame).
   if (!g_sharedConstantsInitialized) {
+    for (uint32_t i = 0; i < std::size(g_sharedConstants.vertexTexture2DIndices); ++i) {
+      g_sharedConstants.vertexTexture2DIndices[i] = kNullTexture2DDescriptor;
+      g_sharedConstants.vertexTexture3DIndices[i] = kNullTexture3DDescriptor;
+      g_sharedConstants.vertexTextureCubeIndices[i] = kNullTextureCubeDescriptor;
+      g_sharedConstants.vertexSamplerIndices[i] = 0;
+    }
     for (uint32_t i = 0; i < std::size(g_sharedConstants.texture2DIndices); ++i) {
       g_sharedConstants.texture2DIndices[i] = kNullTexture2DDescriptor;
       g_sharedConstants.texture3DIndices[i] = kNullTexture3DDescriptor;
@@ -1787,6 +1805,13 @@ namespace {
 void ProcSetTexture(uint32_t index, GuestTexture* texture) {
   if (IsDeviceLost())
     return;
+  if (index >= 16u) {  // PGR4: vertex samplers 16..19
+    if (index < 20u)
+      BindVertexTextureDescriptor(index - 16u, texture,
+                                  texture ? texture->viewDimension
+                                          : RenderTextureViewDimension::UNKNOWN);
+    return;
+  }
 
   // Unleashed ProcSetTexture: if a StretchRect linked this texture to a
   // source surface, either sample the surface directly (1x) or mark MSAA
@@ -1819,6 +1844,13 @@ void ProcSetTexture(uint32_t index, GuestTexture* texture) {
 void ProcSetTextureBase(uint32_t index, GuestBaseTexture* texture) {
   if (IsDeviceLost())
     return;
+  if (index >= 16u) {  // PGR4: vertex samplers 16..19
+    if (index < 20u)
+      BindVertexTextureDescriptor(index - 16u, texture,
+                                  texture && texture->texture ? RenderTextureViewDimension::TEXTURE_2D
+                                                              : RenderTextureViewDimension::UNKNOWN);
+    return;
+  }
   if (texture == nullptr || texture->texture == nullptr) {
     BindTextureDescriptor(index, nullptr, RenderTextureViewDimension::UNKNOWN);
     g_textures[index] = nullptr;
@@ -3306,6 +3338,62 @@ void ProcSetBooleans(const uint32_t* words) {
 void ProcSetLoopConstants(const uint32_t* values) {
   if (values != nullptr)
     std::memcpy(g_sharedConstants.loopConstants, values, sizeof(g_sharedConstants.loopConstants));
+}
+
+// PGR4: vertex texture fetches (bone palettes) address texels directly, so
+// they always sample through a point/clamp sampler.
+static uint32_t VertexPointSamplerDescriptor() {
+  static uint32_t s_index = ~0u;
+  if (s_index != ~0u)
+    return s_index;
+  s_index = 0;
+  if (Device() == nullptr || SamplerDescriptorSet() == nullptr)
+    return 0;
+  RenderSamplerDesc desc{};
+  desc.minFilter = RenderFilter::NEAREST;
+  desc.magFilter = RenderFilter::NEAREST;
+  desc.mipmapMode = RenderMipmapMode::NEAREST;
+  desc.addressU = RenderTextureAddressMode::CLAMP;
+  desc.addressV = RenderTextureAddressMode::CLAMP;
+  desc.addressW = RenderTextureAddressMode::CLAMP;
+  const uint64_t hash = XXH3_64bits(&desc, sizeof(desc));
+  auto [it, inserted] = g_samplerStates.try_emplace(hash);
+  auto& [descriptorIndex, sampler] = it->second;
+  if (inserted)
+    descriptorIndex = uint32_t(g_samplerStates.size());
+  if (descriptorIndex == 0 || descriptorIndex > kSamplerDescriptorSize)
+    return 0;
+  if (sampler == nullptr) {
+    sampler = Device()->createSampler(desc);
+    if (sampler != nullptr)
+      SamplerDescriptorSet()->setSampler(descriptorIndex - 1, sampler.get());
+  }
+  s_index = sampler != nullptr ? descriptorIndex - 1 : 0;
+  return s_index;
+}
+
+void BindVertexTextureDescriptor(uint32_t slot, GuestBaseTexture* texture,
+                                 RenderTextureViewDimension viewDimension) {
+  if (slot >= std::size(g_sharedConstants.vertexTexture2DIndices))
+    return;
+  AddBarrier(texture, RenderTextureLayout::SHADER_READ);
+  EnsureShaderResourceDescriptor(texture);
+  const bool stacked = texture && viewDimension == RenderTextureViewDimension::TEXTURE_2D &&
+                       texture->type == ResourceType::Texture &&
+                       static_cast<GuestTexture*>(texture)->depth > 1;
+  g_sharedConstants.vertexTexture2DIndices[slot] =
+      (texture && viewDimension == RenderTextureViewDimension::TEXTURE_2D && !stacked)
+          ? texture->descriptorIndex
+          : kNullTexture2DDescriptor;
+  g_sharedConstants.vertexTexture3DIndices[slot] =
+      (texture && (viewDimension == RenderTextureViewDimension::TEXTURE_3D || stacked))
+          ? texture->descriptorIndex
+          : kNullTexture3DDescriptor;
+  g_sharedConstants.vertexTextureCubeIndices[slot] =
+      (texture && viewDimension == RenderTextureViewDimension::TEXTURE_CUBE)
+          ? texture->descriptorIndex
+          : kNullTextureCubeDescriptor;
+  g_sharedConstants.vertexSamplerIndices[slot] = VertexPointSamplerDescriptor();
 }
 
 void ProcSetSamplerState(uint32_t index, uint32_t data0, uint32_t data3, uint32_t data5) {

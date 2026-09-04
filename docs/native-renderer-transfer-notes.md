@@ -493,3 +493,50 @@ behind a fence, properly lit red car. From the user-provided captures
   `BindTextureDescriptor` publishes stacked textures in the 3D slot only.
   Ceiling: slices are assumed to be mip-0 footprints back to back.
 
+## Whole-capture sweep (2026-09-03, `rdoc_sweep.py`)
+
+`tools/rdoc_sweep.py <capture.rdc> <report.txt>` (run with the RenderDoc
+source build python, `renderdoc/x64/Development/python/python.exe`, DLL dir +
+`pymodules` on the path) walks every draw and flags: used vertex slots that
+are unbound or stride 0, 16-bit integer attributes, null descriptors actually
+sampled (the 1x1 R8 null textures), all-zero textures sampled, and post-VS
+positions that are NaN, all behind the camera, collapsed to a point, or all
+off screen. On `pgr4_ps3.rdc` (2028 draws, pre-fix build) it found:
+
+- 1555 draws bind a stride-0 instance slot (crowd + most environment draws),
+  so the stride-0 snapshot fix is wider than the crowd.
+- 636 draws collapse to a point: the crowd (fixed), and the skinned car in the
+  shadow-mask pass (EID 24769.., 5b9e5198/61a77895/c47ce4ce/99dffcba) and the
+  skinned depth-only casters (EID 2291.., de39b69c/373746df).
+- 67 draws (f8dfd57a) have every vertex behind the camera: a stride-0 slot
+  holding a stale 221760-byte crowd table; covered by the stride-0 fix.
+- 18 draws sample a null descriptor: 13 with the stacked mask (fixed), the
+  rest the tonemap reading a 1x1 game default texture.
+- 861 draws read a shader input from the dummy slot 15: inputs the matched
+  declaration lacks (NORMAL1/2, COLOR0 on environment draws). On Xenos a
+  missing element fetches zero, so this is by design, not a mismatch.
+
+## Vertex textures (2026-09-03)
+
+The skinned car (shadow-mask and shadow-map passes) fetches its bone palette
+from a texture in the vertex shader: `SampleLevel(u = 3 * boneIndex, v = 0.5)`
+with `tx_coord_denorm` set, through vertex sampler 0. The game binds those
+palettes with `D3DDevice_SetTexture(16..19)` (D3DVERTEXTEXTURESAMPLER0..3;
+confirmed by tracing the title frame: five different textures at samplers 16
+and 19). Two host gaps made the mesh collapse to a point:
+
+- `SetTextureHook` dropped samplers >= 16, and the earlier stopgap in
+  XenosRecomp aliased vertex fetch constants 16..31 onto s0..s15, so the
+  vertex shader read the pixel stage's slot 0 (the game's 1x1 default).
+  SharedConstants now carries a vertex table at 512 (2D), 528 (3D/stacked),
+  544 (cube), 560 (samplers), 4 slots each (struct is 576 bytes). XenosRecomp
+  `textureIndexOffset`/`samplerIndexOffset` route vertex-shader samplers
+  n < 4 there (`reg` from the constant table, or the s16+n alias). The host
+  binds samplers 16..19 through `BindVertexTextureDescriptor` with a
+  point/clamp sampler (`VertexPointSamplerDescriptor`).
+- The recompiler ignored `tx_coord_denorm`; `denormCoord2D`/`2DArray` divide
+  texel coordinates by the texture size before sampling.
+
+Unverified until the next capture: the shadow-mask pass output and the crowd
+after the stride-0 fix. Re-run the sweep on the new capture.
+
