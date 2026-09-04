@@ -721,15 +721,28 @@ the flags do not move. Two separate findings:
    0xEBEC3000). So the palettes are zero and the skinning matrices are zero.
 
    This is the same root cause as the skinned car collapsing in the shadow
-   passes. The writer is missing on our side. Xenos memory export is the
-   leading suspect: `ExportRegister` in shader_code.h already names
-   `ExportAddress = 32` and `ExportData0..4 = 33..37`, but the vertex export
-   switch in shader_recompiler.cpp handles only `VSPosition` and interpolators
-   and falls into `interpolators.find(...)` with an assert for anything else,
-   so a memexport shader cannot translate correctly. Implementing it means
-   emitting UAV writes for eA/eM and binding a UAV over the target guest
-   memory, then letting the palette texture read it.
+   passes. The writer is missing on our side.
+
+   **Memory export is ruled out** (2026-09-04). A diagnostic build of
+   XenosRecomp scanned all 953 shaders for ALU exports to registers outside
+   the interpolator range: exactly one shader hits that path, and its target
+   is register 63 (point size / edge flag / kill vertex), not eA/eM0..4
+   (32..37). No PGR4 shader uses memory export, so the palettes are not
+   written by the GPU that way. Remaining candidates: the palette base address
+   we parse from the fetch constant is not where the game writes, or the game
+   populates it through a path the port does not intercept.
 
    Note the crowd's *main* pass (draw 21041) binds no textures at all, so
    confirm which crowd pass consumes the palette before building this.
+
+## Export register 63 was undefined behaviour (fixed 2026-09-04)
+
+The one shader that writes Xenos export register 63 fell through the vertex
+export switch into `interpolators.find(...)`, whose result was dereferenced
+without checking for `end()`. That is what intermittently produced a shader
+full of NUL bytes and dropped `CC80228A287F34B7` from the cache, leaving 952
+of 953 entries and a flaky 4-attempt retry. Unhandled export registers now
+write to a declared `exportSink` local, and the cache regenerates at 953
+deterministically. Point size and kill-vertex are discarded, which is what the
+previous behaviour intended; nothing in the title screen uses them.
 
