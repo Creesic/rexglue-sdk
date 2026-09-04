@@ -540,3 +540,35 @@ and 19). Two host gaps made the mesh collapse to a point:
 Unverified until the next capture: the shadow-mask pass output and the crowd
 after the stride-0 fix. Re-run the sweep on the new capture.
 
+## pgr4_ps4.rdc round (2026-09-03, late)
+
+- **Under-car shadow (EID 26407)**: the multiply pass samples a 512x512 D32S8
+  shadow map that had no writer. `ProcResolveToTexture` always took the color
+  RT as its source, so a depth-format destination was a format mismatch and
+  was dropped. Depth destinations now read the bound depth surface and copy
+  immediately (no deferred StretchRect alias). Verified: the title car casts
+  a soft shadow that matches the reference.
+- **Scene sampled while bound**: a 1x resolve of the scene was deferred into an
+  alias of the live RT, so draws that sample the resolved scene while it is
+  still the render target (tail-light refraction, EID 6601) read the target
+  being written. `ProcSetTexture` now routes such textures through the
+  pending copy. The tail lights still render near-white: pixel history shows
+  the lens shader itself outputs (0.90, 0.99, 1.00) with only the scene RT
+  and the environment cube bound, so the red tint is not a texture; the
+  shader's DXIL cannot be disassembled by RenderDoc (resource-tracking gap),
+  so the constant or vertex-colour path it uses is still unknown.
+- **Vertex index register**: Xenos starts vertex shaders with r0.x = vertex
+  index; XenosRecomp only seeded it in the Unleashed build. The crowd shader
+  picks its constant-palette matrix with `trunc((r0.x + 0.5) / 32) * 4`, so
+  every person used instance 0. PGR4 vertex shaders now declare
+  `SV_VertexID` and seed r0 with it (regen required). Unverified on a capture.
+- **Skinned car still collapses**: the 156x1 RGBA16F bone-palette textures
+  bound at vertex sampler 16 refresh every frame but guest memory at their
+  base (0xEAE12000, 0xEBEBF000, ...) reads all zero, so the CPU never writes
+  them. XenosRecomp has no memexport support and the PM4 parser only applies
+  MEM_WRITE packets, so a GPU-side palette writer (memexport or a small
+  render-to-texture) is the leading suspect. Open.
+- The crowd stride-0 stream is an FM2 buffer bound with offset 0 (the whole
+  221760-byte table); the per-instance selection comes from the vertex index
+  above, not from the stream offset.
+

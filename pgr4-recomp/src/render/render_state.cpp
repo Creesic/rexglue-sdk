@@ -1818,7 +1818,11 @@ void ProcSetTexture(uint32_t index, GuestTexture* texture) {
   // for resolve-before-draw and bind the destination texture.
   if (texture != nullptr && texture->sourceSurface != nullptr) {
     GuestSurface* surface = texture->sourceSurface;
-    if (surface->sampleCount != RenderSampleCount::COUNT_1) {
+    // PGR4: a resolve of the scene that is sampled while the same surface is
+    // still the bound render target (tail-light refraction) needs a real copy;
+    // aliasing the live RT reads the target being written.
+    const bool liveTarget = static_cast<GuestBaseTexture*>(surface) == g_renderTarget;
+    if (surface->sampleCount != RenderSampleCount::COUNT_1 || liveTarget) {
       g_pendingMsaaResolves.insert(surface);
       BindTextureDescriptor(index, texture, texture->viewDimension);
     } else {
@@ -4038,7 +4042,13 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
   // using the live surface via pending StretchRect links; fall back to the last
   // presentable RT so aperture resolves are not no-ops.
   GuestBaseTexture* source = g_renderTarget;
-  if (!IsLiveHostTexture(source)) {
+  // PGR4: depth resolves (shadow maps, D3DRESOLVE_DEPTHSTENCIL) read the bound
+  // depth surface and copy immediately -- the color RT would be a format
+  // mismatch and the deferred StretchRect link only aliases color surfaces.
+  const bool depthDest = RenderFormatIsDepth(destTexture->format);
+  if (depthDest) {
+    source = g_depthStencil != nullptr ? g_depthStencil : g_implicitDepthStencil;
+  } else if (!IsLiveHostTexture(source)) {
     source = g_lastPresentableRenderTarget;
   }
   if (!IsLiveHostTexture(source) || source == destTexture) {
@@ -4056,7 +4066,8 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
                             ? static_cast<GuestTexture*>(destTexture)
                             : nullptr;
 
-  if (surface != nullptr && destAsTexture != nullptr && !hasSrc && destX == 0 && destY == 0) {
+  if (!depthDest && surface != nullptr && destAsTexture != nullptr && !hasSrc && destX == 0 &&
+      destY == 0) {
     RegisterStretchRect(destAsTexture, surface);
     static uint64_t resolveDeferred = 0;
     if (++resolveDeferred <= 24 || resolveDeferred % 300 == 1) {
