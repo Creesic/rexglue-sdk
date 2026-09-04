@@ -44,6 +44,8 @@ uint32_t CurrentRecordingFrame();
 // Called by Video after waiting on a frame slot's fence, just before that
 // slot is reused for recording -- resets that frame's upload allocator.
 void OnRecordingFrameReady(uint32_t frame);
+// Unmap written upload ranges before submitting the current command list.
+void FinishUploadWrites();
 
 struct GuestBaseTexture;
 void SetPresentSource(GuestBaseTexture* frontBuffer);
@@ -93,6 +95,8 @@ std::recursive_mutex& RecordingMutex();
 // further GPU creates and Present work to avoid spam/hangs.
 bool IsDeviceLost();
 void NoteDeviceLost(const char* why);
+// Query the backend after an allocation failure; latch actual device removal.
+bool CheckDeviceLost(const char* why);
 
 struct GuestShader;
 plume::RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants = 0);
@@ -109,4 +113,3 @@ std::vector<GuestVertexDeclaration*> SnapshotGameDeclarations();
 // PGR4_RDOC_CAPTURE_DRAWS draws; Video::Present turns it into one RenderDoc
 // capture (present-index triggers miss under RenderDoc's lower frame rate).
 inline std::atomic<bool> g_rdocCaptureRequested{false};
-

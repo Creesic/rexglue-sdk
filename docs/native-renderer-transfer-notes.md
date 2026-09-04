@@ -636,9 +636,9 @@ Draw 21041 is one crowd person. What is now confirmed *correct*:
   (-46.04, 0.09, -829.67), (-41.33, 0.06, -829.04), (-47.71, 0.07, -825.15).
 - The stride-0 instance rows (POSITION1..3, FLOAT16_4) decode through
   `swapFloats` to a clean orthonormal basis, so the 16-bit lane swap is right.
-  Their .w lanes are 0xE1FF / 0xE201 / 0xE1FF (57855, 57856, 57857), a 16-bit
-  counter rather than a translation, so the translation legitimately comes
-  from the palette.
+  Their .w lanes are 0xE1FF / 0xE201 / 0xE1FF. The earlier interpretation as
+  counters was incorrect: log 149 later traced these to corrupted bone
+  translations (see the packed-vector decoder correction below).
 
 What is still wrong: the people land about 1144 units from the camera at
 ndc y about -1.0 (draw 21041) and the group summary for the first draw of the
@@ -649,29 +649,26 @@ step is to find what supplies the crowd's world placement (the palette
 translation of about z = -827 is the suspect) and compare it against an object
 that lands correctly in the same frame.
 
-## Crowd fixed: instance rows are 3x3 rotations (2026-09-03)
+## Superseded crowd workaround: dropping matrix translations (2026-09-03)
 
-The crowd renders correctly now. The per-person transform is composed in the
+The crowd became visible but remained in a T-pose. The per-person transform is composed in the
 vertex shader as `world = palette * (instanceRot * localPos) + paletteT +
 palette * T_instance`, where `T_instance` is the 4th component of the three
 FLOAT16_4 instance rows (POSITION1..3) on the stride-0 stream.
 
 Those 4th halves read 0xE1FF / 0xE201 / 0xE1FF, i.e. -767.5 / -768.5 / -767.5,
-in every crowd draw of every capture taken so far. They are padding, not a
-translation: the game's placement comes entirely from the palette. Feeding
-them through pushed every person about 1144 units from the camera and below
-the bottom of the frame. Dropping them (`swapInstanceRow` in shader_common.h,
-used for POSITION1+ instead of `swapFloats`) puts each person about 13 units
-from the camera at `c24`, which is where the reference screenshot shows them.
+in the captures examined then. They are corrupted bone translations, not
+padding. Feeding them through pushed every person about 1144 units from the
+camera and below the frame. Dropping them temporarily hid that corruption,
+but also discarded valid translation data. This workaround is now removed;
+POSITION1+ uses `swapFloats` and preserves all four components.
 
 Corroborating numbers from `pgr4-ps1.rdc` draw 21041: camera (c24) is
 (-41.68, 0.99, -842.23); the palette translation for that person is
 (-46.04, 0.09, -829.67), 13.4 units away. The first three lanes of each row
 form a clean orthonormal basis, so the 16-bit lane swap itself was right.
 
-Ceiling: this assumes no PGR4 shader puts a real translation in the 4th lane
-of an instance row. 29 shaders take POSITION1..3; the title screen shows no
-regression, but a scene with a different instanced effect could.
+The observation above established visibility only, not correct skinning.
 
 ## Sampling the bound render target
 
@@ -696,7 +693,7 @@ check: where the red is meant to come from for a draw with no albedo texture
 -- the remaining candidates are the 2D array binding and the vertex colour
 path (the VS forwards only COLOR0.x, with a decoded normal in TEXCOORD6.yzw).
 
-## Crowd T-pose: bone palettes are never written (2026-09-04, open)
+## Earlier palette-texture hypothesis (2026-09-04, unresolved)
 
 The crowd is placed correctly now but every figure stands in its bind pose and
 the flags do not move. Two separate findings:
@@ -720,8 +717,9 @@ the flags do not move. Two separate findings:
    frame (logged across frames 438-445 at bases 0xEAE12000 / 0xEBEBF000 /
    0xEBEC3000). So the palettes are zero and the skinning matrices are zero.
 
-   This is the same root cause as the skinned car collapsing in the shadow
-   passes. The writer is missing on our side.
+   This may explain the skinned car collapsing in shadow passes, but it does
+   not establish the crowd's cause. Log 149 confirms that the crowd's CPU
+   vertex-buffer bone palette is written, with corrupt animation inputs.
 
    **Memory export is ruled out** (2026-09-04). A diagnostic build of
    XenosRecomp scanned all 953 shaders for ALU exports to registers outside
@@ -746,3 +744,154 @@ write to a declared `exportSink` local, and the cache regenerates at 953
 deterministically. Point size and kill-vertex are discarded, which is what the
 previous behaviour intended; nothing in the title screen uses them.
 
+## Packed-vector decoder correction (2026-09-04, flags confirmed)
+
+`pgr4_recompiled_149.log` captures a 22-bone crowd palette at the writer
+`sub_823DFAA0`: local translations are already (-768, -768, -768), with NaNs
+in bones 10 and 13. Propagation carries those NaNs into the arms, half packing
+turns them into 0x7FFF, and `sub_823D2B20` reads them as positions near 131008
+for the flags. Log 148 separately confirms that cloth initialization is
+healthy and the vertex writer faithfully copies the corrupt simulation data.
+
+The translation evaluator `sub_823BD9D8` uses `vupkd3d128` type 6. Its shared
+code generator read the wrong 64-bit half, shifted a 32-bit value by 44,
+reversed output lanes, and converted to numeric floats instead of adding the
+required mantissa biases (3.0 for signed XYZ, 1.0 for unsigned W). The corrected
+emission snapshots guest words 2-3, extracts signed 20-bit XYZ and unsigned
+4-bit W, and handles the reserved negative endpoint as QNaN. No PGR4 pose
+override is used. The shader workaround that discarded matrix .w is removed.
+
+Five assembly regression cases exercise zeros, signed values, limits, reserved
+values, and aliased/separate registers: the old generated code fails 20
+assertions; the corrected code passes all. An isolated harness of the actual
+PGR4 translation evaluator returns (-768, -768, -768) before the fix, then
+correctly decodes and interpolates positive and negative (1,2,3) to (2,4,6)
+tracks after it. The installed generator, generated guest code, shader cache,
+and Plume executable have been rebuilt. The user confirms the flags are back.
+Log 150 reports finite attachment positions for all 12 flags (around 1.7-1.9
+units high), no saturated palette samples, and no cloth anomalies. The user
+confirmed that the crowd still T-poses; the fence and tail-light fixes were
+confirmed earlier.
+
+## Indexed bone-matrix vertex fetch (2026-09-04, crowd visibility confirmed)
+
+The crowd shader `1FA9B696872B63EA` computes `r0.z = boneIndex + paletteBase`
+and uses it as the source of vfetch instructions 17, 18 and 19 (POSITION1..3).
+XenosRecomp discarded that source and read ordinary input-assembler attributes,
+so fixing the CPU animation did not make the crowd use its animated bones.
+
+Direct disassembly of `sub_823D3078` confirms stride 24 at `0x823D30BC` and
+byte offset `24 * paletteOffset` before `D3DDevice_SetStreamSource`. The
+decompiler's apparent stride zero is misleading. The bound declaration uses
+stream 1, offsets 0/8/16, FLOAT16_4, matching three rows per bone.
+
+Non-default-index POSITION1..3 fetches now read shader-visible vertex buffers
+using the source register, declaration format/offset, and bound stream stride.
+The D3D12 renderer binds three root SRVs to its existing geometry views and
+publishes range metadata at SharedConstants offset 576. Half-floats decode in
+guest component order from DWORD-swapped uploads. Bounds are checked before
+address multiplication. Missing streams and unsupported formats return zero.
+Snapshots retain the full palette. No shader hash selects this behavior.
+
+Scope: indexed FLOAT16_2/4 and FLOAT1..4 position inputs. Other indexed semantics
+are not implemented. DXIL and SPIR-V compile the buffer-fetch path; this PGR4
+renderer binds it on D3D12. The Metal output retains its previous IA path.
+
+`tools/XenosRecomp/tests/indexed_position_fetch.cpp` runs the actual HLSL helper
+on D3D11 WARP: 21 cases cover two distinct bone transforms, all supported float
+formats, zero stride, missing/short buffers, invalid indices, and unsupported
+formats. An optional crowd HLSL dump checks that all three rows consume r0.z.
+The user confirms the crowd is now visible. Animation correctness was not
+separately confirmed.
+
+## Arcade chapter-card UI stride (2026-09-04, runtime confirmation pending)
+
+Compared `pgr4-arcade1.rdc` with the known-good `pgr4-arcadexenos.rdc`.
+Bad EID 46029 composites texture 1729, copied from offscreen card target 1688
+at EID 4511. The corruption starts earlier: EIDs 4398-4483 overlay text and
+borders after the stride-36 medal meshes. The font and border atlases match
+the good capture (bad textures 393/378 versus good 2837/2834 at EIDs 474/498).
+
+Those bad UI draws bind stride-44 vertex data: FLOAT4 position at 0, packed
+color at 16, and FLOAT2 texcoords at 20/28/36. Their pipeline instead reads
+FLOAT3 position at 0, FLOAT4 color at 12, and FLOAT2 texcoord at 28. This
+feeds position.w and packed-color bits into float color, and selects the wrong
+UV channel, explaining the discoloration and unrelated atlas fragments.
+
+`ProcDrawPrimitiveUP` overrode only the PSO stride before `FlushRenderState`.
+`EffectiveStream0Stride` prefers the input-slot stride, so the previous mesh's
+36 bytes rejected the queued 44-byte declaration and selected a 36-byte
+fallback. The UP buffer was bound only after that pipeline was chosen.
+
+The shared UP path now installs the uploaded buffer view and both stride
+mirrors before flushing. Declaration selection, indexed-fetch metadata, and
+vertex binding therefore see the same geometry. It restores the previous
+stream and dirties the binding after the draw, including failed pipeline setup.
+This also covers Begin/EndVertices and rectangle draws routed through UP.
+
+`python scripts/tests/test_up_vertex_stream.py` compiles the actual UP draw,
+declaration selection, and stride validation functions against the real renderer
+types with a fake upload/command backend. All 32 transitions pass, covering
+previous strides 0/8/36/44, direct/indexed draws, failed upload/setup, stream
+restoration, and preservation of the palette stream. Device-lost early exit
+also passes. A temporary negative control retaining the stale input-slot
+stride fails declaration selection as expected. The Plume executable rebuild
+passes. The same Arcade menu still needs user visual confirmation.
+
+## Race freeze and upload duplication (2026-09-04, race retest pending)
+
+The user reports audio continuing while the last loading-screen frame remains.
+Run 153's surviving logs contain continuous 64 MiB upload-chunk allocation
+failures and small texture-staging allocation failures. More than 100 MB of
+rotated logs cover only the final 25 seconds, so the original failure is gone.
+These logs establish failed GPU resource creation, but do not distinguish
+memory exhaustion from an earlier device-removal fault.
+
+Direct replay inspection of the existing Arcade captures found:
+
+| Measurement | Native `pgr4-arcade1.rdc` | Xenos `pgr4-arcadexenos.rdc` |
+|---|---:|---:|
+| File bytes | 697,824,975 | 150,500,697 |
+| Buffer resource bytes | 1,244,515,152 | 675,927,102 |
+| Texture resource bytes | 129,682,756 | 448,441,152 |
+| Serialized initial contents bytes | 1,331,122,832 | 1,107,820,894 |
+| Coherent mapped write chunks / bytes | 8 / 536,871,264 | 27 / 48,569,826 |
+
+The native frame section decompresses to 1,893,318,912 bytes. Eighteen captured
+buffers are 64 MiB each. Reading the vertex/index binding ranges from the
+structured capture and comparing their actual bytes gives 8,142 ranges with
+459,966,180 aggregate bytes, but only 1,788 distinct payloads totaling
+27,157,188 bytes. This is repeated binding content, not a measurement of the
+new build's frame time or final capture size.
+
+`ProcSetDrawGeometrySnapshot` uploaded every full raw vertex/index snapshot on
+every draw. Shader constants were also uploaded afresh each time. The per-GPU-
+slot upload allocator now shares identical immutable payloads, using XXH3 for
+lookup and an exact byte comparison before reuse. A changed final bone creates
+a new version; no palette is shortened to the visible draw's vertex count.
+Recorded command batches share their identical owned payloads too. GPU cache
+entries clear only when the owning slot's fence has retired. Producer-side
+guest snapshots keep their existing staging path and lifetime.
+
+Upload buffers now map with an empty read range and unmap their actual written
+range before normal or wait-for-GPU submission. Reusing the slot remaps as
+needed. This avoids reporting every byte of an entire persistent mapping as
+newly written. UploadStats reports written/reused MiB at the existing trace
+cadence. Allocation failures stop further upload attempts for that slot and
+query the actual D3D12 removal reason, latching confirmed removal through the
+existing diagnostic path. Draws with failed constant uploads are skipped.
+Texture-staging failures use the same removal check and bounded logging.
+
+`python scripts/tests/test_upload_cache.py` compiles the actual allocator and
+snapshot/batch types with a memory-backed GPU substitute. Reuse across 2,000
+full-palette requests, changed-byte versions, endian tails, exact written
+ranges, slot reset/remap, create/map failures, and recorded ownership pass.
+Disabling cache lookup in a temporary negative control fails the reuse check.
+The previous 32 UP stride cases still pass, and the Plume executable rebuilds.
+No game launch was automated. Race presentation, FPS, and a new capture's size
+remain to be measured on the rebuilt executable; per-draw producer copies and
+texture refresh work remain performance candidates.
+
+The user's subsequent run still has abysmal FPS. No performance improvement
+is confirmed; the race presentation result was not separately reported. This
+is a checkpoint of the rendering fixes and upload work, with performance open.

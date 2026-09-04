@@ -25,10 +25,12 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <string>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -104,6 +106,56 @@ uint32_t ReadGuestU32At(uint32_t guestAddress) {
     return 0;
   auto* p = pgr4::ghp::ToHost<const rex::be<uint32_t>>(guestAddress);
   return p != nullptr ? p->get() : 0;
+}
+
+float ReadGuestF32At(uint32_t guestAddress) {
+  return std::bit_cast<float>(ReadGuestU32At(guestAddress));
+}
+
+std::array<float, 3> ReadGuestVec3At(uint32_t guestAddress) {
+  return {ReadGuestF32At(guestAddress), ReadGuestF32At(guestAddress + 4),
+          ReadGuestF32At(guestAddress + 8)};
+}
+
+struct ClothPositionSample {
+  uint32_t index = 0;
+  std::array<float, 3> position{};
+  float magnitude = 0;
+  bool nonfinite = false;
+
+  bool Suspect() const { return nonfinite || magnitude > 10000.0f; }
+};
+
+// Diagnostic only: inspect every node, including unpinned nodes and flags
+// other than the first pre-simulated object. Never alter simulation data.
+ClothPositionSample SampleClothPositions(uint32_t nodes, uint32_t count) {
+  ClothPositionSample result;
+  if (nodes == 0 || count == 0 || count > 4096)
+    return result;
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto position = ReadGuestVec3At(nodes + i * 112u);
+    for (float component : position) {
+      if (!std::isfinite(component))
+        return {i, position, 0, true};
+      if (std::abs(component) > result.magnitude)
+        result = {i, position, std::abs(component), false};
+    }
+  }
+  return result;
+}
+
+// Bounded palette diagnostics retain exact guest bytes for standalone replay.
+std::string GuestBytesHex(uint32_t address, uint32_t size) {
+  if (address == 0)
+    return {};
+  const auto* bytes = pgr4::ghp::ToHost<const uint8_t>(address);
+  constexpr char digits[] = "0123456789abcdef";
+  std::string hex(size * 2u, '0');
+  for (uint32_t i = 0; i < size; ++i) {
+    hex[i * 2u] = digits[bytes[i] >> 4];
+    hex[i * 2u + 1u] = digits[bytes[i] & 15];
+  }
+  return hex;
 }
 
 }  // namespace
@@ -191,6 +243,172 @@ void Swap(uint32_t device, uint32_t arg4, uint32_t /*arg5*/, uint32_t caller) {
 
 }  // namespace
 
+// Capture both sides of the animation palette before it reaches flag physics.
+REX_IMPORT(__imp__sub_823DFAA0, g_origWriteBonePalette, void());
+REX_HOOK_RAW(sub_823DFAA0) {
+  const uint32_t workspace = ctx.r3.u32;
+  const uint32_t output = ctx.r4.u32;
+  const uint32_t skeleton = ReadGuestU32At(workspace);
+  const uint32_t count = ReadGuestU32At(skeleton);
+  const uint32_t propagated = ReadGuestU32At(workspace + 40);
+  g_origWriteBonePalette.fn(ctx, base);
+
+  static std::atomic<uint32_t> samples{0};
+  static std::atomic<uint32_t> anomalies{0};
+  if (output == 0 || count == 0 || count > 60 ||
+      anomalies.load(std::memory_order_relaxed) >= 2)
+    return;
+  uint32_t saturatedLane = count * 12u;
+  const auto* packed = pgr4::ghp::ToHost<const rex::be<uint16_t>>(output);
+  for (uint32_t lane = 0; lane < count * 12u; ++lane) {
+    if ((packed[lane].get() & 0x7FFFu) == 0x7FFFu) {
+      saturatedLane = lane;
+      break;
+    }
+  }
+  const bool suspect = saturatedLane != count * 12u;
+  if ((suspect && anomalies.fetch_add(1, std::memory_order_relaxed) < 2) ||
+      (!suspect && samples.fetch_add(1, std::memory_order_relaxed) < 2)) {
+    const uint32_t local = ReadGuestU32At(workspace + 4);
+    const uint32_t global = ReadGuestU32At(workspace + 16);
+    REXGPU_INFO("BONEPALETTE workspace=0x{:08X} skeleton=0x{:08X} output=0x{:08X} "
+                "bones={} propagated={} saturatedLane={} suspect={} "
+                "workspaceHex={} skeletonHex={} localHex={} globalHex={} packedHex={}",
+                workspace, skeleton, output, count, propagated, saturatedLane, suspect,
+                GuestBytesHex(workspace, 184), GuestBytesHex(skeleton, 1744 + count * 28u),
+                GuestBytesHex(local, count * 28u), GuestBytesHex(global, count * 28u),
+                GuestBytesHex(output, count * 24u));
+  }
+}
+
+REX_IMPORT(__imp__sub_823D2B20, g_origReadBoneAttachment, void());
+REX_HOOK_RAW(sub_823D2B20) {
+  const uint32_t manager = ctx.r3.u32;
+  const uint32_t skeleton = ctx.r4.u32;
+  const uint32_t paletteIndex = ctx.r5.u32;
+  const uint32_t bone = ctx.r6.u32;
+  const uint32_t rotationOut = ctx.r7.u32;
+  const uint32_t positionOut = ctx.r8.u32;
+  const uint32_t palette = ReadGuestU32At(manager + 12);
+  const uint32_t matrix = palette + 24u * (paletteIndex + bone);
+  g_origReadBoneAttachment.fn(ctx, base);
+
+  static std::atomic<uint32_t> samples{0};
+  static std::atomic<uint32_t> anomalies{0};
+  if (anomalies.load(std::memory_order_relaxed) >= 8)
+    return;
+  const auto position = ReadGuestVec3At(positionOut);
+  const bool suspect = std::any_of(position.begin(), position.end(), [](float v) {
+    return !std::isfinite(v) || std::abs(v) > 10000.0f;
+  });
+  if ((suspect && anomalies.fetch_add(1, std::memory_order_relaxed) < 8) ||
+      (!suspect && samples.fetch_add(1, std::memory_order_relaxed) < 12)) {
+    REXGPU_INFO("BONEATTACH manager=0x{:08X} palette=0x{:08X} skeleton=0x{:08X} "
+                "paletteIndex={} bone={} allocated={} p=({},{},{}) suspect={} "
+                "matrixHex={} bindHex={} rotationHex={}",
+                manager, palette, skeleton, paletteIndex, bone, ReadGuestU32At(manager + 16),
+                position[0], position[1], position[2], suspect, GuestBytesHex(matrix, 24),
+                GuestBytesHex(skeleton + 1744 + bone * 28u, 28), GuestBytesHex(rotationOut, 16));
+  }
+}
+
+// Follow flag data through initialization, simulation and vertex generation.
+// These hooks preserve guest execution and bound logging independently at
+// each boundary; a late anomaly cannot be hidden by initialization spam.
+REX_IMPORT(__imp__sub_82821BD8, g_origClothInit, void());
+REX_HOOK_RAW(sub_82821BD8) {
+  const uint32_t simulation = ctx.r3.u32;
+  const uint32_t descriptor = ctx.r4.u32;
+  const auto row0 = ReadGuestVec3At(descriptor + 32);
+  const auto row1 = ReadGuestVec3At(descriptor + 48);
+  const auto row2 = ReadGuestVec3At(descriptor + 64);
+  const std::array<float, 3> translation = {ReadGuestF32At(descriptor + 44),
+      ReadGuestF32At(descriptor + 60), ReadGuestF32At(descriptor + 76)};
+  g_origClothInit.fn(ctx, base);
+  static std::atomic<uint32_t> reports{0};
+  if (reports.fetch_add(1, std::memory_order_relaxed) < 32) {
+    const auto sample = SampleClothPositions(ReadGuestU32At(simulation + 8),
+                                            ReadGuestU32At(simulation + 16));
+    REXGPU_INFO("CLOTHINIT sim=0x{:08X} descriptor=0x{:08X} grid={}x{} "
+                "row0=({},{},{}) row1=({},{},{}) row2=({},{},{}) t=({},{},{}) "
+                "node={} p=({},{},{}) suspect={}", simulation, descriptor,
+                ReadGuestU32At(simulation), ReadGuestU32At(simulation + 4),
+                row0[0], row0[1], row0[2], row1[0], row1[1], row1[2],
+                row2[0], row2[1], row2[2], translation[0], translation[1], translation[2],
+                sample.index, sample.position[0], sample.position[1], sample.position[2],
+                sample.Suspect());
+  }
+}
+
+REX_IMPORT(__imp__sub_828219D8, g_origClothStep, void());
+REX_HOOK_RAW(sub_828219D8) {
+  static std::atomic<uint32_t> anomalies{0};
+  thread_local std::unordered_map<uint32_t, uint32_t> steps;
+  const uint32_t simulation = ctx.r3.u32;
+  const uint32_t nodes = ReadGuestU32At(simulation + 8);
+  const uint32_t count = ReadGuestU32At(simulation + 16);
+  const uint32_t step = ++steps[simulation];
+  const bool inspect = nodes != 0 && count > 0 && count <= 4096 &&
+                       anomalies.load(std::memory_order_relaxed) < 16;
+  const auto before = inspect ? SampleClothPositions(nodes, count) : ClothPositionSample{};
+  const float delta = inspect ? ReadGuestF32At(ctx.r4.u32) : 0;
+  g_origClothStep.fn(ctx, base);
+  if (inspect) {
+    const auto after = SampleClothPositions(nodes, count);
+    const bool suspect = before.Suspect() || after.Suspect();
+    if ((suspect && anomalies.fetch_add(1, std::memory_order_relaxed) < 16) ||
+        (!suspect && (step == 1 || step == 100 || step == 101))) {
+      const auto wind = ReadGuestVec3At(simulation + 224);
+      REXGPU_INFO("CLOTHSTEP sim=0x{:08X} step={} nodes=0x{:08X}/{} dt={} "
+                  "beforeNode={} p=({},{},{}) afterNode={} p=({},{},{}) "
+                  "wind=({},{},{}) suspect={}>{}", simulation, step, nodes, count, delta,
+                  before.index, before.position[0], before.position[1], before.position[2],
+                  after.index, after.position[0], after.position[1], after.position[2],
+                  wind[0], wind[1], wind[2], before.Suspect(), after.Suspect());
+    }
+  }
+}
+
+REX_IMPORT(__imp__sub_8282E0A8, g_origClothVertexFinish, void());
+REX_HOOK_RAW(sub_8282E0A8) {
+  // The only caller is sub_82359238, which keeps the flag object in r28.
+  // The allocator's +76 is the start, and r4 is the end of the written range.
+  static std::atomic<uint32_t> reports{0};
+  static std::atomic<uint32_t> anomalies{0};
+  const uint32_t vertices = ReadGuestU32At(ctx.r3.u32 + 76);
+  const uint32_t end = ctx.r4.u32;
+  const uint32_t simulation = ctx.r28.u32 + 16;
+  const uint32_t nodes = ReadGuestU32At(simulation + 8);
+  const uint32_t count = ReadGuestU32At(simulation + 16);
+  if (ctx.lr == 0x82359448u && nodes != 0 && count > 0 && count <= 4096 &&
+      vertices != 0 && uint64_t(vertices) + uint64_t(count) * 36u == end &&
+      anomalies.load(std::memory_order_relaxed) < 16) {
+    const auto sample = SampleClothPositions(nodes, count);
+    uint32_t mismatch = count;
+    for (uint32_t i = 0; i < count && mismatch == count; ++i) {
+      for (uint32_t component = 0; component < 3; ++component) {
+        if (ReadGuestU32At(nodes + i * 112u + component * 4u) !=
+            ReadGuestU32At(vertices + i * 36u + component * 4u)) {
+          mismatch = i;
+          break;
+        }
+      }
+    }
+    const bool suspect = sample.Suspect() || mismatch != count;
+    if ((suspect && anomalies.fetch_add(1, std::memory_order_relaxed) < 16) ||
+        (!suspect && reports.fetch_add(1, std::memory_order_relaxed) < 24)) {
+      const uint32_t index = mismatch != count ? mismatch : sample.index;
+      const auto source = ReadGuestVec3At(nodes + index * 112u);
+      const auto output = ReadGuestVec3At(vertices + index * 36u);
+      REXGPU_INFO("CLOTHVB sim=0x{:08X} nodes=0x{:08X} vertices=0x{:08X}/{} "
+                  "node={} source=({},{},{}) output=({},{},{}) equal={} suspect={}",
+                  simulation, nodes, vertices, count, index,
+                  source[0], source[1], source[2], output[0], output[1], output[2],
+                  mismatch == count, suspect);
+    }
+  }
+  g_origClothVertexFinish.fn(ctx, base);
+}
 // PGR4: PGR4_D3D_TryPresentAndUpdateStatus is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
 [[maybe_unused]] static Pgr4NoopGuestFn g_origTryPresentAndUpdateStatus;
@@ -635,67 +853,6 @@ void Pgr4RsViewportEnable(uint32_t renderContext, uint32_t value) {
 
 REX_HOOK(D3DDevice_SetRenderState_ClipPlaneEnable, Pgr4RsClipPlaneEnable);
 REX_HOOK(D3DDevice_SetRenderState_ViewportEnable, Pgr4RsViewportEnable);
-
-// ---------------------------------------------------------------------------
-// Vertex/pixel shader bool constants (device->vertexShaderBoolConstants /
-// pixelShaderBoolConstants -- packed 32 bools/dword, guest data is
-// big-endian, 1 bool per dword, LSB tested). Distinct from the (deliberately
-// unhooked) float-constant setters.
-// ---------------------------------------------------------------------------
-
-// PGR4: sub_8236DBC8 is not exported by this manifest (FM2-engine, or not yet located);
-// stubbed so the ported code links. Its hook stays dormant until mapped.
-[[maybe_unused]] static Pgr4NoopGuestFn g_origSetPsBoolConst;
-// PGR4: sub_8236DB68 is not exported by this manifest (FM2-engine, or not yet located);
-// stubbed so the ported code links. Its hook stays dormant until mapped.
-[[maybe_unused]] static Pgr4NoopGuestFn g_origSetVsBoolConst;
-
-namespace {
-
-void SetShaderConstantB(rex::be<uint32_t>* constants, uint32_t constantCount,
-                        uint32_t startRegister, const uint32_t* data, uint32_t boolCount) {
-  if (constants == nullptr || data == nullptr || startRegister >= constantCount * 32)
-    return;
-  const uint32_t count = std::min(boolCount, constantCount * 32 - startRegister);
-  for (uint32_t i = 0; i < count; ++i) {
-    const uint32_t bit = startRegister + i;
-    uint32_t value = constants[bit / 32].get();
-    const uint32_t mask = 1u << (bit & 31);
-    if ((std::byteswap(data[i]) & 1u) != 0) {
-      value |= mask;
-    } else {
-      value &= ~mask;
-    }
-    constants[bit / 32] = value;
-  }
-}
-
-void Pgr4SetPixelShaderConstantB(uint32_t device, uint32_t startRegister, uint32_t constantData,
-                                uint32_t boolCount) {
-  g_origSetPsBoolConst(device, startRegister, constantData, boolCount);
-  auto* dev = ghp::ToHost<GuestDevice>(device);
-  if (dev == nullptr || constantData == 0 || boolCount == 0)
-    return;
-  SetShaderConstantB(dev->pixelShaderBoolConstants,
-                     uint32_t(std::size(dev->pixelShaderBoolConstants)), startRegister,
-                     ghp::ToHost<const uint32_t>(constantData), boolCount);
-}
-
-void Pgr4SetVertexShaderConstantB(uint32_t device, uint32_t startRegister, uint32_t constantData,
-                                 uint32_t boolCount) {
-  g_origSetVsBoolConst(device, startRegister, constantData, boolCount);
-  auto* dev = ghp::ToHost<GuestDevice>(device);
-  if (dev == nullptr || constantData == 0 || boolCount == 0)
-    return;
-  SetShaderConstantB(dev->vertexShaderBoolConstants,
-                     uint32_t(std::size(dev->vertexShaderBoolConstants)), startRegister,
-                     ghp::ToHost<const uint32_t>(constantData), boolCount);
-}
-
-}  // namespace
-
-REX_HOOK(sub_8236DBC8, Pgr4SetPixelShaderConstantB);
-REX_HOOK(sub_8236DB68, Pgr4SetVertexShaderConstantB);
 
 // PGR4: PGR4_RenderContext_SetVertexDeclaration is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.

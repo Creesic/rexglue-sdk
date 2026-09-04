@@ -78,3 +78,42 @@ test_vupkd3d128_uint_2101010_2:
   .long 0x18681FF0
   blr
   #_ REGISTER_OUT v3 [7FC00000, 40400000, 40400000, 3F800001]
+
+# NORMPACKED64 uses the low 64 guest bits, returns biased float bits, and
+# permits source/destination aliasing (as in PGR4's translation decoder).
+test_vupkd3d128_ulong_4202020_zero:
+  #_ REGISTER_IN v3 [CDCDCDCD, CDCDCDCD, 00000000, 00000000]
+  # vupkd3d128 v3, v3, 6
+  .long 0x18781FF0
+  blr
+  #_ REGISTER_OUT v3 [40400000, 40400000, 40400000, 3F800000]
+
+test_vupkd3d128_ulong_4202020_positive:
+  # x=1000, y=2000, z=100, w=5
+  #_ REGISTER_IN v3 [CDCDCDCD, CDCDCDCD, 50006400, 7D0003E8]
+  .long 0x18781FF0
+  blr
+  #_ REGISTER_OUT v3 [404003E8, 404007D0, 40400064, 3F800005]
+
+test_vupkd3d128_ulong_4202020_negative:
+  # x=-100, y=50, z=-1, w=10
+  #_ REGISTER_IN v3 [CDCDCDCD, CDCDCDCD, AFFFFF00, 032FFF9C]
+  .long 0x18781FF0
+  blr
+  #_ REGISTER_OUT v3 [403FFF9C, 40400032, 403FFFFF, 3F80000A]
+
+test_vupkd3d128_ulong_4202020_limits:
+  # x=524287, y=-524287, z=-524288 (reserved -> QNaN), w=15
+  #_ REGISTER_IN v3 [CDCDCDCD, CDCDCDCD, F8000080, 0017FFFF]
+  # vupkd3d128 v4, v3, 6 (source must survive)
+  .long 0x18981FF0
+  blr
+  #_ REGISTER_OUT v4 [4047FFFF, 40380001, 7FC00000, 3F80000F]
+  #_ REGISTER_OUT v3 [CDCDCDCD, CDCDCDCD, F8000080, 0017FFFF]
+
+test_vupkd3d128_ulong_4202020_overflow:
+  # Reserved negative endpoint in all XYZ lanes.
+  #_ REGISTER_IN v3 [CDCDCDCD, CDCDCDCD, 08000080, 00080000]
+  .long 0x18781FF0
+  blr
+  #_ REGISTER_OUT v3 [7FC00000, 7FC00000, 7FC00000, 3F800000]

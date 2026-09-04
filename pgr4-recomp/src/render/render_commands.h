@@ -246,7 +246,17 @@ enum class RenderCommandType : uint32_t {
   UnlockBuffer32,
   CopyBufferFromUpload,
   CopyTextureFromUpload,
+  CopyTextureSubresourcesFromUpload,
   CreateTranslatedTextureHost,
+};
+
+struct TextureUploadRegion {
+  uint32_t width;
+  uint32_t height;
+  uint32_t rowTexels;
+  uint32_t mip;
+  uint32_t arrayIndex;
+  uint64_t srcOffset;
 };
 
 struct RenderCommand {
@@ -453,8 +463,17 @@ struct RenderCommand {
       uint32_t height;
       uint32_t rowTexels;
       uint32_t mip;
+      uint32_t arrayIndex;
       uint64_t srcOffset;
     } copyTextureFromUpload;
+
+    struct {
+      void* dst;
+      void* src;
+      uint32_t format;  // plume::RenderFormat
+      const TextureUploadRegion* regions;
+      uint32_t regionCount;
+    } copyTextureSubresourcesFromUpload;
 
     struct {
       GuestTexture* texture;
@@ -462,6 +481,8 @@ struct RenderCommand {
       uint32_t height;
       uint32_t format;  // plume::RenderFormat
       uint32_t baseAddress;
+      uint32_t levels;
+      bool cube;
       bool* createdOut;
     } createTranslatedTextureHost;
   };
@@ -484,9 +505,13 @@ void ProcUnlockBuffer32(GuestBuffer* buffer, const uint8_t* data, uint32_t size)
 void ProcCopyBufferFromUpload(void* dst, void* src, uint64_t size);
 void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t width,
                                uint32_t height, uint32_t rowTexels, uint32_t mip,
-                               uint64_t srcOffset);
+                               uint32_t arrayIndex, uint64_t srcOffset);
+void ProcCopyTextureSubresourcesFromUpload(void* dst, void* src, uint32_t format,
+                                           const TextureUploadRegion* regions,
+                                           uint32_t regionCount);
 void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint32_t height,
-                                     uint32_t format, uint32_t baseAddress, bool* createdOut);
+                                     uint32_t format, uint32_t baseAddress, uint32_t levels,
+                                     bool cube, bool* createdOut);
 void ProcSetViewportEnable(uint32_t value);
 void ProcSetClipPlaneState(uint32_t enabled, const float* plane);
 void ProcSetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc);

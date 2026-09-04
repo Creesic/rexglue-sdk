@@ -106,8 +106,8 @@ struct PipelineState {
 // have no live producer in this renderer yet -- normal/tangent packing is
 // instead handled via the hasR11G11B10Normal/hasUByte4TangentBasis spec
 // constants below, and occlusion-query/predication is simply unimplemented;
-// they stay at 0. vteFlags is hardcoded to FM2's one observed
-// PA_CL_VTE_CNTL value rather than decoded from a PM4 register.
+// they stay at 0. PGR4's ViewportEnable path writes PA_CL_VTE_CNTL 0x43F or
+// 0x400; both encode the same vertex-export flags value used below.
 struct SharedConstants {
   uint32_t texture2DIndices[16]{};
   uint32_t texture3DIndices[16]{};
@@ -146,8 +146,10 @@ struct SharedConstants {
   uint32_t vertexTexture3DIndices[4]{};
   uint32_t vertexTextureCubeIndices[4]{};
   uint32_t vertexSamplerIndices[4]{};
+  uint32_t indexedPositions[3][4]{};  // stride, size, format, element offset
 };
-static_assert(sizeof(SharedConstants) == 576);
+static_assert(sizeof(SharedConstants) == 624);
+static_assert(offsetof(SharedConstants, indexedPositions) == 576);
 static_assert(offsetof(SharedConstants, vertexTexture2DIndices) == 512);
 static_assert(offsetof(SharedConstants, vertexSamplerIndices) == 560);
 static_assert(offsetof(SharedConstants, packedTexcoordsLo) == 484);
@@ -457,9 +459,45 @@ std::unordered_set<GuestSurface*> g_pendingMsaaResolves;
 class UploadAllocator {
  public:
   void Reset() {
+    FinishWrites();
+    if (writtenBytes_ != 0 && (g_frameTraceIndex <= 64 || g_frameTraceIndex % 300 <= 1 || failed_)) {
+      REXGPU_INFO("UploadStats: retired slot requested={} MiB written={} MiB reused={} MiB chunks={}",
+                   (writtenBytes_ + reusedBytes_) >> 20, writtenBytes_ >> 20,
+                   reusedBytes_ >> 20, chunks_.size());
+    }
+    writtenBytes_ = reusedBytes_ = 0;
+    cachedUploads_.clear();
+    cachedBytes_.Clear();
+    failed_ = false;
     currentChunk_ = 0;
     for (Chunk& chunk : chunks_)
       chunk.offset = 0;
+  }
+
+  void FinishWrites() {
+    for (Chunk& chunk : chunks_) {
+      if (chunk.mapped != nullptr) {
+        const RenderRange written(0, chunk.offset);
+        chunk.buffer->unmap(0, &written);
+        chunk.mapped = nullptr;
+      }
+    }
+  }
+
+  bool Failed() const { return failed_; }
+
+  RenderBufferReference UploadCached(const void* src, uint32_t size, bool byteSwap) {
+    if (failed_ || IsDeviceLost()) return {};
+    const uint8_t* bytes = cachedBytes_.Copy(src, size, byteSwap);
+    if (bytes == nullptr) return {};
+    const auto it = cachedUploads_.find(bytes);
+    if (it != cachedUploads_.end()) {
+      reusedBytes_ += size;
+      return it->second;
+    }
+    const auto ref = Upload(bytes, size, false);
+    if (ref.ref != nullptr) cachedUploads_.emplace(bytes, ref);
+    return ref;
   }
 
   // Copies `size` bytes from `src` into the next aligned region of the
@@ -470,7 +508,7 @@ class UploadAllocator {
   // Grows in reusable chunks so large menu/resource upload bursts do not
   // create and retain one D3D12 upload resource for every guest Unlock.
   RenderBufferReference Upload(const void* src, uint64_t size, bool byteSwap) {
-    if (src == nullptr || size == 0)
+    if (src == nullptr || size == 0 || failed_ || IsDeviceLost())
       return RenderBufferReference{};
     Chunk* chunk = AcquireChunk(size);
     if (chunk == nullptr)
@@ -494,15 +532,17 @@ class UploadAllocator {
     }
     RenderBufferReference ref = chunk->buffer->at(chunk->offset);
     chunk->offset += size;
+    writtenBytes_ += size;
     return ref;
   }
 
-  void UploadAndBindRootDescriptor(const void* src, uint64_t size, uint32_t rootIndex,
+  bool UploadAndBindRootDescriptor(const void* src, uint32_t size, uint32_t rootIndex,
                                    bool byteSwap) {
-    RenderBufferReference ref = Upload(src, size, byteSwap);
+    RenderBufferReference ref = UploadCached(src, size, byteSwap);
     if (ref.ref == nullptr)
-      return;
+      return false;
     CommandList()->setGraphicsRootDescriptor(ref, rootIndex);
+    return true;
   }
 
  private:
@@ -526,6 +566,16 @@ class UploadAllocator {
       Chunk& chunk = chunks_[i];
       if (Align(chunk.offset) + size <= chunk.capacity) {
         currentChunk_ = i;
+        if (chunk.mapped == nullptr) {
+          const RenderRange noRead(0, 0);
+          chunk.mapped = static_cast<uint8_t*>(chunk.buffer->map(0, &noRead));
+          if (chunk.mapped == nullptr) {
+            failed_ = true;
+            REXGPU_ERROR("UploadAllocator: failed to map retained upload chunk");
+            CheckDeviceLost("UploadAllocator::map");
+            return nullptr;
+          }
+        }
         return &chunk;
       }
     }
@@ -534,12 +584,18 @@ class UploadAllocator {
     auto buffer = Device()->createBuffer(RenderBufferDesc::UploadBuffer(
         capacity, RenderBufferFlag::CONSTANT | RenderBufferFlag::VERTEX | RenderBufferFlag::INDEX));
     if (buffer == nullptr) {
-      REXGPU_ERROR("UploadAllocator: failed to create {}-byte upload chunk", capacity);
+      failed_ = true;
+      REXGPU_ERROR("UploadAllocator: failed to create {}-byte upload chunk ({} retained chunks)",
+                   capacity, chunks_.size());
+      CheckDeviceLost("UploadAllocator::createBuffer");
       return nullptr;
     }
-    uint8_t* mapped = reinterpret_cast<uint8_t*>(buffer->map());
+    const RenderRange noRead(0, 0);
+    uint8_t* mapped = reinterpret_cast<uint8_t*>(buffer->map(0, &noRead));
     if (mapped == nullptr) {
+      failed_ = true;
       REXGPU_ERROR("UploadAllocator: failed to map {}-byte upload chunk", capacity);
+      CheckDeviceLost("UploadAllocator::map");
       return nullptr;
     }
     chunks_.push_back(Chunk{std::move(buffer), mapped, capacity, 0});
@@ -549,6 +605,10 @@ class UploadAllocator {
 
   std::vector<Chunk> chunks_;
   size_t currentChunk_ = 0;
+  bool failed_ = false;
+  uint64_t writtenBytes_ = 0, reusedBytes_ = 0;
+  ByteSnapshotCache cachedBytes_;
+  std::unordered_map<const uint8_t*, RenderBufferReference> cachedUploads_;
 };
 std::array<UploadAllocator, kNumFrames> g_uploadAllocators;
 std::array<std::vector<std::unique_ptr<RenderBuffer>>, kNumFrames> g_tempUploadBuffers;
@@ -1232,6 +1292,13 @@ RenderFilter ConvertFilter(uint32_t v) {
       return RenderFilter::NEAREST;
   }
 }
+
+constexpr uint32_t DecodeMaxAnisotropy(uint32_t data3) {
+  const uint32_t mode = std::min((data3 >> 25) & 0x7u, 5u);
+  return mode == 0 ? 1u : 1u << (mode - 1u);
+}
+
+static_assert(DecodeMaxAnisotropy(4u << 25) == 8);
 
 RenderBorderColor ConvertBorderColor(uint32_t v) {
   return v == 1 ? RenderBorderColor::OPAQUE_WHITE : RenderBorderColor::TRANSPARENT_BLACK;
@@ -2032,7 +2099,7 @@ void ProcSetDrawGeometrySnapshot(const DrawGeometrySnapshot& snapshot) {
     }
 
     const RenderBufferReference ref =
-        CurrentUploadAllocator().Upload(stream.rawData, stream.rawSize, false);
+        CurrentUploadAllocator().UploadCached(stream.rawData, stream.rawSize, false);
     SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexStrides[index],
                   uint8_t(ref.ref != nullptr ? stream.stride : 0u));
     bool dirty = false;
@@ -2055,7 +2122,7 @@ void ProcSetDrawGeometrySnapshot(const DrawGeometrySnapshot& snapshot) {
   if (snapshot.rawIndexData != nullptr && snapshot.rawIndexSize != 0 &&
       (snapshot.rawIndexStride == 2u || snapshot.rawIndexStride == 4u)) {
     const RenderBufferReference ref =
-        CurrentUploadAllocator().Upload(snapshot.rawIndexData, snapshot.rawIndexSize, false);
+        CurrentUploadAllocator().UploadCached(snapshot.rawIndexData, snapshot.rawIndexSize, false);
     SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.buffer, ref);
     SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.format,
                   snapshot.rawIndexStride == 4u ? RenderFormat::R32_UINT : RenderFormat::R16_UINT);
@@ -2354,6 +2421,10 @@ void OnRecordingFrameReady(uint32_t frame) {
   // Intermediary is shared; safe to reset once the queue has drained jobs that
   // pointed into it (Present/WaitForGPU call this after sync Run).
   g_intermediaryUploadAllocator.Reset();
+}
+
+void FinishUploadWrites() {
+  CurrentUploadAllocator().FinishWrites();
 }
 
 void ScheduleResourceDestruction(GuestResource* resource) {
@@ -2844,7 +2915,7 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
     } else if (e.usage == D3DDECLUSAGE_POSITION && e.usageIndex >= 1) {
       if (e.usageIndex == 1)
         decl->indexVertexStream = e.stream;
-      // PGR4: POSITION1..3 hold a FLOAT16_4 per-draw matrix (stride-0 stream);
+      // POSITION1..3 may hold FLOAT16_4 bone matrices in an indexed stream;
       // 16-bit lanes need the .yxwz half-order fix-up in the shader.
       switch (e.type & 0x3Fu) {
         case 0x19: case 0x1A: case 0x1F: case 0x20:
@@ -3017,14 +3088,14 @@ GuestVertexDeclaration* MatchDeclarationForShader(GuestShader* vs, uint32_t stre
 // Live VB stride for stream 0. Prefer the input-slot stride (what SetVertexBuffers
 // will actually bind). Never take max() with a stale pipeline vertexStrides
 // value — that let a leftover 32B stride accept FLOAT3 decls while the bound
-// VB stayed at 8 (fm2mmgrok10 draw 200).
+// VB stayed at 8.
 uint32_t EffectiveStream0Stride(GuestDevice* device) {
   uint32_t stride = g_inputSlots[0].stride;
   if (stride == 0)
     stride = g_pipelineState.vertexStrides[0];
   if (stride == 0 && device != nullptr) {
-    // Xbox stores stride/4 as a byte at device+0x2FD8+stream (080plume).
-    const uint8_t dwords = reinterpret_cast<const uint8_t*>(device)[0x2FD8];
+    // PGR4 stores stride/4 as one byte per stream in the guest device.
+    const uint8_t dwords = device->streamStrideDwords[0];
     if (dwords != 0)
       stride = uint32_t(dwords) * 4u;
   }
@@ -3034,8 +3105,8 @@ uint32_t EffectiveStream0Stride(GuestDevice* device) {
 GuestVertexDeclaration* ResolveVertexDeclaration(GuestDevice* device) {
   const uint32_t streamStride = EffectiveStream0Stride(device);
 
-  // Keep host stride mirrors coherent when a low-level guest path wrote
-  // device+0x2FD8 without reaching the BindVertexStream wrapper.
+  // Keep host stride mirrors coherent when a low-level guest path wrote the
+  // guest device without reaching the BindVertexStream wrapper.
   if (streamStride != 0 && g_inputSlots[0].stride == 0) {
     g_inputSlots[0].stride = streamStride;
     g_pipelineState.vertexStrides[0] = uint8_t(streamStride > 255u ? 255u : streamStride);
@@ -3264,11 +3335,13 @@ std::unique_ptr<RenderPipeline> CreateGraphicsPipeline(const PipelineState& ps) 
   desc.slopeScaledDepthBias = ps.slopeScaledDepthBias;
   desc.depthClipEnabled = ps.depthClipEnabled;
   desc.stencilEnabled = ps.stencilEnable;
-  // PGR4: our plume pin predates FM2P's two-sided-stencil patch (independentStencil*/stencilBack*);
-  // front-face masks only until that patch is ported to Creesic/plume PGR4.
+  desc.independentStencilMasksAndReference = ps.twoSidedStencilMode;
   desc.stencilReadMask = ps.stencilFrontReadMask;
   desc.stencilWriteMask = ps.stencilFrontWriteMask;
   desc.stencilReference = ps.stencilFrontRef;
+  desc.stencilBackReadMask = ps.stencilBackReadMask;
+  desc.stencilBackWriteMask = ps.stencilBackWriteMask;
+  desc.stencilBackReference = ps.stencilBackRef;
   desc.stencilFrontFace = {ps.stencilFrontPass, ps.stencilFrontFail, ps.stencilFrontDepthFail,
                            ps.stencilFrontFunc};
   desc.stencilBackFace = {ps.stencilBackPass, ps.stencilBackFail, ps.stencilBackDepthFail,
@@ -3483,8 +3556,8 @@ void ProcSetSamplerState(uint32_t index, uint32_t data0, uint32_t data3, uint32_
   desc.magFilter = ConvertFilter((data3 >> 19) & 0x3);
   desc.minFilter = ConvertFilter((data3 >> 21) & 0x3);
   desc.mipmapMode = RenderMipmapMode(ConvertFilter((data3 >> 23) & 0x3));
-  desc.maxAnisotropy = 16;
-  desc.anisotropyEnabled = false;
+  desc.maxAnisotropy = DecodeMaxAnisotropy(data3);
+  desc.anisotropyEnabled = ((data3 >> 25) & 0x7u) != 0;
   desc.borderColor = ConvertBorderColor(data5 & 0x3);
 
   const uint64_t hash = XXH3_64bits(&desc, sizeof(desc));
@@ -3571,21 +3644,17 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
         address->get() != 0 ? ghp::ToHost<GuestBuffer>(address->get()) : nullptr;
     const uint32_t liveStride = uint32_t(strideDwords) * 4u;
     DrawStreamSnapshot& stream = geometry.streams[index];
-    if (liveBuffer == nullptr || (liveStride == 0 && IsFm2Resource(liveBuffer))) {
+    if (liveBuffer == nullptr) {
       stream = {};
     } else if (!IsFm2Resource(liveBuffer)) {
       // Vertex fetch constants count down from Fetch[31] (see GuestDevice).
-      // Stride 0 (PGR4 crowd: one 3 x FLOAT16_4 instance matrix per draw) is a
-      // valid D3D12 stride; the fetch base already includes the per-draw byte
-      // offset, and one element is all the draw can read.
+      // Preserve the whole palette: shader-computed indices can address beyond
+      // the draw's vertex count. The fetch base includes the stream byte offset.
       const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
           reinterpret_cast<const uint8_t*>(device) + 0x778u - index * 8u);
       const auto* fetchSize = fetchBase + 1;
       uint32_t rawSize = DecodeRawBufferSize(fetchSize->get());
       uint8_t* rawData = SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), 4u, false);
-      constexpr uint32_t kStrideZeroSnapshotBytes = 256u;
-      if (liveStride == 0)
-        rawSize = std::min(rawSize, kStrideZeroSnapshotBytes);
       stream = {nullptr, 0, liveStride, rawData, rawData != nullptr ? rawSize : 0u};
     } else if (stream.buffer != liveBuffer || stream.stride != liveStride) {
       stream = {liveBuffer, 0, liveStride};
@@ -3620,9 +3689,9 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   geometryCommand.type = RenderCommandType::SetDrawGeometrySnapshot;
   geometryCommand.setDrawGeometrySnapshot = geometry;
 
-  // PGR4's Set*ShaderConstantB/I OR 0x01000000 into the low word of
+  // PGR4's Set*ShaderConstantB/I rotate 1 left by 56 into
   // m_Pending.m_Mask[4] (IDA 0x82694608 / 0x82694758).
-  constexpr uint64_t kBooleanDirtyMask = uint64_t{1} << 24;
+  constexpr uint64_t kBooleanDirtyMask = uint64_t{1} << 56;
   uint64_t booleanFlags = device->dirtyFlags[4].get();
   if (forceFullSnapshot || (booleanFlags & kBooleanDirtyMask) != 0) {
     RenderCommand& cmd = queue.Enqueue();
@@ -3805,7 +3874,7 @@ bool HasBoundPipeline() {
 void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   std::lock_guard lock(RecordingMutex());
   g_hasBoundPipeline = false;
-  if (device == nullptr)
+  if (device == nullptr || CurrentUploadAllocator().Failed() || IsDeviceLost())
     return;
 
   // FM2's deferred draw-list nodes carry color-write state that the direct
@@ -3979,12 +4048,46 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   // Snapshot commands already copied the exact guest-thread state into these
   // persistent render-thread files. Never dereference mutable guest state here:
   // the producer may already be preparing the next draw.
-  CurrentUploadAllocator().UploadAndBindRootDescriptor(g_vertexShaderConstants,
-                                                       kVsFloatConstantBytes, 0, true);
-  CurrentUploadAllocator().UploadAndBindRootDescriptor(g_pixelShaderConstants,
-                                                       kPsFloatConstantBytes, 1, true);
-  CurrentUploadAllocator().UploadAndBindRootDescriptor(&g_sharedConstants,
-                                                       sizeof(g_sharedConstants), 2, false);
+  if (!CurrentUploadAllocator().UploadAndBindRootDescriptor(g_vertexShaderConstants,
+                                                            kVsFloatConstantBytes, 0, true) ||
+      !CurrentUploadAllocator().UploadAndBindRootDescriptor(g_pixelShaderConstants,
+                                                            kPsFloatConstantBytes, 1, true))
+    return;
+  // Reuse the immutable geometry uploads. Each semantic may use a different
+  // stream; the declaration owns both the element offset and storage format.
+  std::memset(g_sharedConstants.indexedPositions, 0, sizeof(g_sharedConstants.indexedPositions));
+  RenderBufferReference indexedPositionBuffers[3]{};
+  const auto* declaration = g_pipelineState.vertexDeclaration;
+  if (declaration != nullptr) {
+    for (uint32_t i = 0; i < declaration->vertexElementCount; ++i) {
+      const auto& element = declaration->vertexElements[i];
+      if (element.usage != D3DDECLUSAGE_POSITION || element.usageIndex < 1u ||
+          element.usageIndex > 3u || element.stream >= 16u)
+        continue;
+      const auto& view = g_vertexBufferViews[element.stream];
+      const uint32_t stride = g_inputSlots[element.stream].stride;
+      if (view.buffer.ref == nullptr || (element.offset & 3u) != 0 || (stride & 3u) != 0)
+        continue;
+      const uint32_t slot = element.usageIndex - 1u;
+      auto& metadata = g_sharedConstants.indexedPositions[slot];
+      metadata[0] = stride;
+      metadata[1] = view.size;
+      metadata[2] = element.type & 0x3Fu;
+      metadata[3] = element.offset;
+      indexedPositionBuffers[slot] = view.buffer;
+    }
+  }
+  const auto sharedBuffer = CurrentUploadAllocator().UploadCached(&g_sharedConstants,
+                                                           sizeof(g_sharedConstants), false);
+  if (sharedBuffer.ref == nullptr) return;
+  commandList->setGraphicsRootDescriptor(sharedBuffer, 2);
+  for (uint32_t slot = 0; slot < 3; ++slot) {
+    // Keep every root initialized even if the declaration omits a matrix row.
+    // Its zero size makes the shader return zero before touching this fallback.
+    commandList->setGraphicsRootDescriptor(indexedPositionBuffers[slot].ref != nullptr
+                                              ? indexedPositionBuffers[slot] : sharedBuffer,
+                                          3u + slot);
+  }
 
   if (g_dirtyStates.vertexStreamFirst <= g_dirtyStates.vertexStreamLast) {
     // [vertexStreamFirst, vertexStreamLast] is only the min/max index *ever*
@@ -4258,9 +4361,11 @@ void ProcDrawIndexedPrimitive(GuestDevice* device, uint32_t primitiveType, int32
       if (decl != nullptr) {
         for (uint32_t i = 0; i < decl->vertexElementCount; ++i) {
           const auto& e = decl->vertexElements[i];
-          REXGPU_INFO("CROWDDECL   [{}] stream={} offset={} type=0x{:08X} usage={} usageIndex={}",
+          REXGPU_INFO("CROWDDECL   [{}] stream={} offset={} type=0x{:08X} usage={} usageIndex={} stride={} bytes={}",
                       i, uint32_t(e.stream), uint32_t(e.offset), uint32_t(e.type),
-                      uint32_t(e.usage), uint32_t(e.usageIndex));
+                      uint32_t(e.usage), uint32_t(e.usageIndex),
+                      e.stream < 16 ? g_inputSlots[e.stream].stride : 0u,
+                      e.stream < 16 ? g_vertexBufferViews[e.stream].size : 0u);
         }
       }
     }
@@ -4277,16 +4382,6 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
   ++g_frameTrace.attemptedDraws;
   g_hasBoundPipeline = false;
 
-  const uint8_t savedStride0 = g_pipelineState.vertexStrides[0];
-  g_pipelineState.vertexStrides[0] = uint8_t(stride);
-  const uint32_t convertedIndexCount = PrepareConvertedIndices(primitiveType, vertexCount);
-  FlushRenderState(device, primitiveType);
-  g_pipelineState.vertexStrides[0] = savedStride0;
-  if (!g_hasBoundPipeline)
-    return;
-  const uint32_t geometry[] = {primitiveType, vertexCount, stride, bytes, convertedIndexCount};
-  TraceIssuedDraw(3, geometry, std::size(geometry), copy, bytes);
-
   const uint8_t* uploadData = copy;
   std::array<uint8_t, 4 * 20> normalizedQuad;
   if (!g_viewportEnabled && primitiveType == D3DPT_TRIANGLESTRIP &&
@@ -4301,23 +4396,34 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
     g_hasBoundPipeline = false;
     return;
   }
-  RenderPipelineLayout* layout = PipelineLayout();
-  RenderCommandList* commandList = CommandList();
-  // FlushRenderState already selected and bound the PSO using the temporary
-  // user-pointer stride and the actual attachment sample count.
-  if (layout == nullptr || commandList == nullptr) {
-    g_hasBoundPipeline = false;
-    return;
+
+  // Declaration resolution and indexed fetch metadata read the stream views,
+  // not just the PSO strides. Install the UP stream before flushing so a prior
+  // mesh cannot make this draw select a declaration for its stale stride.
+  const uint8_t savedStride0 = g_pipelineState.vertexStrides[0];
+  const RenderVertexBufferView savedView0 = g_vertexBufferViews[0];
+  const RenderInputSlot savedSlot0 = g_inputSlots[0];
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexStrides[0], uint8_t(stride));
+  g_vertexBufferViews[0] = RenderVertexBufferView(ref, bytes);
+  g_inputSlots[0] = RenderInputSlot(0, stride, RenderInputSlotClassification::PER_VERTEX_DATA);
+  g_dirtyStates.vertexStreamFirst = 0;
+
+  const uint32_t convertedIndexCount = PrepareConvertedIndices(primitiveType, vertexCount);
+  FlushRenderState(device, primitiveType);
+  if (g_hasBoundPipeline) {
+    const uint32_t geometry[] = {primitiveType, vertexCount, stride, bytes, convertedIndexCount};
+    TraceIssuedDraw(3, geometry, std::size(geometry), copy, bytes);
+    if (convertedIndexCount != 0) {
+      CommandList()->drawIndexedInstanced(convertedIndexCount, 1, 0, 0, 0);
+    } else {
+      CommandList()->drawInstanced(vertexCount, 1, 0, 0);
+    }
   }
-  commandList->setGraphicsPipelineLayout(layout);
-  RenderVertexBufferView view(ref, bytes);
-  RenderInputSlot slot(0, stride, RenderInputSlotClassification::PER_VERTEX_DATA);
-  commandList->setVertexBuffers(0, &view, 1, &slot);
-  if (convertedIndexCount != 0) {
-    commandList->drawIndexedInstanced(convertedIndexCount, 1, 0, 0, 0);
-  } else {
-    commandList->drawInstanced(vertexCount, 1, 0, 0);
-  }
+
+  // Restore the queued stream even if the flush could not bind a pipeline.
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexStrides[0], savedStride0);
+  g_vertexBufferViews[0] = savedView0;
+  g_inputSlots[0] = savedSlot0;
   g_dirtyStates.vertexStreamFirst = 0;
 }
 
@@ -4565,7 +4671,8 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
     ProcCreateTranslatedTextureHost(
         cmd.createTranslatedTextureHost.texture, cmd.createTranslatedTextureHost.width,
         cmd.createTranslatedTextureHost.height, cmd.createTranslatedTextureHost.format,
-        cmd.createTranslatedTextureHost.baseAddress, cmd.createTranslatedTextureHost.createdOut);
+        cmd.createTranslatedTextureHost.baseAddress, cmd.createTranslatedTextureHost.levels,
+        cmd.createTranslatedTextureHost.cube, cmd.createTranslatedTextureHost.createdOut);
     return;
   }
 
@@ -4755,7 +4862,15 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
                                 cmd.copyTextureFromUpload.format, cmd.copyTextureFromUpload.width,
                                 cmd.copyTextureFromUpload.height,
                                 cmd.copyTextureFromUpload.rowTexels, cmd.copyTextureFromUpload.mip,
+                                cmd.copyTextureFromUpload.arrayIndex,
                                 cmd.copyTextureFromUpload.srcOffset);
+      break;
+    case RenderCommandType::CopyTextureSubresourcesFromUpload:
+      ProcCopyTextureSubresourcesFromUpload(
+          cmd.copyTextureSubresourcesFromUpload.dst, cmd.copyTextureSubresourcesFromUpload.src,
+          cmd.copyTextureSubresourcesFromUpload.format,
+          cmd.copyTextureSubresourcesFromUpload.regions,
+          cmd.copyTextureSubresourcesFromUpload.regionCount);
       break;
     case RenderCommandType::CreateTranslatedTextureHost:
       break;  // handled above

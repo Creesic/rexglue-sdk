@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "render/render_commands.h"
+#include "render/byte_snapshot_cache.h"
 
 namespace pgr4::render {
 
@@ -121,17 +122,11 @@ class RecordedRenderBatch {
   };
 
   uint8_t* Copy(const uint8_t* source, uint32_t size) {
-    if (source == nullptr || size == 0)
-      return nullptr;
-    auto copy = std::make_unique<uint8_t[]>(size);
-    std::memcpy(copy.get(), source, size);
-    uint8_t* result = copy.get();
-    payloads_.push_back(std::move(copy));
-    return result;
+    return payloads_.Copy(source, size);
   }
 
   std::vector<RenderCommand> commands_;
-  std::vector<std::unique_ptr<uint8_t[]>> payloads_;
+  ByteSnapshotCache payloads_;
   std::vector<TextureFixup> textureFixups_;
 };
 

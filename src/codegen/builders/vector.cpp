@@ -1497,24 +1497,22 @@ bool build_vupkd3d128(BuilderContext& ctx) {
       break;
     }
 
-    case 6:  // NORMPACKED64 - unpack 4:20:20:20 to floats
+    case 6:  // NORMPACKED64 - unpack 4:20:20:20 to biased float bits
     {
       auto vSrc = ctx.v(ctx.insn.operands[1]);
       auto vDst = ctx.v(ctx.insn.operands[0]);
-      // Format: w(4 bits):z(20 bits):y(20 bits):x(20 bits) in 64 bits
-      // x, y, z --> floats, w --> float
-      ctx.println("\t{}.u64[0] = {}.u64[1];", ctx.v_temp(), vSrc);
-      // x (bits 0-19) - sign extend from 20 bits
-      ctx.println("\t{}.s32 = (int32_t({}.u64[0] << 44) >> 44);", ctx.temp(), ctx.v_temp());
-      ctx.println("\t{}.f32[0] = float({}.s32);", vDst, ctx.temp());
-      // y (bits 20-39) - sign extend from 20 bits
-      ctx.println("\t{}.s32 = (int32_t({}.u64[0] << 24) >> 44);", ctx.temp(), ctx.v_temp());
-      ctx.println("\t{}.f32[1] = float({}.s32);", vDst, ctx.temp());
-      // z (bits 40-59) - sign extend from 20 bits
-      ctx.println("\t{}.s32 = (int32_t({}.u64[0] << 4) >> 44);", ctx.temp(), ctx.v_temp());
-      ctx.println("\t{}.f32[2] = float({}.s32);", vDst, ctx.temp());
-      // w (bits 60-63) - 4 bits
-      ctx.println("\t{}.f32[3] = float({}.u64[0] >> 60);", vDst, ctx.v_temp());
+      // Guest words 2-3 are host u64[0]. Snapshot before an aliased write.
+      ctx.println("\t{}.u64[0] = {}.u64[0];", ctx.v_temp(), vSrc);
+      for (size_t i = 0; i < 3; ++i) {
+        // XYZ are signed 20-bit mantissa offsets from 3.0, not numeric floats.
+        ctx.println("\t{}.s32 = int32_t((({}.u64[0] >> {}) & 0xFFFFF) ^ 0x80000) - 0x80000;",
+                    ctx.temp(), ctx.v_temp(), i * 20);
+        ctx.println("\t{}.u32[{}] = {}.s32 == -524288 ? 0x7FC00000u : "
+                    "uint32_t(0x40400000 + {}.s32);",
+                    vDst, 3 - i, ctx.temp(), ctx.temp());
+      }
+      // W is an unsigned 4-bit mantissa offset from 1.0.
+      ctx.println("\t{}.u32[0] = 0x3F800000u | uint32_t({}.u64[0] >> 60);", vDst, ctx.v_temp());
       break;
     }
 
