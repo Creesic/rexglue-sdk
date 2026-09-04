@@ -180,6 +180,9 @@ struct GuestSurface : GuestBaseTexture {
   // Textures waiting for a StretchRect / Resolve copy from this surface
   // (Unleashed destinationTextures). Drained by FlushPendingStretchRectCommands.
   std::unordered_set<GuestTexture*> destinationTextures;
+  // PGR4: scratch copy for draws that sample this surface while it is still
+  // the bound render target (the car's tail-light lens refracts the scene).
+  std::unique_ptr<GuestTexture> selfSampleTexture;
 
   explicit GuestSurface(ResourceType t) : GuestBaseTexture(t) {}
 };

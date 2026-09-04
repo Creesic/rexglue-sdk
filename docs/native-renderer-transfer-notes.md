@@ -649,3 +649,50 @@ step is to find what supplies the crowd's world placement (the palette
 translation of about z = -827 is the suspect) and compare it against an object
 that lands correctly in the same frame.
 
+## Crowd fixed: instance rows are 3x3 rotations (2026-09-03)
+
+The crowd renders correctly now. The per-person transform is composed in the
+vertex shader as `world = palette * (instanceRot * localPos) + paletteT +
+palette * T_instance`, where `T_instance` is the 4th component of the three
+FLOAT16_4 instance rows (POSITION1..3) on the stride-0 stream.
+
+Those 4th halves read 0xE1FF / 0xE201 / 0xE1FF, i.e. -767.5 / -768.5 / -767.5,
+in every crowd draw of every capture taken so far. They are padding, not a
+translation: the game's placement comes entirely from the palette. Feeding
+them through pushed every person about 1144 units from the camera and below
+the bottom of the frame. Dropping them (`swapInstanceRow` in shader_common.h,
+used for POSITION1+ instead of `swapFloats`) puts each person about 13 units
+from the camera at `c24`, which is where the reference screenshot shows them.
+
+Corroborating numbers from `pgr4-ps1.rdc` draw 21041: camera (c24) is
+(-41.68, 0.99, -842.23); the palette translation for that person is
+(-46.04, 0.09, -829.67), 13.4 units away. The first three lanes of each row
+form a clean orthonormal basis, so the 16-bit lane swap itself was right.
+
+Ceiling: this assumes no PGR4 shader puts a real translation in the 4th lane
+of an instance row. 29 shaders take POSITION1..3; the title screen shows no
+regression, but a scene with a different instanced effect could.
+
+## Sampling the bound render target
+
+`pgr4_ps4.rdc` draw 6601 had the same host texture as both SRV and RTV -- the
+tail-light lens samples the resolved scene, and EDRAM aliasing maps that onto
+the live colour target. Sampling a bound target is undefined. `GuestSurface`
+now carries a `selfSampleTexture` scratch copy; when a slot would bind the
+surface that is currently the render target, the binding is redirected to that
+copy and registered as a deferred StretchRect, which `FlushRenderState`
+already drains before it binds render targets. The D3D12 debug layer reports
+no hazard afterwards. This did **not** change the tail lights.
+
+### Tail lights: what is now ruled out
+
+Both the car body draw (6287) and the tail-light draw (6623) run the same
+material with `g_DiffuseColour1` = (1,1,1,1); the body gets its red from an
+albedo texture, and the lens draw binds no albedo texture at all -- only the
+scene target and a 2D array. So the lens is being fed white and paints white.
+Ruled out so far: the 224-register constant cap, stale/missing constants
+(c128..c132 verified live per draw), and sampling the bound target. Still to
+check: where the red is meant to come from for a draw with no albedo texture
+-- the remaining candidates are the 2D array binding and the vertex colour
+path (the VS forwards only COLOR0.x, with a decoded normal in TEXCOORD6.yzw).
+

@@ -1802,6 +1802,68 @@ void ProcSetStencilState(uint32_t enable, uint32_t twoSided, uint32_t frontFunc,
 
 namespace {
 
+// PGR4: a draw that samples the surface it is rendering into (the tail-light
+// lens samples the resolved scene, which EDRAM aliasing maps onto the live
+// colour target) must read a copy -- sampling the bound target is undefined.
+// The copy runs through the existing deferred StretchRect drain, which
+// FlushRenderState already performs before it binds render targets.
+GuestTexture* EnsureSelfSampleTexture(GuestSurface* surface) {
+  if (surface == nullptr || surface->texture == nullptr || Device() == nullptr)
+    return nullptr;
+  if (surface->selfSampleTexture != nullptr &&
+      surface->selfSampleTexture->width == surface->width &&
+      surface->selfSampleTexture->height == surface->height &&
+      surface->selfSampleTexture->format == surface->format) {
+    return surface->selfSampleTexture.get();
+  }
+
+  auto copy = std::make_unique<GuestTexture>();
+  copy->type = ResourceType::Texture;
+  RenderTextureDesc desc;
+  desc.dimension = RenderTextureDimension::TEXTURE_2D;
+  desc.width = surface->width;
+  desc.height = surface->height;
+  desc.depth = 1;
+  desc.mipLevels = 1;
+  desc.arraySize = 1;
+  desc.format = surface->format;
+  desc.flags = RenderTextureFlag::NONE;
+  copy->textureHolder = Device()->createTexture(desc);
+  copy->texture = copy->textureHolder.get();
+  if (copy->texture == nullptr)
+    return nullptr;
+
+  RenderTextureViewDesc viewDesc;
+  viewDesc.format = surface->format;
+  viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
+  viewDesc.mipLevels = 1;
+  copy->textureView = copy->texture->createTextureView(viewDesc);
+  copy->width = surface->width;
+  copy->height = surface->height;
+  copy->depth = 1;
+  copy->levels = 1;
+  copy->format = surface->format;
+  copy->viewDimension = RenderTextureViewDimension::TEXTURE_2D;
+  copy->hostInitialized = true;
+  copy->requiresHostInitialization = false;
+  surface->selfSampleTexture = std::move(copy);
+  return surface->selfSampleTexture.get();
+}
+
+// Returns true when the slot was bound to a scratch copy of the live target.
+bool BindSelfSampleCopy(uint32_t index, GuestBaseTexture* bound) {
+  GuestSurface* rtSurface = AsSurface(g_renderTarget);
+  if (rtSurface == nullptr || bound != static_cast<GuestBaseTexture*>(rtSurface))
+    return false;
+  GuestTexture* copy = EnsureSelfSampleTexture(rtSurface);
+  if (copy == nullptr)
+    return false;
+  RegisterStretchRect(copy, rtSurface);
+  BindTextureDescriptor(index, copy, RenderTextureViewDimension::TEXTURE_2D);
+  g_textures[index] = copy;
+  return true;
+}
+
 void ProcSetTexture(uint32_t index, GuestTexture* texture) {
   if (IsDeviceLost())
     return;
@@ -1841,6 +1903,8 @@ void ProcSetTexture(uint32_t index, GuestTexture* texture) {
     viewDimension = RenderTextureViewDimension::TEXTURE_2D;
   }
 
+  if (BindSelfSampleCopy(index, bound))
+    return;
   BindTextureDescriptor(index, bound, viewDimension);
   g_textures[index] = texture;
 }
@@ -1861,6 +1925,8 @@ void ProcSetTextureBase(uint32_t index, GuestBaseTexture* texture) {
     return;
   }
   GuestBaseTexture* bound = texture->sourceTexture != nullptr ? texture->sourceTexture : texture;
+  if (BindSelfSampleCopy(index, bound))
+    return;
   BindTextureDescriptor(index, bound, RenderTextureViewDimension::TEXTURE_2D);
   g_textures[index] = nullptr;
 }
@@ -4175,6 +4241,25 @@ void ProcDrawIndexedPrimitive(GuestDevice* device, uint32_t primitiveType, int32
   FlushRenderState(device, primitiveType);
   if (!g_hasBoundPipeline)
     return;
+  {
+    const auto* vs = g_pipelineState.vertexShader;
+    const bool crowd = vs != nullptr && vs->shaderCacheEntry != nullptr &&
+                       vs->shaderCacheEntry->hash == 0x1FA9B696872B63EAull;
+    static std::atomic<uint32_t> s_declLog{0};
+    if (crowd && s_declLog.fetch_add(1, std::memory_order_relaxed) < 2) {
+      const GuestVertexDeclaration* decl = g_pipelineState.vertexDeclaration;
+      REXGPU_INFO("CROWDDECL indexCount={} decl={} elements={}", indexCount,
+                  static_cast<const void*>(decl), decl != nullptr ? decl->vertexElementCount : 0u);
+      if (decl != nullptr) {
+        for (uint32_t i = 0; i < decl->vertexElementCount; ++i) {
+          const auto& e = decl->vertexElements[i];
+          REXGPU_INFO("CROWDDECL   [{}] stream={} offset={} type=0x{:08X} usage={} usageIndex={}",
+                      i, uint32_t(e.stream), uint32_t(e.offset), uint32_t(e.type),
+                      uint32_t(e.usage), uint32_t(e.usageIndex));
+        }
+      }
+    }
+  }
   const uint32_t geometry[] = {primitiveType, uint32_t(baseVertexIndex), startIndex, indexCount};
   TraceIssuedDraw(2, geometry, std::size(geometry));
   CommandList()->drawIndexedInstanced(indexCount, 1, startIndex, baseVertexIndex, 0);
