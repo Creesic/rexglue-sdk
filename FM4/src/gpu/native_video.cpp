@@ -167,24 +167,13 @@ void Video::OnGraphicsInterruptRegistered(uint32_t device_va) {
   REXLOG_INFO("native gpu: vblank worker started for guest D3DDevice 0x{:08X}", device_va);
 }
 
-void Video::RequestClear(uint32_t argb) {
-  ::Video::SetFallbackClearColor(((argb >> 16) & 0xFF) / 255.0f, ((argb >> 8) & 0xFF) / 255.0f,
-                                 (argb & 0xFF) / 255.0f, ((argb >> 24) & 0xFF) / 255.0f);
-  // Kept from the milestone-1 body: this is the one line that proves the guest's
-  // D3DDevice_ClearF hook still reaches the renderer, and it is what tells a
-  // black window apart from a window clearing to the colour the guest asked for.
-  static std::atomic<bool> logged{false};
-  if (!logged.exchange(true)) {
-    REXLOG_INFO("native gpu: first guest clear colour 0x{:08X}", argb);
-  }
-}
-
 void Video::Present() {
   if (!g_initialized.load()) {
     return;
   }
-  // Present-source selection lands in Task 9; until then the blit has no source
-  // and ::Video::Present falls back to the clear colour.
+  // The source is published by the Swap hook via SetFrontbufferPresentSource;
+  // ::Video::Present picks it up together with the stretch-rect override and
+  // the sticky render target, in that priority order.
   if (::Video::Present(nullptr)) {
     g_presented.fetch_add(1, std::memory_order_relaxed);
     g_swaps_to_ack.fetch_add(1, std::memory_order_relaxed);

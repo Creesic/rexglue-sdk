@@ -2319,6 +2319,53 @@ void Clear(GuestDevice* /*device*/, uint32_t flags, const float* color, float z)
   RenderQueue::Enqueue(cmd);
 }
 
+namespace {
+bool g_hostTilingActive = false;
+}
+
+void EndTilingPass() {
+  if (g_hostTilingActive) {
+    g_hostTilingActive = false;
+  }
+}
+
+void BeginTilingPass(const uint32_t* rects, uint32_t count, uint32_t flags, const float* clearColor,
+                     float clearZ, uint32_t /*clearStencil*/) {
+  g_hostTilingActive = true;
+  int32_t left = 0, top = 0, right = 0, bottom = 0;
+  bool have = false;
+  if (rects != nullptr) {
+    const auto* r = reinterpret_cast<const rex::be<uint32_t>*>(rects);
+    for (uint32_t i = 0; i < count && i < 32u; ++i) {
+      const int32_t l = int32_t(r[i * 4 + 0].get());
+      const int32_t t = int32_t(r[i * 4 + 1].get());
+      const int32_t ri = int32_t(r[i * 4 + 2].get());
+      const int32_t b = int32_t(r[i * 4 + 3].get());
+      if (!have) {
+        left = l;
+        top = t;
+        right = ri;
+        bottom = b;
+        have = true;
+      } else {
+        left = std::min(left, l);
+        top = std::min(top, t);
+        right = std::max(right, ri);
+        bottom = std::max(bottom, b);
+      }
+    }
+  }
+  static std::atomic<bool> logged{false};
+  if (!logged.exchange(true, std::memory_order_relaxed)) {
+    REXLOG_INFO("fm4render: tiling pass {} rects, union {}x{} flags=0x{:X}", count,
+                have ? (right - left) : 0, have ? (bottom - top) : 0, flags);
+  }
+  constexpr uint32_t kSkipFirstTileClear = 0x4;
+  if (clearColor != nullptr && (flags & kSkipFirstTileClear) == 0) {
+    Clear(nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, clearColor, clearZ);
+  }
+}
+
 void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint,
                       const GuestRect* sourceRect, uint32_t postClearFlags,
                       const float* postClearColor, float postClearZ) {
@@ -4049,10 +4096,172 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
 
 }  // namespace
 
+// Xbox RECTLIST (D3DPT=8): 3 vertices define an axis-aligned rect. FM2 used
+// QUADLIST (4 verts, re-indexed). FM4's 2D path emits RECTLIST; drawing those
+// 3 verts as a triangle list is the sawtooth wedges on the loading screen.
+// Xenos builds the 4th vertex as (v1.x, v2.y, v1.z, v2.w) per float4, then two
+// triangles (v0,v1,v2) and (v1,v3,v2).
+void WriteRectListFourthVertex(uint8_t* dst, const uint8_t* v0, const uint8_t* v1,
+                               const uint8_t* v2, uint32_t stride) {
+  (void)v0;
+  uint32_t offset = 0;
+  auto loadBeFloat = [](const uint8_t* p) {
+    uint32_t word;
+    std::memcpy(&word, p, sizeof(word));
+    return std::bit_cast<float>(std::byteswap(word));
+  };
+  auto storeBeFloat = [](uint8_t* p, float value) {
+    const uint32_t word = std::byteswap(std::bit_cast<uint32_t>(value));
+    std::memcpy(p, &word, sizeof(word));
+  };
+  while (offset + 16u <= stride) {
+    storeBeFloat(dst + offset + 0, loadBeFloat(v1 + offset + 0));
+    storeBeFloat(dst + offset + 4, loadBeFloat(v2 + offset + 4));
+    storeBeFloat(dst + offset + 8, loadBeFloat(v1 + offset + 8));
+    storeBeFloat(dst + offset + 12, loadBeFloat(v2 + offset + 12));
+    offset += 16u;
+  }
+  if (offset < stride)
+    std::memcpy(dst + offset, v1 + offset, stride - offset);
+}
+
+uint8_t* ExpandRectListToTriangleList(const uint8_t* src, uint32_t stride, uint32_t vertexCount,
+                                      uint32_t& outVertexCount) {
+  outVertexCount = 0;
+  const uint32_t rects = vertexCount / 3u;
+  if (src == nullptr || stride == 0 || stride > 256u || rects == 0)
+    return nullptr;
+  const uint32_t dstCount = rects * 6u;
+  uint8_t* dst = g_intermediaryUploadAllocator.Allocate(dstCount * stride);
+  if (dst == nullptr)
+    return nullptr;
+  uint8_t fourth[256];
+  for (uint32_t rect = 0; rect < rects; ++rect) {
+    const uint8_t* v0 = src + (rect * 3u + 0u) * stride;
+    const uint8_t* v1 = src + (rect * 3u + 1u) * stride;
+    const uint8_t* v2 = src + (rect * 3u + 2u) * stride;
+    WriteRectListFourthVertex(fourth, v0, v1, v2, stride);
+    uint8_t* o = dst + rect * 6u * stride;
+    std::memcpy(o + 0u * stride, v0, stride);
+    std::memcpy(o + 1u * stride, v1, stride);
+    std::memcpy(o + 2u * stride, v2, stride);
+    std::memcpy(o + 3u * stride, v1, stride);
+    std::memcpy(o + 4u * stride, fourth, stride);
+    std::memcpy(o + 5u * stride, v2, stride);
+  }
+  outVertexCount = dstCount;
+  return dst;
+}
+
+const uint8_t* GuestStream0Vertices(GuestDevice* device, uint32_t startVertex, uint32_t vertexCount,
+                                    uint32_t& stride) {
+  stride = uint32_t(device->streamStrideDwords[0]) * 4u;
+  if (stride == 0 || stride > 256u)
+    return nullptr;
+  const uint32_t va = device->boundVertexStreams[0].get();
+  if (va == 0)
+    return nullptr;
+  GuestBuffer* buffer = ghp::ToHost<GuestBuffer>(va);
+  if (IsFm4Resource(buffer) && buffer->mappedMemory != nullptr) {
+    const uint32_t byteOffset = startVertex * stride;
+    if (byteOffset + vertexCount * stride > buffer->dataSize)
+      return nullptr;
+    return static_cast<const uint8_t*>(buffer->mappedMemory) + byteOffset;
+  }
+  if (IsFm4Resource(buffer))
+    return nullptr;
+  const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
+      reinterpret_cast<const uint8_t*>(device) + kGuestVertexFetchBase);
+  const auto* fetchSize = fetchBase + 1;
+  uint8_t* raw = SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), 0u, false);
+  if (raw == nullptr)
+    return nullptr;
+  const uint32_t byteOffset = startVertex * stride;
+  if (byteOffset + vertexCount * stride > DecodeRawBufferSize(fetchSize->get()))
+    return nullptr;
+  return raw + byteOffset;
+}
+
+// Xbox 2D (RECTLIST / DrawUP) often writes screen pixels or a 0-1 unit quad
+// with PA_CL_VTE viewport scale off. D3D12 still clips to [-w,w], so a 0-1280
+// quad only keeps the [0,1] corner -- a dark rectangle in the top-right of a
+// 720p RT, then stretched to the window. Same remap as
+// NormalizeUnitFullscreenUpQuad, generalized to pixel space.
+bool RemapScreenSpacePositionsToClip(uint8_t* data, uint32_t vertexCount, uint32_t stride,
+                                     float spaceWidth, float spaceHeight, uint32_t vte) {
+  if (data == nullptr || vertexCount < 3 || stride < 8 || stride > 256)
+    return false;
+  auto read = [](const uint8_t* p) {
+    uint32_t word;
+    std::memcpy(&word, p, sizeof(word));
+    return std::bit_cast<float>(std::byteswap(word));
+  };
+  auto write = [](uint8_t* p, float value) {
+    const uint32_t word = std::byteswap(std::bit_cast<uint32_t>(value));
+    std::memcpy(p, &word, sizeof(word));
+  };
+  float minX = read(data), maxX = minX;
+  float minY = read(data + 4), maxY = minY;
+  for (uint32_t i = 1; i < vertexCount; ++i) {
+    const float x = read(data + i * stride);
+    const float y = read(data + i * stride + 4);
+    if (!std::isfinite(x) || !std::isfinite(y))
+      return false;
+    minX = std::min(minX, x);
+    maxX = std::max(maxX, x);
+    minY = std::min(minY, y);
+    maxY = std::max(maxY, y);
+  }
+  const bool unitQuad = minX >= -0.01f && minY >= -0.01f && maxX <= 1.01f && maxY <= 1.01f &&
+                        (maxX - minX) > 0.5f && (maxY - minY) > 0.5f;
+  const bool pixelSpace = maxX > 2.5f || maxY > 2.5f;
+  if (!unitQuad && !pixelSpace)
+    return false;
+  if (spaceWidth < 1.0f)
+    spaceWidth = float(kFm4FrameWidth);
+  if (spaceHeight < 1.0f || spaceHeight == float(kFm4TileHeight))
+    spaceHeight = float(kFm4FrameHeight);
+  const float w = unitQuad ? 1.0f : spaceWidth;
+  const float h = unitQuad ? 1.0f : spaceHeight;
+  for (uint32_t i = 0; i < vertexCount; ++i) {
+    uint8_t* v = data + i * stride;
+    write(v, read(v) * 2.0f / w - 1.0f);
+    write(v + 4, 1.0f - read(v + 4) * 2.0f / h);
+  }
+  static std::atomic<bool> logged{false};
+  if (!logged.exchange(true, std::memory_order_relaxed)) {
+    REXGPU_INFO(
+        "fm4render: 2D pos remap {} verts stride={} xy=[{:.1f},{:.1f}]..[{:.1f},{:.1f}] "
+        "space={}x{} vte=0x{:X} unit={}",
+        vertexCount, stride, minX, minY, maxX, maxY, w, h, vte, unitQuad);
+  }
+  return true;
+}
+
+bool DrawRectListAsTriangles(GuestDevice* device, uint32_t startVertex, uint32_t vertexCount) {
+  uint32_t stride = 0;
+  const uint8_t* src = GuestStream0Vertices(device, startVertex, vertexCount, stride);
+  uint32_t expandedCount = 0;
+  uint8_t* expanded = ExpandRectListToTriangleList(src, stride, vertexCount, expandedCount);
+  if (expanded == nullptr)
+    return false;
+  static std::atomic<bool> logged{false};
+  if (!logged.exchange(true, std::memory_order_relaxed)) {
+    REXGPU_INFO("fm4render: RECTLIST {} verts -> {} triangle-list verts (stride={})", vertexCount,
+                expandedCount, stride);
+  }
+  DrawUserPointerVertices(device, D3DPT_TRIANGLELIST, expandedCount, expanded, stride);
+  return true;
+}
+
 void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
                   uint32_t vertexCount) {
   if (!::Video::IsInitialized())
     return;
+  if (primitiveType == D3DPT_RECTLIST &&
+      DrawRectListAsTriangles(device, startVertex, vertexCount)) {
+    return;
+  }
   LocalRenderCommandQueue queue;
   QueueDrawStateSnapshots(device, queue);
   RenderCommand& cmd = queue.Enqueue();
@@ -4089,6 +4298,16 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
     return;
   if (data == nullptr || vertexCount == 0 || stride == 0)
     return;
+  if (primitiveType == D3DPT_RECTLIST) {
+    uint32_t expandedCount = 0;
+    uint8_t* expanded = ExpandRectListToTriangleList(static_cast<const uint8_t*>(data), stride,
+                                                     vertexCount, expandedCount);
+    if (expanded != nullptr) {
+      primitiveType = D3DPT_TRIANGLELIST;
+      vertexCount = expandedCount;
+      data = expanded;
+    }
+  }
   const uint32_t bytes = vertexCount * stride;
   // Copy on the guest thread so Enqueue can return before the guest reuses
   // its stack/heap buffer (Unleashed intermediary upload pattern).
@@ -4096,6 +4315,21 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
   if (copy == nullptr) {
     REXGPU_WARN("DrawUserPointerVertices: intermediary upload exhausted ({} bytes)", bytes);
     return;
+  }
+  if (device != nullptr) {
+    float vpW = float(kFm4FrameWidth);
+    float vpH = float(kFm4FrameHeight);
+    if (const rex::be<float>* vp = GuestViewportFloats(device)) {
+      if (vp[2].get() > 1.0f)
+        vpW = vp[2].get();
+      if (vp[3].get() > 1.0f)
+        vpH = vp[3].get();
+    }
+    const uint32_t vte =
+        reinterpret_cast<const rex::be<uint32_t>*>(reinterpret_cast<const uint8_t*>(device) +
+                                                   kGuestViewportEnableOffset)
+            ->get();
+    RemapScreenSpacePositionsToClip(copy, vertexCount, stride, vpW, vpH, vte);
   }
   LocalRenderCommandQueue queue;
   QueueDrawStateSnapshots(device, queue);

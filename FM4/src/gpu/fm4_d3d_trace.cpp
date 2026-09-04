@@ -4,6 +4,7 @@
 // Works under both GPU paths; every hook forwards to the original body.
 #include "generated/default/fm4_init.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -36,13 +37,17 @@ enum Counter : size_t {
   kInterruptCb,        // D3D::InterruptCallback invocations (any source)
   kInterruptVblankSrc, // ... with source 0 (vblank)
   kVblank,             // D3D::VerticalBlankInterrupt actually ran
+  kBeginCommandBuffer, // D3DDevice_BeginCommandBuffer: recording starts
+  kCreateQuery,        // D3DDevice_CreateQueryTiled
+  kQueryGetData,       // D3DQuery_GetData calls
+  kQueryNotReady,      // ... that did NOT return S_OK (the suspected native gate)
   kCount
 };
 
 constexpr std::array<const char*, kCount> kNames = {
     "swap",       "drawIdx",   "drawIdxUP", "beginVerts", "runCB",    "beginTiling",
     "resolve",    "rtIdxNon0", "createTex", "createVS",   "createPS", "irq",
-    "irqVbl",     "vblank"};
+    "irqVbl",     "vblank",    "beginCB",   "qCreate",    "qGet",     "qBusy"};
 
 std::array<std::atomic<uint32_t>, kCount> g_counters{};
 std::atomic<uint32_t> g_resolve_flags{0};
@@ -58,6 +63,8 @@ void LogAndReset() {
   for (size_t i = 0; i < kCount; ++i) {
     n += std::snprintf(line + n, sizeof(line) - n, " %s=%u", kNames[i],
                        g_counters[i].exchange(0, std::memory_order_relaxed));
+    // snprintf returns the length it WOULD have written; clamp or sizeof-n wraps.
+    n = std::min<int>(n, int(sizeof(line)) - 1);
   }
   std::snprintf(line + n, sizeof(line) - n, " resolveFlags=0x%08X",
                 g_resolve_flags.exchange(0, std::memory_order_relaxed));
@@ -140,14 +147,28 @@ extern "C" REX_FUNC(D3D_VerticalBlankInterrupt) {
   __imp__D3D_VerticalBlankInterrupt(ctx, base);
 }
 
-extern "C" REX_FUNC(D3DDevice_RunCommandBuffer) {
+void fm4::gpu::TraceOnRunCommandBuffer() {
   if (Enabled()) Bump(kRunCommandBuffer);
-  __imp__D3DDevice_RunCommandBuffer(ctx, base);
 }
 
-extern "C" REX_FUNC(D3DDevice_BeginTiling) {
+void fm4::gpu::TraceOnBeginTiling() {
   if (Enabled()) Bump(kBeginTiling);
-  __imp__D3DDevice_BeginTiling(ctx, base);
+}
+
+void fm4::gpu::TraceOnBeginCommandBuffer() {
+  if (Enabled()) Bump(kBeginCommandBuffer);
+}
+
+void fm4::gpu::TraceOnQueryGetData(uint32_t not_ready) {
+  if (Enabled()) {
+    Bump(kQueryGetData);
+    if (not_ready != 0) Bump(kQueryNotReady);
+  }
+}
+
+extern "C" REX_FUNC(D3DDevice_CreateQueryTiled) {
+  if (Enabled()) Bump(kCreateQuery);
+  __imp__D3DDevice_CreateQueryTiled(ctx, base);
 }
 
 // D3DDevice_CreateTexture / CreateVertexShader / CreatePixelShader are hooked

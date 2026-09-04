@@ -91,6 +91,13 @@ void ScheduleResourceDestruction(GuestResource* resource);
 
 void Clear(GuestDevice* device, uint32_t flags, const float* color, float z);
 
+// Predicated tiling: the host renders the union of the tile rects once. FM4
+// has no XDK D3DDevice_EndTiling; the pass is closed by the next BeginTiling
+// or by Swap.
+void BeginTilingPass(const uint32_t* rects, uint32_t count, uint32_t flags, const float* clearColor,
+                     float clearZ, uint32_t clearStencil);
+void EndTilingPass();
+
 // D3DDevice_Resolve's texture-copy half: copies the currently-bound color
 // render target into destTexture (Xbox 360's EDRAM-to-linear-texture
 // resolve). destPoint/sourceRect may be null (full-texture copy at 0,0),

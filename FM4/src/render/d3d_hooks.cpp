@@ -14,8 +14,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 
+#include <plume_render_interface.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/types.h>
@@ -25,8 +27,10 @@
 #include "render/guest_device.h"
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
+#include "render/render_internal.h"
 #include "render/render_queue.h"
 #include "render/render_state.h"
+#include "render/video.h"
 
 namespace rr = fm4::render;
 namespace ghp = fm4::ghp;
@@ -86,12 +90,20 @@ enum Counter : size_t {
   kDrawUP,
   kDrawIdxUP,
   kDrawOtherDevice,
+  kSwap,
+  kResolve,
+  kPresentSrc,
+  kRunCB,
+  kRunCBMiss,
+  kBeginTiling,
+  kQueryGet,
   kCounterCount
 };
 constexpr const char* kCounterNames[kCounterCount] = {
-    "vb",      "ib",         "tex",     "surf",       "decl",   "vs",        "ps",
-    "lock",    "unlock",     "passcalls", "drawIdx",  "drawNonIdx", "drawUP", "drawIdxUP",
-    "drawOtherDev"};
+    "vb",         "ib",        "tex",        "surf",      "decl",     "vs",
+    "ps",         "lock",      "unlock",     "passcalls", "drawIdx",  "drawNonIdx",
+    "drawUP",     "drawIdxUP", "drawOtherDev", "swap",     "resolve",  "presentSrc",
+    "runCB",      "runCBMiss", "beginTiling", "queryGet"};
 std::atomic<uint32_t> g_counters[kCounterCount]{};
 void Bump(Counter c) { g_counters[c].fetch_add(1, std::memory_order_relaxed); }
 
@@ -111,6 +123,42 @@ void StoreLockedRect(uint32_t lockedRectVa, uint32_t pitch, uint32_t bits) {
   }
 }
 
+uint32_t ReadGuestU32(uint32_t guestAddress) {
+  auto* p = ghp::ToHost<const rex::be<uint32_t>>(guestAddress);
+  return p != nullptr ? p->get() : 0;
+}
+
+void ReadGuestVec4(uint32_t guestAddress, float out[4]) {
+  auto* p = ghp::ToHost<const rex::be<float>>(guestAddress);
+  if (p == nullptr) {
+    out[0] = out[1] = out[2] = 0.0f;
+    out[3] = 1.0f;
+    return;
+  }
+  out[0] = p[0].get();
+  out[1] = p[1].get();
+  out[2] = p[2].get();
+  out[3] = p[3].get();
+}
+
+void LogMissingPortHooks() {
+  static std::atomic<bool> once{false};
+  if (once.exchange(true, std::memory_order_relaxed)) {
+    return;
+  }
+  REXLOG_WARN(
+      "fm4render: D3DDevice_EndCommandBuffer not located; recordings close at CreateClone instead");
+  REXLOG_WARN(
+      "fm4render: D3DCommandBuffer_CreateShaderConstantFFixup not located; recorded command "
+      "buffers replay with their record-time bindings");
+  REXLOG_WARN(
+      "fm4render: D3DCommandBuffer_CreateTextureFixup not located; recorded command buffers "
+      "replay with their record-time bindings");
+  REXLOG_WARN(
+      "fm4render: D3DDevice_EndTiling not located; tiling passes close at the next BeginTiling "
+      "or Swap");
+}
+
 }  // namespace
 
 namespace fm4::render {
@@ -120,7 +168,7 @@ void OnResourceTraceFrame() {
   if ((frames.fetch_add(1, std::memory_order_relaxed) % 300) != 299) {
     return;
   }
-  char line[384];
+  char line[512];
   int n = std::snprintf(line, sizeof(line), "[fm4render] frames=300");
   for (size_t i = 0; i < kCounterCount; ++i) {
     n += std::snprintf(line + n, sizeof(line) - n, " %s=%u", kCounterNames[i],
@@ -158,6 +206,7 @@ extern "C" REX_FUNC(Direct3D_CreateDevice) {
   rr::SetActiveGuestDevice(device);
   REXLOG_INFO("fm4render: guest D3DDevice at 0x{:08X}", device_va);
   rr::LogGuestDeviceLayout(device);
+  LogMissingPortHooks();
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +259,26 @@ extern "C" REX_FUNC(D3DDevice_CreateTexture) {
   Bump(kCreateTex);
   ctx.r3.u64 =
       ghp::ToGuest(rr::CreateTexture(width, height, depth, levels, usage, format, pool, type));
+}
+
+// D3DTexture_GetSurfaceLevel(pThis, Level) @0x826DEEC0. The original calls
+// FindSurfaceWithinTexture (walks the XDK fetch constant) then mallocs a
+// 48-byte D3DSurface whose SurfaceInfo is the parent texture. Running that on
+// a GuestTexture reads host members as GPU state. Return the texture itself:
+// it is already a GuestBaseTexture, SetRenderTarget can bind it, and the extra
+// AddRef is dropped when the caller Releases the "surface".
+extern "C" REX_FUNC(D3DTexture_GetSurfaceLevel) {
+  if (!Native()) {
+    __imp__D3DTexture_GetSurfaceLevel(ctx, base);
+    return;
+  }
+  auto* host = OurResource(ctx.r3.u32);
+  if (host == nullptr) {
+    __imp__D3DTexture_GetSurfaceLevel(ctx, base);
+    return;
+  }
+  host->refCount.fetch_add(1, std::memory_order_acq_rel);
+  ctx.r3.u64 = ghp::ToGuest(host);
 }
 
 // D3DDevice_CreateSurface(Width, Height, Format, MultiSample, pParameters)
@@ -350,6 +419,27 @@ extern "C" REX_FUNC(D3DTexture_LockRect) {
   }
   const uint32_t level = ctx.r4.u32;
   const uint32_t lockedRectVa = ctx.r5.u32;
+  Bump(kLock);
+  uint32_t pitch = 0, bits = 0;
+  rr::LockRect(static_cast<GuestBaseTexture*>(host), level, &pitch, &bits);
+  StoreLockedRect(lockedRectVa, pitch, bits);
+}
+
+// D3DCubeTexture_LockRect(pThis, FaceType, Level, pLockedRect, pRect, Flags)
+// @0x826DF050. Face is ignored: our lock path has no array-slice model.
+extern "C" REX_FUNC(D3DCubeTexture_LockRect) {
+  if (!Native()) {
+    __imp__D3DCubeTexture_LockRect(ctx, base);
+    return;
+  }
+  auto* host = OurResource(ctx.r3.u32);
+  if (host == nullptr) {
+    Bump(kPassCalls);
+    __imp__D3DCubeTexture_LockRect(ctx, base);
+    return;
+  }
+  const uint32_t level = ctx.r5.u32;
+  const uint32_t lockedRectVa = ctx.r6.u32;
   Bump(kLock);
   uint32_t pitch = 0, bits = 0;
   rr::LockRect(static_cast<GuestBaseTexture*>(host), level, &pitch, &bits);
@@ -595,6 +685,75 @@ ResolvedTextureBinding ResolveTextureBinding(GuestBaseTexture* texture) {
   }
 }
 
+// CreateDevice's default RTs are 48-byte XDK D3DSurface objects (Common nibble
+// 4). GetDesc @0x826DF380 reads Format at +0x28 and packed width/height at +0x24.
+GuestSurface* HostSurfaceForXdkHeader(uint32_t surface) {
+  static std::mutex mutex;
+  static std::unordered_map<uint32_t, GuestSurface*> cache;
+  std::lock_guard lock(mutex);
+  if (auto it = cache.find(surface); it != cache.end()) {
+    return it->second;
+  }
+  const uint32_t packed = ReadGuestU32(surface + 0x24);
+  const uint32_t format = ReadGuestU32(surface + 0x28);
+  const uint32_t width = (packed >> 18) + 1u;
+  const uint32_t height = ((packed >> 3) & 0x7FFFu) + 1u;
+  const uint32_t msaa = (ReadGuestU32(surface + 0x18) >> 16) & 3u;
+  if (width == 0 || height == 0 || width > 4096u || height > 4096u) {
+    return nullptr;
+  }
+  GuestSurface* created = rr::CreateSurface(width, height, format, msaa);
+  if (created != nullptr) {
+    cache[surface] = created;
+    REXLOG_INFO("fm4render: XDK surface 0x{:08X} -> host {}x{} fmt=0x{:08X} msaa={}", surface,
+                width, height, format, msaa);
+  }
+  return created;
+}
+
+// Our CreateSurface/CreateTexture objects bind directly. XDK D3DSurface headers
+// (nibble 4) get a host RT via GetDesc's packed size. Textures go through
+// TranslateGuestTexture. GetSurfaceLevel of our textures already returns the
+// GuestTexture itself (Common bit 0x40000000 children of XDK textures still
+// use Parent at +0x18).
+GuestBaseTexture* ResolveBoundColorTarget(uint32_t surface) {
+  if (surface == 0) {
+    return nullptr;
+  }
+  auto* host = ghp::ToHost<GuestResource>(surface);
+  if (rr::IsFm4Resource(host)) {
+    return static_cast<GuestBaseTexture*>(host);
+  }
+  const uint32_t common = ReadGuestU32(surface);
+  if ((common & 0xF) == 4) {
+    if ((common & 0x40000000u) != 0) {
+      const uint32_t parent = ReadGuestU32(surface + rr::kGuestSurfaceParentOffset);
+      if (parent >= 0x10000u && (parent & 3u) == 0) {
+        auto* parentHost = ghp::ToHost<GuestResource>(parent);
+        if (rr::IsFm4Resource(parentHost)) {
+          return static_cast<GuestBaseTexture*>(parentHost);
+        }
+      }
+    }
+    return HostSurfaceForXdkHeader(surface);
+  }
+  return rr::TranslateGuestTexture(host, false);
+}
+
+GuestSurface* ResolveBoundDepthTarget(uint32_t surface) {
+  GuestBaseTexture* bound = ResolveBoundColorTarget(surface);
+  if (bound == nullptr) {
+    return nullptr;
+  }
+  switch (bound->type) {
+    case fm4::render::ResourceType::DepthStencil:
+    case fm4::render::ResourceType::RenderTarget:
+      return static_cast<GuestSurface*>(bound);
+    default:
+      return nullptr;
+  }
+}
+
 }  // namespace
 
 // D3DDevice_SetTexture(pDevice, Sampler, pTexture, PendingMask3) @0x8233A9A8.
@@ -696,9 +855,13 @@ extern "C" REX_FUNC(D3DDevice_SetRenderTarget) {
     StoreBoundSurfaceSlot(device, kBoundColorSurfaceSlot0 + 4u * index, surface);
     ReapplyRenderTargetColorMask(device, index);
   }
-  auto* host = surface != 0 ? ghp::ToHost<GuestResource>(surface) : nullptr;
-  rr::SetRenderTarget(ghp::ToHost<GuestDevice>(device), index,
-                      rr::IsFm4Resource(host) ? static_cast<GuestBaseTexture*>(host) : nullptr);
+  GuestBaseTexture* bound = ResolveBoundColorTarget(surface);
+  static std::atomic<bool> loggedFirst{false};
+  if (!loggedFirst.exchange(true, std::memory_order_relaxed)) {
+    REXLOG_INFO("fm4render: first SetRenderTarget index={} surface=0x{:08X} common=0x{:08X} bound={}",
+                index, surface, surface != 0 ? ReadGuestU32(surface) : 0, bound != nullptr);
+  }
+  rr::SetRenderTarget(ghp::ToHost<GuestDevice>(device), index, bound);
 }
 
 // D3DDevice_SetDepthStencilSurface(pDevice, pSurface) @0x822D9968: its own first
@@ -712,9 +875,7 @@ extern "C" REX_FUNC(D3DDevice_SetDepthStencilSurface) {
   const uint32_t surface = ctx.r4.u32;
   StoreBoundSurfaceSlot(device, kBoundDepthSurfaceSlot, surface);
   ReapplyDepthStencilGatedStates(device);
-  auto* host = surface != 0 ? ghp::ToHost<GuestResource>(surface) : nullptr;
-  rr::SetDepthStencilSurface(ghp::ToHost<GuestDevice>(device),
-                             rr::IsFm4Resource(host) ? static_cast<GuestSurface*>(host) : nullptr);
+  rr::SetDepthStencilSurface(ghp::ToHost<GuestDevice>(device), ResolveBoundDepthTarget(surface));
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,16 +1161,301 @@ extern "C" REX_FUNC(D3DDevice_BeginVertices) {
   }
 }
 
-// D3DDevice_Resolve(pDevice, Flags, pSourceRect, pDestTexture, ...) @0x822E2120:
-// the original body dereferences the destination resource header, which is one
-// of ours, and faulted writing guest 0x00000004. Nothing on the native path
-// consumes the library's resolve output today (Present falls back to the clear
-// until Task 9 selects a source), and Task 8 owns the real host-side resolve.
+// D3DDevice_Resolve @0x822E2120 is a 0x4C-byte wrapper that shuffles args into
+// sub_82348DC8. Hook the public wrapper; dest is r6 (ida40 prototype).
+//
+// void D3DDevice_Resolve(pDevice, Flags, pSourceRect, pDestTexture, pDestPoint,
+// DestLevel, DestSliceOrFace, pClearColor, ClearZ, ClearStencil, pParameters)
 extern "C" REX_FUNC(D3DDevice_Resolve) {
   fm4::gpu::TraceOnResolve(ctx.r4.u32);
   if (!Native()) {
     __imp__D3DDevice_Resolve(ctx, base);
     return;
   }
-  ctx.r3.u64 = 0;  // D3D_OK
+  Bump(kResolve);
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t flags = ctx.r4.u32;
+  const uint32_t srcRectVa = ctx.r5.u32;
+  const uint32_t destTexture = ctx.r6.u32;
+  const uint32_t destPointVa = ctx.r7.u32;
+  const uint32_t pClearColor = ctx.r10.u32;
+  const float clearZ = float(ctx.f1.f64);
+
+  constexpr uint32_t kResolveClearColor = 0x100;
+  constexpr uint32_t kResolveClearDepthStencil = 0x200;
+  uint32_t postClearFlags = 0;
+  float postClearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+  if ((flags & kResolveClearColor) != 0) {
+    postClearFlags |= rr::D3DCLEAR_TARGET;
+    if (pClearColor != 0) {
+      ReadGuestVec4(pClearColor, postClearColor);
+    }
+  }
+  if ((flags & kResolveClearDepthStencil) != 0) {
+    postClearFlags |= rr::D3DCLEAR_ZBUFFER | rr::D3DCLEAR_STENCIL;
+  }
+
+  if (destTexture == 0) {
+    if (postClearFlags != 0) {
+      rr::Clear(nullptr, postClearFlags, postClearColor, clearZ);
+    }
+    ctx.r3.u64 = device;
+    return;
+  }
+
+  auto* destHost = ghp::ToHost<GuestResource>(destTexture);
+  rr::GuestBaseTexture* hostDest = nullptr;
+  uint32_t dataBase = 0;
+  if (rr::IsFm4Resource(destHost)) {
+    hostDest = static_cast<rr::GuestBaseTexture*>(destHost);
+  } else {
+    hostDest = ResolveBoundColorTarget(destTexture);
+    dataBase = ReadGuestU32(destTexture + rr::kGuestTextureFetchConstantOffset + 4u) &
+               0x1FFFFFFFu & ~0xFFFu;
+  }
+
+  if (hostDest == nullptr || hostDest->texture == nullptr) {
+    if (postClearFlags != 0) {
+      rr::Clear(nullptr, postClearFlags, postClearColor, clearZ);
+    }
+    ctx.r3.u64 = device;
+    return;
+  }
+
+  const bool destIsBlockCompressed = hostDest->format >= plume::RenderFormat::BC1_TYPELESS &&
+                                     hostDest->format <= plume::RenderFormat::BC7_UNORM_SRGB;
+  if (destIsBlockCompressed) {
+    static std::atomic<uint32_t> bcSkip{0};
+    if (bcSkip.fetch_add(1, std::memory_order_relaxed) < 24) {
+      REXLOG_WARN("fm4render: Resolve skipping BC dest 0x{:08X} fmt={}", destTexture,
+                  int(hostDest->format));
+    }
+    if (postClearFlags != 0) {
+      rr::Clear(nullptr, postClearFlags, postClearColor, clearZ);
+    }
+    ctx.r3.u64 = device;
+    return;
+  }
+
+  if (dataBase != 0) {
+    rr::RegisterResolveSurfaceAperture(dataBase, hostDest);
+  }
+
+  rr::ResolveToTexture(hostDest,
+                       destPointVa != 0 ? ghp::ToHost<rr::GuestPoint>(destPointVa) : nullptr,
+                       srcRectVa != 0 ? ghp::ToHost<rr::GuestRect>(srcRectVa) : nullptr,
+                       postClearFlags, postClearColor, clearZ);
+  ctx.r3.u64 = device;
 }
+
+// ---------------------------------------------------------------------------
+// Command buffers. FM4 has no XDK D3DDevice_EndCommandBuffer: live callers
+// (sub_82946C00, sub_8237CC08, ...) flush pending state through sub_826E4050
+// and then D3DCommandBuffer_CreateClone. Recordings therefore close at clone.
+// ---------------------------------------------------------------------------
+
+extern "C" REX_FUNC(D3DDevice_BeginCommandBuffer) {
+  fm4::gpu::TraceOnBeginCommandBuffer();
+  if (Native()) {
+    if (rr::RenderQueue::IsRecording()) {
+      rr::RenderQueue::EndRecording();
+      static std::atomic<uint32_t> discarded{0};
+      if (discarded.fetch_add(1, std::memory_order_relaxed) == 0) {
+        REXLOG_WARN("fm4render: BeginCommandBuffer discarded an uncloned recording");
+      }
+    }
+    rr::RenderQueue::BeginRecording();
+  }
+  __imp__D3DDevice_BeginCommandBuffer(ctx, base);
+}
+
+extern "C" REX_FUNC(D3DCommandBuffer_CreateClone) {
+  __imp__D3DCommandBuffer_CreateClone(ctx, base);
+  if (Native()) {
+    rr::RenderQueue::EndRecording();
+    rr::RenderQueue::BindPendingRecording(ctx.r3.u32);
+  }
+}
+
+extern "C" REX_FUNC(D3DDevice_RunCommandBuffer) {
+  fm4::gpu::TraceOnRunCommandBuffer();
+  if (!Native()) {
+    __imp__D3DDevice_RunCommandBuffer(ctx, base);
+    return;
+  }
+  const uint32_t cloneAddress = ctx.r4.u32;
+  Bump(kRunCB);
+  if (!rr::RenderQueue::ReplayRecording(cloneAddress, nullptr, 0)) {
+    Bump(kRunCBMiss);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Predicated tiling. D3DDevice_BeginTiling (0x82374660) takes
+// (pDevice, Flags, Count, pTileRects, const D3DVECTOR4* pClearColor, float
+// ClearZ, DWORD ClearStencil). ClearZ occupies f1 and reserves r8, so
+// ClearStencil is r9. There is no XDK EndTiling; Swap (and a nested
+// BeginTiling) close the host pass.
+// ---------------------------------------------------------------------------
+
+extern "C" REX_FUNC(D3DDevice_BeginTiling) {
+  fm4::gpu::TraceOnBeginTiling();
+  if (!Native()) {
+    __imp__D3DDevice_BeginTiling(ctx, base);
+    return;
+  }
+  const uint32_t device = ctx.r3.u32;
+  const uint32_t flags = ctx.r4.u32;
+  const uint32_t count = ctx.r5.u32;
+  const uint32_t rects = ctx.r6.u32;
+  const uint32_t clearColorVa = ctx.r7.u32;
+  const float clearZ = float(ctx.f1.f64);
+  const uint32_t clearStencil = ctx.r9.u32;
+  rr::EndTilingPass();
+  Bump(kBeginTiling);
+  float rgba[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+  if (clearColorVa != 0) {
+    ReadGuestVec4(clearColorVa, rgba);
+  }
+  rr::BeginTilingPass(ghp::ToHost<const uint32_t>(rects), count, flags,
+                      clearColorVa != 0 ? rgba : nullptr, clearZ, clearStencil);
+  // Original writes CDevice tiling flags / pending masks. SetSurfaceClip is a
+  // native no-op so it cannot store through a null ring.
+  __imp__D3DDevice_BeginTiling(ctx, base);
+  ctx.r3.u64 = device;
+}
+
+// D3DQuery_GetData(pThis, pData, Size, Flags) @0x8239B2C0 -> HRESULT.
+// Type 8 (event) writes *pData=1; type 9 (occlusion) wants a pixel count.
+// A never-ready query stalls the object pass; a zero count culls everything.
+// Report complete and fully visible.
+extern "C" REX_FUNC(D3DQuery_GetData) {
+  if (!Native()) {
+    __imp__D3DQuery_GetData(ctx, base);
+    fm4::gpu::TraceOnQueryGetData(ctx.r3.u32);
+    return;
+  }
+  Bump(kQueryGet);
+  const uint32_t pData = ctx.r4.u32;
+  const uint32_t size = ctx.r5.u32;
+  if (pData != 0 && size >= 4) {
+    if (auto* out = ghp::ToHost<rex::be<uint32_t>>(pData)) {
+      *out = 0x0000FFFFu;
+    }
+  }
+  ctx.r3.u64 = 0;  // S_OK
+  fm4::gpu::TraceOnQueryGetData(0);
+}
+
+// ---------------------------------------------------------------------------
+// Present and clear.
+//
+// D3DDevice_Swap(pDevice, pFrontBuffer, pParameters) @0x8237FA28. r4 is a
+// D3DBaseTexture*, not FM2's VdSwap descriptor: the body copies
+// pFrontBuffer->Format (18 bytes) and uses Format.dword[1] & 0xFFFFF000 as the
+// front-buffer page.
+// ---------------------------------------------------------------------------
+
+extern "C" REX_FUNC(D3DDevice_Swap) {
+  fm4::gpu::TraceOnSwap();
+  if (!Native()) {
+    __imp__D3DDevice_Swap(ctx, base);
+    return;
+  }
+  Bump(kSwap);
+  const uint32_t device = ctx.r3.u32;
+  rr::EndTilingPass();
+  rr::GuestBaseTexture* source = nullptr;
+  const uint32_t frontBuffer = ctx.r4.u32;
+  if (frontBuffer != 0) {
+    auto* host = ghp::ToHost<GuestResource>(frontBuffer);
+    if (rr::IsFm4Resource(host)) {
+      source = static_cast<rr::GuestBaseTexture*>(host);
+    } else {
+      const uint32_t page =
+          ReadGuestU32(frontBuffer + rr::kGuestTextureFetchConstantOffset + 4u) & 0x1FFFFFFFu &
+          ~0xFFFu;
+      source = rr::LookupResolveSurfaceAperture(page);
+      if (source == nullptr) {
+        source = rr::TranslateGuestTexture(host, false);
+      }
+    }
+  }
+  if (source != nullptr && source->texture != nullptr) {
+    Bump(kPresentSrc);
+    rr::SetFrontbufferPresentSource(source);
+  } else {
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true, std::memory_order_relaxed)) {
+      REXLOG_WARN(
+          "fm4render: Swap front buffer 0x{:08X} had no host texture; presenting the last "
+          "bound render target instead",
+          frontBuffer);
+    }
+  }
+  fm4::render::OnResourceTraceFrame();
+  fm4::gpu::Video::Present();
+  // Original Swap is void and leaves a leftover in r3 (usually a ring pointer).
+  // Zeroing it made later `lbz …, 0x2B3D(r3)` fault as a read of guest 0x2B3D.
+  ctx.r3.u64 = device;
+}
+
+// D3DDevice_Clear(pDevice, Count, pRects, Flags, Color, Z, Stencil, EDRAMClear)
+// @0x8236D840. Flags=r6, Color=r7 (D3DCOLOR), Z in f1, Stencil=r9.
+extern "C" REX_FUNC(D3DDevice_Clear) {
+  if (!Native()) {
+    __imp__D3DDevice_Clear(ctx, base);
+    return;
+  }
+  const uint32_t flags = ctx.r6.u32;
+  const uint32_t color = ctx.r7.u32;
+  const float z = float(ctx.f1.f64);
+  float rgba[4] = {((color >> 16) & 0xFF) / 255.0f, ((color >> 8) & 0xFF) / 255.0f,
+                   (color & 0xFF) / 255.0f, ((color >> 24) & 0xFF) / 255.0f};
+  if ((flags & rr::D3DCLEAR_TARGET) != 0) {
+    ::Video::SetFallbackClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true, std::memory_order_relaxed)) {
+      REXLOG_INFO("native gpu: first guest clear colour 0x{:08X}", color);
+    }
+  }
+  rr::Clear(ghp::ToHost<GuestDevice>(ctx.r3.u32), flags, rgba, z);
+  ctx.r3.u64 = 0;
+}
+
+// XDK entry points with no surviving host state. Fall through when native is
+// off so the xenos plugin is unaffected.
+#define FM4_D3D_GPU_NOOP(name)                \
+  extern "C" REX_FUNC(name) {                 \
+    if (!Native()) __imp__##name(ctx, base); \
+  }
+
+FM4_D3D_GPU_NOOP(D3DDevice_SetShaderGPRAllocation);
+// D3D::SetSurfaceClip @0x82310530 writes PM4 through m_pRing. Native BeginTiling
+// / EndTiling call it; a null ring was the write of guest 0x00000004.
+FM4_D3D_GPU_NOOP(sub_82310530);
+
+// Original FlushHiZStencil writes a PM4 packet and then
+// `BYTE1(pDevice[1].m_ReferenceCount) &= ~0x04` -- that's CDevice+0x2B3D.
+// Skipping the whole body left that flags byte stale; after BeginTiling the
+// next guest load of it with a clobbered r3 was the 0x00002B3D AV. Keep the
+// flag update, skip the ring write (nothing consumes PM4 on this path).
+extern "C" REX_FUNC(D3DDevice_FlushHiZStencil) {
+  if (!Native()) {
+    __imp__D3DDevice_FlushHiZStencil(ctx, base);
+    return;
+  }
+  const uint32_t device = ctx.r3.u32;
+  if (device != 0) {
+    if (auto* flags = ghp::ToHost<uint8_t>(device + 0x2B3D)) {
+      *flags = static_cast<uint8_t>(*flags & ~0x04u);
+    }
+  }
+}
+
+FM4_D3D_GPU_NOOP(D3DDevice_SetScreenExtentQueryMode);
+FM4_D3D_GPU_NOOP(D3DDevice_NuiMetaData);
+FM4_D3D_GPU_NOOP(D3D_ExecuteLowPriCommandBuffer);
+FM4_D3D_GPU_NOOP(D3D_InitializeAsyncCommandBuffers);
+
+#undef FM4_D3D_GPU_NOOP

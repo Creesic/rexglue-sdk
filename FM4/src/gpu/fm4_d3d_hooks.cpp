@@ -1,8 +1,7 @@
-// Native-path guest hooks, milestone 1. The real D3D library still builds and
-// owns the guest D3DDevice and its ring; these hooks only make every GPU wait
-// return immediately and route Swap to Plume. Every hook forwards to the
-// original body when the native path is off, so the xenos plugin is
-// unaffected.
+// Native-path wait neutralization plus D3D_InitializeEngines. Swap, Clear and
+// the rest of the D3D surface live in render/d3d_hooks.cpp. Every hook
+// forwards to the original body when the native path is off, so the xenos
+// plugin is unaffected.
 #include "generated/default/fm4_init.h"
 
 #include <cstdint>
@@ -20,10 +19,6 @@ bool Native() { return fm4::gpu::NativeRequested(); }
 
 // Direct3D_CreateDevice is owned by render/d3d_hooks.cpp, which latches the
 // device for the ported renderer.
-
-namespace fm4::render {
-void OnResourceTraceFrame();
-}
 
 // GPU waits: nothing to wait for.
 extern "C" REX_FUNC(D3DDevice_BlockUntilIdle) {
@@ -52,20 +47,6 @@ extern "C" REX_FUNC(D3DDevice_IsFencePending) {
     return;
   }
   ctx.r3.u64 = 0;
-}
-
-// D3DDevice_Swap(pDevice, pFrontBuffer, pParameters): present through Plume.
-// The front buffer is ignored in milestone 1; the swapchain shows the clear.
-extern "C" REX_FUNC(D3DDevice_Swap) {
-  fm4::gpu::TraceOnSwap();
-  // The library's own Swap advances the frame token and swap counters the game
-  // polls; with the ring library-owned and every GPU wait neutralised it is safe
-  // to run (VdSwap is ignored by the kernel without a GPU plugin). Present after.
-  __imp__D3DDevice_Swap(ctx, base);
-  if (Native()) {
-    fm4::render::OnResourceTraceFrame();
-    fm4::gpu::Video::Present();
-  }
 }
 
 // D3D_RingMakeSpace(pDevice) @0x822FEF08 -- the counterpart to the GPU waits
@@ -142,14 +123,4 @@ extern "C" REX_FUNC(D3D_InitializeEngines) {
   if (Native()) {
     fm4::gpu::Video::OnGraphicsInterruptRegistered(device);
   }
-}
-
-// D3DDevice_Clear(pDevice, Count, pRects, Flags, Color, Z, Stencil, EDRAMClear):
-// r6 = Flags, r7 = Color (Z rides in f1 with a reserved GPR slot after it).
-// The library's own body still runs so its pending state stays consistent.
-extern "C" REX_FUNC(D3DDevice_Clear) {
-  if (Native() && (ctx.r6.u32 & 0x1u) != 0) {
-    fm4::gpu::Video::RequestClear(ctx.r7.u32);
-  }
-  __imp__D3DDevice_Clear(ctx, base);
 }

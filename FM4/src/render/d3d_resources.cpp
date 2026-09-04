@@ -46,7 +46,9 @@ RenderFormat ConvertFormat(uint32_t d3dFormat) {
       return RenderFormat::R16G16B16A16_FLOAT;
     case 0x1A200186:  // D3DFMT_A8B8G8R8
       return RenderFormat::R8G8B8A8_UNORM;
+    case 0x18280086:  // D3DFMT_A8R8G8B8 (FM4; bit 8 clear vs 0x18280186)
     case 0x18280186:  // D3DFMT_A8R8G8B8
+    case 0x18287F86:  // D3DFMT_A8R8G8B8 (FM4 intro blit dest)
     case 0x28280086:  // D3DFMT_X8R8G8B8
     case 0x28280186:  // D3DFMT_X8R8G8B8 variant (gpu fmt 6 = k_8_8_8_8; only a
                       // flag bit differs from 0x28280086 — same byte order)
@@ -69,6 +71,11 @@ RenderFormat ConvertFormat(uint32_t d3dFormat) {
   }
 
   switch (d3dFormat & 0x3F) {
+    case 6:   // k_8_8_8_8 (A8R8G8B8 cooked; 8-in-32 swap yields BGRA)
+    case 7:   // k_2_10_10_10
+    case 50:  // k_8_8_8_8_AS_16_16_16_16
+    case 54:  // k_2_10_10_10_AS_16_16_16_16 (FM4 default RT 0x182801B6)
+      return RenderFormat::B8G8R8A8_UNORM;
     case 10:  // k_8_8
       return RenderFormat::R8G8_UNORM;
     case 22:  // k_24_8 (D24S8 variants)
@@ -838,6 +845,12 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
       info.bytesPerBlock = 1;
       break;
     case 6:  // k_8_8_8_8 (A8R8G8B8 cooked; 8-in-32 swap yields BGRA bytes)
+    case 7:  // k_2_10_10_10 (display / front buffer)
+    case 50: // k_8_8_8_8_AS_16_16_16_16
+    case 54: // k_2_10_10_10_AS_16_16_16_16 (FM4 1280x720 front buffer)
+      // Plume has no packed-10 host format. Swap translates these with
+      // upload=false -- the host texture is an RT we present, not a decode of
+      // guest 10-bit EDRAM. 32bpp matches Xenia's texture_cache entry.
       info.format = RenderFormat::B8G8R8A8_UNORM;
       info.bytesPerBlock = 4;
       break;

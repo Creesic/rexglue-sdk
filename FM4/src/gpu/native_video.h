@@ -29,12 +29,10 @@ class Video {
   // a host vsync thread that calls the callback with source 0 at 60 Hz.
   static void OnGraphicsInterruptRegistered(uint32_t device_va);
 
-  // The next Present clears the back buffer to this D3DCOLOR (ARGB8).
-  static void RequestClear(uint32_t argb);
-
-  // Present one frame through the ported renderer (render/video.cpp). Safe to
-  // call from any guest thread; a Present already in flight is coalesced away
-  // by ::Video::Present's own busy latch.
+  // Present one frame through the ported renderer (render/video.cpp). The Swap
+  // hook publishes the front buffer via SetFrontbufferPresentSource first.
+  // Safe to call from any guest thread; a Present already in flight is
+  // coalesced away by ::Video::Present's own busy latch.
   static void Present();
 
   static uint64_t PresentedFrames();

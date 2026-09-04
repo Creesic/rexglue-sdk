@@ -35,7 +35,7 @@ constexpr uint8_t kFnvProbe[3] = {'a', 'b', 'c'};
 static_assert(Fnv1a64(kFnvProbe, 3) == 0xE71FA2190541574Bull);  // FNV-1a("abc")
 
 // Implemented in fm4_d3d_trace.cpp: per-frame trace bookkeeping, no-op unless
-// fm4_d3d_trace is set. Called by the D3DDevice_Swap hook in fm4_d3d_hooks.cpp.
+// fm4_d3d_trace is set. Called by the D3DDevice_Swap hook in render/d3d_hooks.cpp.
 void TraceOnSwap();
 
 // Same hand-off for the three creation entry points the native renderer now
@@ -47,5 +47,9 @@ void TraceOnDrawIndexed(bool up);
 void TraceOnBeginVertices();
 void TraceOnResolve(uint32_t flags);
 void TraceOnSetRenderTarget(uint32_t index);
+void TraceOnRunCommandBuffer();
+void TraceOnBeginTiling();
+void TraceOnBeginCommandBuffer();
+void TraceOnQueryGetData(uint32_t not_ready);
 
 }  // namespace fm4::gpu

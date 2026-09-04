@@ -55,6 +55,17 @@ void AppendBootstrapTomlLine(const std::filesystem::path& path, uint32_t guest_a
   std::filesystem::create_directories(path.parent_path(), ec);
 
   const bool exists = std::filesystem::exists(path, ec);
+  // A run that died mid-write can leave the file without a trailing newline;
+  // appending blindly would glue two entries onto one line and make the whole
+  // file unparseable for the codegen bootstrap merge.
+  bool needs_newline = false;
+  if (exists) {
+    std::ifstream in(path, std::ios::binary);
+    if (in && in.seekg(-1, std::ios::end)) {
+      needs_newline = in.get() != '\n';
+    }
+  }
+
   std::ofstream out(path, std::ios::app);
   if (!out) {
     REXLOG_ERROR("Bootstrap: failed to open log file {}", path.string());
@@ -63,6 +74,8 @@ void AppendBootstrapTomlLine(const std::filesystem::path& path, uint32_t guest_a
 
   if (!exists) {
     out << "# Auto-discovered guest functions (bootstrap mode)\n[functions]\n";
+  } else if (needs_newline) {
+    out << '\n';
   }
   out << fmt::format("0x{:08X} = {{}}\n", guest_address);
 }
@@ -74,13 +87,10 @@ void RecordBootstrapGuestFunction(uint32_t guest_address, const char* source) {
     return;
   }
 
-  bool is_new = false;
-  {
-    std::lock_guard lock(g_bootstrap_mutex);
-    is_new = g_recorded_addresses.insert(guest_address).second;
-  }
-
-  if (!is_new) {
+  // The append runs under the same lock as the dedup so two guest threads
+  // discovering functions at once cannot interleave their file writes.
+  std::lock_guard lock(g_bootstrap_mutex);
+  if (!g_recorded_addresses.insert(guest_address).second) {
     return;
   }
 

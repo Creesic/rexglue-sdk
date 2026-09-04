@@ -62,6 +62,10 @@ inline constexpr uint32_t kGuestTextureFetchConstantOffset = 0x1C;
 // struct: 6 header dwords, then SurfaceInfo/DepthInfo/HiControl/Parent, then
 // Format at +0x28 and Size at +0x2C). A surface carries no fetch constant.
 inline constexpr uint32_t kGuestSurfaceFormatOffset = 0x28;
+// D3DTexture_GetSurfaceLevel @0x826DEEC0 stores the parent D3DBaseTexture in
+// SurfaceInfo (`stw r30, 0x18(r31)`). That child is a 48-byte XDK header, not
+// one of our GuestSurface objects.
+inline constexpr uint32_t kGuestSurfaceParentOffset = 0x18;
 
 struct GuestResource {
   // Deliberately aliases the guest's D3DResource::Common; IsFm4Resource reads
