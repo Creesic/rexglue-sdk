@@ -127,7 +127,8 @@ struct SharedConstants {
   uint32_t conditionalRenderingIndex = 0;
   uint32_t vteFlags = 8;
   uint32_t loopConstants[32]{};  // VS 0-15, PS 16-31; Xenos packed count/start/step.
-  uint32_t trailingPadding[3]{};
+  uint32_t r11g11b10Texcoords = 0;
+  uint32_t trailingPadding[2]{};
 };
 static_assert(sizeof(SharedConstants) == 496);
 static_assert(offsetof(SharedConstants, texture2DIndices) == 0);
@@ -142,7 +143,8 @@ static_assert(offsetof(SharedConstants, clipPlane) == 320);
 static_assert(offsetof(SharedConstants, clipPlaneEnabled) == 336);
 static_assert(offsetof(SharedConstants, vteFlags) == 352);
 static_assert(offsetof(SharedConstants, loopConstants) == 356);
-static_assert(offsetof(SharedConstants, trailingPadding) == 484);
+static_assert(offsetof(SharedConstants, r11g11b10Texcoords) == 484);
+static_assert(offsetof(SharedConstants, trailingPadding) == 488);
 
 struct DirtyStates {
   bool renderTargetAndDepthStencil;
@@ -1767,6 +1769,8 @@ void ApplyVertexDeclarationMetadata(GuestVertexDeclaration* declaration) {
   g_sharedConstants.swappedTexcoords = declaration != nullptr ? declaration->swappedTexcoords : 0;
   g_sharedConstants.swappedBlendWeights =
       declaration != nullptr ? declaration->swappedBlendWeights : 0;
+  g_sharedConstants.r11g11b10Texcoords =
+      declaration != nullptr ? declaration->r11g11b10Texcoords : 0;
 
   constexpr uint32_t kDeclarationSpecConstants = SPEC_CONSTANT_R11G11B10_NORMAL |
                                                  SPEC_CONSTANT_UNPACK_UBYTE4_BASIS |
@@ -1886,6 +1890,16 @@ void ProcSetDrawGeometrySnapshot(const DrawGeometrySnapshot& snapshot) {
   }
 }
 
+void SetReverseZ(bool enabled) {
+  uint32_t specConstants = g_pipelineState.specConstants;
+  if (enabled) {
+    specConstants |= SPEC_CONSTANT_REVERSE_Z;
+  } else {
+    specConstants &= ~uint32_t(SPEC_CONSTANT_REVERSE_Z);
+  }
+  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.specConstants, specConstants);
+}
+
 void ProcSetViewport(float x, float y, float width, float height, float minZ, float maxZ) {
   SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.x, x);
   SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.y, y);
@@ -1894,13 +1908,7 @@ void ProcSetViewport(float x, float y, float width, float height, float minZ, fl
   SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.minDepth, minZ);
   SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.maxDepth, maxZ);
 
-  uint32_t specConstants = g_pipelineState.specConstants;
-  if (minZ > maxZ) {
-    specConstants |= SPEC_CONSTANT_REVERSE_Z;
-  } else {
-    specConstants &= ~uint32_t(SPEC_CONSTANT_REVERSE_Z);
-  }
-  SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.specConstants, specConstants);
+  SetReverseZ(minZ > maxZ);
   g_dirtyStates.scissorRect |= g_dirtyStates.viewport;
 }
 
@@ -2089,7 +2097,7 @@ void SetIndices(GuestDevice* device, GuestBuffer* buffer) {
   RenderQueue::Enqueue(cmd);
 }
 
-void SetViewport(GuestDevice* /*device*/, GuestViewport* viewport) {
+void SetViewport(GuestDevice* device, GuestViewport* viewport) {
   // D3D9 validation: a zero-sized viewport is INVALIDCALL and leaves state
   // unchanged. Read guest be<> values on the caller thread, then enqueue.
   if (viewport->width.get() == 0 || viewport->height.get() == 0)
@@ -2103,6 +2111,14 @@ void SetViewport(GuestDevice* /*device*/, GuestViewport* viewport) {
   cmd.setViewport.minDepth = viewport->minZ.get();
   cmd.setViewport.maxDepth = viewport->maxZ.get();
   RenderQueue::Enqueue(cmd);
+  if (device != nullptr) {
+    device->viewport.x = cmd.setViewport.x;
+    device->viewport.y = cmd.setViewport.y;
+    device->viewport.width = cmd.setViewport.width;
+    device->viewport.height = cmd.setViewport.height;
+    device->viewport.minZ = cmd.setViewport.minDepth;
+    device->viewport.maxZ = cmd.setViewport.maxDepth;
+  }
 }
 
 void SetScissorRect(GuestDevice* device, GuestRect* rect) {
@@ -2572,6 +2588,33 @@ struct BuiltElement {
   uint32_t offset;
 };
 
+constexpr bool ControlsNormalPackingSpec(uint8_t usage, uint8_t usageIndex) {
+  return usage == D3DDECLUSAGE_NORMAL && usageIndex == 0;
+}
+
+constexpr bool IsSignedNormalized10_11_11(uint32_t type) {
+  return (type & 0x3Fu) == 0x10u && ((type >> 8) & 0x3u) == 1u;
+}
+
+constexpr RenderFormat PreservePackedFloatInputBits(uint8_t usage, uint32_t type,
+                                                    RenderFormat format) {
+  const uint32_t fetchFormat = type & 0x3Fu;
+  const bool packed = fetchFormat == 0x07u || fetchFormat == 0x10u || fetchFormat == 0x11u;
+  const bool floatInput = usage == D3DDECLUSAGE_NORMAL || usage == D3DDECLUSAGE_TANGENT ||
+                          usage == D3DDECLUSAGE_BINORMAL || usage == D3DDECLUSAGE_TEXCOORD;
+  return packed && floatInput ? RenderFormat::R32_FLOAT : format;
+}
+
+static_assert(ControlsNormalPackingSpec(D3DDECLUSAGE_NORMAL, 0));
+static_assert(!ControlsNormalPackingSpec(D3DDECLUSAGE_TANGENT, 0));
+static_assert(!ControlsNormalPackingSpec(D3DDECLUSAGE_BINORMAL, 0));
+static_assert(IsSignedNormalized10_11_11(D3DDECLTYPE_DEC3N_2));
+static_assert(!IsSignedNormalized10_11_11(D3DDECLTYPE_DEC3N_3));
+static_assert(PreservePackedFloatInputBits(D3DDECLUSAGE_TEXCOORD, D3DDECLTYPE_DEC3N_2,
+                                           RenderFormat::R32_UINT) == RenderFormat::R32_FLOAT);
+static_assert(PreservePackedFloatInputBits(D3DDECLUSAGE_POSITION, D3DDECLTYPE_DEC3N_2,
+                                           RenderFormat::R32_UINT) == RenderFormat::R32_UINT);
+
 // Resolves a declaration's raw D3DVERTEXELEMENT9 array into a plume input
 // layout, exactly once per declaration (cached on GuestVertexDeclaration).
 // Every standard attribute a shader might reference gets a fallback element
@@ -2616,16 +2659,19 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
       // Classify by the fetch-format field (bits 0-5) so variant dwords take
       // the same path as their canonical GuestDeclType instance.
       const uint32_t fmt = e.type & 0x3Fu;
+      const bool controlsNormalPackingSpec = ControlsNormalPackingSpec(e.usage, e.usageIndex);
       if (fmt == 0x06u) {  // k_8_8_8_8 (UBYTE4 family)
         // Already hardware-UNORM-converted to a float4 by the input
         // assembler -- NOT R11G11B10-packed, must not also set that flag.
         format = RenderFormat::R8G8B8A8_UNORM;
-        decl->hasUByte4TangentBasis = true;
+        decl->hasUByte4TangentBasis |= controlsNormalPackingSpec;
       } else if (fmt != 0x39u && fmt != 0x26u) {  // not FLOAT3 / FLOAT4
-        format = RenderFormat::R32_UINT;  // packed DEC3N/UDEC3 family; shader bit-unpacks raw.
-        decl->hasR11G11B10Normal = true;
+        format = RenderFormat::R32_UINT;  // Packed DEC3N/UDEC3; adjusted to the shader input below.
+        decl->hasR11G11B10Normal |= controlsNormalPackingSpec;
       }
     } else if (e.usage == D3DDECLUSAGE_TEXCOORD) {
+      if (e.usageIndex < 32 && IsSignedNormalized10_11_11(e.type))
+        decl->r11g11b10Texcoords |= 1u << e.usageIndex;
       switch (e.type & 0x3Fu) {
         case 0x19:  // k_16_16 (SHORT2/SHORT2N/USHORT2N)
         case 0x1A:  // k_16_16_16_16 (SHORT4/SHORT4N/USHORT4N)
@@ -2637,6 +2683,9 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
           break;
       }
     }
+    // These generated shader inputs are float4, so an integer input format
+    // would numerically convert the packed word before asuint can decode it.
+    format = PreservePackedFloatInputBits(e.usage, e.type, format);
     if (format == RenderFormat::UNKNOWN)
       format = RenderFormat::R32_UINT;
 
@@ -3139,7 +3188,9 @@ void ProcSetShaderConstants(bool vertex, const uint8_t* memory, uint32_t index, 
 }
 
 struct LocalRenderCommandQueue {
-  std::array<RenderCommand, 32> commands{};
+  // A recorded draw may have alternating dirty groups in both constant files
+  // (32 VS runs + 28 PS runs) in addition to its ordinary state snapshots.
+  std::array<RenderCommand, 96> commands{};
   uint32_t count = 0;
 
   RenderCommand& Enqueue() {
@@ -3167,12 +3218,32 @@ bool QueueConstantSnapshot(LocalRenderCommandQueue& queue, RenderCommandType typ
   return true;
 }
 
-void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue) {
+bool QueueConstantGroupSnapshots(LocalRenderCommandQueue& queue, RenderCommandType type,
+                                 const uint32_t* source, uint64_t dirtyGroups,
+                                 uint32_t maxGroupCount) {
+  bool queued = false;
+  while (dirtyGroups != 0) {
+    const ConstantSnapshotRange range =
+        PopConstantSnapshotRange(dirtyGroups, maxGroupCount);
+    if (range.size == 0)
+      break;
+    if (!QueueConstantSnapshot(queue, type, source, range))
+      return false;
+    queued = true;
+  }
+  return queued;
+}
+
+void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue,
+                             uint64_t recordedVsDirtyFlags,
+                             uint64_t recordedPsDirtyFlags) {
   if (device == nullptr)
     return;
 
   thread_local GuestDevice* lastDevice = nullptr;
-  const bool forceFullSnapshot = lastDevice != device || RenderQueue::IsRecording();
+  const bool recording = RenderQueue::IsRecording();
+  const bool forceFullSnapshot = lastDevice != device || recording;
+  const bool forceFullConstantSnapshot = lastDevice != device && !recording;
   lastDevice = device;
 
   // Vertex/index bindings are mutable guest context state just like shader
@@ -3277,40 +3348,53 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   }
   device->dirtyFlags[3] = samplerFlags;
 
-  uint64_t vsFlags = device->dirtyFlags[0].get();
+  uint64_t vsFlags = recording ? recordedVsDirtyFlags : device->dirtyFlags[0].get();
   std::array<uint32_t, PendingShaderConstantFile::kRegisterCount *
                            PendingShaderConstantFile::kDwordsPerRegister>
       mergedVsConstants;
   const bool hasPendingVs = !t_pendingDrawVsConstants.empty();
-  ConstantSnapshotRange vsRange = (forceFullSnapshot || hasPendingVs)
-                                      ? ConstantSnapshotRange{0, kVsFloatConstantBytes}
-                                      : GetConstantSnapshotRange(vsFlags, 64);
+  const uint64_t pendingVsGroups = t_pendingDrawVsConstants.DirtyGroups(64);
   const uint32_t* vsSource = reinterpret_cast<const uint32_t*>(device->vertexShaderFloatConstants);
   if (hasPendingVs) {
     std::memcpy(mergedVsConstants.data(), vsSource, kVsFloatConstantBytes);
     t_pendingDrawVsConstants.OverlayAndClear(mergedVsConstants.data(), 256);
     vsSource = mergedVsConstants.data();
   }
-  if (QueueConstantSnapshot(queue, RenderCommandType::SetVertexShaderConstants, vsSource,
-                            vsRange)) {
+  const bool queuedVs = recording
+                            ? QueueConstantGroupSnapshots(
+                                  queue, RenderCommandType::SetVertexShaderConstants, vsSource,
+                                  vsFlags | pendingVsGroups, 64)
+                            : QueueConstantSnapshot(
+                                  queue, RenderCommandType::SetVertexShaderConstants, vsSource,
+                                  (forceFullConstantSnapshot || hasPendingVs)
+                                      ? ConstantSnapshotRange{0, kVsFloatConstantBytes}
+                                      : GetConstantSnapshotRange(vsFlags, 64));
+  if (queuedVs && !recording) {
     device->dirtyFlags[0] = 0;
   }
 
-  uint64_t psFlags = device->dirtyFlags[1].get();
+  uint64_t psFlags = recording ? recordedPsDirtyFlags : device->dirtyFlags[1].get();
   std::array<uint32_t, PendingShaderConstantFile::kRegisterCount *
                            PendingShaderConstantFile::kDwordsPerRegister>
       mergedPsConstants;
   const bool hasPendingPs = !t_pendingDrawPsConstants.empty();
-  ConstantSnapshotRange psRange = (forceFullSnapshot || hasPendingPs)
-                                      ? ConstantSnapshotRange{0, kPsFloatConstantBytes}
-                                      : GetConstantSnapshotRange(psFlags, 56);
+  const uint64_t pendingPsGroups = t_pendingDrawPsConstants.DirtyGroups(56);
   const uint32_t* psSource = reinterpret_cast<const uint32_t*>(device->pixelShaderFloatConstants);
   if (hasPendingPs) {
     std::memcpy(mergedPsConstants.data(), psSource, kPsFloatConstantBytes);
     t_pendingDrawPsConstants.OverlayAndClear(mergedPsConstants.data(), 224);
     psSource = mergedPsConstants.data();
   }
-  if (QueueConstantSnapshot(queue, RenderCommandType::SetPixelShaderConstants, psSource, psRange)) {
+  const bool queuedPs = recording
+                            ? QueueConstantGroupSnapshots(
+                                  queue, RenderCommandType::SetPixelShaderConstants, psSource,
+                                  psFlags | pendingPsGroups, 56)
+                            : QueueConstantSnapshot(
+                                  queue, RenderCommandType::SetPixelShaderConstants, psSource,
+                                  (forceFullConstantSnapshot || hasPendingPs)
+                                      ? ConstantSnapshotRange{0, kPsFloatConstantBytes}
+                                      : GetConstantSnapshotRange(psFlags, 56));
+  if (queuedPs && !recording) {
     device->dirtyFlags[1] = 0;
   }
 }
@@ -3590,6 +3674,10 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   g_sharedConstants.swappedTexcoords = g_pipelineState.vertexDeclaration != nullptr
                                            ? g_pipelineState.vertexDeclaration->swappedTexcoords
                                            : 0;
+  g_sharedConstants.r11g11b10Texcoords =
+      g_pipelineState.vertexDeclaration != nullptr
+          ? g_pipelineState.vertexDeclaration->r11g11b10Texcoords
+          : 0;
 
   // Snapshot commands already copied the exact guest-thread state into these
   // persistent render-thread files. Never dereference mutable guest state here:
@@ -3913,9 +4001,10 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
 }  // namespace
 
 void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
-                  uint32_t vertexCount) {
+                  uint32_t vertexCount, uint64_t recordedVsDirtyFlags,
+                  uint64_t recordedPsDirtyFlags) {
   LocalRenderCommandQueue queue;
-  QueueDrawStateSnapshots(device, queue);
+  QueueDrawStateSnapshots(device, queue, recordedVsDirtyFlags, recordedPsDirtyFlags);
   RenderCommand& cmd = queue.Enqueue();
   cmd.type = RenderCommandType::DrawPrimitive;
   cmd.drawPrimitive.device = device;
@@ -3926,9 +4015,10 @@ void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVer
 }
 
 void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
-                         uint32_t startIndex, uint32_t indexCount) {
+                         uint32_t startIndex, uint32_t indexCount,
+                         uint64_t recordedVsDirtyFlags, uint64_t recordedPsDirtyFlags) {
   LocalRenderCommandQueue queue;
-  QueueDrawStateSnapshots(device, queue);
+  QueueDrawStateSnapshots(device, queue, recordedVsDirtyFlags, recordedPsDirtyFlags);
   RenderCommand& cmd = queue.Enqueue();
   cmd.type = RenderCommandType::DrawIndexedPrimitive;
   cmd.drawIndexedPrimitive.device = device;
@@ -3940,7 +4030,8 @@ void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t ba
 }
 
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
-                             const void* data, uint32_t stride) {
+                             const void* data, uint32_t stride, uint64_t recordedVsDirtyFlags,
+                             uint64_t recordedPsDirtyFlags) {
   if (data == nullptr || vertexCount == 0 || stride == 0)
     return;
   const uint32_t bytes = vertexCount * stride;
@@ -3952,7 +4043,7 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
     return;
   }
   LocalRenderCommandQueue queue;
-  QueueDrawStateSnapshots(device, queue);
+  QueueDrawStateSnapshots(device, queue, recordedVsDirtyFlags, recordedPsDirtyFlags);
   RenderCommand& cmd = queue.Enqueue();
   cmd.type = RenderCommandType::DrawPrimitiveUP;
   cmd.drawPrimitiveUP.device = device;
@@ -3979,7 +4070,9 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
     ProcCreateTranslatedTextureHost(
         cmd.createTranslatedTextureHost.texture, cmd.createTranslatedTextureHost.width,
         cmd.createTranslatedTextureHost.height, cmd.createTranslatedTextureHost.format,
-        cmd.createTranslatedTextureHost.baseAddress, cmd.createTranslatedTextureHost.createdOut);
+        cmd.createTranslatedTextureHost.baseAddress, cmd.createTranslatedTextureHost.levels,
+        cmd.createTranslatedTextureHost.cube,
+        cmd.createTranslatedTextureHost.createdOut);
     return;
   }
 
@@ -4048,6 +4141,14 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
                              cmd.setShaderConstants.size);
       break;
     case RenderCommandType::SetPixelShaderConstants:
+      ProcSetShaderConstants(false, cmd.setShaderConstants.memory, cmd.setShaderConstants.index,
+                             cmd.setShaderConstants.size);
+      break;
+    case RenderCommandType::ApplyVertexShaderConstantFixup:
+      ProcSetShaderConstants(true, cmd.setShaderConstants.memory, cmd.setShaderConstants.index,
+                             cmd.setShaderConstants.size);
+      break;
+    case RenderCommandType::ApplyPixelShaderConstantFixup:
       ProcSetShaderConstants(false, cmd.setShaderConstants.memory, cmd.setShaderConstants.index,
                              cmd.setShaderConstants.size);
       break;
@@ -4152,7 +4253,8 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
                             cmd.createSurfaceHost.sampleCount, cmd.createSurfaceHost.depth);
       break;
     case RenderCommandType::UnlockTextureRect:
-      ProcUnlockTextureRect(cmd.unlockTextureRect.texture);
+      ProcUnlockTextureRect(cmd.unlockTextureRect.texture, cmd.unlockTextureRect.data,
+                            cmd.unlockTextureRect.size, cmd.unlockTextureRect.level);
       break;
     case RenderCommandType::UnlockBuffer16:
       ProcUnlockBuffer16(cmd.unlockBuffer.buffer, cmd.unlockBuffer.data, cmd.unlockBuffer.size);
@@ -4169,11 +4271,133 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
                                 cmd.copyTextureFromUpload.format, cmd.copyTextureFromUpload.width,
                                 cmd.copyTextureFromUpload.height,
                                 cmd.copyTextureFromUpload.rowTexels, cmd.copyTextureFromUpload.mip,
+                                cmd.copyTextureFromUpload.arrayIndex,
                                 cmd.copyTextureFromUpload.srcOffset);
+      break;
+    case RenderCommandType::CopyTextureSubresourcesFromUpload:
+      ProcCopyTextureSubresourcesFromUpload(
+          cmd.copyTextureSubresourcesFromUpload.dst, cmd.copyTextureSubresourcesFromUpload.src,
+          cmd.copyTextureSubresourcesFromUpload.format,
+          cmd.copyTextureSubresourcesFromUpload.regions,
+          cmd.copyTextureSubresourcesFromUpload.regionCount);
       break;
     case RenderCommandType::CreateTranslatedTextureHost:
       break;  // handled above
   }
+}
+
+void TraceMr2BodyDraw(size_t commandIndex, const RenderCommand& command,
+                      const DeferredExecutionSnapshot* executionSnapshot) {
+  const uint64_t pixelShader = ShaderTraceId(g_pipelineState.pixelShader);
+  if (pixelShader != 0x95DD7C99779DD08Bull && pixelShader != 0xE1B2891B7D112A0Dull)
+    return;
+
+  uint32_t elementCount = 0;
+  if (command.type == RenderCommandType::DrawPrimitive)
+    elementCount = command.drawPrimitive.vertexCount;
+  else if (command.type == RenderCommandType::DrawIndexedPrimitive)
+    elementCount = command.drawIndexedPrimitive.indexCount;
+  else if (command.type == RenderCommandType::DrawPrimitiveUP)
+    elementCount = command.drawPrimitiveUP.vertexCount;
+  static uint32_t traceCount = 0;
+  if (traceCount < 512) {
+    ++traceCount;
+    REXGPU_INFO("MR2ShaderDraw: n={} command={} type={} count={} ps=0x{:016X}", traceCount,
+                commandIndex, static_cast<uint32_t>(command.type), elementCount, pixelShader);
+  }
+
+  const uint64_t vertexSignature =
+      XXH3_64bits(g_vertexShaderConstants, kVsFloatConstantBytes);
+  const uint64_t pixelSignature = XXH3_64bits(g_pixelShaderConstants, kPsFloatConstantBytes);
+  const uint64_t sharedSignature = XXH3_64bits(&g_sharedConstants, sizeof(g_sharedConstants));
+  const std::array<uint64_t, 3> signatures{vertexSignature, pixelSignature, sharedSignature};
+  const uint64_t stateSignature = XXH3_64bits(signatures.data(), sizeof(signatures));
+  static std::unordered_set<uint64_t> loggedStates;
+  if (loggedStates.size() >= 96 || !loggedStates.insert(stateSignature).second)
+    return;
+
+  const std::array<uint64_t, 4> noCoverage{};
+  const auto& vertexCoverage = executionSnapshot != nullptr
+                                   ? executionSnapshot->vertexExecutionConstants.coverage
+                                   : noCoverage;
+  const auto& pixelCoverage =
+      executionSnapshot != nullptr ? executionSnapshot->pixelExecutionConstants.coverage : noCoverage;
+  const auto* c120 = g_pixelShaderConstants + 120 * 4;
+  const auto* c122 = g_pixelShaderConstants + 122 * 4;
+  const auto* c127 = g_pixelShaderConstants + 127 * 4;
+  const auto* c128 = g_pixelShaderConstants + 128 * 4;
+  const auto* c171 = g_pixelShaderConstants + 171 * 4;
+
+  REXGPU_INFO(
+      "MR2BodyState: n={} shader=0x{:016X} state=0x{:016X} "
+      "vsConstants=0x{:016X} psConstants=0x{:016X} shared=0x{:016X} "
+      "vsOverlay={:016X}/{:016X}/{:016X}/{:016X} "
+      "psOverlay={:016X}/{:016X}/{:016X}/{:016X} psBool={:08X}/{:08X}/{:08X}/{:08X}",
+      loggedStates.size(), ShaderTraceId(g_pipelineState.vertexShader), stateSignature,
+      vertexSignature, pixelSignature, sharedSignature,
+      vertexCoverage[0], vertexCoverage[1], vertexCoverage[2], vertexCoverage[3],
+      pixelCoverage[0], pixelCoverage[1], pixelCoverage[2], pixelCoverage[3],
+      g_sharedConstants.booleans[4], g_sharedConstants.booleans[5],
+      g_sharedConstants.booleans[6], g_sharedConstants.booleans[7]);
+  REXGPU_INFO(
+      "MR2BodyVertex: c12={:08X},{:08X},{:08X},{:08X} "
+      "c36={:08X},{:08X},{:08X},{:08X} c48={:08X},{:08X},{:08X},{:08X} "
+      "c116={:08X},{:08X},{:08X},{:08X} c184={:08X},{:08X},{:08X},{:08X} "
+      "c189={:08X},{:08X},{:08X},{:08X} c190={:08X},{:08X},{:08X},{:08X} "
+      "c191={:08X},{:08X},{:08X},{:08X}",
+      g_vertexShaderConstants[12 * 4], g_vertexShaderConstants[12 * 4 + 1],
+      g_vertexShaderConstants[12 * 4 + 2], g_vertexShaderConstants[12 * 4 + 3],
+      g_vertexShaderConstants[36 * 4], g_vertexShaderConstants[36 * 4 + 1],
+      g_vertexShaderConstants[36 * 4 + 2], g_vertexShaderConstants[36 * 4 + 3],
+      g_vertexShaderConstants[48 * 4], g_vertexShaderConstants[48 * 4 + 1],
+      g_vertexShaderConstants[48 * 4 + 2], g_vertexShaderConstants[48 * 4 + 3],
+      g_vertexShaderConstants[116 * 4], g_vertexShaderConstants[116 * 4 + 1],
+      g_vertexShaderConstants[116 * 4 + 2], g_vertexShaderConstants[116 * 4 + 3],
+      g_vertexShaderConstants[184 * 4], g_vertexShaderConstants[184 * 4 + 1],
+      g_vertexShaderConstants[184 * 4 + 2], g_vertexShaderConstants[184 * 4 + 3],
+      g_vertexShaderConstants[189 * 4], g_vertexShaderConstants[189 * 4 + 1],
+      g_vertexShaderConstants[189 * 4 + 2], g_vertexShaderConstants[189 * 4 + 3],
+      g_vertexShaderConstants[190 * 4], g_vertexShaderConstants[190 * 4 + 1],
+      g_vertexShaderConstants[190 * 4 + 2], g_vertexShaderConstants[190 * 4 + 3],
+      g_vertexShaderConstants[191 * 4], g_vertexShaderConstants[191 * 4 + 1],
+      g_vertexShaderConstants[191 * 4 + 2], g_vertexShaderConstants[191 * 4 + 3]);
+  REXGPU_INFO(
+      "MR2BodyConstants: c120={:08X},{:08X},{:08X},{:08X} "
+      "c122={:08X},{:08X},{:08X},{:08X} c127={:08X},{:08X},{:08X},{:08X} "
+      "c128={:08X},{:08X},{:08X},{:08X} c171={:08X},{:08X},{:08X},{:08X}",
+      c120[0], c120[1], c120[2], c120[3], c122[0], c122[1], c122[2], c122[3], c127[0],
+      c127[1], c127[2], c127[3], c128[0], c128[1], c128[2], c128[3], c171[0], c171[1],
+      c171[2], c171[3]);
+  REXGPU_INFO(
+      "MR2BodyMaterial: c180={:08X},{:08X},{:08X},{:08X} "
+      "c184={:08X},{:08X},{:08X},{:08X} c188={:08X},{:08X},{:08X},{:08X} "
+      "c190={:08X},{:08X},{:08X},{:08X} c191={:08X},{:08X},{:08X},{:08X} "
+      "c201={:08X},{:08X},{:08X},{:08X} c212={:08X},{:08X},{:08X},{:08X}",
+      g_pixelShaderConstants[180 * 4], g_pixelShaderConstants[180 * 4 + 1],
+      g_pixelShaderConstants[180 * 4 + 2], g_pixelShaderConstants[180 * 4 + 3],
+      g_pixelShaderConstants[184 * 4], g_pixelShaderConstants[184 * 4 + 1],
+      g_pixelShaderConstants[184 * 4 + 2], g_pixelShaderConstants[184 * 4 + 3],
+      g_pixelShaderConstants[188 * 4], g_pixelShaderConstants[188 * 4 + 1],
+      g_pixelShaderConstants[188 * 4 + 2], g_pixelShaderConstants[188 * 4 + 3],
+      g_pixelShaderConstants[190 * 4], g_pixelShaderConstants[190 * 4 + 1],
+      g_pixelShaderConstants[190 * 4 + 2], g_pixelShaderConstants[190 * 4 + 3],
+      g_pixelShaderConstants[191 * 4], g_pixelShaderConstants[191 * 4 + 1],
+      g_pixelShaderConstants[191 * 4 + 2], g_pixelShaderConstants[191 * 4 + 3],
+      g_pixelShaderConstants[201 * 4], g_pixelShaderConstants[201 * 4 + 1],
+      g_pixelShaderConstants[201 * 4 + 2], g_pixelShaderConstants[201 * 4 + 3],
+      g_pixelShaderConstants[212 * 4], g_pixelShaderConstants[212 * 4 + 1],
+      g_pixelShaderConstants[212 * 4 + 2], g_pixelShaderConstants[212 * 4 + 3]);
+  REXGPU_INFO(
+      "MR2BodyTextures: 2D s0/s1/s2/s3/s4/s10={}/{}/{}/{}/{}/{} "
+      "cube s5/s6={}/{} sampler s0/s1/s2/s3/s4/s5/s6/s10={}/{}/{}/{}/{}/{}/{}/{}",
+      g_sharedConstants.texture2DIndices[0], g_sharedConstants.texture2DIndices[1],
+      g_sharedConstants.texture2DIndices[2], g_sharedConstants.texture2DIndices[3],
+      g_sharedConstants.texture2DIndices[4], g_sharedConstants.texture2DIndices[10],
+      g_sharedConstants.textureCubeIndices[5], g_sharedConstants.textureCubeIndices[6],
+      g_sharedConstants.samplerIndices[0], g_sharedConstants.samplerIndices[1],
+      g_sharedConstants.samplerIndices[2], g_sharedConstants.samplerIndices[3],
+      g_sharedConstants.samplerIndices[4], g_sharedConstants.samplerIndices[5],
+      g_sharedConstants.samplerIndices[6], g_sharedConstants.samplerIndices[10]);
 }
 
 void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
@@ -4230,18 +4454,40 @@ void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
             saved.vertexBufferViews.begin());
   std::copy(std::begin(g_inputSlots), std::end(g_inputSlots), saved.inputSlots.begin());
 
+  PendingShaderConstantFile replayVertexFixups;
+  PendingShaderConstantFile replayPixelFixups;
+  if (executionSnapshot != nullptr) {
+    // The guest context is the state entering this command buffer. Initialize
+    // the complete VS file once, then let recorded constant commands and
+    // per-draw fixups modify it in their original order.
+    InitializeDeferredVertexConstants(*executionSnapshot, g_vertexShaderConstants, 256);
+    executionSnapshot->pixelExecutionConstants.Overlay(g_pixelShaderConstants, 224);
+  }
   for (size_t i = 0; i < count; ++i) {
     const RenderCommandType type = commands[i].type;
+    if (type == RenderCommandType::ApplyVertexShaderConstantFixup ||
+        type == RenderCommandType::ApplyPixelShaderConstantFixup) {
+      PendingShaderConstantFile& pending = type == RenderCommandType::ApplyVertexShaderConstantFixup
+                                               ? replayVertexFixups
+                                               : replayPixelFixups;
+      pending.Stage(commands[i].setShaderConstants.index / 4,
+                    reinterpret_cast<const uint32_t*>(commands[i].setShaderConstants.memory),
+                    commands[i].setShaderConstants.size / 16);
+      continue;
+    }
     const bool isDraw = type == RenderCommandType::DrawPrimitive ||
                         type == RenderCommandType::DrawIndexedPrimitive ||
                         type == RenderCommandType::DrawPrimitiveUP;
     if (isDraw && executionSnapshot != nullptr) {
-      ProcSetShaderConstants(true, executionSnapshot->vertexConstants.data(), 0,
-                             uint32_t(executionSnapshot->vertexConstants.size()));
-      ProcSetShaderConstants(false, executionSnapshot->pixelConstants.data(), 0,
-                             uint32_t(executionSnapshot->pixelConstants.size()));
       ProcSetBooleans(executionSnapshot->booleans.data());
+      SetReverseZ(executionSnapshot->viewportReverseZ != 0);
     }
+    if (isDraw) {
+      replayVertexFixups.OverlayAndClear(g_vertexShaderConstants, 256);
+      replayPixelFixups.OverlayAndClear(g_pixelShaderConstants, 224);
+    }
+    if (isDraw)
+      TraceMr2BodyDraw(i, commands[i], executionSnapshot);
     DispatchRenderCommand(commands[i]);
   }
 

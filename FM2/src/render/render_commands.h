@@ -35,6 +35,27 @@ constexpr ConstantSnapshotRange GetConstantSnapshotRange(uint64_t dirtyFlags,
   return ConstantSnapshotRange{startGroup * 16u, (endGroup - startGroup) * 64u};
 }
 
+// Remove and return the first contiguous run of dirty constant groups. This is
+// used while recording reusable command buffers so clean groups between two
+// dirty runs are not accidentally baked into the template.
+constexpr ConstantSnapshotRange PopConstantSnapshotRange(uint64_t& dirtyFlags,
+                                                          uint32_t maxGroupCount) {
+  maxGroupCount = std::min(maxGroupCount, 64u);
+  while (dirtyFlags != 0 && std::countl_zero(dirtyFlags) >= maxGroupCount)
+    dirtyFlags &= dirtyFlags - 1;
+  if (dirtyFlags == 0)
+    return {};
+
+  const uint32_t startGroup = std::countl_zero(dirtyFlags);
+  uint32_t endGroup = startGroup;
+  while (endGroup < maxGroupCount &&
+         (dirtyFlags & (uint64_t{1} << (63u - endGroup))) != 0) {
+    dirtyFlags &= ~(uint64_t{1} << (63u - endGroup));
+    ++endGroup;
+  }
+  return ConstantSnapshotRange{startGroup * 16u, (endGroup - startGroup) * 64u};
+}
+
 // Per-draw constants emitted through APIs that return a command-buffer payload
 // for the caller to fill (notably D3DDevice_GpuBeginShaderConstantF4). Those
 // values never enter GuestDevice's +0x700/+0x1700 files, so stage them until the
@@ -60,7 +81,33 @@ struct PendingShaderConstantFile {
       coverage[reg / 64] |= uint64_t{1} << (reg % 64);
   }
 
-  void OverlayAndClear(uint32_t* destination, uint32_t destinationRegisterCount) {
+  void StageDirtyGroups(uint64_t dirtyGroups, const uint32_t* source,
+                        uint32_t maxGroupCount) {
+    if (source == nullptr)
+      return;
+    maxGroupCount = std::min(maxGroupCount, kRegisterCount / 4);
+    while (dirtyGroups != 0) {
+      const uint32_t group = std::countl_zero(dirtyGroups);
+      if (group >= maxGroupCount)
+        break;
+      Stage(group * 4, source + group * 16, 4);
+      dirtyGroups &= ~(uint64_t{1} << (63 - group));
+    }
+  }
+
+  uint64_t DirtyGroups(uint32_t maxGroupCount) const {
+    uint64_t groups = 0;
+    maxGroupCount = std::min(maxGroupCount, kRegisterCount / 4);
+    for (uint32_t group = 0; group < maxGroupCount; ++group) {
+      const uint32_t firstRegister = group * 4;
+      const uint64_t registerMask = uint64_t{0xF} << (firstRegister % 64);
+      if ((coverage[firstRegister / 64] & registerMask) != 0)
+        groups |= uint64_t{1} << (63u - group);
+    }
+    return groups;
+  }
+
+  void Overlay(uint32_t* destination, uint32_t destinationRegisterCount) const {
     if (destination != nullptr) {
       destinationRegisterCount = std::min(destinationRegisterCount, kRegisterCount);
       for (uint32_t word = 0; word < coverage.size(); ++word) {
@@ -76,6 +123,10 @@ struct PendingShaderConstantFile {
         }
       }
     }
+  }
+
+  void OverlayAndClear(uint32_t* destination, uint32_t destinationRegisterCount) {
+    Overlay(destination, destinationRegisterCount);
     coverage.fill(0);
   }
 };
@@ -86,32 +137,37 @@ struct PendingShaderConstantFile {
 // reaches the replay job.
 struct DeferredExecutionSnapshot {
   static constexpr uint32_t kVsConstantOffset = 0x700;
-  static constexpr uint32_t kVsConstantBytes = 12 * 16;
-  static constexpr uint32_t kPsConstantOffset = 0x1700;
-  static constexpr uint32_t kPsConstantBytes = 224 * 16;
+  // The VS float file occupies c0-c255; the PS float file begins immediately
+  // after it at context +0x1700.
+  static constexpr uint32_t kVsConstantBytes = 256 * 16;
   static constexpr uint32_t kVsBooleanOffset = 0x2700;
   static constexpr uint32_t kPsBooleanOffset = 0x2710;
-  static constexpr uint32_t kContextBytes = 0x2720;
+  static constexpr uint32_t kViewportOffset = 0x3168;
+  static constexpr uint32_t kContextBytes = 0x3180;
 
   std::array<uint8_t, kVsConstantBytes> vertexConstants{};
-  std::array<uint8_t, kPsConstantBytes> pixelConstants{};
   std::array<uint32_t, 8> booleans{};
+  uint32_t viewportReverseZ = 0;
+  PendingShaderConstantFile vertexExecutionConstants{};
+  PendingShaderConstantFile pixelExecutionConstants{};
 };
 
 static_assert(std::is_trivially_copyable_v<DeferredExecutionSnapshot>);
-static_assert(sizeof(DeferredExecutionSnapshot) == 3808);
+static_assert(DeferredExecutionSnapshot::kVsConstantOffset +
+                  DeferredExecutionSnapshot::kVsConstantBytes ==
+              0x1700);
+static_assert(sizeof(DeferredExecutionSnapshot) == 12392);
 
 inline bool CaptureDeferredExecutionSnapshot(DeferredExecutionSnapshot& snapshot,
                                              const uint8_t* context) {
   if (context == nullptr)
     return false;
 
+  snapshot.vertexExecutionConstants = {};
+  snapshot.pixelExecutionConstants = {};
   std::memcpy(snapshot.vertexConstants.data(),
               context + DeferredExecutionSnapshot::kVsConstantOffset,
               snapshot.vertexConstants.size());
-  std::memcpy(snapshot.pixelConstants.data(),
-              context + DeferredExecutionSnapshot::kPsConstantOffset,
-              snapshot.pixelConstants.size());
   for (uint32_t i = 0; i < 4; ++i) {
     uint32_t word;
     std::memcpy(&word, context + DeferredExecutionSnapshot::kVsBooleanOffset + i * sizeof(word),
@@ -121,7 +177,26 @@ inline bool CaptureDeferredExecutionSnapshot(DeferredExecutionSnapshot& snapshot
                 sizeof(word));
     snapshot.booleans[4 + i] = std::byteswap(word);
   }
+  uint32_t minZBits;
+  uint32_t maxZBits;
+  std::memcpy(&minZBits, context + DeferredExecutionSnapshot::kViewportOffset + 16,
+              sizeof(minZBits));
+  std::memcpy(&maxZBits, context + DeferredExecutionSnapshot::kViewportOffset + 20,
+              sizeof(maxZBits));
+  const float minZ = std::bit_cast<float>(std::byteswap(minZBits));
+  const float maxZ = std::bit_cast<float>(std::byteswap(maxZBits));
+  snapshot.viewportReverseZ = std::isfinite(minZ) && std::isfinite(maxZ) && minZ > maxZ;
   return true;
+}
+
+inline void InitializeDeferredVertexConstants(const DeferredExecutionSnapshot& snapshot,
+                                              uint32_t* destination,
+                                              uint32_t destinationRegisterCount) {
+  if (destination == nullptr || destinationRegisterCount == 0)
+    return;
+  const uint32_t registerCount = std::min(destinationRegisterCount, 256u);
+  std::memcpy(destination, snapshot.vertexConstants.data(), size_t(registerCount) * 16);
+  snapshot.vertexExecutionConstants.Overlay(destination, registerCount);
 }
 
 inline bool NormalizeUnitFullscreenUpQuad(uint8_t* data, uint32_t vertexCount, uint32_t stride,
@@ -246,7 +321,19 @@ enum class RenderCommandType : uint32_t {
   UnlockBuffer32,
   CopyBufferFromUpload,
   CopyTextureFromUpload,
+  CopyTextureSubresourcesFromUpload,
   CreateTranslatedTextureHost,
+  ApplyVertexShaderConstantFixup,
+  ApplyPixelShaderConstantFixup,
+};
+
+struct TextureUploadRegion {
+  uint32_t width;
+  uint32_t height;
+  uint32_t rowTexels;
+  uint32_t mip;
+  uint32_t arrayIndex;
+  uint64_t srcOffset;
 };
 
 struct RenderCommand {
@@ -429,6 +516,9 @@ struct RenderCommand {
 
     struct {
       GuestBaseTexture* texture;
+      const uint8_t* data;
+      uint32_t size;
+      uint32_t level;
     } unlockTextureRect;
 
     struct {
@@ -453,8 +543,17 @@ struct RenderCommand {
       uint32_t height;
       uint32_t rowTexels;
       uint32_t mip;
+      uint32_t arrayIndex;
       uint64_t srcOffset;
     } copyTextureFromUpload;
+
+    struct {
+      void* dst;
+      void* src;
+      uint32_t format;  // plume::RenderFormat
+      const TextureUploadRegion* regions;
+      uint32_t regionCount;
+    } copyTextureSubresourcesFromUpload;
 
     struct {
       GuestTexture* texture;
@@ -462,6 +561,8 @@ struct RenderCommand {
       uint32_t height;
       uint32_t format;  // plume::RenderFormat
       uint32_t baseAddress;
+      uint32_t levels;
+      bool cube;
       bool* createdOut;
     } createTranslatedTextureHost;
   };
@@ -478,15 +579,21 @@ void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t heigh
                            uint32_t levels, uint32_t usage, uint32_t format, bool volume);
 void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t height, uint32_t format,
                            uint32_t sampleCount, bool depth);
-void ProcUnlockTextureRect(GuestBaseTexture* texture);
+void ProcUnlockTextureRect(GuestBaseTexture* texture, const uint8_t* data, uint32_t size,
+                           uint32_t level);
 void ProcUnlockBuffer16(GuestBuffer* buffer, const uint8_t* data, uint32_t size);
 void ProcUnlockBuffer32(GuestBuffer* buffer, const uint8_t* data, uint32_t size);
 void ProcCopyBufferFromUpload(void* dst, void* src, uint64_t size);
 void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t width,
-                               uint32_t height, uint32_t rowTexels, uint32_t mip,
-                               uint64_t srcOffset);
+                                uint32_t height, uint32_t rowTexels, uint32_t mip,
+                                uint32_t arrayIndex, uint64_t srcOffset);
+void ProcCopyTextureSubresourcesFromUpload(void* dst, void* src, uint32_t format,
+                                           const TextureUploadRegion* regions,
+                                           uint32_t regionCount);
 void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint32_t height,
-                                     uint32_t format, uint32_t baseAddress, bool* createdOut);
+                                      uint32_t format, uint32_t baseAddress, uint32_t levels,
+                                      bool cube,
+                                      bool* createdOut);
 void ProcSetViewportEnable(uint32_t value);
 void ProcSetClipPlaneState(uint32_t enabled, const float* plane);
 void ProcSetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc);

@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -51,6 +53,26 @@ inline constexpr uint32_t kFm2ResourceMagic = 0x464D3252;  // 'FM2R'
 // the guest's +0x1C read-modify-write silently corrupted the texture pointer
 // (IsLiveHostTexture then rejected the render target and Present went black).
 inline constexpr uint32_t kGuestResourceHeaderBytes = 0x40;
+
+inline constexpr bool TextureFetchIsCube(uint32_t dword5) {
+  return ((dword5 >> 9) & 0x3u) == 3u;
+}
+
+inline constexpr uint32_t TextureFetchMipMaxLevel(uint32_t dword4) {
+  return (dword4 >> 6) & 0xFu;
+}
+
+inline constexpr uint32_t TextureFetchMipAddress(uint32_t dword5) {
+  return ((dword5 >> 12) & 0xFFFFFu) << 12;
+}
+
+inline constexpr uint32_t TextureFetchMipLevelCount(uint32_t dword4, uint32_t dword5,
+                                                    uint32_t width, uint32_t height) {
+  if (TextureFetchMipAddress(dword5) == 0 || width == 0 || height == 0)
+    return 1;
+  const uint32_t maxDimensionLevel = std::bit_width(std::max(width, height)) - 1u;
+  return std::min(TextureFetchMipMaxLevel(dword4), maxDimensionLevel) + 1u;
+}
 
 struct GuestResource {
   // Deliberately aliases the guest's D3DResource::Common; IsFm2Resource reads
@@ -196,6 +218,7 @@ struct GuestVertexDeclaration : GuestResource {
   // Derived during input-layout translation (render_state.cpp).
   uint32_t swappedTexcoords = 0;
   uint32_t swappedBlendWeights = 0;
+  uint32_t r11g11b10Texcoords = 0;
   uint32_t indexVertexStream = 0;
   bool hasR11G11B10Normal = false;
   bool hasUByte4TangentBasis = false;

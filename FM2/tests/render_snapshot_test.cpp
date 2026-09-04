@@ -14,6 +14,7 @@
 #include "render/guest_resources.h"
 #include "render/render_internal.h"
 #include "render/render_queue.h"
+#include "render/render_state.h"
 
 namespace {
 
@@ -28,10 +29,24 @@ int main() {
   using fm2::render::CaptureDeferredExecutionSnapshot;
   using fm2::render::ConstantSnapshotRange;
   using fm2::render::DeferredExecutionSnapshot;
+  using fm2::render::TextureFetchIsCube;
+  using fm2::render::TextureFetchMipAddress;
+  using fm2::render::TextureFetchMipLevelCount;
+  using fm2::render::TextureFetchMipMaxLevel;
+
+  Check(!TextureFetchIsCube(1u << 9));
+  Check(TextureFetchIsCube(3u << 9));
+  Check(TextureFetchMipMaxLevel(9u << 6) == 9);
+  Check(TextureFetchMipAddress(0xABCDEu << 12) == 0xABCDE000u);
+  Check(TextureFetchMipLevelCount(15u << 6, 1u << 12, 1024, 128) == 11);
+  Check(TextureFetchMipLevelCount(15u << 6, 1u << 12, 256, 256) == 9);
+  Check(TextureFetchMipLevelCount(15u << 6, 0, 1024, 128) == 1);
   using fm2::render::DrawGeometrySnapshot;
   using fm2::render::GetConstantSnapshotRange;
+  using fm2::render::InitializeDeferredVertexConstants;
   using fm2::render::NormalizeUnitFullscreenUpQuad;
   using fm2::render::PendingShaderConstantFile;
+  using fm2::render::PopConstantSnapshotRange;
   using fm2::render::RecordedRenderBatch;
   using fm2::render::RenderCommand;
   using fm2::render::RenderCommandType;
@@ -42,35 +57,94 @@ int main() {
   Check(offsetof(fm2::render::GuestDevice, pixelShaderBoolConstants) == 0x2710);
   Check(offsetof(fm2::render::GuestDevice, vertexShaderIntConstants) == 0x2720);
   Check(offsetof(fm2::render::GuestDevice, pixelShaderIntConstants) == 0x2760);
+  Check(offsetof(fm2::render::GuestDevice, viewport) == 0x3168);
+
+  {
+    std::array<uint8_t, 4> guestStaging{1, 2, 3, 4};
+    std::array<uint8_t, 4> mip0Snapshot = guestStaging;
+    RenderCommand mip0{};
+    mip0.type = RenderCommandType::UnlockTextureRect;
+    mip0.unlockTextureRect.data = mip0Snapshot.data();
+    mip0.unlockTextureRect.size = uint32_t(mip0Snapshot.size());
+    mip0.unlockTextureRect.level = 0;
+
+    guestStaging = {5, 6, 7, 8};
+    std::array<uint8_t, 4> mip1Snapshot = guestStaging;
+    RenderCommand mip1{};
+    mip1.type = RenderCommandType::UnlockTextureRect;
+    mip1.unlockTextureRect.data = mip1Snapshot.data();
+    mip1.unlockTextureRect.size = uint32_t(mip1Snapshot.size());
+    mip1.unlockTextureRect.level = 1;
+    const std::array<RenderCommand, 2> queued{mip0, mip1};
+
+    guestStaging.fill(0);
+    Check(queued[0].unlockTextureRect.level == 0);
+    Check(queued[1].unlockTextureRect.level == 1);
+    Check(queued[0].unlockTextureRect.data[0] == 1);
+    Check(queued[1].unlockTextureRect.data[0] == 5);
+  }
 
   {
     std::array<uint8_t, DeferredExecutionSnapshot::kContextBytes> context{};
     context[DeferredExecutionSnapshot::kVsConstantOffset] = 0x11;
-    context[DeferredExecutionSnapshot::kVsConstantOffset +
-            DeferredExecutionSnapshot::kVsConstantBytes - 1] = 0x12;
-    context[DeferredExecutionSnapshot::kPsConstantOffset] = 0x21;
-    context[DeferredExecutionSnapshot::kPsConstantOffset +
-            DeferredExecutionSnapshot::kPsConstantBytes - 1] = 0x22;
+    context[DeferredExecutionSnapshot::kVsConstantOffset + 12 * 16] = 0x13;
+    context[DeferredExecutionSnapshot::kVsConstantOffset + 32 * 16] = 0x14;
+    context[DeferredExecutionSnapshot::kVsConstantOffset + 255 * 16] = 0x15;
+    context[DeferredExecutionSnapshot::kVsConstantOffset + 255 * 16 + 15] = 0x12;
     const uint32_t vsBoolean = std::byteswap(0x01020304u);
     const uint32_t psBoolean = std::byteswap(0xA0B0C0D0u);
+    const uint32_t minZ = std::byteswap(std::bit_cast<uint32_t>(1.0f));
+    const uint32_t maxZ = std::byteswap(std::bit_cast<uint32_t>(0.0f));
     std::memcpy(context.data() + DeferredExecutionSnapshot::kVsBooleanOffset, &vsBoolean,
                 sizeof(vsBoolean));
     std::memcpy(context.data() + DeferredExecutionSnapshot::kPsBooleanOffset, &psBoolean,
                 sizeof(psBoolean));
+    std::memcpy(context.data() + DeferredExecutionSnapshot::kViewportOffset + 16, &minZ,
+                sizeof(minZ));
+    std::memcpy(context.data() + DeferredExecutionSnapshot::kViewportOffset + 20, &maxZ,
+                sizeof(maxZ));
 
     DeferredExecutionSnapshot snapshot{};
     Check(CaptureDeferredExecutionSnapshot(snapshot, context.data()));
     Check(snapshot.vertexConstants.front() == 0x11);
+    Check(snapshot.vertexConstants[12 * 16] == 0x13);
+    Check(snapshot.vertexConstants[32 * 16] == 0x14);
+    Check(snapshot.vertexConstants[255 * 16] == 0x15);
     Check(snapshot.vertexConstants.back() == 0x12);
-    Check(snapshot.pixelConstants.front() == 0x21);
-    Check(snapshot.pixelConstants.back() == 0x22);
+    Check(snapshot.vertexExecutionConstants.empty());
+    Check(snapshot.pixelExecutionConstants.empty());
     Check(snapshot.booleans[0] == 0x01020304u);
     Check(snapshot.booleans[4] == 0xA0B0C0D0u);
+    Check(snapshot.viewportReverseZ == 1);
     context.fill(0);
+    snapshot.vertexExecutionConstants.coverage[0] = 1;
+    snapshot.pixelExecutionConstants.coverage[0] = 2;
     DeferredExecutionSnapshot copied = snapshot;
-    snapshot.pixelConstants.front() = 0;
-    Check(copied.pixelConstants.front() == 0x21);
+    snapshot.vertexExecutionConstants.coverage[0] = 0;
+    snapshot.pixelExecutionConstants.coverage[0] = 0;
+    Check(copied.vertexExecutionConstants.coverage[0] == 1);
+    Check(copied.pixelExecutionConstants.coverage[0] == 2);
     Check(!CaptureDeferredExecutionSnapshot(snapshot, nullptr));
+  }
+
+  {
+    DeferredExecutionSnapshot snapshot{};
+    const uint32_t initial[4] = {1, 2, 3, 4};
+    std::memcpy(snapshot.vertexConstants.data() + 32 * 16, initial, sizeof(initial));
+
+    std::array<uint32_t, 256 * 4> replayConstants{};
+    InitializeDeferredVertexConstants(snapshot, replayConstants.data(), 256);
+    Check(std::memcmp(replayConstants.data() + 32 * 4, initial, sizeof(initial)) == 0);
+
+    uint32_t recorded[4] = {5, 6, 7, 8};
+    RenderCommand command{};
+    command.type = RenderCommandType::SetVertexShaderConstants;
+    command.setShaderConstants.memory = reinterpret_cast<uint8_t*>(recorded);
+    command.setShaderConstants.index = 32 * 4;
+    command.setShaderConstants.size = sizeof(recorded);
+    std::memcpy(replayConstants.data() + command.setShaderConstants.index,
+                command.setShaderConstants.memory, command.setShaderConstants.size);
+    Check(std::memcmp(replayConstants.data() + 32 * 4, recorded, sizeof(recorded)) == 0);
   }
 
   fm2::render::GuestTexture uploadState;
@@ -109,6 +183,14 @@ int main() {
     const ConstantSnapshotRange range = GetConstantSnapshotRange(uint64_t{1} << 7, 56);
     Check(range.size == 0);
   }
+  {
+    uint64_t flags = (uint64_t{1} << 63) | (uint64_t{1} << 62) | (uint64_t{1} << 60);
+    ConstantSnapshotRange range = PopConstantSnapshotRange(flags, 64);
+    Check(range.index == 0 && range.size == 2 * 64);
+    range = PopConstantSnapshotRange(flags, 64);
+    Check(range.index == 3 * 16 && range.size == 64);
+    Check(flags == 0);
+  }
 
   {
     PendingShaderConstantFile pending;
@@ -121,6 +203,7 @@ int main() {
     const uint32_t replacement[] = {0x30, 0x31, 0x32, 0x33};
     pending.Stage(2, first, 2);
     pending.Stage(3, replacement, 1);
+    Check(pending.DirtyGroups(64) == (uint64_t{1} << 63));
     Check(!pending.empty());
     pending.OverlayAndClear(destination, PendingShaderConstantFile::kRegisterCount);
     Check(pending.empty());
@@ -136,6 +219,25 @@ int main() {
     pending.OverlayAndClear(destination, PendingShaderConstantFile::kRegisterCount);
     Check(destination[255 * 4] == 0x40u);
     Check(destination[255 * 4 + 3] == 0x43u);
+
+    std::array<uint32_t, PendingShaderConstantFile::kRegisterCount *
+                             PendingShaderConstantFile::kDwordsPerRegister>
+        groupedSource{};
+    groupedSource[120 * 4] = 0x12345678u;
+    groupedSource[188 * 4] = 0xABCDEF01u;
+    groupedSource[240 * 4] = 0xFFFFFFFFu;
+    destination[120 * 4] = destination[188 * 4] = destination[240 * 4] = 0;
+    pending.StageDirtyGroups((uint64_t{1} << (63 - 30)) | (uint64_t{1} << (63 - 47)) |
+                                 (uint64_t{1} << (63 - 60)),
+                             groupedSource.data(), 56);
+    pending.Overlay(destination, PendingShaderConstantFile::kRegisterCount);
+    Check(!pending.empty());
+    Check(destination[120 * 4] == 0x12345678u);
+    Check(destination[188 * 4] == 0xABCDEF01u);
+    Check(destination[240 * 4] == 0);
+    pending.OverlayAndClear(destination, PendingShaderConstantFile::kRegisterCount);
+    Check(pending.empty());
+
   }
 
   RenderCommand command{};
@@ -260,7 +362,8 @@ int main() {
     replacement.type = RenderCommandType::SetTexture;
     replacement.setTexture = {0, live, 0xC000};
     Check(batch.SetTextureFixup(0x55, replacement));
-    std::vector<RenderCommand> replay = batch.BuildReplayCommands();
+    std::vector<uint8_t> shaderConstantPayload;
+    std::vector<RenderCommand> replay = batch.BuildReplayCommands(shaderConstantPayload);
     Check(replay[0].setTexture.index == 1 && replay[0].setTexture.texture == live);
     Check(replay[1].setTexture.texture == other);
     Check(replay[2].type == RenderCommandType::SetTexture);
@@ -270,10 +373,45 @@ int main() {
 
     replacement.setTexture.texture = nullptr;
     Check(batch.SetTextureFixup(0x55, replacement));
-    replay = batch.BuildReplayCommands();
+    replay = batch.BuildReplayCommands(shaderConstantPayload);
     Check(replay[0].setTexture.texture == nullptr);
     Check(replay[2].setTexture.texture == nullptr);
     Check(batch.commands()[0].setTexture.texture == initial);
+  }
+
+  {
+    RecordedRenderBatch batch;
+    RenderCommand draw{};
+    draw.type = RenderCommandType::DrawIndexedPrimitive;
+
+    batch.RecordMarker(10);
+    batch.Append(draw);
+    batch.RecordMarker(20);
+    batch.Append(draw);
+    batch.RecordMarker(30);
+
+    Check(batch.AssociateShaderConstantFixup(0x77, true, 180, 1, 10, 20) == 1);
+    Check(batch.AssociateShaderConstantFixup(0x88, false, 4, 1, 20, 30) == 1);
+    Check(batch.AssociateShaderConstantFixup(0x99, true, 181, 1, 20, 99) == 0);
+
+    const uint32_t pixelValue[4] = {0x3F800000u, 0x40000000u, 0x40400000u, 0x40800000u};
+    const uint32_t vertexValue[4] = {1, 2, 3, 4};
+    Check(batch.SetShaderConstantFixup(0x77, pixelValue));
+    Check(batch.SetShaderConstantFixup(0x88, vertexValue));
+    Check(!batch.SetShaderConstantFixup(0x99, pixelValue));
+
+    std::vector<uint8_t> payload;
+    const std::vector<RenderCommand> replay = batch.BuildReplayCommands(payload);
+    Check(replay.size() == 4);
+    Check(replay[0].type == RenderCommandType::ApplyPixelShaderConstantFixup);
+    Check(replay[0].setShaderConstants.index == 180 * 4);
+    Check(replay[0].setShaderConstants.size == 16);
+    Check(std::memcmp(replay[0].setShaderConstants.memory, pixelValue, sizeof(pixelValue)) == 0);
+    Check(replay[1].type == RenderCommandType::DrawIndexedPrimitive);
+    Check(replay[2].type == RenderCommandType::ApplyVertexShaderConstantFixup);
+    Check(replay[2].setShaderConstants.index == 4 * 4);
+    Check(std::memcmp(replay[2].setShaderConstants.memory, vertexValue, sizeof(vertexValue)) == 0);
+    Check(replay[3].type == RenderCommandType::DrawIndexedPrimitive);
   }
 
   {

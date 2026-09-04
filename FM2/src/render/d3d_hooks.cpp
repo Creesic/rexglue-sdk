@@ -28,7 +28,6 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -69,6 +68,7 @@ void GetSurfaceDesc(const GuestSurface* surface, GuestSurfaceDesc* desc);
 GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size);
 GuestShader* CreateVertexShader(const uint32_t* function);
 GuestShader* CreatePixelShader(const uint32_t* function);
+void RegisterShaderAlias(uint32_t guestAddress, GuestShader* shader);
 GuestShader* LookupShaderAlias(uint32_t guestAddress);
 }  // namespace fm2::render
 
@@ -184,6 +184,11 @@ namespace {
 namespace rr = fm2::render;
 namespace ghp = fm2::ghp;
 
+REX_IMPORT(__imp__D3DDevice_CreateVertexShader, g_origCreateVertexShader,
+           uint32_t(const uint32_t*));
+REX_IMPORT(__imp__D3DDevice_CreatePixelShader, g_origCreatePixelShader,
+           uint32_t(const uint32_t*));
+
 uint32_t CreateVertexBufferHook(uint32_t length, uint32_t /*usage*/, uint32_t /*pool*/) {
   return ghp::ToGuest(rr::CreateVertexBuffer(length));
 }
@@ -207,19 +212,30 @@ uint32_t CreateVertexDeclarationHook(const GuestVertexElement* elements) {
   return ghp::ToGuest(rr::CreateVertexDeclaration(elements));
 }
 
-// D3DDevice_CreateVertexShader/CreatePixelShader take the raw ShaderContainer
-// microcode pointer directly -- these two addresses were mislabeled in the
-// manifest as unrelated GPU-memory-block allocators (FM2_Render_AllocGpuPassMemoryBlock
-// / FM2_D3D_CreateGpuMemoryBlock) despite already being correctly renamed in
-// IDA; fixed in fm2_manifest.toml. Without this fix no vertex/pixel shader
-// object is ever created, so SetVertexShaderState/SetPixelShaderState's
-// ResolveShader() would never find a real GuestShader to bind.
+// Keep FM2's real shader object because its appended compiled-state table is
+// applied by Set*ShaderState. The alias supplies the native shader without
+// replacing that guest-visible object.
 uint32_t CreateVertexShaderHook(const uint32_t* function) {
-  return ghp::ToGuest(rr::CreateVertexShader(function));
+  const uint32_t guestShader = g_origCreateVertexShader(function);
+  if (guestShader != 0)
+    rr::RegisterShaderAlias(guestShader, rr::CreateVertexShader(function));
+  return guestShader;
 }
 
 uint32_t CreatePixelShaderHook(const uint32_t* function) {
-  return ghp::ToGuest(rr::CreatePixelShader(function));
+  const uint32_t guestShader = g_origCreatePixelShader(function);
+  if (guestShader != 0) {
+    rr::GuestShader* nativeShader = rr::CreatePixelShader(function);
+    rr::RegisterShaderAlias(guestShader, nativeShader);
+    const uint64_t hash = nativeShader != nullptr && nativeShader->shaderCacheEntry != nullptr
+                              ? nativeShader->shaderCacheEntry->hash
+                              : 0;
+    if (hash == 0x95DD7C99779DD08Bull || hash == 0xE1B2891B7D112A0Dull) {
+      REXGPU_INFO("MR2ShaderAlias: object=0x{:08X} native=0x{:08X} hash=0x{:016X}",
+                  guestShader, ghp::ToGuest(nativeShader), hash);
+    }
+  }
+  return guestShader;
 }
 
 }  // namespace
@@ -751,40 +767,46 @@ REX_HOOK(sub_823716F8, Fm2BindSurface);
 // Shader state.
 // ---------------------------------------------------------------------------
 
+REX_IMPORT(__imp__FM2_RenderContext_SetPixelShaderState, g_origSetPixelShaderState,
+           void(uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_RenderContext_SetVertexShaderState, g_origSetVertexShaderState,
+           void(uint32_t, uint32_t));
+
 namespace {
 
-// Every shader we create is pure-replace (own guest address is the handle),
-// so resolving a guest shader reference is either "it already is one of
-// ours" or "look it up by alias" (registered when the container that owns
-// it gets loaded -- Phase 4 wires that registration to the actual draw-time
-// shader-load path).
 rr::GuestShader* ResolveShader(uint32_t shaderAddr) {
+  if (shaderAddr == 0)
+    return nullptr;
   auto* shader = ghp::ToHost<rr::GuestShader>(shaderAddr);
   if (rr::IsFm2Resource(shader))
     return shader;
   return rr::LookupShaderAlias(shaderAddr);
 }
 
-// Pure replacement, no passthrough to the original guest function: the
-// original body reads its shader argument as a real 24-byte D3DPixelShader
-// (Common/ReferenceCount/Fence/ReadFence/Identifier/BaseFlush), using
-// ReadFence (offset 0xC) as a relative offset to a "compiled state table"
-// appended after the struct. Our GuestShader is a real C++ object (mutex,
-// unique_ptr, unordered_map, ...), not that 24-byte layout, so calling
-// through reads garbage from inside our std::mutex as if it were state-table
-// metadata. That table's merge loop decrements a uint16_t count by 2 until
-// it hits zero -- mathematically impossible to terminate if the (garbage)
-// count is odd, which intermittently hung the process for minutes.
 void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shaderAddr) {
+  rr::GuestShader* shader = ResolveShader(shaderAddr);
+  g_origSetPixelShaderState(renderContext, shaderAddr);
   GuestDevice* device = DeviceForRenderContext(renderContext);
-  if (device == nullptr || shaderAddr == 0)
+  if (device == nullptr)
     return;
-  rr::SetPixelShader(device, ResolveShader(shaderAddr));
+  rr::SetPixelShader(device, shader);
+  const uint64_t hash = shader != nullptr && shader->shaderCacheEntry != nullptr
+                            ? shader->shaderCacheEntry->hash
+                            : 0;
+  if (hash == 0x95DD7C99779DD08Bull || hash == 0xE1B2891B7D112A0Dull) {
+    static std::atomic<uint32_t> traceCount{0};
+    const uint32_t index = traceCount.fetch_add(1, std::memory_order_relaxed);
+    if (index < 512) {
+      REXGPU_INFO("MR2ShaderSet: n={} object=0x{:08X} hash=0x{:016X} recording={}", index + 1,
+                  shaderAddr, hash, fm2::render::RenderQueue::IsRecording());
+    }
+  }
 }
 
 void Fm2SetVertexShaderState(uint32_t renderContext, uint32_t shaderAddr) {
+  g_origSetVertexShaderState(renderContext, shaderAddr);
   GuestDevice* device = DeviceForRenderContext(renderContext);
-  if (device == nullptr || shaderAddr == 0)
+  if (device == nullptr)
     return;
   rr::SetVertexShader(device, ResolveShader(shaderAddr));
 }
@@ -1051,9 +1073,15 @@ REX_HOOK_RAW(D3DDevice_Resolve) {
 // CPU constant files; record the payload here and consume it at the next draw.
 REX_IMPORT(__imp__sub_82803358, g_origGpuBeginShaderConstantF4,
            uint32_t(uint32_t, uint32_t, uint32_t, uint32_t));
-REX_IMPORT(__imp__sub_823767B8, g_origCbSetShaderConstantF, void(uint32_t, uint32_t, uint32_t));
-REX_IMPORT(__imp__sub_823766E0, g_origCbCreateShaderConstantFFixup,
+REX_IMPORT(__imp__sub_82382CC8, g_origSetPendingAluConstants,
+           void(uint32_t, uint64_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_82376830, g_origCbSetShaderConstantF, void(uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_823766E0, g_origCbCreateVertexShaderConstantFFixup,
            uint32_t(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_82376828, g_origCbCreatePixelShaderConstantFFixup,
+           uint32_t(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+REX_IMPORT(__imp__FM2_Render_EmitDrawRangeCountPm4, g_origEmitDrawRangeCountPm4,
+           uint32_t(uint32_t));
 REX_IMPORT(__imp__D3DDevice_DrawVertices, g_origDrawVertices,
            void(GuestDevice*, uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__D3DDevice_DrawIndexedVertices, g_origDrawIndexedVertices,
@@ -1088,20 +1116,7 @@ struct DeferredShaderConstants {
 std::mutex g_deferredShaderConstantsMutex;
 std::vector<DeferredShaderConstants> g_deferredShaderConstants;
 
-struct CommandBufferFixupRange {
-  uint16_t startRegister;
-  uint16_t registerCount;
-};
-
-struct DeferredCommandBufferConstants {
-  uint32_t startRegister;
-  uint32_t registerCount;
-  std::array<uint32_t, 64 * 4> values;
-};
-
-std::mutex g_commandBufferFixupMutex;
-std::unordered_map<uint32_t, CommandBufferFixupRange> g_commandBufferFixupRanges;
-std::vector<DeferredCommandBufferConstants> g_deferredCommandBufferConstants;
+thread_local fm2::render::DeferredExecutionSnapshot* t_executionSnapshotCapture = nullptr;
 
 void DrainDeferredShaderConstants() {
   std::vector<DeferredShaderConstants> pending;
@@ -1136,64 +1151,78 @@ void DrainDeferredShaderConstants() {
   }
 }
 
-void DrainDeferredCommandBufferConstants() {
-  std::vector<DeferredCommandBufferConstants> pending;
-  {
-    std::lock_guard lock(g_commandBufferFixupMutex);
-    if (g_deferredCommandBufferConstants.empty())
-      return;
-    pending.swap(g_deferredCommandBufferConstants);
-  }
-
-  for (const DeferredCommandBufferConstants& constants : pending) {
-    fm2::render::StageDrawShaderConstants(true, constants.startRegister, constants.values.data(),
-                                          constants.registerCount);
-  }
-}
-
 void DrainDeferredDrawShaderConstants() {
   DrainDeferredShaderConstants();
-  DrainDeferredCommandBufferConstants();
 }
 
 void DrawVerticesHook(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
                       uint32_t vertexCount) {
   DrainDeferredDrawShaderConstants();
-  if (fm2::render::RenderQueue::IsRecording())
+  const bool recording = fm2::render::RenderQueue::IsRecording();
+  const uint64_t vsDirtyFlags = recording && device != nullptr ? device->dirtyFlags[0].get() : 0;
+  const uint64_t psDirtyFlags = recording && device != nullptr ? device->dirtyFlags[1].get() : 0;
+  if (recording)
     g_origDrawVertices(device, primitiveType, startVertex, vertexCount);
-  rr::DrawVertices(device, primitiveType, startVertex, vertexCount);
+  rr::DrawVertices(device, primitiveType, startVertex, vertexCount, vsDirtyFlags, psDirtyFlags);
 }
 
 void DrawIndexedVerticesHook(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
                              uint32_t startIndex, uint32_t indexCount) {
   DrainDeferredDrawShaderConstants();
-  if (fm2::render::RenderQueue::IsRecording())
+  const bool recording = fm2::render::RenderQueue::IsRecording();
+  const uint64_t vsDirtyFlags = recording && device != nullptr ? device->dirtyFlags[0].get() : 0;
+  const uint64_t psDirtyFlags = recording && device != nullptr ? device->dirtyFlags[1].get() : 0;
+  if (recording)
     g_origDrawIndexedVertices(device, primitiveType, baseVertexIndex, startIndex, indexCount);
-  rr::DrawIndexedVertices(device, primitiveType, baseVertexIndex, startIndex, indexCount);
+  rr::DrawIndexedVertices(device, primitiveType, baseVertexIndex, startIndex, indexCount,
+                          vsDirtyFlags, psDirtyFlags);
 }
 
 void DrawIndexedVerticesWithVertexFormatHook(GuestDevice* device, uint32_t primitiveType,
                                              int32_t baseVertexIndex, uint32_t startIndex,
                                              uint32_t indexCount) {
   DrainDeferredDrawShaderConstants();
-  if (fm2::render::RenderQueue::IsRecording())
+  const bool recording = fm2::render::RenderQueue::IsRecording();
+  const uint64_t vsDirtyFlags = recording && device != nullptr ? device->dirtyFlags[0].get() : 0;
+  const uint64_t psDirtyFlags = recording && device != nullptr ? device->dirtyFlags[1].get() : 0;
+  if (recording)
     g_origDrawIndexedVerticesWithVertexFormat(device, primitiveType, baseVertexIndex, startIndex,
-                                              indexCount);
-  rr::DrawIndexedVertices(device, primitiveType, baseVertexIndex, startIndex, indexCount);
+                                               indexCount);
+  rr::DrawIndexedVertices(device, primitiveType, baseVertexIndex, startIndex, indexCount,
+                          vsDirtyFlags, psDirtyFlags);
 }
 
 void DrawVerticesUPHook(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
                         const void* vertexStreamZeroData, uint32_t vertexStreamZeroStride) {
   DrainDeferredDrawShaderConstants();
-  if (fm2::render::RenderQueue::IsRecording()) {
+  const bool recording = fm2::render::RenderQueue::IsRecording();
+  const uint64_t vsDirtyFlags = recording && device != nullptr ? device->dirtyFlags[0].get() : 0;
+  const uint64_t psDirtyFlags = recording && device != nullptr ? device->dirtyFlags[1].get() : 0;
+  if (recording) {
     g_origDrawVerticesUP(device, primitiveType, vertexCount, vertexStreamZeroData,
-                         vertexStreamZeroStride);
+                          vertexStreamZeroStride);
   }
   rr::DrawUserPointerVertices(device, primitiveType, vertexCount, vertexStreamZeroData,
-                              vertexStreamZeroStride);
+                               vertexStreamZeroStride, vsDirtyFlags, psDirtyFlags);
 }
 
 }  // namespace
+
+REX_HOOK_RAW(sub_82382CC8) {
+  const uint64_t dirtyMask = ctx.r4.u64;
+  const uint32_t registerBase = ctx.r5.u32;
+  const uint32_t sourceGuest = ctx.r6.u32;
+  g_origSetPendingAluConstants.fn(ctx, base);
+
+  if (t_executionSnapshotCapture == nullptr || sourceGuest == 0)
+    return;
+  const auto* source = ghp::ToHost<const uint32_t>(sourceGuest);
+  if (registerBase == 0x4000) {
+    t_executionSnapshotCapture->vertexExecutionConstants.StageDirtyGroups(dirtyMask, source, 64);
+  } else if (registerBase == 0x4400) {
+    t_executionSnapshotCapture->pixelExecutionConstants.StageDirtyGroups(dirtyMask, source, 56);
+  }
+}
 
 REX_HOOK_RAW(sub_82803358) {
   const bool pixelShader = ctx.r4.u32 != 0;
@@ -1221,28 +1250,71 @@ REX_HOOK_RAW(sub_82803358) {
   }
 }
 
-// D3DCommandBuffer_CreateShaderConstantFFixup returns a handle describing the
-// VS register range that a later SetShaderConstantF call will populate. FM2
-// uses this path for per-object matrices that never enter GuestDevice's CPU
-// constant file.
+REX_HOOK_RAW(FM2_Render_EmitDrawRangeCountPm4) {
+  g_origEmitDrawRangeCountPm4.fn(ctx, base);
+  fm2::render::RenderQueue::RecordPendingCommandBufferMarker(ctx.r3.u32);
+}
+
+// The generic API encodes VS registers as 0..255 and PS registers as 256..479.
+// PS calls below pass through the wrapper hook, so capture only direct VS uses
+// here to avoid associating the same PS fixup twice.
 REX_HOOK_RAW(sub_823766E0) {
   const uint32_t startRegister = ctx.r5.u32;
   const uint32_t registerCount = ctx.r6.u32;
-  g_origCbCreateShaderConstantFFixup.fn(ctx, base);
+  const uint32_t startMarker = ctx.r7.u32;
+  const uint32_t stopMarker = ctx.r8.u32;
+  g_origCbCreateVertexShaderConstantFFixup.fn(ctx, base);
 
-  if (registerCount == 0 || registerCount > 64 || startRegister >= 256)
+  if (startRegister >= 256u || registerCount == 0 || registerCount > 64u ||
+      registerCount > 256u - startRegister) {
+    return;
+  }
+
+  const uint32_t handle = ctx.r3.u32;
+  const size_t draws = fm2::render::RenderQueue::AssociatePendingShaderConstantFixup(
+      handle, false, startRegister, registerCount, startMarker, stopMarker);
+  static std::atomic<uint32_t> createCount{0};
+  const uint32_t count = createCount.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (count <= 32) {
+    REXGPU_INFO(
+        "Deferred shader fixup recorded: n={} handle=0x{:08X} stage=VS "
+        "start={} count={} markers={}/{} draws={}",
+        count, handle, startRegister, registerCount, startMarker, stopMarker, draws);
+  }
+}
+
+// FM2 calls this PS wrapper directly; it adds 256 before tail-branching to the
+// generic creator. Hook the called alias so the generated direct call cannot
+// bypass our fixup association.
+REX_HOOK_RAW(sub_82376828) {
+  const uint32_t startRegister = ctx.r5.u32;
+  const uint32_t registerCount = ctx.r6.u32;
+  const uint32_t startMarker = ctx.r7.u32;
+  const uint32_t stopMarker = ctx.r8.u32;
+  g_origCbCreatePixelShaderConstantFFixup.fn(ctx, base);
+
+  if (registerCount == 0 || registerCount > 64 || startRegister >= 224u ||
+      registerCount > 224u - startRegister)
     return;
 
   const uint32_t handle = ctx.r3.u32;
-  std::lock_guard lock(g_commandBufferFixupMutex);
-  g_commandBufferFixupRanges[handle] = {static_cast<uint16_t>(startRegister),
-                                        static_cast<uint16_t>(registerCount)};
+  const size_t draws = fm2::render::RenderQueue::AssociatePendingShaderConstantFixup(
+      handle, true, startRegister, registerCount, startMarker, stopMarker);
+  static std::atomic<uint32_t> createCount{0};
+  const uint32_t count = createCount.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (count <= 32) {
+    REXGPU_INFO(
+        "Deferred shader fixup recorded: n={} handle=0x{:08X} stage=PS "
+        "start={} count={} markers={}/{} draws={}",
+        count, handle, startRegister, registerCount, startMarker, stopMarker, draws);
+  }
 }
 
-// Copy the values while the guest source is valid, but consume them only at
-// the next draw so each draw receives the matrix/material values associated
-// with its own command-buffer fixup.
-REX_HOOK_RAW(sub_823767B8) {
+// The batch copies these values while the guest source is valid. Replay then
+// injects the matching stage/range immediately before every draw selected by
+// the fixup's marker interval.
+REX_HOOK_RAW(sub_82376830) {
+  const uint32_t cloneAddress = ctx.r3.u32;
   const uint32_t handle = ctx.r4.u32;
   const uint32_t sourceGuest = ctx.r5.u32;
   g_origCbSetShaderConstantF.fn(ctx, base);
@@ -1250,33 +1322,17 @@ REX_HOOK_RAW(sub_823767B8) {
   if (sourceGuest == 0)
     return;
 
-  std::lock_guard lock(g_commandBufferFixupMutex);
-  const auto rangeIt = g_commandBufferFixupRanges.find(handle);
-  if (rangeIt == g_commandBufferFixupRanges.end())
-    return;
-
-  const CommandBufferFixupRange range = rangeIt->second;
   const auto* source = ghp::ToHost<const uint32_t>(sourceGuest);
-  if (source == nullptr || range.registerCount == 0 || range.registerCount > 64)
+  if (source == nullptr)
     return;
 
-  if (g_deferredCommandBufferConstants.size() >= 2048) {
-    static std::atomic<bool> loggedOverflow{false};
-    if (!loggedOverflow.exchange(true, std::memory_order_relaxed)) {
-      REXGPU_WARN("Command-buffer shader-constant queue overflow; dropping later payloads");
-    }
-    return;
-  }
-
-  DeferredCommandBufferConstants constants{};
-  constants.startRegister = range.startRegister;
-  constants.registerCount = range.registerCount;
-  std::memcpy(constants.values.data(), source, size_t(range.registerCount) * 16u);
-  g_deferredCommandBufferConstants.push_back(std::move(constants));
-  static std::atomic<bool> loggedActive{false};
-  if (!loggedActive.exchange(true, std::memory_order_relaxed)) {
-    REXGPU_INFO("Per-draw command-buffer constants active: start={} count={}", range.startRegister,
-                range.registerCount);
+  const bool applied =
+      fm2::render::RenderQueue::SetRecordingShaderConstantFixup(cloneAddress, handle, source);
+  static std::atomic<uint32_t> setCount{0};
+  const uint32_t count = setCount.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (count <= 32) {
+    REXGPU_INFO("Deferred shader fixup updated: n={} clone=0x{:08X} handle=0x{:08X} applied={}",
+                count, cloneAddress, handle, applied);
   }
 }
 
@@ -1358,7 +1414,10 @@ REX_HOOK_RAW(FM2_D3D_EmitDirtyStateAndDrawList) {
     context = ghp::ToHost<const uint8_t>(contextAddress);
   }
   const bool captured = fm2::render::CaptureDeferredExecutionSnapshot(executionSnapshot, context);
+  auto* previousCapture = t_executionSnapshotCapture;
+  t_executionSnapshotCapture = captured ? &executionSnapshot : nullptr;
   g_origEmitDirtyStateAndDrawList.fn(ctx, base);
+  t_executionSnapshotCapture = previousCapture;
 
   if (fm2::render::RenderQueue::ReplayRecording(cloneAddress,
                                                 captured ? &executionSnapshot : nullptr)) {

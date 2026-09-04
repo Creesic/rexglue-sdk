@@ -19,14 +19,11 @@ struct GuestDevice {
   rex::be<uint32_t> setRenderStateFunctions[0x65];
   uint32_t setSamplerStateFunctions[0x14];
 
-  uint8_t padding224[0x25C];
+  uint8_t padding224[0x1DC];
 
-  // Xenos exposes 16 unified sampler slots. Keeping 32 entries here shifted
-  // every shader constant file by 0x80 bytes, so direct draws uploaded c8 as
-  // c0 while object-pass replay (which used raw +0x700/+0x1700 pointers) did
-  // not. The two paths must describe the same guest-device layout.
-  GuestSamplerState samplerStates[0x10];
-  uint8_t padding600[0x100];
+  // FM2's generated sampler setters address device + 0x400 + slot * 24.
+  // The 32-entry storage table ends exactly where the VS constants begin.
+  GuestSamplerState samplerStates[0x20];
 
   // Raw host-endian shader constant register files used by the Xbox D3D
   // runtime. Boolean and loop files immediately follow the VS/PS float files.
@@ -54,7 +51,7 @@ struct GuestDevice {
 };
 
 static_assert(sizeof(GuestDevice) == 0x5E00);
-static_assert(offsetof(GuestDevice, samplerStates) == 0x480);
+static_assert(offsetof(GuestDevice, samplerStates) == 0x400);
 static_assert(offsetof(GuestDevice, vertexShaderFloatConstants) == 0x700);
 static_assert(offsetof(GuestDevice, pixelShaderFloatConstants) == 0x1700);
 static_assert(offsetof(GuestDevice, vertexShaderBoolConstants) == 0x2700);
@@ -62,6 +59,7 @@ static_assert(offsetof(GuestDevice, pixelShaderBoolConstants) == 0x2710);
 static_assert(offsetof(GuestDevice, vertexShaderIntConstants) == 0x2720);
 static_assert(offsetof(GuestDevice, pixelShaderIntConstants) == 0x2760);
 static_assert(offsetof(GuestDevice, vertexDeclaration) == 0x2D14);
+static_assert(offsetof(GuestDevice, viewport) == 0x3168);
 
 struct GuestViewport {
   rex::be<uint32_t> x;

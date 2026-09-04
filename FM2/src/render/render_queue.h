@@ -52,6 +52,16 @@ class RecordedRenderBatch {
   size_t size() const { return commands_.size(); }
   const std::vector<RenderCommand>& commands() const { return commands_; }
 
+  void RecordMarker(uint32_t marker) {
+    for (CommandMarker& existing : markers_) {
+      if (existing.marker == marker) {
+        existing.commandIndex = commands_.size();
+        return;
+      }
+    }
+    markers_.push_back({marker, commands_.size()});
+  }
+
   size_t AssociateTextureFixup(uint32_t handle, uint32_t guestAddress) {
     TextureFixup* fixup = nullptr;
     for (TextureFixup& candidate : textureFixups_) {
@@ -92,33 +102,158 @@ class RecordedRenderBatch {
     return false;
   }
 
-  std::vector<RenderCommand> BuildReplayCommands() const {
-    std::vector<RenderCommand> result = commands_;
+  size_t AssociateShaderConstantFixup(uint32_t handle, bool pixelShader, uint32_t startRegister,
+                                      uint32_t registerCount, uint32_t startMarker,
+                                      uint32_t stopMarker) {
+    const uint32_t registerCapacity = pixelShader ? 224u : 256u;
+    size_t startIndex;
+    size_t stopIndex;
+    if (handle == UINT32_MAX || registerCount == 0 || registerCount > 64 ||
+        startRegister >= registerCapacity || registerCount > registerCapacity - startRegister ||
+        !FindMarker(startMarker, startIndex) || !FindMarker(stopMarker, stopIndex) ||
+        startIndex > stopIndex) {
+      return 0;
+    }
+
+    ShaderConstantFixup* fixup = nullptr;
+    for (ShaderConstantFixup& candidate : shaderConstantFixups_) {
+      if (candidate.handle == handle) {
+        fixup = &candidate;
+        break;
+      }
+    }
+    if (fixup == nullptr) {
+      shaderConstantFixups_.push_back({handle});
+      fixup = &shaderConstantFixups_.back();
+    }
+    fixup->pixelShader = pixelShader;
+    fixup->startRegister = startRegister;
+    fixup->registerCount = registerCount;
+    fixup->startCommandIndex = startIndex;
+    fixup->stopCommandIndex = stopIndex;
+    fixup->hasReplacement = false;
+
+    return std::count_if(commands_.begin() + startIndex, commands_.begin() + stopIndex,
+                         [](const RenderCommand& command) { return IsDraw(command.type); });
+  }
+
+  bool SetShaderConstantFixup(uint32_t handle, const uint32_t* source) {
+    if (source == nullptr)
+      return false;
+    for (ShaderConstantFixup& fixup : shaderConstantFixups_) {
+      if (fixup.handle != handle)
+        continue;
+      std::memcpy(fixup.values.data(), source, size_t(fixup.registerCount) * 16u);
+      fixup.hasReplacement = true;
+      return true;
+    }
+    return false;
+  }
+
+  std::vector<RenderCommand> BuildReplayCommands(
+      std::vector<uint8_t>& shaderConstantPayload) const {
+    std::vector<RenderCommand> patched = commands_;
     for (const TextureFixup& fixup : textureFixups_) {
       if (!fixup.hasReplacement)
         continue;
       for (size_t commandIndex : fixup.commandIndices) {
-        const RenderCommand& original = result[commandIndex];
+        const RenderCommand& original = patched[commandIndex];
         const uint32_t sampler = original.type == RenderCommandType::SetTexture
                                      ? original.setTexture.index
                                      : original.setTextureBase.index;
-        result[commandIndex] = fixup.replacement;
-        if (result[commandIndex].type == RenderCommandType::SetTexture)
-          result[commandIndex].setTexture.index = sampler;
+        patched[commandIndex] = fixup.replacement;
+        if (patched[commandIndex].type == RenderCommandType::SetTexture)
+          patched[commandIndex].setTexture.index = sampler;
         else
-          result[commandIndex].setTextureBase.index = sampler;
+          patched[commandIndex].setTextureBase.index = sampler;
       }
+    }
+
+    size_t payloadSize = 0;
+    for (const ShaderConstantFixup& fixup : shaderConstantFixups_) {
+      if (fixup.hasReplacement)
+        payloadSize += size_t(fixup.registerCount) * 16u;
+    }
+    shaderConstantPayload.resize(payloadSize);
+    std::vector<size_t> payloadOffsets(shaderConstantFixups_.size(), SIZE_MAX);
+    size_t payloadOffset = 0;
+    for (size_t i = 0; i < shaderConstantFixups_.size(); ++i) {
+      const ShaderConstantFixup& fixup = shaderConstantFixups_[i];
+      if (!fixup.hasReplacement)
+        continue;
+      const size_t byteCount = size_t(fixup.registerCount) * 16u;
+      payloadOffsets[i] = payloadOffset;
+      std::memcpy(shaderConstantPayload.data() + payloadOffset, fixup.values.data(), byteCount);
+      payloadOffset += byteCount;
+    }
+
+    std::vector<RenderCommand> result;
+    result.reserve(patched.size() + shaderConstantFixups_.size());
+    for (size_t commandIndex = 0; commandIndex < patched.size(); ++commandIndex) {
+      if (IsDraw(patched[commandIndex].type)) {
+        for (size_t i = 0; i < shaderConstantFixups_.size(); ++i) {
+          const ShaderConstantFixup& fixup = shaderConstantFixups_[i];
+          if (!fixup.hasReplacement || commandIndex < fixup.startCommandIndex ||
+              commandIndex >= fixup.stopCommandIndex) {
+            continue;
+          }
+          RenderCommand constants{};
+          constants.type = fixup.pixelShader ? RenderCommandType::ApplyPixelShaderConstantFixup
+                                             : RenderCommandType::ApplyVertexShaderConstantFixup;
+          constants.setShaderConstants.memory = shaderConstantPayload.data() + payloadOffsets[i];
+          constants.setShaderConstants.index = fixup.startRegister * 4u;
+          constants.setShaderConstants.size = fixup.registerCount * 16u;
+          result.push_back(constants);
+        }
+      }
+      result.push_back(patched[commandIndex]);
     }
     return result;
   }
 
  private:
+  struct CommandMarker {
+    uint32_t marker;
+    size_t commandIndex;
+  };
+
   struct TextureFixup {
     uint32_t handle = 0;
     std::vector<size_t> commandIndices;
     RenderCommand replacement{};
     bool hasReplacement = false;
   };
+
+  struct ShaderConstantFixup {
+    uint32_t handle = 0;
+    bool pixelShader = false;
+    uint32_t startRegister = 0;
+    uint32_t registerCount = 0;
+    size_t startCommandIndex = 0;
+    size_t stopCommandIndex = 0;
+    std::array<uint32_t, 64 * 4> values{};
+    bool hasReplacement = false;
+  };
+
+  static bool IsDraw(RenderCommandType type) {
+    return type == RenderCommandType::DrawPrimitive ||
+           type == RenderCommandType::DrawIndexedPrimitive ||
+           type == RenderCommandType::DrawPrimitiveUP;
+  }
+
+  bool FindMarker(uint32_t marker, size_t& commandIndex) const {
+    for (const CommandMarker& candidate : markers_) {
+      if (candidate.marker == marker) {
+        commandIndex = candidate.commandIndex;
+        return true;
+      }
+    }
+    if (marker == 0) {
+      commandIndex = 0;
+      return true;
+    }
+    return false;
+  }
 
   uint8_t* Copy(const uint8_t* source, uint32_t size) {
     if (source == nullptr || size == 0)
@@ -132,7 +267,9 @@ class RecordedRenderBatch {
 
   std::vector<RenderCommand> commands_;
   std::vector<std::unique_ptr<uint8_t[]>> payloads_;
+  std::vector<CommandMarker> markers_;
   std::vector<TextureFixup> textureFixups_;
+  std::vector<ShaderConstantFixup> shaderConstantFixups_;
 };
 
 struct RenderQueue {
@@ -161,10 +298,16 @@ struct RenderQueue {
   static void BeginRecording();
   static void EndRecording();
   static bool IsRecording();
+  static void RecordPendingCommandBufferMarker(uint32_t marker);
   static size_t AssociatePendingTextureFixup(uint32_t handle, uint32_t guestAddress);
+  static size_t AssociatePendingShaderConstantFixup(uint32_t handle, bool pixelShader,
+                                                    uint32_t startRegister, uint32_t registerCount,
+                                                    uint32_t startMarker, uint32_t stopMarker);
   static void BindPendingRecording(uint32_t cloneAddress);
   static bool SetRecordingTextureFixup(uint32_t cloneAddress, uint32_t handle,
                                        const RenderCommand& replacement);
+  static bool SetRecordingShaderConstantFixup(uint32_t cloneAddress, uint32_t handle,
+                                              const uint32_t* source);
   static bool ReplayRecording(uint32_t cloneAddress,
                               const DeferredExecutionSnapshot* executionSnapshot);
 };

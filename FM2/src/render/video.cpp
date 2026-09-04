@@ -794,8 +794,16 @@ void ProcCopyBufferFromUpload(void* dst, void* src, uint64_t size) {
 }
 
 void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t width, uint32_t height,
-                               uint32_t rowTexels, uint32_t mip, uint64_t srcOffset) {
-  if (dst == nullptr || src == nullptr) return;
+                                uint32_t rowTexels, uint32_t mip, uint32_t arrayIndex,
+                                uint64_t srcOffset) {
+  const TextureUploadRegion region{width, height, rowTexels, mip, arrayIndex, srcOffset};
+  ProcCopyTextureSubresourcesFromUpload(dst, src, format, &region, 1);
+}
+
+void ProcCopyTextureSubresourcesFromUpload(void* dst, void* src, uint32_t format,
+                                           const TextureUploadRegion* regions,
+                                           uint32_t regionCount) {
+  if (dst == nullptr || src == nullptr || regions == nullptr || regionCount == 0) return;
   auto* dstTex = static_cast<RenderTexture*>(dst);
   auto* srcBuf = static_cast<RenderBuffer*>(src);
   const auto fmt = static_cast<RenderFormat>(format);
@@ -803,9 +811,13 @@ void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t w
   g_copyCommandList->begin();
   g_copyCommandList->barriers(RenderBarrierStage::COPY,
                               RenderTextureBarrier(dstTex, RenderTextureLayout::COPY_DEST));
-  g_copyCommandList->copyTextureRegion(
-      RenderTextureCopyLocation::Subresource(dstTex, mip),
-      RenderTextureCopyLocation::PlacedFootprint(srcBuf, fmt, width, height, 1, rowTexels, srcOffset));
+  for (uint32_t i = 0; i < regionCount; ++i) {
+    const TextureUploadRegion& region = regions[i];
+    g_copyCommandList->copyTextureRegion(
+        RenderTextureCopyLocation::Subresource(dstTex, region.mip, region.arrayIndex),
+        RenderTextureCopyLocation::PlacedFootprint(srcBuf, fmt, region.width, region.height, 1,
+                                                   region.rowTexels, region.srcOffset));
+  }
   g_copyCommandList->end();
   g_copyQueue->executeCommandLists(g_copyCommandList.get(), g_copyFence.get());
   g_copyQueue->waitForCommandFence(g_copyFence.get());

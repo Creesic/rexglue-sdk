@@ -19,6 +19,7 @@ struct Job {
   std::atomic<bool>* done = nullptr;
   std::shared_ptr<const RecordedRenderBatch> replayBatch;
   std::vector<RenderCommand> replayCommands;
+  std::vector<uint8_t> replayShaderConstantPayload;
   DeferredExecutionSnapshot executionSnapshot{};
   bool hasExecutionSnapshot = false;
 };
@@ -194,10 +195,25 @@ bool RenderQueue::IsRecording() {
   return t_recording != nullptr;
 }
 
+void RenderQueue::RecordPendingCommandBufferMarker(uint32_t marker) {
+  if (t_recording != nullptr)
+    t_recording->RecordMarker(marker);
+}
+
 size_t RenderQueue::AssociatePendingTextureFixup(uint32_t handle, uint32_t guestAddress) {
   if (t_pendingRecording == nullptr)
     return 0;
   return t_pendingRecording->AssociateTextureFixup(handle, guestAddress);
+}
+
+size_t RenderQueue::AssociatePendingShaderConstantFixup(uint32_t handle, bool pixelShader,
+                                                        uint32_t startRegister,
+                                                        uint32_t registerCount,
+                                                        uint32_t startMarker, uint32_t stopMarker) {
+  if (t_pendingRecording == nullptr)
+    return 0;
+  return t_pendingRecording->AssociateShaderConstantFixup(handle, pixelShader, startRegister,
+                                                          registerCount, startMarker, stopMarker);
 }
 
 void RenderQueue::BindPendingRecording(uint32_t cloneAddress) {
@@ -255,22 +271,27 @@ bool RenderQueue::SetRecordingTextureFixup(uint32_t cloneAddress, uint32_t handl
   return it != g_recordings.end() && it->second->SetTextureFixup(handle, replacement);
 }
 
+bool RenderQueue::SetRecordingShaderConstantFixup(uint32_t cloneAddress, uint32_t handle,
+                                                  const uint32_t* source) {
+  std::lock_guard lock(g_recordingsMutex);
+  const auto it = g_recordings.find(cloneAddress);
+  return it != g_recordings.end() && it->second->SetShaderConstantFixup(handle, source);
+}
+
 bool RenderQueue::ReplayRecording(uint32_t cloneAddress,
                                   const DeferredExecutionSnapshot* executionSnapshot) {
+  Job job{};
   std::shared_ptr<RecordedRenderBatch> recording;
-  std::vector<RenderCommand> commands;
   {
     std::lock_guard lock(g_recordingsMutex);
     const auto it = g_recordings.find(cloneAddress);
     if (it == g_recordings.end())
       return false;
     recording = it->second;
-    commands = recording->BuildReplayCommands();
+    job.replayCommands = recording->BuildReplayCommands(job.replayShaderConstantPayload);
   }
 
-  Job job{};
   job.replayBatch = std::move(recording);
-  job.replayCommands = std::move(commands);
   if (executionSnapshot != nullptr) {
     job.executionSnapshot = *executionSnapshot;
     job.hasExecutionSnapshot = true;

@@ -18,6 +18,8 @@
 #include <vector>
 
 #include <plume_render_interface.h>
+#include <rex/graphics/pipeline/texture/util.h>
+#include <rex/graphics/xenos.h>
 #include <rex/hash.h>  // XXH3_64bits
 #include <rex/logging.h>
 
@@ -397,9 +399,12 @@ void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t heigh
 }
 
 void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint32_t height,
-                                     uint32_t format, uint32_t baseAddress, bool* createdOut) {
+                                     uint32_t format, uint32_t baseAddress, uint32_t levels,
+                                     bool cube,
+                                     bool* createdOut) {
   if (createdOut != nullptr) *createdOut = false;
   if (texture == nullptr || IsDeviceLost()) return;
+  levels = std::max(levels, 1u);
 
   const auto fmt = static_cast<RenderFormat>(format);
   RenderTextureDesc desc;
@@ -407,15 +412,16 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   desc.width = width;
   desc.height = height;
   desc.depth = 1;
-  desc.mipLevels = 1;
-  desc.arraySize = 1;
+  desc.mipLevels = levels;
+  desc.arraySize = cube ? 6 : 1;
   desc.format = fmt;
   // Only request RT for formats that can actually be render targets. BC/etc.
   // translated textures must stay COPY_DEST+SRV — marking them RT removes the
   // device. Aperture/frontbuffer (BGRA8) needs RT for format-mismatch shader blit.
-  const bool colorRt = !RenderFormatIsDepth(fmt) && fmt != RenderFormat::UNKNOWN &&
+  const bool colorRt = !cube && !RenderFormatIsDepth(fmt) && fmt != RenderFormat::UNKNOWN &&
                        fmt < RenderFormat::BC1_TYPELESS;
-  desc.flags = colorRt ? RenderTextureFlag::RENDER_TARGET : RenderTextureFlag::NONE;
+  desc.flags = cube ? RenderTextureFlag::CUBE
+                    : colorRt ? RenderTextureFlag::RENDER_TARGET : RenderTextureFlag::NONE;
   texture->textureHolder = Device()->createTexture(desc);
   texture->texture = texture->textureHolder.get();
   if (texture->texture == nullptr) {
@@ -430,8 +436,9 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
 
   RenderTextureViewDesc viewDesc;
   viewDesc.format = fmt;
-  viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
-  viewDesc.mipLevels = 1;
+  viewDesc.dimension = cube ? RenderTextureViewDimension::TEXTURE_CUBE
+                            : RenderTextureViewDimension::TEXTURE_2D;
+  viewDesc.mipLevels = levels;
   if (fmt == RenderFormat::R8_UNORM) {
     viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R,
                                                        RenderSwizzle::R, RenderSwizzle::ONE);
@@ -440,12 +447,12 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   texture->width = width;
   texture->height = height;
   texture->depth = 1;
-  texture->levels = 1;
+  texture->levels = levels;
   texture->format = fmt;
   texture->requiresHostInitialization = false;
   texture->hostInitialized = true;
   texture->hostRenderTargetCapable = colorRt;
-  texture->viewDimension = RenderTextureViewDimension::TEXTURE_2D;
+  texture->viewDimension = viewDesc.dimension;
   texture->descriptorIndex = AllocTextureDescriptor();
   TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
                                      RenderTextureLayout::SHADER_READ, texture->textureView.get());
@@ -596,22 +603,45 @@ void LockRect(GuestBaseTexture* texture, uint32_t level, uint32_t* outPitch, uin
 void UnlockRect(GuestBaseTexture* texture) {
   if (texture == nullptr || texture->mappedMemory == nullptr || texture->texture == nullptr)
     return;
+
+  const uint32_t level =
+      texture->levels != 0 ? std::min(texture->lockedLevel, texture->levels - 1u) : 0u;
+  const uint32_t mipWidth = std::max(texture->width >> level, 1u);
+  const uint32_t mipHeight = std::max(texture->height >> level, 1u);
+  const uint64_t linearSize =
+      uint64_t(ComputeTexturePitchForWidth(texture, mipWidth)) * mipHeight;
+  const uint32_t mappedSize = texture->mappedSizeBytes != 0
+                                  ? texture->mappedSizeBytes
+                                  : uint32_t(std::min<uint64_t>(linearSize, UINT32_MAX));
+  const uint32_t snapshotSize = texture->guestTiled
+                                    ? mappedSize
+                                    : uint32_t(std::min<uint64_t>(linearSize, mappedSize));
+  uint8_t* snapshot = AllocateIntermediaryData(snapshotSize);
+  if (snapshot == nullptr) {
+    REXGPU_ERROR("UnlockTextureRect: failed to snapshot guest texture (size={})", snapshotSize);
+    return;
+  }
+  std::memcpy(snapshot, texture->mappedMemory, snapshotSize);
+
   RenderCommand cmd{};
   cmd.type = RenderCommandType::UnlockTextureRect;
   cmd.unlockTextureRect.texture = texture;
+  cmd.unlockTextureRect.data = snapshot;
+  cmd.unlockTextureRect.size = snapshotSize;
+  cmd.unlockTextureRect.level = level;
   RenderQueue::Enqueue(cmd);
 }
 
-void ProcUnlockTextureRect(GuestBaseTexture* texture) {
-  if (texture == nullptr || texture->mappedMemory == nullptr || texture->texture == nullptr)
+void ProcUnlockTextureRect(GuestBaseTexture* texture, const uint8_t* data, uint32_t size,
+                           uint32_t level) {
+  if (texture == nullptr || data == nullptr || size == 0 || texture->texture == nullptr)
     return;
 
   // Geometry of the LOCKED mip level (D3DTexture_LockRect's Level param,
   // recorded by LockRect). Uploading every level over mip 0 left mips 1+
   // uninitialized -> minified sampling read garbage (or the game's intended
   // pinstripe backgrounds aliased into harsh stripes).
-  const uint32_t level =
-      texture->levels != 0 ? std::min(texture->lockedLevel, texture->levels - 1u) : 0u;
+  level = texture->levels != 0 ? std::min(level, texture->levels - 1u) : 0u;
   const uint32_t mipWidth = std::max(texture->width >> level, 1u);
   const uint32_t mipHeight = std::max(texture->height >> level, 1u);
   uint32_t pitch = ComputeTexturePitchForWidth(texture, mipWidth);
@@ -621,7 +651,7 @@ void ProcUnlockTextureRect(GuestBaseTexture* texture) {
   // never untiles; writers memcpy pre-tiled asset bytes). Uploading those
   // bytes linearly scrambles the image in 32-texel macroblocks. Untile into a
   // linear staging image first, mirroring UploadGuestTextureData's layout.
-  const void* uploadSrc = texture->mappedMemory;
+  const void* uploadSrc = data;
   std::vector<uint8_t> untiled;
   if (texture->guestTiled) {
     uint32_t blockDim = 1;
@@ -638,8 +668,8 @@ void ProcUnlockTextureRect(GuestBaseTexture* texture) {
     const uint32_t wBlocks = (mipWidth + blockDim - 1) / blockDim;
     const uint32_t hBlocks = (mipHeight + blockDim - 1) / blockDim;
     untiled.resize(size_t(wBlocks) * hBlocks * bytesPerBlock);
-    const auto* src = reinterpret_cast<const uint8_t*>(texture->mappedMemory);
-    const uint32_t srcBytes = texture->mappedSizeBytes != 0 ? texture->mappedSizeBytes : slicePitch;
+    const auto* src = data;
+    const uint32_t srcBytes = size;
     for (uint32_t by = 0; by < hBlocks; ++by) {
       for (uint32_t bx = 0; bx < wBlocks; ++bx) {
         const uint32_t element = TiledOffset2D(bx, by, wBlocks, bytesPerBlock);
@@ -674,6 +704,12 @@ void ProcUnlockTextureRect(GuestBaseTexture* texture) {
     }
   }
 
+  if (!texture->guestTiled && size < slicePitch) {
+    REXGPU_ERROR("UnlockTextureRect: snapshot too small (size={} required={} mip={})", size,
+                 slicePitch, level);
+    return;
+  }
+
   RenderBufferReference ref = UploadFrameData(uploadSrc, slicePitch, false);
   if (ref.ref == nullptr) {
     // Frame upload exhausted -- fall back to a dedicated staging buffer + copy queue.
@@ -690,8 +726,8 @@ void ProcUnlockTextureRect(GuestBaseTexture* texture) {
     // Already on the render thread (Dispatch); call Proc* directly so staging
     // stays live across the copy-queue submit without nested Run().
     ProcCopyTextureFromUpload(texture->texture, upload.get(), uint32_t(texture->format),
-                              mipWidth, mipHeight,
-                              pitch / FormatBytes(texture->format), level, 0);
+                               mipWidth, mipHeight,
+                               pitch / FormatBytes(texture->format), level, 0, 0);
     texture->hostInitialized = true;
     texture->layout = RenderTextureLayout::COPY_DEST;
     return;
@@ -769,35 +805,22 @@ uint32_t TiledOffset2D(uint32_t x, uint32_t y, uint32_t width, uint32_t bytesPer
 
 struct XenosTextureInfo {
   RenderFormat format = RenderFormat::UNKNOWN;
+  uint32_t gpuFormat = 0;
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t baseAddress = 0;  // guest byte address of mip 0
+  uint32_t mipAddress = 0;   // guest byte address of levels 1+
+  uint32_t mipMaxLevel = 0;
+  uint32_t mipLevels = 1;
   uint32_t pitchTexels = 0;  // row pitch in texels
   uint32_t blockDim = 1;     // 4 for BC formats
   uint32_t bytesPerBlock = 4;
   uint32_t endian = 0;  // 0 none, 1 = 8-in-16, 2 = 8-in-32
+  bool cube = false;
   bool tiled = false;
   bool packedMips = false;
   bool valid = false;
 };
-
-void GetPackedBaseOffsetBlocks(const XenosTextureInfo& info, uint32_t& outX, uint32_t& outY) {
-  outX = 0;
-  outY = 0;
-  if (!info.packedMips)
-    return;
-  const uint32_t log2Width = uint32_t(std::bit_width(info.width - 1));
-  const uint32_t log2Height = uint32_t(std::bit_width(info.height - 1));
-  if (std::min(log2Width, log2Height) > 4)
-    return;  // min dimension > 16 texels: not packed
-  uint32_t xTexels = 0, yTexels = 0;
-  if (log2Width > log2Height)
-    yTexels = 16;  // wider than tall: laid out vertically
-  else
-    xTexels = 16;  // taller than wide (or square): laid out horizontally
-  outX = xTexels / info.blockDim;
-  outY = yTexels / info.blockDim;
-}
 
 // GPUTEXTURE_FETCH_CONSTANT: 6 dwords, big-endian.
 XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
@@ -805,15 +828,21 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
   const uint32_t fc0 = fc[0].get();
   const uint32_t fc1 = fc[1].get();
   const uint32_t fc2 = fc[2].get();
+  const uint32_t fc4 = fc[4].get();
+  const uint32_t fc5 = fc[5].get();
 
   info.pitchTexels = ((fc0 >> 22) & 0x1FF) * 32;
   info.tiled = (fc0 >> 31) != 0;
   const uint32_t gpuFormat = fc1 & 0x3F;
+  info.gpuFormat = gpuFormat;
   info.endian = (fc1 >> 6) & 0x3;
   info.baseAddress = ((fc1 >> 12) & 0xFFFFF) << 12;
   info.width = (fc2 & 0x1FFF) + 1;
   info.height = ((fc2 >> 13) & 0x1FFF) + 1;
-  info.packedMips = ((fc[5].get() >> 11) & 0x1) != 0;
+  info.mipAddress = TextureFetchMipAddress(fc5);
+  info.mipMaxLevel = TextureFetchMipMaxLevel(fc4);
+  info.cube = TextureFetchIsCube(fc5);
+  info.packedMips = ((fc5 >> 11) & 0x1) != 0;
 
   switch (gpuFormat) {
     case 2:  // k_8 (L8/A8)
@@ -862,7 +891,9 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
     }
   }
   if (info.pitchTexels == 0)
-    info.pitchTexels = info.width;
+    info.pitchTexels = (info.width + 31u) & ~31u;
+  info.mipLevels = TextureFetchMipLevelCount(fc4, fc5, info.width, info.height);
+  info.mipMaxLevel = info.mipLevels - 1u;
   info.valid = info.width != 0 && info.height != 0 && info.baseAddress != 0;
   return info;
 }
@@ -883,99 +914,137 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
   if (texture == nullptr || texture->texture == nullptr || !info.valid)
     return false;
   if (texture->width != info.width || texture->height != info.height ||
-      texture->format != info.format) {
+      texture->format != info.format || texture->levels != info.mipLevels) {
     return false;
   }
 
-  const uint32_t wBlocks = (info.width + info.blockDim - 1) / info.blockDim;
-  const uint32_t hBlocks = (info.height + info.blockDim - 1) / info.blockDim;
-  const uint32_t pitchBlocks = std::max(wBlocks, info.pitchTexels / info.blockDim);
+  const uint32_t faceCount = info.cube ? 6u : 1u;
+  const auto dimension = info.cube ? rex::graphics::xenos::DataDimension::kCube
+                                   : rex::graphics::xenos::DataDimension::k2DOrStacked;
+  const auto guestFormat = static_cast<rex::graphics::xenos::TextureFormat>(info.gpuFormat);
+  const auto guestLayout = rex::graphics::texture_util::GetGuestTextureLayout(
+      dimension, (info.pitchTexels + 31u) / 32u, info.width, info.height, 1u, info.tiled,
+      guestFormat, info.packedMips, true, info.mipMaxLevel);
 
-  // Small textures live at a block offset inside their packed 32x32 tile.
-  uint32_t packedX = 0, packedY = 0;
-  GetPackedBaseOffsetBlocks(info, packedX, packedY);
-
-  // Guard against reading unmapped guest memory: textures bound from the PM4
-  // command stream point at raw GPU memory that may not be heap-backed. A
-  // tiled texture's footprint spans pitchBlocks * align(hBlocks,32) blocks;
-  // require the whole conservative footprint to be readable or we'd fault.
-  const uint32_t alignedHBlocks = (hBlocks + packedY + 31u) & ~31u;
-  const uint64_t footprint = uint64_t(pitchBlocks + packedX) * alignedHBlocks * info.bytesPerBlock;
-  // Fetch-constant bases are guest PHYSICAL addresses -- the game writes
-  // texture data through its physical-memory aliases, so gate readability on
-  // the physical heap's commit state, not the virtual one.
   auto* mem = ghp::GuestMemory();
-  const uint32_t physBase = info.baseAddress & 0x1FFFFFFFu;
-  const bool sizeOk = footprint != 0 && footprint <= 0x4000000ull;
-  const bool readable =
-      sizeOk && (physBase + footprint) <= 0x20000000ull &&
-      mem->GetPhysicalHeap()->QueryRangeAccess(physBase, uint32_t(physBase + footprint - 1)) !=
-          rex::memory::PageAccess::kNoAccess;
-  if (!readable) {
+  const auto rangeReadable = [mem](uint32_t address, uint32_t size) {
+    const uint32_t physical = address & 0x1FFFFFFFu;
+    const uint64_t end = uint64_t(physical) + size;
+    return address != 0 && size != 0 && size <= 0x4000000u && end <= 0x20000000ull &&
+           mem->GetPhysicalHeap()->QueryRangeAccess(physical, uint32_t(end - 1)) !=
+               rex::memory::PageAccess::kNoAccess;
+  };
+  const bool baseReadable =
+      rangeReadable(info.baseAddress, guestLayout.base.level_data_extent_bytes);
+  const bool mipsReadable =
+      info.mipMaxLevel == 0 ||
+      rangeReadable(info.mipAddress, guestLayout.mips_total_extent_bytes);
+  if (!baseReadable || !mipsReadable) {
     static std::unordered_set<uint32_t> s_warned;
     if (s_warned.insert(info.baseAddress).second) {
       REXGPU_WARN(
-          "UploadGuestTextureData: base 0x{:08X} footprint {} not readable ({}x{} fmt={} "
-          "tiled={}) -- skipped",
-          info.baseAddress, footprint, info.width, info.height, int(info.format), info.tiled);
+          "UploadGuestTextureData: base 0x{:08X}/{} mip 0x{:08X}/{} not readable "
+          "({}x{} levels={} fmt={} tiled={}) -- skipped",
+          info.baseAddress, guestLayout.base.level_data_extent_bytes, info.mipAddress,
+          guestLayout.mips_total_extent_bytes, info.width, info.height, info.mipLevels,
+          int(info.format), info.tiled);
     }
     return false;
   }
 
-  std::vector<uint8_t> linear(size_t(wBlocks) * hBlocks * info.bytesPerBlock);
-  const uint8_t* src = mem->TranslatePhysical<const uint8_t*>(info.baseAddress);
-
-  if (info.tiled) {
-    for (uint32_t by = 0; by < hBlocks; ++by) {
-      for (uint32_t bx = 0; bx < wBlocks; ++bx) {
-        const uint32_t element =
-            TiledOffset2D(bx + packedX, by + packedY, pitchBlocks, info.bytesPerBlock);
-        // Bounds guard: TiledOffset2D can overshoot the committed footprint
-        // for small/odd dims -> OOB read/crash. Skip if so.
-        if (uint64_t(element) * info.bytesPerBlock + info.bytesPerBlock > footprint)
-          continue;
-        std::memcpy(linear.data() + (size_t(by) * wBlocks + bx) * info.bytesPerBlock,
-                    src + size_t(element) * info.bytesPerBlock, info.bytesPerBlock);
-      }
-    }
-  } else {
-    for (uint32_t by = 0; by < hBlocks; ++by) {
-      std::memcpy(linear.data() + size_t(by) * wBlocks * info.bytesPerBlock,
-                  src + (size_t(by + packedY) * pitchBlocks + packedX) * info.bytesPerBlock,
-                  size_t(wBlocks) * info.bytesPerBlock);
+  std::vector<TextureUploadRegion> regions;
+  regions.reserve(size_t(info.mipLevels) * faceCount);
+  uint64_t uploadSize = 0;
+  for (uint32_t mip = 0; mip < info.mipLevels; ++mip) {
+    const uint32_t width = std::max(info.width >> mip, 1u);
+    const uint32_t height = std::max(info.height >> mip, 1u);
+    const uint32_t blockWidth = (width + info.blockDim - 1u) / info.blockDim;
+    const uint32_t blockHeight = (height + info.blockDim - 1u) / info.blockDim;
+    const uint32_t rowBytes = blockWidth * info.bytesPerBlock;
+    const uint32_t rowPitch = (rowBytes + 255u) & ~255u;
+    const uint32_t rowTexels = (rowPitch / info.bytesPerBlock) * info.blockDim;
+    for (uint32_t face = 0; face < faceCount; ++face) {
+      uploadSize = (uploadSize + 511u) & ~511ull;
+      regions.push_back(TextureUploadRegion{width, height, rowTexels, mip, face, uploadSize});
+      uploadSize += uint64_t(rowPitch) * blockHeight;
     }
   }
-  EndianSwapBuffer(linear.data(), linear.size(), info.endian);
+  if (uploadSize == 0 || uploadSize > 0x4000000ull)
+    return false;
 
-  const uint32_t srcRowPitch = wBlocks * info.bytesPerBlock;
-  const uint32_t dstRowPitch = (srcRowPitch + 255u) & ~255u;
-  auto upload =
-      Device()->createBuffer(RenderBufferDesc::UploadBuffer(size_t(dstRowPitch) * hBlocks));
+  auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(uploadSize));
   if (!upload) {
     REXGPU_ERROR("UploadGuestTextureData: failed to create staging upload buffer (size={})",
-                 size_t(dstRowPitch) * hBlocks);
+                 uploadSize);
     return false;
   }
   auto* mapped = reinterpret_cast<uint8_t*>(upload->map());
   if (mapped == nullptr)
     return false;
-  for (uint32_t by = 0; by < hBlocks; ++by) {
-    std::memcpy(mapped + size_t(by) * dstRowPitch, linear.data() + size_t(by) * srcRowPitch,
-                srcRowPitch);
+  std::memset(mapped, 0, size_t(uploadSize));
+
+  const uint8_t* baseSrc = mem->TranslatePhysical<const uint8_t*>(info.baseAddress);
+  const uint8_t* mipSrc = info.mipMaxLevel != 0
+                              ? mem->TranslatePhysical<const uint8_t*>(info.mipAddress)
+                              : nullptr;
+  const uint32_t bytesPerBlockLog2 = std::countr_zero(info.bytesPerBlock);
+  for (const TextureUploadRegion& region : regions) {
+    const uint32_t mip = region.mip;
+    const uint32_t widthBlocks = (region.width + info.blockDim - 1u) / info.blockDim;
+    const uint32_t heightBlocks = (region.height + info.blockDim - 1u) / info.blockDim;
+    const uint32_t rowBytes = widthBlocks * info.bytesPerBlock;
+    const uint32_t rowPitch = (rowBytes + 255u) & ~255u;
+
+    const rex::graphics::texture_util::TextureGuestLayout::Level* sourceLayout;
+    const uint8_t* source;
+    const bool packed = guestLayout.packed_level != UINT32_MAX && mip >= guestLayout.packed_level;
+    uint32_t packedX = 0, packedY = 0, packedZ = 0;
+    if (mip == 0) {
+      sourceLayout = &guestLayout.base;
+      source = baseSrc;
+    } else {
+      const uint32_t storageLevel = packed ? guestLayout.packed_level : mip;
+      sourceLayout = &guestLayout.mips[storageLevel];
+      source = mipSrc + guestLayout.mip_offsets_bytes[storageLevel];
+    }
+    if (packed) {
+      rex::graphics::texture_util::GetPackedMipOffset(
+          info.width, info.height, 1u, guestFormat, mip, packedX, packedY, packedZ);
+    }
+    source += uint64_t(region.arrayIndex) * sourceLayout->array_slice_stride_bytes;
+    const uint32_t pitchBlocks = sourceLayout->row_pitch_bytes / info.bytesPerBlock;
+    const uint32_t sourceExtent = sourceLayout->array_slice_data_extent_bytes;
+
+    uint8_t* destination = mapped + region.srcOffset;
+    for (uint32_t by = 0; by < heightBlocks; ++by) {
+      uint8_t* destinationRow = destination + uint64_t(by) * rowPitch;
+      for (uint32_t bx = 0; bx < widthBlocks; ++bx) {
+        int64_t sourceOffset;
+        if (info.tiled) {
+          sourceOffset = rex::graphics::texture_util::GetTiledOffset2D(
+              int32_t(packedX + bx), int32_t(packedY + by), pitchBlocks,
+              bytesPerBlockLog2);
+        } else {
+          sourceOffset = int64_t(packedY + by) * sourceLayout->row_pitch_bytes +
+                         int64_t(packedX + bx) * info.bytesPerBlock;
+        }
+        if (sourceOffset < 0 || uint64_t(sourceOffset) + info.bytesPerBlock > sourceExtent)
+          continue;
+        std::memcpy(destinationRow + uint64_t(bx) * info.bytesPerBlock,
+                    source + sourceOffset, info.bytesPerBlock);
+      }
+      EndianSwapBuffer(destinationRow, rowBytes, info.endian);
+    }
   }
   upload->unmap();
 
-  const uint32_t rowTexels = (dstRowPitch / info.bytesPerBlock) * info.blockDim;
   RenderCommand cmd{};
-  cmd.type = RenderCommandType::CopyTextureFromUpload;
-  cmd.copyTextureFromUpload.dst = texture->texture;
-  cmd.copyTextureFromUpload.src = upload.get();
-  cmd.copyTextureFromUpload.format = uint32_t(info.format);
-  cmd.copyTextureFromUpload.width = info.width;
-  cmd.copyTextureFromUpload.height = info.height;
-  cmd.copyTextureFromUpload.rowTexels = rowTexels;
-  cmd.copyTextureFromUpload.mip = 0;
-  cmd.copyTextureFromUpload.srcOffset = 0;
+  cmd.type = RenderCommandType::CopyTextureSubresourcesFromUpload;
+  cmd.copyTextureSubresourcesFromUpload.dst = texture->texture;
+  cmd.copyTextureSubresourcesFromUpload.src = upload.get();
+  cmd.copyTextureSubresourcesFromUpload.format = uint32_t(info.format);
+  cmd.copyTextureSubresourcesFromUpload.regions = regions.data();
+  cmd.copyTextureSubresourcesFromUpload.regionCount = uint32_t(regions.size());
   RenderQueue::Run(cmd);
   texture->hostInitialized = true;
   texture->layout = RenderTextureLayout::COPY_DEST;
@@ -1006,6 +1075,8 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
   cmd.createTranslatedTextureHost.height = info.height;
   cmd.createTranslatedTextureHost.format = uint32_t(info.format);
   cmd.createTranslatedTextureHost.baseAddress = info.baseAddress;
+  cmd.createTranslatedTextureHost.levels = info.mipLevels;
+  cmd.createTranslatedTextureHost.cube = info.cube;
   cmd.createTranslatedTextureHost.createdOut = &created;
   RenderQueue::Run(cmd);
 
@@ -1018,9 +1089,11 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
     texture->lastUploadFrame = CurrentFrameIndex();
 
   REXGPU_INFO(
-      "TranslateGuestTexture: base=0x{:08X} {}x{} fmt={} tiled={} endian={} upload={} -> desc {}",
-      info.baseAddress, info.width, info.height, int(info.format), info.tiled, info.endian,
-      uploadGuestData, texture->descriptorIndex);
+      "TranslateGuestTexture: base=0x{:08X} mip=0x{:08X} {}x{} levels={} fmt={} cube={} "
+      "tiled={} endian={} upload={} -> desc {}",
+      info.baseAddress, info.mipAddress, info.width, info.height, info.mipLevels,
+      int(info.format), info.cube, info.tiled, info.endian, uploadGuestData,
+      texture->descriptorIndex);
 
   GuestTexture* result = texture;
   std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
@@ -1038,7 +1111,8 @@ GuestTexture* FindAndRefreshGuestTexture(const XenosTextureInfo& info, bool uplo
       return nullptr;
     cached = it->second;
     if (cached->width != info.width || cached->height != info.height ||
-        cached->format != info.format) {
+        cached->format != info.format || cached->levels != info.mipLevels ||
+        (cached->viewDimension == RenderTextureViewDimension::TEXTURE_CUBE) != info.cube) {
       g_guestTextureAliases.erase(it);
       return nullptr;
     }
@@ -1408,6 +1482,7 @@ GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size) {
     cmd.copyTextureFromUpload.height = s.height;
     cmd.copyTextureFromUpload.rowTexels = rowTexels;
     cmd.copyTextureFromUpload.mip = i;
+    cmd.copyTextureFromUpload.arrayIndex = 0;
     cmd.copyTextureFromUpload.srcOffset = s.dstOffset;
     RenderQueue::Run(cmd);
   }

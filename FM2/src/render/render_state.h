@@ -113,17 +113,22 @@ void DrawIndexedInstanced(uint32_t indexCount, uint32_t startIndex, int32_t base
 
 // Non-indexed draw with QUADLIST/TRIANGLEFAN → indexed triangle-list conversion.
 void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
-                  uint32_t vertexCount);
+                  uint32_t vertexCount, uint64_t recordedVsDirtyFlags = 0,
+                  uint64_t recordedPsDirtyFlags = 0);
 
 // Indexed draw (FlushRenderState + drawIndexedInstanced in one render-queue job).
 void DrawIndexedVertices(GuestDevice* device, uint32_t primitiveType, int32_t baseVertexIndex,
-                         uint32_t startIndex, uint32_t indexCount);
+                         uint32_t startIndex, uint32_t indexCount,
+                         uint64_t recordedVsDirtyFlags = 0,
+                         uint64_t recordedPsDirtyFlags = 0);
 
 // D3DDevice_DrawVerticesUP: inline (non-buffer-backed) vertex data supplied
 // directly by the guest for this one draw. Uploads it to a scratch buffer
 // and binds it at stream 0 for just this call -- callers must not rely on
 // stream 0's tracked GuestBuffer binding surviving a call to this function.
 void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32_t vertexCount,
-                             const void* data, uint32_t stride);
+                             const void* data, uint32_t stride,
+                             uint64_t recordedVsDirtyFlags = 0,
+                             uint64_t recordedPsDirtyFlags = 0);
 
 }  // namespace fm2::render
