@@ -248,7 +248,7 @@ void UpdateNdcTransform() {
 bool g_sharedConstantsInitialized = false;
 GuestTexture* g_textures[16]{};
 alignas(16) uint32_t g_vertexShaderConstants[0x400]{};
-alignas(16) uint32_t g_pixelShaderConstants[0x380]{};
+alignas(16) uint32_t g_pixelShaderConstants[0x400]{};
 bool g_scissorTestEnable = false;
 RenderRect g_scissorRect;
 RenderVertexBufferView g_vertexBufferViews[16];
@@ -3326,10 +3326,11 @@ RenderPipeline* GetPipeline(PipelineState ps) {
 // ---------------------------------------------------------------------------
 
 constexpr uint32_t kVsFloatConstantBytes = 256 * 16;  // 256 float4 registers.
-// ps_3_0's guaranteed minimum (and FM2's actual usable range) is 224 float4
-// registers, not 256 -- the guest's storage array reserves 256 defensively,
-// but only the first 224 are part of the real constant-buffer ABI.
-constexpr uint32_t kPsFloatConstantBytes = 224 * 16;
+// Both stages carry 256 float4 registers: the guest device reserves 4096
+// bytes per stage (VertexShaderF at +0x780, PixelShaderF at +0x1780, VS bool
+// at +0x2780) and PGR4's car material reads c255. Capping the pixel file at
+// 224 dropped whole SetPixelShaderConstantF ranges that spanned the limit.
+constexpr uint32_t kPsFloatConstantBytes = 256 * 16;
 
 thread_local PendingShaderConstantFile t_pendingDrawVsConstants;
 thread_local PendingShaderConstantFile t_pendingDrawPsConstants;
@@ -3620,7 +3621,7 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   const uint32_t* psSource = reinterpret_cast<const uint32_t*>(device->pixelShaderFloatConstants);
   if (hasPendingPs) {
     std::memcpy(mergedPsConstants.data(), psSource, kPsFloatConstantBytes);
-    t_pendingDrawPsConstants.OverlayAndClear(mergedPsConstants.data(), 224);
+    t_pendingDrawPsConstants.OverlayAndClear(mergedPsConstants.data(), 256);
     psSource = mergedPsConstants.data();
   }
   if (QueueConstantSnapshot(queue, RenderCommandType::SetPixelShaderConstants, psSource, psRange)) {

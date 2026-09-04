@@ -572,3 +572,56 @@ after the stride-0 fix. Re-run the sweep on the new capture.
   221760-byte table); the per-instance selection comes from the vertex index
   above, not from the stream offset.
 
+## Pixel shader constant file is 256 registers (2026-09-03)
+
+The port inherited FM2's assumption that pixel shaders only use c0..c223.
+PGR4's car material (`5B9D6A2FADFF7ADA`, paired with VS `BD0D9DDACFF4A6CA`)
+reads `c255`, and the guest device reserves a full 4096-byte float constant
+file per stage (VertexShaderF at +0x780, PixelShaderF at +0x1780, VS bool at
++0x2780 -- exactly 256 float4 apart). Two consequences of the old 224 cap:
+
+- XenosRecomp clamped every pixel constant index to 223, so `c255` silently
+  read `c223`.
+- `ProcSetShaderConstants` drops a write whose range does not fit, so any
+  single `SetPixelShaderConstantF` spanning the limit (e.g. c128..c255) was
+  discarded whole, not truncated.
+
+`g_pixelShaderConstants` is now 0x400 dwords, `kPsFloatConstantBytes` is
+256 * 16, and the recompiler exposes 256 registers for both stages.
+`PendingShaderConstantFile::kRegisterCount` was already 256, so the merged
+snapshot arrays still fit exactly. No visible regression on the title screen;
+this did not by itself fix the tail lights.
+
+### Tail lights: still open
+
+`g_DiffuseColour1` (c128) is (1,1,1,1) and `g_ReflectionColour1` (c130) is
+(0.294,0.294,0.294) at the tail-light draw in `pgr4_ps4.rdc`, and the pixel
+shader binds no albedo texture (only the scene RT and a 2D array), so the
+white lenses follow from the constants the shader is fed. Whether the game
+really sets white there, or an earlier constant write is still being lost,
+is unresolved. Note `g_pixelShaderConstants` holds *big-endian* guest dwords
+(the swap happens in `UploadAndBindRootDescriptor`), so any host-side probe
+of those registers must byte-swap before interpreting them.
+
+### Crowd: fix is in, still unverified
+
+All 358 vertex shaders now take `SV_VertexID` and seed r0.x with it, which is
+what the crowd shader needs (`trunc((r0.x + 0.5) / c55.y) * 4 + 53` selects
+the per-person matrix from the constant palette; c55.y is 32, the per-person
+vertex count). The old `0.5 / c55.y` seen in captured DXIL was that expression
+constant-folded with r0.x = 0. The crowd is still absent from the title
+screen in this build, so either the draws still collapse or something else
+hides them -- a fresh capture is needed to tell which.
+
+### Tooling
+
+`tools/rdoc_sweep.py` (whole-capture bug sweep) is joined by two focused
+scripts kept in the session scratchpad pattern: dump a draw's bound shader
+reflection/disassembly, and dump named constant registers for an event. Both
+use the RenderDoc source build's python
+(`renderdoc/x64/Development/python/python.exe`, with that directory added as a
+DLL dir and `pymodules` on `sys.path`). `XenosRecomp --dump-hlsl <input dir>
+<out dir> <shader_common.h>` writes the recompiled HLSL for all 953 shaders,
+which is how the car material was identified when RenderDoc could not
+disassemble the runtime-linked variant.
+
