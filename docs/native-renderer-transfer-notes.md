@@ -696,3 +696,40 @@ check: where the red is meant to come from for a draw with no albedo texture
 -- the remaining candidates are the 2D array binding and the vertex colour
 path (the VS forwards only COLOR0.x, with a decoded normal in TEXCOORD6.yzw).
 
+## Crowd T-pose: bone palettes are never written (2026-09-04, open)
+
+The crowd is placed correctly now but every figure stands in its bind pose and
+the flags do not move. Two separate findings:
+
+1. **UBYTE4 texcoords were a vertex format type mismatch (fixed).** The crowd
+   declaration carries bone indices in TEXCOORD2 as `D3DDECLTYPE_UBYTE4`
+   (0x1A2286) and weights in TEXCOORD3 as UBYTE4N. `ConvertDeclType` bound
+   UBYTE4 as `R8G8B8A8_UINT`, but every recompiled shader declares its texcoord
+   inputs as `float4`; a UINT vertex format against a float input register is a
+   type-class mismatch and delivers nothing usable. UBYTE4 texcoords now bind
+   `R8G8B8A8_UNORM` and publish unpack mode 12, which multiplies by 255 in the
+   shader to recover the integer. Honest note: this did **not** change the
+   crowd visually, so it was not the T-pose cause -- it is a correctness fix
+   that stands on its own.
+
+2. **The bone palette textures contain nothing.** The skinned passes sample a
+   156x1 R16G16B16A16_FLOAT texture as a vertex texture (e.g. `pgr4-ps1.rdc`
+   draw 2506, resource 4394). Its only usages in the whole frame are a CopyDst
+   at event 80 -- our own `UploadGuestTextureData` -- and a barrier. Nothing
+   renders into it, and the guest memory it uploads from reads all zero every
+   frame (logged across frames 438-445 at bases 0xEAE12000 / 0xEBEBF000 /
+   0xEBEC3000). So the palettes are zero and the skinning matrices are zero.
+
+   This is the same root cause as the skinned car collapsing in the shadow
+   passes. The writer is missing on our side. Xenos memory export is the
+   leading suspect: `ExportRegister` in shader_code.h already names
+   `ExportAddress = 32` and `ExportData0..4 = 33..37`, but the vertex export
+   switch in shader_recompiler.cpp handles only `VSPosition` and interpolators
+   and falls into `interpolators.find(...)` with an assert for anything else,
+   so a memexport shader cannot translate correctly. Implementing it means
+   emitting UAV writes for eA/eM and binding a UAV over the target guest
+   memory, then letting the palette texture read it.
+
+   Note the crowd's *main* pass (draw 21041) binds no textures at all, so
+   confirm which crowd pass consumes the palette before building this.
+

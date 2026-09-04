@@ -2884,11 +2884,16 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
         else
           decl->packedTexcoordsHi |= packedMode << ((e.usageIndex - 8u) * 4u);
       }
-      if (const uint32_t intMode = Int16VertexMode(e.type); intMode != 0) {
+      uint32_t texcoordMode = Int16VertexMode(e.type);
+      if (e.type == D3DDECLTYPE_UBYTE4 || e.type == D3DDECLTYPE_UBYTE4_2) {
+        format = RenderFormat::R8G8B8A8_UNORM;
+        texcoordMode = 12u;  // unorm8 -> integer, see unpackVertexMode
+      }
+      if (texcoordMode != 0) {
         if (e.usageIndex < 8)
-          decl->packedTexcoordsLo |= intMode << (e.usageIndex * 4u);
+          decl->packedTexcoordsLo |= texcoordMode << (e.usageIndex * 4u);
         else
-          decl->packedTexcoordsHi |= intMode << ((e.usageIndex - 8u) * 4u);
+          decl->packedTexcoordsHi |= texcoordMode << ((e.usageIndex - 8u) * 4u);
       }
       switch (e.type & 0x3Fu) {
         case 0x19:  // k_16_16 (SHORT2/SHORT2N/USHORT2N)
