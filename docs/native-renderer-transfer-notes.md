@@ -625,3 +625,27 @@ DLL dir and `pymodules` on `sys.path`). `XenosRecomp --dump-hlsl <input dir>
 which is how the car material was identified when RenderDoc could not
 disassemble the runtime-linked variant.
 
+## Crowd, evidence from `pgr4-ps1.rdc` (2026-09-03)
+
+Draw 21041 is one crowd person. What is now confirmed *correct*:
+
+- `SV_VertexID` reaches the shader and drives the palette index
+  (`trunc((vid + 0.5) / c55.y) * 4`, with the rows read at +52/+53/+54).
+- The per-draw palette really is per person and really is uploaded: three
+  neighbouring crowd draws give rotations plus translations
+  (-46.04, 0.09, -829.67), (-41.33, 0.06, -829.04), (-47.71, 0.07, -825.15).
+- The stride-0 instance rows (POSITION1..3, FLOAT16_4) decode through
+  `swapFloats` to a clean orthonormal basis, so the 16-bit lane swap is right.
+  Their .w lanes are 0xE1FF / 0xE201 / 0xE1FF (57855, 57856, 57857), a 16-bit
+  counter rather than a translation, so the translation legitimately comes
+  from the palette.
+
+What is still wrong: the people land about 1144 units from the camera at
+ndc y about -1.0 (draw 21041) and the group summary for the first draw of the
+big crowd batch shows only 80 of 4096 sampled vertices with w > 0, i.e. most
+crowd vertices are behind the camera. So the mesh is not collapsing, it is
+being placed far away, below the frame, and partly behind the eye. The next
+step is to find what supplies the crowd's world placement (the palette
+translation of about z = -827 is the suspect) and compare it against an object
+that lands correctly in the same frame.
+
