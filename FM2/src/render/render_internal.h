@@ -31,9 +31,17 @@ inline constexpr uint32_t kFm2FrameWidth = 1280;
 inline constexpr uint32_t kFm2FrameHeight = 720;
 inline constexpr uint32_t kFm2TileHeight = 256;
 
+inline constexpr uint32_t SurfaceHostHeight(uint32_t width, uint32_t height) {
+  // Menu uses 256-row bands; race mode reinitializes them as 512-row bands.
+  // Both allocations must cover the full guest frame for our single replay.
+  return width == kFm2FrameWidth && (height == kFm2TileHeight || height == 512)
+             ? kFm2FrameHeight : height;
+}
+
 // The active Plume interface and device created by Video::Init(), or nullptr.
 plume::RenderInterface* Interface();
 plume::RenderDevice* Device();
+plume::RenderFormat ConvertFormat(uint32_t d3dFormat);
 
 // Slot currently being recorded into (0 .. kNumFrames-1). Safe to call from
 // the render thread while recording draws / flushing state.
@@ -64,7 +72,7 @@ plume::RenderDescriptorSet* SamplerDescriptorSet();
 
 plume::RenderPipelineLayout* PipelineLayout();
 
-plume::RenderPipeline* GetBlitPipeline(plume::RenderFormat format);
+plume::RenderPipeline* GetBlitPipeline(plume::RenderFormat format, bool multisampled = false);
 
 uint32_t AllocTextureDescriptor();
 void FreeTextureDescriptor(uint32_t index);

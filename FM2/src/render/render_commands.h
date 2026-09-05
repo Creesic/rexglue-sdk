@@ -135,6 +135,9 @@ struct PendingShaderConstantFile {
 // before execution. Keep this producer-owned copy independent of the recorded
 // template commands: the guest context can advance before the render thread
 // reaches the replay job.
+struct GuestBaseTexture;
+struct GuestSurface;
+
 struct DeferredExecutionSnapshot {
   static constexpr uint32_t kVsConstantOffset = 0x700;
   // The VS float file occupies c0-c255; the PS float file begins immediately
@@ -148,6 +151,11 @@ struct DeferredExecutionSnapshot {
   std::array<uint8_t, kVsConstantBytes> vertexConstants{};
   std::array<uint32_t, 8> booleans{};
   uint32_t viewportReverseZ = 0;
+  uint32_t guestColorTarget = 0;
+  uint32_t guestDepthTarget = 0;
+  GuestBaseTexture* colorTarget = nullptr;
+  GuestSurface* depthTarget = nullptr;
+  std::array<float, 6> viewport{};
   PendingShaderConstantFile vertexExecutionConstants{};
   PendingShaderConstantFile pixelExecutionConstants{};
 };
@@ -156,7 +164,7 @@ static_assert(std::is_trivially_copyable_v<DeferredExecutionSnapshot>);
 static_assert(DeferredExecutionSnapshot::kVsConstantOffset +
                   DeferredExecutionSnapshot::kVsConstantBytes ==
               0x1700);
-static_assert(sizeof(DeferredExecutionSnapshot) == 12392);
+static_assert(sizeof(DeferredExecutionSnapshot) == 12440);
 
 inline bool CaptureDeferredExecutionSnapshot(DeferredExecutionSnapshot& snapshot,
                                              const uint8_t* context) {
@@ -165,6 +173,12 @@ inline bool CaptureDeferredExecutionSnapshot(DeferredExecutionSnapshot& snapshot
 
   snapshot.vertexExecutionConstants = {};
   snapshot.pixelExecutionConstants = {};
+  snapshot.colorTarget = nullptr;
+  snapshot.depthTarget = nullptr;
+  std::memcpy(&snapshot.guestColorTarget, context + 0x2F80, 4);
+  std::memcpy(&snapshot.guestDepthTarget, context + 0x2F90, 4);
+  snapshot.guestColorTarget = std::byteswap(snapshot.guestColorTarget);
+  snapshot.guestDepthTarget = std::byteswap(snapshot.guestDepthTarget);
   std::memcpy(snapshot.vertexConstants.data(),
               context + DeferredExecutionSnapshot::kVsConstantOffset,
               snapshot.vertexConstants.size());
@@ -185,6 +199,13 @@ inline bool CaptureDeferredExecutionSnapshot(DeferredExecutionSnapshot& snapshot
               sizeof(maxZBits));
   const float minZ = std::bit_cast<float>(std::byteswap(minZBits));
   const float maxZ = std::bit_cast<float>(std::byteswap(maxZBits));
+  for (uint32_t i = 0; i < 4; ++i) {
+    uint32_t word;
+    std::memcpy(&word, context + DeferredExecutionSnapshot::kViewportOffset + i * 4, 4);
+    snapshot.viewport[i] = float(std::byteswap(word));
+  }
+  snapshot.viewport[4] = minZ;
+  snapshot.viewport[5] = maxZ;
   snapshot.viewportReverseZ = std::isfinite(minZ) && std::isfinite(maxZ) && minZ > maxZ;
   return true;
 }
@@ -197,6 +218,17 @@ inline void InitializeDeferredVertexConstants(const DeferredExecutionSnapshot& s
   const uint32_t registerCount = std::min(destinationRegisterCount, 256u);
   std::memcpy(destination, snapshot.vertexConstants.data(), size_t(registerCount) * 16);
   snapshot.vertexExecutionConstants.Overlay(destination, registerCount);
+}
+
+// Recorded constants/fixups are scoped to replay, but the execution-time D3D
+// uploads consumed guest dirty bits and must survive into following direct draws.
+// Preserve only emitted registers, not the entire live context or template file.
+inline void RestoreDeferredShaderConstants(const uint32_t* saved, uint32_t* destination,
+                                           uint32_t registerCount,
+                                           const PendingShaderConstantFile* executionConstants) {
+  std::memcpy(destination, saved, size_t(registerCount) * 16);
+  if (executionConstants != nullptr)
+    executionConstants->Overlay(destination, registerCount);
 }
 
 inline bool NormalizeUnitFullscreenUpQuad(uint8_t* data, uint32_t vertexCount, uint32_t stride,
@@ -316,6 +348,7 @@ enum class RenderCommandType : uint32_t {
   BeginRenderStateFrame,
   CreateTextureHost,
   CreateSurfaceHost,
+  ReinitializeSurfaceHost,
   UnlockTextureRect,
   UnlockBuffer16,
   UnlockBuffer32,
@@ -353,7 +386,8 @@ struct RenderCommand {
     } setScissorRect;
 
     struct {
-      GuestBaseTexture* renderTarget;  // null => g_implicitRenderTarget
+      GuestBaseTexture* renderTarget;  // null => intentional color unbind
+      uint32_t caller;  // Diagnostic guest LR, preserved through queue/replay.
     } setRenderTarget;
 
     struct {
@@ -362,6 +396,7 @@ struct RenderCommand {
 
     struct {
       GuestSurface* depthStencil;
+      uint32_t caller;
     } setDepthStencilSurface;
 
     struct {
@@ -396,12 +431,14 @@ struct RenderCommand {
       uint32_t index;
       GuestTexture* texture;
       uint32_t guestAddress;
+      int32_t exponentAdjust;
     } setTexture;
 
     struct {
       uint32_t index;
       GuestBaseTexture* texture;
       uint32_t guestAddress;
+      int32_t exponentAdjust;
     } setTextureBase;
 
     struct {
@@ -458,6 +495,9 @@ struct RenderCommand {
 
     struct {
       GuestBaseTexture* destTexture;
+      uint32_t flags;
+      uint32_t destLevel;
+      uint32_t destSlice;
       uint32_t destX;
       uint32_t destY;
       bool hasSrc;

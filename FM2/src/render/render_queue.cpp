@@ -3,6 +3,7 @@
 #include "render/render_queue.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -35,6 +36,8 @@ std::mutex g_recordingsMutex;
 std::unordered_map<uint32_t, std::shared_ptr<RecordedRenderBatch>> g_recordings;
 thread_local std::shared_ptr<RecordedRenderBatch> t_recording;
 thread_local std::shared_ptr<RecordedRenderBatch> t_pendingRecording;
+thread_local uint32_t t_recordingSource = 0;
+thread_local uint32_t t_pendingRecordingSource = 0;
 
 bool IsRecordable(RenderCommandType type) {
   const uint32_t value = uint32_t(type);
@@ -67,8 +70,14 @@ void ExecuteJob(Job& job) {
 void ThreadMain() {
   g_renderThreadId = std::this_thread::get_id();
   REXGPU_INFO("FM2 render queue: render thread started");
+  using Clock = std::chrono::steady_clock;
+  constexpr size_t replayIndex = size_t(RenderCommandType::ApplyPixelShaderConstantFixup) + 1;
+  std::array<double, replayIndex + 1> milliseconds{};
+  auto intervalStart = Clock::now();
+  uint32_t jobs = 0, submits = 0;
   while (true) {
     Job job;
+    size_t queued = 0;
     {
       std::unique_lock lock(g_mutex);
       g_cv.wait(lock, [] { return !g_jobs.empty() || !g_running.load(std::memory_order_acquire); });
@@ -79,8 +88,33 @@ void ThreadMain() {
       }
       job = std::move(g_jobs.front());
       g_jobs.pop_front();
+      queued = g_jobs.size();
     }
+    const auto start = Clock::now();
     ExecuteJob(job);
+    const auto end = Clock::now();
+    const size_t kind = job.replayBatch ? replayIndex : size_t(job.cmd.type);
+    milliseconds[kind] += std::chrono::duration<double, std::milli>(end - start).count();
+    ++jobs;
+    submits += !job.replayBatch && job.cmd.type == RenderCommandType::ExecuteCommandList;
+    const double wall = std::chrono::duration<double, std::milli>(end - intervalStart).count();
+    if (wall >= 5000.0) {
+      double busy = 0;
+      size_t top = 0;
+      for (size_t i = 0; i < milliseconds.size(); ++i) {
+        busy += milliseconds[i];
+        if (milliseconds[i] > milliseconds[top])
+          top = i;
+      }
+      // Handler wall time includes waits inside it; this is not GPU timing.
+      REXGPU_INFO("RenderTiming: wallMs={:.1f} handlerMs={:.1f} replayMs={:.1f} "
+                  "topKind={} topMs={:.1f} jobs={} submits={} queued={} (replayKind={})",
+                  wall, busy, milliseconds[replayIndex], top, milliseconds[top],
+                  jobs, submits, queued, replayIndex);
+      milliseconds.fill(0);
+      jobs = submits = 0;
+      intervalStart = end;
+    }
   }
   REXGPU_INFO("FM2 render queue: render thread stopped");
 }
@@ -180,15 +214,24 @@ void RenderQueue::EnqueueBulk(const RenderCommand* commands, size_t count) {
   g_cv.notify_one();
 }
 
-void RenderQueue::BeginRecording() {
+void RenderQueue::BeginRecording(uint32_t sourceAddress) {
   t_pendingRecording.reset();
+  t_recordingSource = sourceAddress;
   t_recording = std::make_shared<RecordedRenderBatch>();
+  std::lock_guard lock(g_recordingsMutex);
+  g_recordings.erase(sourceAddress);
 }
 
 void RenderQueue::EndRecording() {
   if (t_recording == nullptr)
     return;
   t_pendingRecording = std::move(t_recording);
+  t_pendingRecordingSource = t_recordingSource;
+  // Finalized buffers can be submitted directly, without CreateCommandBufferClone.
+  // Keep the same pending object so subsequent source fixups remain visible.
+  std::lock_guard lock(g_recordingsMutex);
+  if (t_pendingRecordingSource != 0)
+    g_recordings[t_pendingRecordingSource] = t_pendingRecording;
 }
 
 bool RenderQueue::IsRecording() {
@@ -200,10 +243,14 @@ void RenderQueue::RecordPendingCommandBufferMarker(uint32_t marker) {
     t_recording->RecordMarker(marker);
 }
 
-size_t RenderQueue::AssociatePendingTextureFixup(uint32_t handle, uint32_t guestAddress) {
-  if (t_pendingRecording == nullptr)
-    return 0;
-  return t_pendingRecording->AssociateTextureFixup(handle, guestAddress);
+uint32_t RenderQueue::RegisterRecordingTextureFixup(uint32_t sourceAddress, uint32_t handle,
+                                                    uint32_t guestAddress, uint32_t startMarker,
+                                                    uint32_t stopMarker) {
+  std::lock_guard lock(g_recordingsMutex);
+  const auto it = g_recordings.find(sourceAddress);
+  return it == g_recordings.end()
+             ? handle
+             : it->second->RegisterTextureFixup(handle, guestAddress, startMarker, stopMarker);
 }
 
 size_t RenderQueue::AssociatePendingShaderConstantFixup(uint32_t handle, bool pixelShader,
@@ -212,14 +259,37 @@ size_t RenderQueue::AssociatePendingShaderConstantFixup(uint32_t handle, bool pi
                                                         uint32_t startMarker, uint32_t stopMarker) {
   if (t_pendingRecording == nullptr)
     return 0;
+  std::lock_guard lock(g_recordingsMutex);
   return t_pendingRecording->AssociateShaderConstantFixup(handle, pixelShader, startRegister,
                                                           registerCount, startMarker, stopMarker);
 }
 
-void RenderQueue::BindPendingRecording(uint32_t cloneAddress) {
-  std::shared_ptr<RecordedRenderBatch> recording = std::move(t_pendingRecording);
-  if (cloneAddress == 0 || recording == nullptr || recording->empty())
+void RenderQueue::BindPendingRecording(uint32_t cloneAddress, uint32_t sourceAddress,
+                                        uint32_t caller) {
+  std::shared_ptr<RecordedRenderBatch> recording;
+  {
+    std::lock_guard lock(g_recordingsMutex);
+    if (sourceAddress != 0 && t_pendingRecording != nullptr &&
+        sourceAddress == t_pendingRecordingSource) {
+      g_recordings[sourceAddress] = std::move(t_pendingRecording);
+    }
+    const auto source = g_recordings.find(sourceAddress);
+    if (cloneAddress != 0 && source != g_recordings.end()) {
+      recording = std::make_shared<RecordedRenderBatch>(*source->second);
+      g_recordings[cloneAddress] = recording;
+    }
+  }
+  if (cloneAddress == 0 || recording == nullptr || recording->empty()) {
+    static std::atomic<uint32_t> missingRecordings{0};
+    const uint32_t n = ++missingRecordings;
+    if (n <= 64 || n % 4096 == 0) {
+      REXGPU_WARN("DeferredCloneUnrecorded: n={} lr=0x{:08X} source=0x{:08X} "
+                  "clone=0x{:08X} pending={} commands={}",
+                  n, caller, sourceAddress, cloneAddress, recording != nullptr,
+                  recording != nullptr ? recording->size() : 0);
+    }
     return;
+  }
   const size_t commandCount = recording->size();
   size_t textures = 0;
   size_t textureBases = 0;
@@ -251,16 +321,14 @@ void RenderQueue::BindPendingRecording(uint32_t cloneAddress) {
         break;
     }
   }
-  std::lock_guard lock(g_recordingsMutex);
-  g_recordings[cloneAddress] = std::move(recording);
   static std::atomic<uint32_t> bindCount{0};
   const uint32_t count = bindCount.fetch_add(1, std::memory_order_relaxed) + 1;
   if (count <= 256) {
     REXGPU_INFO(
         "Deferred D3D command buffer recorded: n={} clone=0x{:08X} commands={} draws={} "
-        "textures={}/{} booleans={} ps={} psBool0Or=0x{:08X}",
+        "textures={}/{} booleans={} ps={} psBool0Or=0x{:08X} source=0x{:08X} lr=0x{:08X}",
         count, cloneAddress, commandCount, draws, textures, textureBases, booleans, pixelShaders,
-        psBoolean0Or);
+        psBoolean0Or, sourceAddress, caller);
   }
 }
 

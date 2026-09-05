@@ -12,7 +12,9 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -30,6 +32,7 @@
 #include "render/render_internal.h"
 #include "render/render_queue.h"
 #include "render/render_state.h"
+#include "render/shader_container.h"
 
 using namespace plume;
 using namespace fm2::ghp;
@@ -71,6 +74,9 @@ RenderFormat ConvertFormat(uint32_t d3dFormat) {
   }
 
   switch (d3dFormat & 0x3F) {
+    case 7:   // k_2_10_10_10
+    case 54:  // k_2_10_10_10_AS_16_16_16_16 (still packed 32bpp)
+      return RenderFormat::R10G10B10A2_UNORM;
     case 10:  // k_8_8
       return RenderFormat::R8G8_UNORM;
     case 22:  // k_24_8 (D24S8 variants)
@@ -97,6 +103,7 @@ uint32_t FormatBytes(RenderFormat format) {
       return 8;
     case RenderFormat::R8G8B8A8_UNORM:
     case RenderFormat::B8G8R8A8_UNORM:
+    case RenderFormat::R10G10B10A2_UNORM:
     case RenderFormat::R16G16_FLOAT:
     case RenderFormat::D32_FLOAT:
     case RenderFormat::R32_UINT:
@@ -336,10 +343,11 @@ void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t heigh
   desc.mipLevels = levels;
   desc.arraySize = 1;
   desc.format = ConvertFormat(format);
-  // Match Unleashed: only request RT when the guest usage asks for it.
+  // Xenos also resolves into ordinary sampled textures (Usage=0). Color
+  // conversion needs a host RTV even when the guest never binds this as an RT.
   if (RenderFormatIsDepth(desc.format)) {
     desc.flags = RenderTextureFlag::DEPTH_TARGET;
-  } else if (usage != 0) {
+  } else if (usage != 0 || (!volume && CanReceiveColorResolveBlit(desc.format))) {
     desc.flags = RenderTextureFlag::RENDER_TARGET;
   } else {
     desc.flags = RenderTextureFlag::NONE;
@@ -418,8 +426,7 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   // Only request RT for formats that can actually be render targets. BC/etc.
   // translated textures must stay COPY_DEST+SRV — marking them RT removes the
   // device. Aperture/frontbuffer (BGRA8) needs RT for format-mismatch shader blit.
-  const bool colorRt = !cube && !RenderFormatIsDepth(fmt) && fmt != RenderFormat::UNKNOWN &&
-                       fmt < RenderFormat::BC1_TYPELESS;
+  const bool colorRt = !cube && CanReceiveColorResolveBlit(fmt);
   desc.flags = cube ? RenderTextureFlag::CUBE
                     : colorRt ? RenderTextureFlag::RENDER_TARGET : RenderTextureFlag::NONE;
   texture->textureHolder = Device()->createTexture(desc);
@@ -439,10 +446,7 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   viewDesc.dimension = cube ? RenderTextureViewDimension::TEXTURE_CUBE
                             : RenderTextureViewDimension::TEXTURE_2D;
   viewDesc.mipLevels = levels;
-  if (fmt == RenderFormat::R8_UNORM) {
-    viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R,
-                                                       RenderSwizzle::R, RenderSwizzle::ONE);
-  }
+  viewDesc.componentMapping = TranslatedTextureComponentMapping(fmt);
   texture->textureView = texture->texture->createTextureView(viewDesc);
   texture->width = width;
   texture->height = height;
@@ -459,19 +463,9 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   if (createdOut != nullptr) *createdOut = true;
 }
 
-GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format,
-                            uint32_t multiSample) {
-  if (IsDeviceLost()) {
-    const bool depth = RenderFormatIsDepth(ConvertFormat(format));
-    auto* surface =
-        GuestNew<GuestSurface>(depth ? ResourceType::DepthStencil : ResourceType::RenderTarget);
-    surface->width = width;
-    surface->height = height;
-    surface->format = ConvertFormat(format);
-    surface->guestFormat = format;
-    return surface;
-  }
-
+namespace {
+void QueueSurfaceStorage(GuestSurface* surface, uint32_t width, uint32_t height, uint32_t format,
+                          uint32_t multiSample, RenderCommandType commandType) {
   // Xbox D3DMULTISAMPLE_TYPE: 0=NONE, 2=2x, 4=4x, ...
   RenderSampleCounts sampleCount = RenderSampleCount::COUNT_1;
   if (multiSample >= 8) {
@@ -482,20 +476,41 @@ GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format,
     sampleCount = RenderSampleCount::COUNT_2;
   }
 
-  const bool depth = RenderFormatIsDepth(ConvertFormat(format));
-  auto* surface =
-      GuestNew<GuestSurface>(depth ? ResourceType::DepthStencil : ResourceType::RenderTarget);
-
   RenderCommand cmd{};
-  cmd.type = RenderCommandType::CreateSurfaceHost;
+  cmd.type = commandType;
   cmd.createSurfaceHost.surface = surface;
   cmd.createSurfaceHost.width = width;
   cmd.createSurfaceHost.height = height;
   cmd.createSurfaceHost.format = format;
   cmd.createSurfaceHost.sampleCount = sampleCount;
-  cmd.createSurfaceHost.depth = depth;
+  cmd.createSurfaceHost.depth = RenderFormatIsDepth(ConvertFormat(format));
   RenderQueue::Run(cmd);
+}
+}  // namespace
+
+GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format,
+                            uint32_t multiSample) {
+  const bool depth = RenderFormatIsDepth(ConvertFormat(format));
+  auto* surface =
+      GuestNew<GuestSurface>(depth ? ResourceType::DepthStencil : ResourceType::RenderTarget);
+  if (surface == nullptr)
+    return nullptr;
+  if (IsDeviceLost()) {
+    surface->width = width;
+    surface->height = height;
+    surface->format = ConvertFormat(format);
+    surface->guestFormat = format;
+    return surface;
+  }
+  QueueSurfaceStorage(surface, width, height, format, multiSample,
+                      RenderCommandType::CreateSurfaceHost);
   return surface;
+}
+
+void ReinitializeSurface(GuestSurface* surface, uint32_t width, uint32_t height,
+                         uint32_t format, uint32_t multiSample) {
+  QueueSurfaceStorage(surface, width, height, format, multiSample,
+                      RenderCommandType::ReinitializeSurfaceHost);
 }
 
 void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t height, uint32_t format,
@@ -507,10 +522,9 @@ void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t heigh
   // recorded pass per band; we never see those replays, so allocate the host
   // texture at full 720p up front (no mid-CL recreate / DEVICE_REMOVED).
   uint32_t hostWidth = width;
-  uint32_t hostHeight = height;
-  if (width == kFm2FrameWidth && height == kFm2TileHeight) {
-    surface->tileGrownFromHeight = height;
-    hostHeight = kFm2FrameHeight;
+  uint32_t hostHeight = SurfaceHostHeight(width, height);
+  surface->tileGrownFromHeight = hostHeight != height ? height : 0;
+  if (hostHeight != height) {
     static uint64_t growAtCreate = 0;
     ++growAtCreate;
     if (growAtCreate <= 12 || growAtCreate % 300 == 1) {
@@ -568,7 +582,8 @@ void ProcCreateSurfaceHost(GuestSurface* surface, uint32_t width, uint32_t heigh
   surface->requiresHostInitialization = true;
   surface->hostInitialized = false;
   surface->hostRenderTargetCapable = !depth;
-  surface->descriptorIndex = AllocTextureDescriptor();
+  if (surface->descriptorIndex == 0)
+    surface->descriptorIndex = AllocTextureDescriptor();
   TextureDescriptorSet()->setTexture(surface->descriptorIndex, surface->texture,
                                      RenderTextureLayout::SHADER_READ, surface->textureView.get());
 }
@@ -803,25 +818,6 @@ uint32_t TiledOffset2D(uint32_t x, uint32_t y, uint32_t width, uint32_t bytesPer
          logBpp;
 }
 
-struct XenosTextureInfo {
-  RenderFormat format = RenderFormat::UNKNOWN;
-  uint32_t gpuFormat = 0;
-  uint32_t width = 0;
-  uint32_t height = 0;
-  uint32_t baseAddress = 0;  // guest byte address of mip 0
-  uint32_t mipAddress = 0;   // guest byte address of levels 1+
-  uint32_t mipMaxLevel = 0;
-  uint32_t mipLevels = 1;
-  uint32_t pitchTexels = 0;  // row pitch in texels
-  uint32_t blockDim = 1;     // 4 for BC formats
-  uint32_t bytesPerBlock = 4;
-  uint32_t endian = 0;  // 0 none, 1 = 8-in-16, 2 = 8-in-32
-  bool cube = false;
-  bool tiled = false;
-  bool packedMips = false;
-  bool valid = false;
-};
-
 // GPUTEXTURE_FETCH_CONSTANT: 6 dwords, big-endian.
 XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
   XenosTextureInfo info;
@@ -844,57 +840,23 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
   info.cube = TextureFetchIsCube(fc5);
   info.packedMips = ((fc5 >> 11) & 0x1) != 0;
 
-  switch (gpuFormat) {
-    case 2:  // k_8 (L8/A8)
-      info.format = RenderFormat::R8_UNORM;
-      info.bytesPerBlock = 1;
-      break;
-    case 6:  // k_8_8_8_8 (A8R8G8B8 cooked; 8-in-32 swap yields BGRA bytes)
-      info.format = RenderFormat::B8G8R8A8_UNORM;
-      info.bytesPerBlock = 4;
-      break;
-    case 10:  // k_8_8
-      info.format = RenderFormat::R8G8_UNORM;
-      info.bytesPerBlock = 2;
-      break;
-    case 18:  // k_DXT1
-      info.format = RenderFormat::BC1_UNORM;
-      info.blockDim = 4;
-      info.bytesPerBlock = 8;
-      break;
-    case 19:  // k_DXT2_3
-      info.format = RenderFormat::BC2_UNORM;
-      info.blockDim = 4;
-      info.bytesPerBlock = 16;
-      break;
-    case 20:  // k_DXT4_5
-      info.format = RenderFormat::BC3_UNORM;
-      info.blockDim = 4;
-      info.bytesPerBlock = 16;
-      break;
-    case 26:  // k_16_16_16_16
-      info.format = RenderFormat::R16G16B16A16_UNORM;
-      info.bytesPerBlock = 8;
-      break;
-    case 29:  // k_16_16_16_16_EXPAND
-    case 32:  // k_16_16_16_16_FLOAT (scene-color resolve targets)
-      info.format = RenderFormat::R16G16B16A16_FLOAT;
-      info.bytesPerBlock = 8;
-      break;
-    default: {
-      static std::unordered_set<uint32_t> s_warnedFormats;
-      if (s_warnedFormats.insert(gpuFormat).second) {
-        REXGPU_WARN("TranslateGuestTexture: unsupported Xenos format {} ({}x{})", gpuFormat,
-                    info.width, info.height);
-      }
-      return info;
+  info.format = XenosTextureStorageFormat(gpuFormat);
+  if (info.format == RenderFormat::UNKNOWN) {
+    static std::unordered_set<uint32_t> s_warnedFormats;
+    if (s_warnedFormats.insert(gpuFormat).second) {
+      REXGPU_WARN("TranslateGuestTexture: unsupported Xenos format {} ({}x{})", gpuFormat,
+                  info.width, info.height);
     }
+    return info;
   }
+  info.blockDim = RenderFormatBlockWidth(info.format);
+  info.bytesPerBlock = RenderFormatSize(info.format);
   if (info.pitchTexels == 0)
     info.pitchTexels = (info.width + 31u) & ~31u;
   info.mipLevels = TextureFetchMipLevelCount(fc4, fc5, info.width, info.height);
   info.mipMaxLevel = info.mipLevels - 1u;
   info.valid = info.width != 0 && info.height != 0 && info.baseAddress != 0;
+  info.NormalizeStorageIdentity(rex::graphics::texture_util::GetPackedMipLevel(info.width, info.height));
   return info;
 }
 
@@ -1052,16 +1014,21 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
 }
 
 std::mutex g_guestTextureAliasMutex;
-std::unordered_map<uint32_t, GuestTexture*> g_guestTextureAliases;
+std::map<XenosTextureInfo, GuestTexture*> g_guestTextureAliases;
+// Keep queued/recorded pointers alive. Reusing complete identities bounds the
+// storage by encountered layouts, rather than allocating on every A/B/A switch.
 std::vector<std::unique_ptr<GuestTexture>> g_guestTextureStorage;
 // Avoid hammering CreateResource after DEVICE_REMOVED / permanent create fails.
-std::unordered_set<uint32_t> g_failedGuestTextureBases;
+std::set<XenosTextureInfo> g_failedGuestTextures;
 
 // Shared by TranslateGuestTexture/TranslateGuestTextureFetch: builds a native
 // GuestTexture for a parsed Xenos fetch constant, uploads its guest data if
-// requested, and publishes it into the alias table under info.baseAddress.
+// requested, and publishes it under the complete decoded storage identity.
 GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool uploadGuestData) {
-  if (g_failedGuestTextureBases.contains(info.baseAddress)) return nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
+    if (g_failedGuestTextures.contains(info)) return nullptr;
+  }
 
   auto textureStorage = std::make_unique<GuestTexture>();
   GuestTexture* texture = textureStorage.get();
@@ -1081,7 +1048,8 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
   RenderQueue::Run(cmd);
 
   if (!created) {
-    g_failedGuestTextureBases.insert(info.baseAddress);
+    std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
+    g_failedGuestTextures.insert(info);
     return nullptr;
   }
 
@@ -1090,32 +1058,28 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
 
   REXGPU_INFO(
       "TranslateGuestTexture: base=0x{:08X} mip=0x{:08X} {}x{} levels={} fmt={} cube={} "
-      "tiled={} endian={} upload={} -> desc {}",
+      "tiled={} endian={} upload={} -> desc {} gpuFormat={} pitch={} packedMips={} "
+      "mipMax={} block={}/{}",
       info.baseAddress, info.mipAddress, info.width, info.height, info.mipLevels,
       int(info.format), info.cube, info.tiled, info.endian, uploadGuestData,
-      texture->descriptorIndex);
+      texture->descriptorIndex, info.gpuFormat, info.pitchTexels, info.packedMips,
+      info.mipMaxLevel, info.blockDim, info.bytesPerBlock);
 
   GuestTexture* result = texture;
   std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
   g_guestTextureStorage.push_back(std::move(textureStorage));
-  g_guestTextureAliases[info.baseAddress] = result;
-  return result;
+  // Concurrent creators must not replace an already published recording target.
+  return g_guestTextureAliases.try_emplace(info, result).first->second;
 }
 
 GuestTexture* FindAndRefreshGuestTexture(const XenosTextureInfo& info, bool uploadGuestData) {
   GuestTexture* cached = nullptr;
   {
     std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
-    auto it = g_guestTextureAliases.find(info.baseAddress);
+    auto it = g_guestTextureAliases.find(info);
     if (it == g_guestTextureAliases.end() || it->second == nullptr)
       return nullptr;
     cached = it->second;
-    if (cached->width != info.width || cached->height != info.height ||
-        cached->format != info.format || cached->levels != info.mipLevels ||
-        (cached->viewDimension == RenderTextureViewDimension::TEXTURE_CUBE) != info.cube) {
-      g_guestTextureAliases.erase(it);
-      return nullptr;
-    }
   }
 
   const uint64_t frame = CurrentFrameIndex();
@@ -1191,9 +1155,8 @@ GuestTexture* TranslateGuestTexture(void* guestHeader, bool uploadGuestData) {
 // Vertex declaration
 // ---------------------------------------------------------------------------
 
-// Every D3DVERTEXELEMENT9 declaration FM2 creates. Draws match their shader's
-// header usage/usageIndex set against this registry to recover the real
-// input layout (FM2 never binds a declaration through the device field).
+// Legacy semantic/stride fallback registry. Ordered D3D declarations and
+// prepatched shader-owned fetch layouts take precedence over this search.
 namespace {
 std::vector<GuestVertexDeclaration*> g_gameDeclarations;
 std::mutex g_gameDeclMutex;
@@ -1503,89 +1466,19 @@ ShaderCacheEntry* FindShaderCacheEntry(uint64_t hash) {
   return (it != end && it->hash == hash) ? it : nullptr;
 }
 
-// Shader-container registry for identifying programs that PM4-driven code
-// loads by inline microcode copy or by ucode address rather than through a
-// SetVertexShader/SetPixelShader call (Phase 4 territory; the registration
-// happens at creation time here so it's ready when Phase 4 needs it).
-namespace {
-struct UcodeContainerRec {
-  const uint8_t* host = nullptr;
-  uint32_t guest = 0;
-  uint32_t size = 0;
-  GuestShader* shader = nullptr;
-  bool pixel = false;
-};
-std::mutex g_ucodeIndexMutex;
-std::vector<UcodeContainerRec> g_ucodeContainers;
-std::unordered_map<uint64_t, GuestShader*> g_inlineUcodeCache;
-}  // namespace
-
-void RegisterShaderContainerForUcodeLookup(const uint32_t* function, uint32_t size,
-                                           GuestShader* shader, ResourceType type) {
-  if (function == nullptr || shader == nullptr || size == 0u || size > 0x40000u)
-    return;
-  std::lock_guard lock(g_ucodeIndexMutex);
-  for (const auto& r : g_ucodeContainers) {
-    if (r.host == reinterpret_cast<const uint8_t*>(function))
-      return;
-  }
-  g_ucodeContainers.push_back({reinterpret_cast<const uint8_t*>(function), ToGuest(function), size,
-                               shader, type == ResourceType::PixelShader});
-}
-
-GuestShader* FindShaderByInlineUcode(const void* ucode, uint32_t bytes, bool pixel) {
-  if (ucode == nullptr || bytes < 16u || bytes > 0x20000u)
-    return nullptr;
-  const uint64_t h = XXH3_64bits(ucode, bytes) ^ (pixel ? 1ull : 0ull);
-  std::lock_guard lock(g_ucodeIndexMutex);
-  auto it = g_inlineUcodeCache.find(h);
-  if (it != g_inlineUcodeCache.end())
-    return it->second;
-  GuestShader* found = nullptr;
-  const uint8_t first = *static_cast<const uint8_t*>(ucode);
-  for (const auto& r : g_ucodeContainers) {
-    if (r.pixel != pixel || r.size < bytes)
-      continue;
-    const uint8_t* end = r.host + (r.size - bytes);
-    for (const uint8_t* p = r.host; p <= end; ++p) {
-      p = static_cast<const uint8_t*>(std::memchr(p, first, size_t(end - p) + 1u));
-      if (p == nullptr)
-        break;
-      if (std::memcmp(p, ucode, bytes) == 0) {
-        found = r.shader;
-        break;
-      }
-    }
-    if (found != nullptr)
-      break;
-  }
-  g_inlineUcodeCache.emplace(h, found);  // cache negatives too
-  return found;
-}
-
-GuestShader* FindShaderByUcodeAddress(uint32_t guestAddr, bool pixel) {
-  guestAddr &= 0x1FFFFFFFu;
-  std::lock_guard lock(g_ucodeIndexMutex);
-  for (const auto& r : g_ucodeContainers) {
-    const uint32_t base = r.guest & 0x1FFFFFFFu;
-    if (r.pixel == pixel && guestAddr >= base && guestAddr < base + r.size)
-      return r.shader;
-  }
-  return nullptr;
-}
-
 namespace {
 
 GuestShader* CreateShaderFromFunction(const uint32_t* function, ResourceType type) {
+  static std::mutex creationMutex;
+  std::lock_guard lock(creationMutex);
   // Guest microcode is big-endian; size = header words [1] + [2].
   uint32_t size = std::byteswap(function[1]) + std::byteswap(function[2]);
   uint64_t hash = XXH3_64bits(function, size);
 
-  // Parse the vertex shader's embedded input declaration (usage/usageIndex) from
-  // its container header. FM2's vfetch instructions carry no format/offset and
-  // FM2 never binds the D3DVERTEXELEMENT9 declaration via the device field, so we
-  // match this semantic set against FM2's created declarations (which DO carry
-  // format/offset). Layout: ShaderContainer.shaderOffset @ +0x18 -> VertexShader;
+  // Parse the vertex shader's semantic table. Unpatched shaders use the
+  // ordered declaration (with the legacy matcher as fallback); prepatched
+  // shaders supply their immutable layout in the fetch instructions below.
+  // Layout: ShaderContainer.shaderOffset @ +0x18 -> VertexShader;
   // elements are bitfields { address:12, usage:4, usageIndex:4 } at
   // vertexElementsAndInterpolators[field18 + i].
   std::vector<ShaderHeaderElement> headerEls;
@@ -1610,6 +1503,19 @@ GuestShader* CreateShaderFromFunction(const uint32_t* function, ResourceType typ
   auto finish = [&](GuestShader* s) -> GuestShader* {
     if (s != nullptr && type == ResourceType::VertexShader && s->headerElements.empty()) {
       s->headerElements = headerEls;
+      s->bakedVertexFetch = (std::byteswap(function[0]) & 0x40u) != 0;
+      if (s->bakedVertexFetch) {
+        s->bakedDeclaration = ParseBakedVertexDeclaration(
+            {reinterpret_cast<const uint8_t*>(function), size});
+        if (auto* decl = s->bakedDeclaration.get()) {
+          decl->hash = XXH3_64bits(decl->vertexElements.get(),
+                                  decl->vertexElementCount * sizeof(GuestVertexElement));
+          REXGPU_INFO("BakedVertexDeclaration: shader=0x{:016X} inputs={} stride0={}",
+                      hash, decl->vertexElementCount, decl->bakedStrides[0]);
+        } else {
+          REXGPU_WARN("BakedVertexDeclaration: unsupported layout shader=0x{:016X}", hash);
+        }
+      }
     }
     return s;
   };
@@ -1621,7 +1527,6 @@ GuestShader* CreateShaderFromFunction(const uint32_t* function, ResourceType typ
       entry->guest_shader = reinterpret_cast<GuestShader*>(shader);
       REXGPU_INFO("CreateShader: hash=0x{:016X} type={} -> guestAddr=0x{:08X}", hash, int(type),
                   ToGuest(shader));
-      RegisterShaderContainerForUcodeLookup(function, size, shader, type);
       return finish(shader);
     }
     auto* cached = reinterpret_cast<GuestShader*>(entry->guest_shader);
@@ -1641,15 +1546,16 @@ GuestShader* CreateShaderFromFunction(const uint32_t* function, ResourceType typ
       }
       return finish(GuestNew<GuestShader>(type));
     }
-    RegisterShaderContainerForUcodeLookup(function, size, cached, type);
     return finish(cached);
   }
 
   // Dump the raw ShaderContainer so XenosRecomp can translate it offline
   // (missed_shaders/*.bin is a real, still-used mechanism -- see
   // docs/migration-from-plume.md on the seed shader cache's provenance).
-  static std::unordered_set<uint64_t> s_dumped;
-  if (s_dumped.insert(hash).second) {
+  static std::unordered_map<uint64_t, GuestShader*> missingShaders;
+  if (const auto it = missingShaders.find(hash); it != missingShaders.end())
+    return it->second;
+  {
     std::filesystem::create_directories("missed_shaders");
     char path[64];
     std::snprintf(path, sizeof(path), "missed_shaders/%016llX.bin",
@@ -1661,7 +1567,10 @@ GuestShader* CreateShaderFromFunction(const uint32_t* function, ResourceType typ
     REXGPU_WARN("Shader cache MISS: hash=0x{:016X} size={} type={} -- dumped to {}", hash, size,
                 int(type), path);
   }
-  return finish(GuestNew<GuestShader>(type));
+  auto* shader = finish(GuestNew<GuestShader>(type));
+  if (shader != nullptr)
+    missingShaders.emplace(hash, shader);
+  return shader;
 }
 
 }  // namespace
@@ -1680,10 +1589,13 @@ std::unordered_map<uint32_t, GuestShader*> g_shaderAliases;
 }  // namespace
 
 void RegisterShaderAlias(uint32_t guestAddress, GuestShader* shader) {
-  if (!guestAddress || shader == nullptr)
+  if (!guestAddress)
     return;
   std::lock_guard lock(g_shaderAliasMutex);
-  g_shaderAliases[guestAddress] = shader;
+  if (shader != nullptr)
+    g_shaderAliases[guestAddress] = shader;
+  else
+    g_shaderAliases.erase(guestAddress);
 }
 
 GuestShader* LookupShaderAlias(uint32_t guestAddress) {
@@ -1692,6 +1604,41 @@ GuestShader* LookupShaderAlias(uint32_t guestAddress) {
   std::lock_guard lock(g_shaderAliasMutex);
   auto it = g_shaderAliases.find(guestAddress);
   return it != g_shaderAliases.end() ? it->second : nullptr;
+}
+
+void RegisterSplitShader(uint32_t guestAddress, uint32_t physicalAddress, bool vertex) {
+  auto* memory = ghp::GuestMemory();
+  const auto read = [memory](uint32_t address, uint32_t size) -> std::span<const uint8_t> {
+    if (memory == nullptr || address == 0 || size == 0 || size - 1u > UINT32_MAX - address)
+      return {};
+    const uint32_t end = address + size - 1u;
+    auto* heap = memory->LookupHeap(address);
+    if (heap == nullptr || heap != memory->LookupHeap(end) ||
+        heap->QueryRangeAccess(address, end) == rex::memory::PageAccess::kNoAccess)
+      return {};
+    return {ghp::ToHost<const uint8_t>(address), size};
+  };
+  const uint32_t prefix = ShaderObjectPrefixBytes(vertex);
+  if (guestAddress == 0 || guestAddress > UINT32_MAX - prefix)
+    return;
+  const uint32_t virtualAddress = guestAddress + prefix;
+  const auto sizes = GetShaderContainerSizes(read(virtualAddress, kShaderContainerHeaderBytes), vertex);
+  std::vector<uint32_t> container;
+  if (sizes) {
+    container = AssembleShaderContainer(read(virtualAddress, sizes->virtualBytes),
+                                         read(physicalAddress, sizes->physicalBytes), vertex);
+  }
+  if (container.empty()) {
+    RegisterShaderAlias(guestAddress, nullptr);
+    REXGPU_WARN("RegisterSplitShader: invalid/unreadable {} container object=0x{:08X} physical=0x{:08X}",
+                vertex ? "VS" : "PS", guestAddress, physicalAddress);
+    return;
+  }
+  // Creation retains only semantic metadata/cache ownership, never these
+  // temporary bytes. A miss goes through the ordinary offline dump path.
+  GuestShader* shader = CreateShaderFromFunction(container.data(), vertex ? ResourceType::VertexShader
+                                                                         : ResourceType::PixelShader);
+  RegisterShaderAlias(guestAddress, shader);
 }
 
 }  // namespace fm2::render

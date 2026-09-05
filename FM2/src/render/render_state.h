@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 #include "render/guest_device.h"
@@ -34,11 +35,12 @@ struct GuestStencilState {
 };
 void SetStencilState(const GuestStencilState& s);
 
-void SetTexture(GuestDevice* device, uint32_t index, GuestTexture* texture, uint32_t guestAddress);
+void SetTexture(GuestDevice* device, uint32_t index, GuestTexture* texture, uint32_t guestAddress,
+                int32_t exponentAdjust);
 // Bind a non-GuestTexture GuestBaseTexture (render-target / depth surface used
 // as a shader resource). Clears any stale GuestTexture alias at this slot.
 void SetTextureBase(GuestDevice* device, uint32_t index, GuestBaseTexture* texture,
-                    uint32_t guestAddress);
+                    uint32_t guestAddress, int32_t exponentAdjust);
 
 // Translates a raw XG-header guest texture object (created via the low-level
 // XGSetTextureHeader XDK API rather than D3DDevice_CreateTexture, so it has
@@ -63,11 +65,12 @@ void SetIndices(GuestDevice* device, GuestBuffer* buffer);
 void SetViewport(GuestDevice* device, GuestViewport* viewport);
 void SetScissorRect(GuestDevice* device, GuestRect* rect);
 
-void SetRenderTarget(GuestDevice* device, uint32_t index, GuestBaseTexture* renderTarget);
+void SetRenderTarget(GuestDevice* device, uint32_t index, GuestBaseTexture* renderTarget,
+                     uint32_t caller = 0);
 void SetImplicitRenderTarget(GuestBaseTexture* renderTarget);
 GuestBaseTexture* GetCurrentColorRenderTarget();
 
-void SetDepthStencilSurface(GuestDevice* device, GuestSurface* depthStencil);
+void SetDepthStencilSurface(GuestDevice* device, GuestSurface* depthStencil, uint32_t caller = 0);
 
 // Drain pending StretchRect / Resolve copies (and MSAA resolves) into their
 // destination textures. Must run on the render thread with RecordingMutex held
@@ -80,13 +83,75 @@ void ScheduleResourceDestruction(GuestResource* resource);
 
 void Clear(GuestDevice* device, uint32_t flags, const float* color, float z);
 
-// D3DDevice_Resolve's texture-copy half: copies the currently-bound color
-// render target into destTexture (Xbox 360's EDRAM-to-linear-texture
+inline constexpr uint32_t kResolveDepthStencil = 0x4;
+
+inline GuestBaseTexture* SelectResolveSource(uint32_t flags, GuestBaseTexture* color,
+                                           GuestSurface* depth, GuestBaseTexture* lastColor) {
+  // A missing depth bind must never resolve a color/presentation fallback.
+  return (flags & kResolveDepthStencil) != 0 ? depth : (color != nullptr ? color : lastColor);
+}
+
+inline plume::RenderViewport ClampViewportToSurface(plume::RenderViewport viewport,
+                                                    const GuestBaseTexture* surface) {
+  // D3D::SetViewport (82371348) clips the requested extent to the bound
+  // surface. InitSurfaceBindDefaults deliberately requests 65535 squared.
+  if (surface != nullptr) {
+    viewport.width = std::min(viewport.width, float(surface->width) - viewport.x);
+    viewport.height = std::min(viewport.height, float(surface->height) - viewport.y);
+    if (viewport.width < 0.0f || viewport.height < 0.0f)
+      viewport.width = viewport.height = 0.0f;
+  }
+  return viewport;
+}
+
+inline bool CanCopyDepthSurface(const GuestSurface& source, const GuestBaseTexture& dest) {
+  // Plume CopyTexture copies both depth and stencil planes. Require identical
+  // whole 2D resources; hardware color resolves/partial depth copies are invalid.
+  if (!plume::RenderFormatIsDepth(source.format) || source.format != dest.format ||
+      source.sampleCount != plume::RenderSampleCount::COUNT_1 ||
+      source.width != dest.width || source.height != dest.height ||
+      source.levels != 1 || dest.levels != 1)
+    return false;
+  if (dest.type == ResourceType::DepthStencil)
+    return static_cast<const GuestSurface&>(dest).sampleCount == plume::RenderSampleCount::COUNT_1;
+  return dest.type == ResourceType::Texture &&
+         static_cast<const GuestTexture&>(dest).viewDimension ==
+             plume::RenderTextureViewDimension::TEXTURE_2D &&
+         static_cast<const GuestTexture&>(dest).depth == 1;
+}
+
+inline bool IsFullResolveRegion(uint32_t sourceWidth, uint32_t sourceHeight,
+                                 uint32_t destWidth, uint32_t destHeight,
+                                 uint32_t destX, uint32_t destY,
+                                 bool hasSrc, const plume::RenderRect& rect) {
+  return sourceWidth != 0 && sourceHeight != 0 && sourceWidth == destWidth &&
+      sourceHeight == destHeight && destX == 0 && destY == 0 &&
+      (!hasSrc || (rect.left == 0 && rect.top == 0 &&
+                   rect.right == int32_t(sourceWidth) && rect.bottom == int32_t(sourceHeight)));
+}
+
+// Resolve subresource bounds, shared by copy clipping and post-copy clear logic.
+inline bool ResolveDestinationExtent(const GuestBaseTexture& texture, uint32_t level,
+                                     uint32_t slice, uint32_t& width, uint32_t& height) {
+  const bool cube = texture.type == ResourceType::Texture &&
+      static_cast<const GuestTexture&>(texture).viewDimension ==
+          plume::RenderTextureViewDimension::TEXTURE_CUBE;
+  if (level >= texture.levels || level >= 32 || slice >= (cube ? 6u : 1u) ||
+      texture.width == 0 || texture.height == 0)
+    return false;
+  width = std::max(1u, texture.width >> level);
+  height = std::max(1u, texture.height >> level);
+  return true;
+}
+
+// D3DDevice_Resolve copies color or depth (flags & 4) into destTexture
+// (Xbox 360's EDRAM-to-linear-texture
 // resolve). destPoint/sourceRect may be null (full-texture copy at 0,0),
 // matching the guest API's own optional-pointer semantics.
 void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint,
-                      const GuestRect* sourceRect, uint32_t postClearFlags,
-                      const float* postClearColor, float postClearZ);
+                      const GuestRect* sourceRect, uint32_t flags, uint32_t postClearFlags,
+                      const float* postClearColor, float postClearZ,
+                      uint32_t destLevel, uint32_t destSlice);
 
 // ---------------------------------------------------------------------------
 // Phase 4: draw dispatch + constant transport.

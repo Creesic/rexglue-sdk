@@ -3,9 +3,12 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
+#include <compare>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -58,6 +61,11 @@ inline constexpr bool TextureFetchIsCube(uint32_t dword5) {
   return ((dword5 >> 9) & 0x3u) == 3u;
 }
 
+inline constexpr int32_t TextureFetchExponentAdjust(uint32_t dword3) {
+  const uint32_t bits = (dword3 >> 13) & 63u;
+  return int32_t(bits ^ 32u) - 32;
+}
+
 inline constexpr uint32_t TextureFetchMipMaxLevel(uint32_t dword4) {
   return (dword4 >> 6) & 0xFu;
 }
@@ -73,6 +81,74 @@ inline constexpr uint32_t TextureFetchMipLevelCount(uint32_t dword4, uint32_t dw
   const uint32_t maxDimensionLevel = std::bit_width(std::max(width, height)) - 1u;
   return std::min(TextureFetchMipMaxLevel(dword4), maxDimensionLevel) + 1u;
 }
+
+// Raw XG storage formats. Block size and dimensions come from Plume's existing
+// metadata; DXT5A is the same eight-byte 4x4 block as BC4, not a new decoder.
+inline constexpr plume::RenderFormat XenosTextureStorageFormat(uint32_t gpuFormat) {
+  using plume::RenderFormat;
+  switch (gpuFormat) {
+    case 2: return RenderFormat::R8_UNORM;
+    case 6: return RenderFormat::B8G8R8A8_UNORM;
+    case 7:
+    case 54: return RenderFormat::R10G10B10A2_UNORM;
+    case 10: return RenderFormat::R8G8_UNORM;
+    case 18: return RenderFormat::BC1_UNORM;
+    case 19: return RenderFormat::BC2_UNORM;
+    case 20: return RenderFormat::BC3_UNORM;
+    case 26: return RenderFormat::R16G16B16A16_UNORM;
+    case 29:
+    case 32: return RenderFormat::R16G16B16A16_FLOAT;
+    case 59: return RenderFormat::BC4_UNORM;  // k_DXT5A
+    default: return RenderFormat::UNKNOWN;
+  }
+}
+
+inline plume::RenderComponentMapping TranslatedTextureComponentMapping(plume::RenderFormat format) {
+  using plume::RenderFormat;
+  using plume::RenderSwizzle;
+  if (format == RenderFormat::R8_UNORM)
+    return {RenderSwizzle::R, RenderSwizzle::R, RenderSwizzle::R, RenderSwizzle::ONE};
+  // Xenos DXT5A supplies its scalar to every component (Xenia's RRRR mapping).
+  if (format == RenderFormat::BC4_UNORM)
+    return {RenderSwizzle::R, RenderSwizzle::R, RenderSwizzle::R, RenderSwizzle::R};
+  return {};
+}
+
+inline bool CanReceiveColorResolveBlit(plume::RenderFormat format) {
+  return format != plume::RenderFormat::UNKNOWN && !plume::RenderFormatIsDepth(format) &&
+         plume::RenderFormatBlockWidth(format) == 1;
+}
+
+// Decoded storage identity for raw XG textures. One guest base may alternate
+// between several layouts; recorded draws must keep a stable host object for
+// each layout so later resolves update the object they actually sample.
+struct XenosTextureInfo {
+  plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
+  uint32_t gpuFormat = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t baseAddress = 0;
+  uint32_t mipAddress = 0;
+  uint32_t mipMaxLevel = 0;
+  uint32_t mipLevels = 1;
+  uint32_t pitchTexels = 0;
+  uint32_t blockDim = 1;
+  uint32_t bytesPerBlock = 4;
+  uint32_t endian = 0;
+  bool cube = false;
+  bool tiled = false;
+  bool packedMips = false;
+  bool valid = false;
+
+  void NormalizeStorageIdentity(uint32_t firstPackedMip) {
+    // Packing cannot change any stored level if the tail starts beyond it.
+    // Keep the bit for small base levels and chains that actually reach the tail.
+    if (valid && mipMaxLevel < firstPackedMip)
+      packedMips = false;
+  }
+
+  auto operator<=>(const XenosTextureInfo&) const = default;
+};
 
 struct GuestResource {
   // Deliberately aliases the guest's D3DResource::Common; IsFm2Resource reads
@@ -172,6 +248,22 @@ struct GuestTexture : GuestBaseTexture {
   GuestTexture() : GuestBaseTexture(ResourceType::Texture) {}
 };
 
+inline uint32_t GetTextureLevelCount(const void* texture) {
+  if (texture == nullptr)
+    return 0;
+  if (IsFm2Resource(texture)) {
+    const auto* resource = static_cast<const GuestResource*>(texture);
+    if (resource->type != ResourceType::Texture && resource->type != ResourceType::VolumeTexture)
+      return 0;
+    return static_cast<const GuestBaseTexture*>(resource)->levels;
+  }
+  // D3DBaseTexture::Format starts at +0x1C. The original GetLevelCount
+  // at 8236BC38 reads mip_max_level from dword 4 (+0x2C), big-endian.
+  uint32_t dword4;
+  std::memcpy(&dword4, static_cast<const uint8_t*>(texture) + 0x2C, sizeof(dword4));
+  return TextureFetchMipMaxLevel(std::byteswap(dword4)) + 1;
+}
+
 // Vertex/index buffer.
 struct GuestBuffer : GuestResource {
   std::unique_ptr<plume::RenderBuffer> buffer;
@@ -202,6 +294,19 @@ struct GuestSurface : GuestBaseTexture {
   std::unordered_set<GuestTexture*> destinationTextures;
 
   explicit GuestSurface(ResourceType t) : GuestBaseTexture(t) {}
+
+  // XGSetSurfaceHeader initializes a 0x30-byte XDK header, including Common
+  // and ReferenceCount. Those first eight bytes are native ownership here.
+  void UpdateGuestHeader(const void* header) {
+    std::memcpy(guestHeader, static_cast<const uint8_t*>(header) + 8, 0x30 - 8);
+  }
+
+  bool MatchesHostLayout(uint32_t newWidth, uint32_t newHeight,
+                         plume::RenderFormat newFormat,
+                         plume::RenderSampleCounts newSamples) const {
+    return width == newWidth && height == newHeight && format == newFormat &&
+           sampleCount == newSamples;
+  }
 };
 
 struct GuestVertexElement {
@@ -228,6 +333,9 @@ struct GuestVertexDeclaration : GuestResource {
   bool hasR11G11B10Normal = false;
   bool hasUByte4TangentBasis = false;
   bool hasFloat16Position = false;
+  // Prepatched shader fetches consume raw words and perform their own decoding.
+  bool bakedVertexFetch = false;
+  std::array<uint32_t, 16> bakedStrides{};
   bool vertexStreams[16]{};
 
   GuestVertexDeclaration() : GuestResource(ResourceType::VertexDeclaration) {}
@@ -236,10 +344,8 @@ struct GuestVertexDeclaration : GuestResource {
 // Vertex/pixel shader: maps a guest shader to its XenosRecomp-translated host
 // shader via the generated shader cache (keyed by microcode hash).
 // One input element a vertex shader declares in its container header
-// (usage/usageIndex). FM2's vfetch instructions carry no format/offset, so
-// this is matched against FM2's real D3DVERTEXELEMENT9 declarations (which
-// carry the format/offset) to recover the input layout -- FM2 never binds the
-// declaration through the device field, so this is how we recover it.
+// (usage/usageIndex). Unpatched shaders use the ordered D3D declaration;
+// prepatched containers (flag 0x40) carry their own complete fetch layout.
 struct ShaderHeaderElement {
   uint8_t usage = 0;
   uint8_t usageIndex = 0;
@@ -255,6 +361,8 @@ struct GuestShader : GuestResource {
   ShaderCacheEntry* shaderCacheEntry = nullptr;
   // Vertex shaders only: the input declaration parsed from the shader header.
   std::vector<ShaderHeaderElement> headerElements;
+  bool bakedVertexFetch = false;
+  std::unique_ptr<GuestVertexDeclaration> bakedDeclaration;
 
   explicit GuestShader(ResourceType t) : GuestResource(t) {}
   ~GuestShader();

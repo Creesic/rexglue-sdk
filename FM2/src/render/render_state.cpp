@@ -131,8 +131,10 @@ struct SharedConstants {
   uint32_t loopConstants[32]{};  // VS 0-15, PS 16-31; Xenos packed count/start/step.
   uint32_t r11g11b10Texcoords = 0;
   uint32_t trailingPadding[2]{};
+  int32_t textureExponentAdjust[16]{};
 };
-static_assert(sizeof(SharedConstants) == 496);
+static_assert(sizeof(SharedConstants) == 560);
+static_assert(offsetof(SharedConstants, textureExponentAdjust) == 496);
 static_assert(offsetof(SharedConstants, texture2DIndices) == 0);
 static_assert(offsetof(SharedConstants, texture3DIndices) == 64);
 static_assert(offsetof(SharedConstants, textureCubeIndices) == 128);
@@ -190,7 +192,20 @@ GuestBaseTexture* g_lastDrawnRenderTarget = nullptr;
 // StretchRect format-skip present override (survives Swap re-setting aperture).
 std::atomic<GuestBaseTexture*> g_stretchRectPresentOverride{nullptr};
 GuestSurface* g_depthStencil = nullptr;
-GuestSurface* g_implicitDepthStencil = nullptr;
+struct TargetBindingTrace {
+  const char* owner = nullptr;
+  uint32_t caller = 0;
+  uint32_t color = 0;
+  uint32_t depth = 0;
+};
+std::array<TargetBindingTrace, 32> g_targetBindingTrace{};
+size_t g_targetBindingTraceCount = 0;
+
+void TraceTargetBinding(const char* owner, uint32_t caller = 0) {
+  g_targetBindingTrace[g_targetBindingTraceCount++ % g_targetBindingTrace.size()] = {
+      owner, caller, g_renderTarget ? ghp::ToGuest(g_renderTarget) : 0,
+      g_depthStencil ? ghp::ToGuest(g_depthStencil) : 0};
+}
 // Last depth surface seen per exact (width, height, sampleCount) — FM2's
 // EDRAM model never re-binds depth when switching passes (720p scene ↔ 512
 // envmap), so the stale wrong-size depth must be swapped for the matching one
@@ -225,6 +240,7 @@ struct FrameTraceStats {
   uint32_t issuedDraws = 0;
   uint32_t clears = 0;
   uint32_t resolves = 0;
+  uint64_t uploadBytes = 0;
   uint64_t shapeHash = 0xCBF29CE484222325ull;
   uint64_t textureHash = 0x9E3779B97F4A7C15ull;
   uint64_t sharedHash = 0x9E3779B97F4A7C15ull;
@@ -349,16 +365,20 @@ void TraceIssuedDraw(uint32_t kind, const uint32_t* geometry, size_t geometryCou
 
 void LogAndResetFrameTrace() {
   ++g_frameTraceIndex;
-  if (g_frameTraceIndex <= 64 || g_frameTraceIndex % 300 == 1) {
+  static auto lastLog = std::chrono::steady_clock::now();
+  const auto now = std::chrono::steady_clock::now();
+  if (g_frameTraceIndex <= 64 || now - lastLog >= std::chrono::seconds(5)) {
+    lastLog = now;
     REXGPU_INFO(
         "FrameTrace: n={} draws={}/{} skipped={} clears={} resolves={} shape=0x{:016X} "
         "tex=0x{:016X} shared=0x{:016X} vs=0x{:016X} ps=0x{:016X} "
-        "vertex=0x{:016X} clear=0x{:016X}",
+        "vertex=0x{:016X} clear=0x{:016X} uploadMiB={:.2f}",
         g_frameTraceIndex, g_frameTrace.issuedDraws, g_frameTrace.attemptedDraws,
         g_frameTrace.attemptedDraws - g_frameTrace.issuedDraws, g_frameTrace.clears,
         g_frameTrace.resolves, g_frameTrace.shapeHash, g_frameTrace.textureHash,
         g_frameTrace.sharedHash, g_frameTrace.vertexConstantHash, g_frameTrace.pixelConstantHash,
-        g_frameTrace.vertexDataHash, g_frameTrace.clearHash);
+        g_frameTrace.vertexDataHash, g_frameTrace.clearHash,
+        double(g_frameTrace.uploadBytes) / (1024.0 * 1024.0));
   }
   if (g_frameTraceIndex <= 64 && g_previousFrameShapeHash == g_frameTrace.shapeHash &&
       !g_currentDrawDataTrace.empty() &&
@@ -441,6 +461,7 @@ class UploadAllocator {
     }
     RenderBufferReference ref = chunk->buffer->at(chunk->offset);
     chunk->offset += size;
+    g_frameTrace.uploadBytes += size;
     return ref;
   }
 
@@ -572,8 +593,10 @@ void DestructTempResources(uint32_t frame) {
       case ResourceType::Texture:
       case ResourceType::VolumeTexture: {
         auto* texture = static_cast<GuestTexture*>(resource);
-        if (g_renderTarget == texture)
+        if (g_renderTarget == texture) {
           g_renderTarget = nullptr;
+          TraceTargetBinding("destroy-texture");
+        }
         if (g_lastPresentableRenderTarget == texture)
           g_lastPresentableRenderTarget = nullptr;
         if (g_lastDrawnRenderTarget == texture)
@@ -616,18 +639,20 @@ void DestructTempResources(uint32_t frame) {
       case ResourceType::RenderTarget:
       case ResourceType::DepthStencil: {
         auto* surface = static_cast<GuestSurface*>(resource);
-        if (g_renderTarget == surface)
+        if (g_renderTarget == surface) {
           g_renderTarget = nullptr;
+          TraceTargetBinding("destroy-color");
+        }
         if (g_lastPresentableRenderTarget == surface)
           g_lastPresentableRenderTarget = nullptr;
         if (g_lastDrawnRenderTarget == surface)
           g_lastDrawnRenderTarget = nullptr;
         if (g_implicitRenderTarget == surface)
           g_implicitRenderTarget = nullptr;
-        if (g_depthStencil == surface)
+        if (g_depthStencil == surface) {
           g_depthStencil = nullptr;
-        if (g_implicitDepthStencil == surface)
-          g_implicitDepthStencil = nullptr;
+          TraceTargetBinding("destroy-depth");
+        }
         for (auto it = g_lastDepthBySize.begin(); it != g_lastDepthBySize.end();) {
           it = it->second == surface ? g_lastDepthBySize.erase(it) : std::next(it);
         }
@@ -820,13 +845,15 @@ bool FormatsCompatibleForGpuCopy(RenderFormat src, RenderFormat dst) {
 bool CanDirectStretchRectCopy(GuestSurface* surface, GuestTexture* texture) {
   return IsLiveHostTexture(surface) && IsLiveHostTexture(texture) &&
          FormatsCompatibleForGpuCopy(surface->format, texture->format) &&
-         surface->width == texture->width && surface->height == texture->height;
+         surface->width == texture->width && surface->height == texture->height &&
+         (!RenderFormatIsDepth(surface->format) || CanCopyDepthSurface(*surface, *texture));
 }
 
 bool ClipResolveCopyRegion(GuestBaseTexture* source, GuestBaseTexture* destination,
-                           RenderRect& sourceRect, uint32_t destX, uint32_t destY) {
+                           RenderRect& sourceRect, uint32_t destX, uint32_t destY,
+                           uint32_t destWidth, uint32_t destHeight) {
   if (!IsLiveHostTexture(source) || !IsLiveHostTexture(destination) ||
-      destX >= destination->width || destY >= destination->height) {
+      destX >= destWidth || destY >= destHeight) {
     return false;
   }
 
@@ -835,9 +862,9 @@ bool ClipResolveCopyRegion(GuestBaseTexture* source, GuestBaseTexture* destinati
   sourceRect.right = std::clamp(sourceRect.right, sourceRect.left, int32_t(source->width));
   sourceRect.bottom = std::clamp(sourceRect.bottom, sourceRect.top, int32_t(source->height));
   const uint32_t copyWidth =
-      std::min(uint32_t(sourceRect.right - sourceRect.left), destination->width - destX);
+      std::min(uint32_t(sourceRect.right - sourceRect.left), destWidth - destX);
   const uint32_t copyHeight =
-      std::min(uint32_t(sourceRect.bottom - sourceRect.top), destination->height - destY);
+      std::min(uint32_t(sourceRect.bottom - sourceRect.top), destHeight - destY);
   if (copyWidth == 0 || copyHeight == 0)
     return false;
   sourceRect.right = sourceRect.left + int32_t(copyWidth);
@@ -849,7 +876,8 @@ bool ClipResolveCopyRegion(GuestBaseTexture* source, GuestBaseTexture* destinati
 // surface instead of an empty / stale frontbuffer. Swap may overwrite
 // g_frontbufferPresentSource afterward; the override survives until Present.
 void PreferStretchRectSourceForPresent(GuestBaseTexture* dest, GuestBaseTexture* source) {
-  if (!IsLiveHostTexture(source))
+  if (!IsLiveHostTexture(source) || RenderFormatIsDepth(source->format) ||
+      (dest != nullptr && RenderFormatIsDepth(dest->format)))
     return;
   g_stretchRectPresentOverride.store(source, std::memory_order_relaxed);
   GuestBaseTexture* cur = ConsumeFrontbufferPresentSource();
@@ -871,7 +899,8 @@ bool StretchRectShaderBlit(GuestSurface* surface, GuestTexture* texture) {
   if (!texture->hostRenderTargetCapable)
     return false;
 
-  RenderPipeline* pipeline = GetBlitPipeline(texture->format);
+  RenderPipeline* pipeline = GetBlitPipeline(texture->format,
+      surface->sampleCount != RenderSampleCount::COUNT_1);
   if (pipeline == nullptr || PipelineLayout() == nullptr)
     return false;
 
@@ -985,9 +1014,22 @@ void ExecutePendingStretchRectCommands(GuestSurface* renderTarget, GuestSurface*
         // A full-subresource D3D12 copy is invalid when the destination is
         // smaller, and ResolveSubresource cannot scale. Single-sample paths
         // use the existing fullscreen shader blit for both scaling and format
-        // conversion; MSAA falls back without submitting an invalid command.
-        if (surface->sampleCount != RenderSampleCount::COUNT_1 ||
-            !StretchRectShaderBlit(surface, texture)) {
+        // conversion. The MSAA shader resolves samples before filtering.
+        const bool blitted = StretchRectShaderBlit(surface, texture);
+        if (texture->format == RenderFormat::R8_UNORM) {
+          static std::unordered_set<uint64_t> tracedLightingCopies;
+          const uint64_t key = (uint64_t(texture->descriptorIndex) << 32) |
+                               surface->descriptorIndex;
+          if (tracedLightingCopies.size() < 64 && tracedLightingCopies.insert(key).second) {
+            REXGPU_INFO("LightingCopyResult: destDesc={} sourceDesc={} {}x{} fmt={} "
+                        "samples={} dest={}x{} rtCapable={} blitted={}",
+                        texture->descriptorIndex, surface->descriptorIndex,
+                        surface->width, surface->height, int(surface->format),
+                        surface->sampleCount, texture->width, texture->height,
+                        texture->hostRenderTargetCapable, blitted);
+          }
+        }
+        if (!blitted) {
           PreferStretchRectSourceForPresent(texture, surface);
         } else {
           for (uint32_t i = 0; i < std::size(g_textures); ++i) {
@@ -999,7 +1041,10 @@ void ExecutePendingStretchRectCommands(GuestSurface* renderTarget, GuestSurface*
         texture->sourceSurface = nullptr;
         continue;
       }
-      if (multiSampling) {
+      if (RenderFormatIsDepth(surface->format)) {
+        // Whole-resource copy preserves both depth and stencil planes.
+        commandList->copyTexture(texture->texture, surface->texture);
+      } else if (multiSampling) {
         commandList->resolveTexture(texture->texture, surface->texture);
       } else {
         // 1x→1x must copy, not ResolveSubresourceRegion (D3D12 requires MSAA src).
@@ -1007,8 +1052,9 @@ void ExecutePendingStretchRectCommands(GuestSurface* renderTarget, GuestSurface*
                                        RenderTextureCopyLocation::Subresource(surface->texture, 0));
       }
       MarkAttachmentInitialized(texture);
-      // Compatible resolve landed — aperture is valid again.
-      g_stretchRectPresentOverride.store(nullptr, std::memory_order_relaxed);
+      // Only color copies can repair the presentation aperture.
+      if (!RenderFormatIsDepth(surface->format))
+        g_stretchRectPresentOverride.store(nullptr, std::memory_order_relaxed);
       texture->sourceSurface = nullptr;
 
       // Any sampler slot that still points at this texture must rebind the
@@ -1328,9 +1374,9 @@ void FlushPendingStretchRectCommands() {
   // Draw). Nested RenderQueue::Run is fine if not.
   bool foundAny = false;
   for (GuestSurface* surface : g_pendingSurfaceCopies) {
-    if (surface != nullptr && surface->type != ResourceType::DepthStencil) {
-      foundAny |= PopulateBarriersForStretchRect(surface, nullptr);
-    }
+    const bool isDepth = surface != nullptr && surface->type == ResourceType::DepthStencil;
+    foundAny |= PopulateBarriersForStretchRect(isDepth ? nullptr : surface,
+                                             isDepth ? surface : nullptr);
   }
   for (GuestSurface* surface : g_pendingMsaaResolves) {
     const bool isDepth = surface != nullptr && surface->type == ResourceType::DepthStencil;
@@ -1340,10 +1386,9 @@ void FlushPendingStretchRectCommands() {
 
   const bool havePending = !g_pendingSurfaceCopies.empty() || !g_pendingMsaaResolves.empty();
   if (havePending) {
-    // Unleashed StretchRect samples/copies the color surface after it leaves
-    // COLOR_WRITE. Leaving the RT bound as the active framebuffer blocks the
-    // 1x copyTextureRegion path (and would block a shader blit too).
-    if (foundAny && g_framebuffer != nullptr) {
+    // Copy sources must leave the framebuffer before a color/depth copy or
+    // shader blit, including when only the shader path populated barriers.
+    if (g_framebuffer != nullptr) {
       CommandList()->setFramebuffer(nullptr);
       g_framebuffer = nullptr;
       g_dirtyStates.renderTargetAndDepthStencil = true;
@@ -1359,9 +1404,8 @@ void FlushPendingStretchRectCommands() {
     // Always Execute: format-incompatible dests still need present-source
     // rewrite even when no COPY barriers were populated.
     for (GuestSurface* surface : g_pendingSurfaceCopies) {
-      if (surface != nullptr && surface->type != ResourceType::DepthStencil) {
-        ExecutePendingStretchRectCommands(surface, nullptr);
-      }
+      const bool isDepth = surface != nullptr && surface->type == ResourceType::DepthStencil;
+      ExecutePendingStretchRectCommands(isDepth ? nullptr : surface, isDepth ? surface : nullptr);
     }
     for (GuestSurface* surface : g_pendingMsaaResolves) {
       const bool isDepth = surface != nullptr && surface->type == ResourceType::DepthStencil;
@@ -1369,7 +1413,7 @@ void FlushPendingStretchRectCommands() {
     }
   }
 
-  // Clear dangling sourceSurface links on any leftovers (e.g. depth skipped).
+  // Clear dangling sourceSurface links on any leftovers (e.g. failed resources).
   for (GuestSurface* surface : g_pendingSurfaceCopies) {
     if (surface == nullptr)
       continue;
@@ -1931,10 +1975,13 @@ void SetReverseZ(bool enabled) {
 }
 
 void ProcSetViewport(float x, float y, float width, float height, float minZ, float maxZ) {
+  const auto viewport = ClampViewportToSurface(RenderViewport(x, y, width, height, minZ, maxZ),
+                                               g_renderTarget != nullptr ? g_renderTarget
+                                                                         : g_depthStencil);
   SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.x, x);
   SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.y, y);
-  SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.width, width);
-  SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.height, height);
+  SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.width, viewport.width);
+  SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.height, viewport.height);
   SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.minDepth, minZ);
   SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.maxDepth, maxZ);
 
@@ -1949,6 +1996,12 @@ void ProcSetScissorRect(bool scissorEnable, int32_t top, int32_t left, int32_t b
   SetDirtyValue<int32_t>(g_dirtyStates.scissorRect, g_scissorRect.left, left);
   SetDirtyValue<int32_t>(g_dirtyStates.scissorRect, g_scissorRect.bottom, bottom);
   SetDirtyValue<int32_t>(g_dirtyStates.scissorRect, g_scissorRect.right, right);
+}
+
+void SetDefaultViewport() {
+  const GuestBaseTexture* surface = g_renderTarget != nullptr ? g_renderTarget : g_depthStencil;
+  if (surface != nullptr && surface->width != 0 && surface->height != 0)
+    ProcSetViewport(0.0f, 0.0f, float(surface->width), float(surface->height), 0.0f, 1.0f);
 }
 
 void SetRenderTargetInternal(GuestBaseTexture* renderTarget) {
@@ -1968,34 +2021,30 @@ void SetRenderTargetInternal(GuestBaseTexture* renderTarget) {
     g_lastPresentableRenderTarget = renderTarget;
   }
 
-  if (renderTarget != nullptr && renderTarget->width != 0 && renderTarget->height != 0) {
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.x, 0.0f);
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.y, 0.0f);
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.width, float(renderTarget->width));
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.height, float(renderTarget->height));
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.minDepth, 0.0f);
-    SetDirtyValue<float>(g_dirtyStates.viewport, g_viewport.maxDepth, 1.0f);
-    g_dirtyStates.scissorRect |= g_dirtyStates.viewport;
-  }
+  SetDefaultViewport();
 }
 
-void ProcSetRenderTarget(GuestBaseTexture* renderTarget) {
-  GuestBaseTexture* target = renderTarget != nullptr ? renderTarget : g_implicitRenderTarget;
-  SetRenderTargetInternal(target);
+void ProcSetRenderTarget(GuestBaseTexture* renderTarget, uint32_t caller) {
+  // Null is an intentional color unbind (depth-only pass), not a backbuffer bind.
+  SetRenderTargetInternal(renderTarget);
+  TraceTargetBinding("set-color", caller);
 }
 
 void ProcSetImplicitRenderTarget(GuestBaseTexture* renderTarget) {
   g_implicitRenderTarget = renderTarget;
   SetRenderTargetInternal(renderTarget);
+  TraceTargetBinding("set-implicit");
 }
 
-void ProcSetDepthStencilSurface(GuestSurface* depthStencil) {
+void ProcSetDepthStencilSurface(GuestSurface* depthStencil, uint32_t caller) {
   SetDirtyValue(g_dirtyStates.renderTargetAndDepthStencil, g_depthStencil, depthStencil);
+  TraceTargetBinding("set-depth", caller);
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthStencilFormat,
                 depthStencil ? depthStencil->format : RenderFormat::UNKNOWN);
   g_dirtyStates.viewport = true;
   if (depthStencil != nullptr) {
-    g_implicitDepthStencil = depthStencil;
+    if (g_renderTarget == nullptr)
+      SetDefaultViewport();
     // Latch per exact size for the stale-depth rescue (both pass directions).
     g_lastDepthBySize[DepthSizeKey(depthStencil->width, depthStencil->height,
                                    depthStencil->sampleCount)] = depthStencil;
@@ -2009,22 +2058,24 @@ void ProcDestructResource(GuestResource* resource) {
 }  // namespace
 
 void SetTexture(GuestDevice* /*device*/, uint32_t index, GuestTexture* texture,
-                uint32_t guestAddress) {
+                uint32_t guestAddress, int32_t exponentAdjust) {
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetTexture;
   cmd.setTexture.index = index;
   cmd.setTexture.texture = texture;
   cmd.setTexture.guestAddress = guestAddress;
+  cmd.setTexture.exponentAdjust = exponentAdjust;
   RenderQueue::Enqueue(cmd);
 }
 
 void SetTextureBase(GuestDevice* /*device*/, uint32_t index, GuestBaseTexture* texture,
-                    uint32_t guestAddress) {
+                    uint32_t guestAddress, int32_t exponentAdjust) {
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetTextureBase;
   cmd.setTextureBase.index = index;
   cmd.setTextureBase.texture = texture;
   cmd.setTextureBase.guestAddress = guestAddress;
+  cmd.setTextureBase.exponentAdjust = exponentAdjust;
   RenderQueue::Enqueue(cmd);
 }
 
@@ -2162,12 +2213,14 @@ void SetScissorRect(GuestDevice* device, GuestRect* rect) {
   RenderQueue::Enqueue(cmd);
 }
 
-void SetRenderTarget(GuestDevice* /*device*/, uint32_t index, GuestBaseTexture* renderTarget) {
+void SetRenderTarget(GuestDevice* /*device*/, uint32_t index, GuestBaseTexture* renderTarget,
+                     uint32_t caller) {
   if (index != 0)
     return;  // FM2 only ever uses a single color render target.
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetRenderTarget;
   cmd.setRenderTarget.renderTarget = renderTarget;
+  cmd.setRenderTarget.caller = caller;
   RenderQueue::Enqueue(cmd);
 }
 
@@ -2203,10 +2256,11 @@ GuestBaseTexture* GetCurrentColorRenderTarget() {
   return nullptr;
 }
 
-void SetDepthStencilSurface(GuestDevice* /*device*/, GuestSurface* depthStencil) {
+void SetDepthStencilSurface(GuestDevice* /*device*/, GuestSurface* depthStencil, uint32_t caller) {
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetDepthStencilSurface;
   cmd.setDepthStencilSurface.depthStencil = depthStencil;
+  cmd.setDepthStencilSurface.caller = caller;
   RenderQueue::Enqueue(cmd);
 }
 
@@ -2248,8 +2302,9 @@ void Clear(GuestDevice* /*device*/, uint32_t flags, const float* color, float z)
 }
 
 void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint,
-                      const GuestRect* sourceRect, uint32_t postClearFlags,
-                      const float* postClearColor, float postClearZ) {
+                      const GuestRect* sourceRect, uint32_t flags, uint32_t postClearFlags,
+                      const float* postClearColor, float postClearZ,
+                      uint32_t destLevel, uint32_t destSlice) {
   // Publish before enqueue: a later SetTexture must not schedule a stale CPU
   // upload while this resolve is still waiting for the render thread.
   if (destTexture != nullptr &&
@@ -2257,12 +2312,15 @@ void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint
     REXGPU_INFO("ResolveToTexture: preserving GPU contents from guest refresh (desc={} {}x{})",
                 destTexture->descriptorIndex, destTexture->width, destTexture->height);
   }
-  // Unleashed StretchRect pattern: link dest to the current RT and defer the
+  // Unleashed StretchRect pattern: link dest to the selected surface and defer the
   // copy/MSAA resolve until FlushPendingStretchRectCommands (before Present /
   // draw). Immediate path kept for non-texture destinations or region copies.
   RenderCommand cmd{};
   cmd.type = RenderCommandType::ResolveToTexture;
   cmd.resolveToTexture.destTexture = destTexture;
+  cmd.resolveToTexture.flags = flags;
+  cmd.resolveToTexture.destLevel = destLevel;
+  cmd.resolveToTexture.destSlice = destSlice;
   cmd.resolveToTexture.destX =
       destPoint != nullptr ? uint32_t(std::max(destPoint->x.get(), int32_t{0})) : 0;
   cmd.resolveToTexture.destY =
@@ -2670,6 +2728,16 @@ void CompleteVertexDeclaration(GuestVertexDeclaration* decl) {
     if (e.stream == 0xFFu)
       continue;
 
+    if (decl->bakedVertexFetch) {
+      const bool position = e.usage == D3DDECLUSAGE_POSITION && e.usageIndex == 0;
+      const auto format = e.type == 57
+                              ? (position ? RenderFormat::R32G32B32_UINT
+                                          : RenderFormat::R32G32B32_FLOAT)
+                              : (position ? RenderFormat::R32_UINT : RenderFormat::R32_FLOAT);
+      built.push_back({ConvertDeclUsage(e.usage), e.usageIndex, format, e.stream, e.offset});
+      continue;
+    }
+
     RenderFormat format = ConvertDeclType(e.type);
     if (!IsCanonicalDeclType(e.type)) {
       // Variant fetch dword handled by the field-decode fallback (or UNKNOWN).
@@ -2850,6 +2918,20 @@ uint32_t EffectiveStream0Stride(GuestDevice* device) {
 
 GuestVertexDeclaration* ResolveVertexDeclaration(GuestDevice* device) {
   const uint32_t streamStride = EffectiveStream0Stride(device);
+
+  // XDK flag 0x40 bypasses even a non-null bound declaration. The shader owns
+  // the fetch layout; an unsupported one must not fall through to a guess.
+  if (auto* vs = g_pipelineState.vertexShader; vs != nullptr && vs->bakedVertexFetch) {
+    auto* decl = vs->bakedDeclaration.get();
+    if (decl != nullptr) {
+      for (uint32_t stream = 0; stream < 16; ++stream) {
+        if (decl->bakedStrides[stream] &&
+            decl->bakedStrides[stream] != g_inputSlots[stream].stride)
+          return nullptr;
+      }
+    }
+    return decl;
+  }
 
   // Keep host stride mirrors coherent when a low-level guest path wrote
   // device+0x2FD8 without reaching the BindVertexStream wrapper.
@@ -3302,6 +3384,19 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
       (lastDevice != device || guestConsumedDirtyFlags) && !recording;
   lastDevice = device;
 
+  // Diagnostic only: alpha state may be inherited before BeginRecording.
+  // XDK AlphaTestEnable writes +10428 bit3; AlphaRef writes float +10372.
+  if (recording) {
+    const auto* bytes = reinterpret_cast<const uint8_t*>(device);
+    const uint32_t control = reinterpret_cast<const rex::be<uint32_t>*>(bytes + 10428)->get();
+    const float reference = reinterpret_cast<const rex::be<float>*>(bytes + 10372)->get();
+    static thread_local uint32_t enabledAlphaTraces = 0;
+    if ((control & 8u) != 0 && enabledAlphaTraces++ < 32)
+      REXGPU_INFO("RaceAlphaRecording: context=0x{:016X} control=0x{:X} reference={} "
+                  "queuedCommands={}", uint64_t(reinterpret_cast<uintptr_t>(device)),
+                  control, reference, queue.count);
+  }
+
   // Vertex/index bindings are mutable guest context state just like shader
   // constants. Capture them on the producer thread so a later unbind cannot
   // reach the render thread before this draw is flushed. Keep the exact offset
@@ -3564,14 +3659,6 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   GuestBaseTexture* renderTarget = g_pipelineState.colorWriteEnable != 0 ? g_renderTarget : nullptr;
   GuestSurface* depthStencil =
       (g_pipelineState.zEnable || g_pipelineState.stencilEnable) ? g_depthStencil : nullptr;
-  if (depthStencil == nullptr && (g_pipelineState.zEnable || g_pipelineState.stencilEnable) &&
-      renderTarget != nullptr && g_implicitDepthStencil != nullptr &&
-      AttachmentsCompatible(renderTarget, g_implicitDepthStencil)) {
-    depthStencil = g_implicitDepthStencil;
-    SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.depthStencilFormat,
-                  depthStencil->format);
-    g_dirtyStates.renderTargetAndDepthStencil = true;
-  }
   if (!AttachmentsCompatible(renderTarget, depthStencil)) {
     // Stale cross-pass depth bind (e.g. 512x512 envmap depth still bound when
     // scene draws resume on the 720p color RT): EDRAM had no such pairing
@@ -3702,8 +3789,26 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
     pipelineState.depthStencilFormat = RenderFormat::UNKNOWN;
   }
   RenderPipeline* pipeline = GetPipeline(pipelineState);
-  if (pipeline == nullptr)
+  if (pipeline == nullptr) {
+    // A once-per-reason message can hide all later race failures behind an
+    // unrelated menu draw. Record distinct rejected state, without retrying it.
+    static std::unordered_set<uint64_t> rejectedStates;
+    const uint64_t signature = XXH3_64bits(&pipelineState, sizeof(pipelineState));
+    if (rejectedStates.size() < 128 && rejectedStates.insert(signature).second) {
+      REXGPU_WARN("DrawRejected: frame={} draw={} vs=0x{:016X} ps=0x{:016X} "
+                  "decl=0x{:016X} queuedDecl=0x{:016X} strides={}/{}/{} "
+                  "color={} depth={} primitive={} colorWrite=0x{:X}",
+                  CurrentFrameIndex(), g_frameTrace.attemptedDraws,
+                  ShaderTraceId(pipelineState.vertexShader), ShaderTraceId(pipelineState.pixelShader),
+                  VertexDeclarationTraceId(pipelineState.vertexDeclaration),
+                  VertexDeclarationTraceId(g_boundVertexDeclaration),
+                  g_inputSlots[0].stride, g_inputSlots[1].stride, g_inputSlots[2].stride,
+                  uint32_t(pipelineState.renderTargetFormat),
+                  uint32_t(pipelineState.depthStencilFormat), primitiveType,
+                  pipelineState.colorWriteEnable);
+    }
     return;
+  }
   RenderPipelineLayout* layout = PipelineLayout();
   RenderCommandList* commandList = CommandList();
   if (layout == nullptr || commandList == nullptr)
@@ -3794,6 +3899,10 @@ void ProcClear(uint32_t flags, const float rgba[4], float z) {
   if (IsDeviceLost())
     return;
 
+  // Resolve destinations must retain the old contents if the guest clears
+  // the source with a separate Clear call rather than Resolve's clear flags.
+  FlushPendingStretchRectCommands();
+
   ++g_frameTrace.clears;
   MixFrameTrace(g_frameTrace.shapeHash, flags);
   MixTextureShape(g_frameTrace.shapeHash, g_renderTarget);
@@ -3802,9 +3911,11 @@ void ProcClear(uint32_t flags, const float rgba[4], float z) {
 
   if (g_renderTarget != nullptr && !IsLiveHostTexture(g_renderTarget)) {
     g_renderTarget = nullptr;
+    TraceTargetBinding("clear-invalid-color");
   }
   if (g_depthStencil != nullptr && !IsLiveHostTexture(g_depthStencil)) {
     g_depthStencil = nullptr;
+    TraceTargetBinding("clear-invalid-depth");
   }
 
   AddBarrier(g_renderTarget, RenderTextureLayout::COLOR_WRITE);
@@ -3846,13 +3957,13 @@ void ProcClear(uint32_t flags, const float rgba[4], float z) {
     if (g_framebuffer != nullptr) {
       commandList->clearDepthStencil(clearDepth, clearStencil, z, 0, &clearRect, 1);
       MarkAttachmentInitialized(g_depthStencil);
-      g_implicitDepthStencil = g_depthStencil;
     }
   }
 }
 
-void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_t destY,
-                          bool hasSrc, const RenderRect& srcRect) {
+void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t flags, uint32_t destX, uint32_t destY,
+                          bool hasSrc, const RenderRect& srcRect,
+                          uint32_t destLevel, uint32_t destSlice) {
   if (IsDeviceLost())
     return;
   ++g_frameTrace.resolves;
@@ -3861,12 +3972,40 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
   MixFrameTraceBytes(g_frameTrace.shapeHash, &srcRect, sizeof(srcRect));
   if (!IsLiveHostTexture(destTexture))
     return;
+  uint32_t destWidth = 0, destHeight = 0;
+  if (!ResolveDestinationExtent(*destTexture, destLevel, destSlice, destWidth, destHeight)) {
+    REXGPU_WARN("ResolveToTexture: invalid destination mip={} slice={} levels={}",
+                destLevel, destSlice, destTexture->levels);
+    return;
+  }
+  const bool base2D = destLevel == 0 && destSlice == 0 &&
+      (destTexture->type != ResourceType::Texture ||
+       static_cast<GuestTexture*>(destTexture)->viewDimension ==
+           RenderTextureViewDimension::TEXTURE_2D);
+  MixFrameTrace(g_frameTrace.shapeHash, uint64_t(destLevel) << 32 | destSlice);
   // Swap/Resolve often run after the guest unbound the color RT. Unleashed keeps
   // using the live surface via pending StretchRect links; fall back to the last
   // presentable RT so aperture resolves are not no-ops.
-  GuestBaseTexture* source = g_renderTarget;
-  if (!IsLiveHostTexture(source)) {
-    source = g_lastPresentableRenderTarget;
+  GuestBaseTexture* source = SelectResolveSource(flags,
+      IsLiveHostTexture(g_renderTarget) ? g_renderTarget : nullptr,
+      g_depthStencil, g_lastPresentableRenderTarget);
+  // Identify single-channel lighting resolves independently of menu log budgets.
+  static std::unordered_set<uint32_t> tracedLightingResolves;
+  if (destTexture->format == RenderFormat::R8_UNORM &&
+      tracedLightingResolves.size() < 64 &&
+      tracedLightingResolves.insert(destTexture->descriptorIndex).second) {
+    const bool sourceLive = IsLiveHostTexture(source);
+    REXGPU_INFO("LightingResolve: destDesc={} {}x{} rtCapable={} flags=0x{:X} "
+                "mip={} slice={} sourceLive={} sourceDesc={} {}x{} fmt={} samples={} "
+                "colorBound={} depthBound={} destPt={},{} hasSrc={} src={},{},{},{}",
+                destTexture->descriptorIndex, destWidth, destHeight,
+                destTexture->hostRenderTargetCapable, flags, destLevel, destSlice,
+                sourceLive, sourceLive ? source->descriptorIndex : 0,
+                sourceLive ? source->width : 0, sourceLive ? source->height : 0,
+                sourceLive ? int(source->format) : 0,
+                sourceLive ? GetSampleCount(source) : 0,
+                g_renderTarget != nullptr, g_depthStencil != nullptr,
+                destX, destY, hasSrc, srcRect.left, srcRect.top, srcRect.right, srcRect.bottom);
   }
   if (destTexture->width == 163 && destTexture->height == 47) {
     REXGPU_INFO(
@@ -3896,7 +4035,47 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
                             ? static_cast<GuestTexture*>(destTexture)
                             : nullptr;
 
-  if (surface != nullptr && destAsTexture != nullptr && !hasSrc && destX == 0 && destY == 0) {
+  const bool depthCopy = RenderFormatIsDepth(source->format) ||
+                         RenderFormatIsDepth(destTexture->format);
+  // Full color resolves support a selected mip/face. Partial MSAA and
+  // format-converting blits still address only base 2D targets.
+  const bool fullResolve = IsFullResolveRegion(source->width, source->height,
+      destWidth, destHeight, destX, destY, hasSrc, srcRect);
+  if (!base2D && (depthCopy || (GetSampleCount(source) != 1 && !fullResolve) ||
+                 !FormatsCompatibleForGpuCopy(source->format, destTexture->format))) {
+    static uint32_t unsupportedSubresource = 0;
+    if (++unsupportedSubresource <= 24)
+      REXGPU_WARN("ResolveToTexture: unsupported subresource copy mip={} slice={} samples={} "
+                  "formats={}->{}", destLevel, destSlice, GetSampleCount(source),
+                  int(source->format), int(destTexture->format));
+    return;
+  }
+  if (!base2D)
+    FlushPendingStretchRectCommands();
+  if (depthCopy) {
+    const bool fullRegion = destX == 0 && destY == 0 &&
+        (!hasSrc || (srcRect.left == 0 && srcRect.top == 0 &&
+                     srcRect.right == int32_t(source->width) &&
+                     srcRect.bottom == int32_t(source->height)));
+    if (surface == nullptr || !fullRegion || !CanCopyDepthSurface(*surface, *destTexture)) {
+      static uint32_t unsupportedDepthResolve = 0;
+      if (++unsupportedDepthResolve <= 24)
+        REXGPU_WARN("ResolveToTexture: unsupported depth copy {}x{} fmt={}@{} -> {}x{} fmt={} "
+                    "full={} (n={})", source->width, source->height, int(source->format),
+                    GetSampleCount(source), destTexture->width, destTexture->height,
+                    int(destTexture->format), fullRegion, unsupportedDepthResolve);
+      return;  // Never send a depth resource through the color resolve/blit path.
+    }
+    static uint32_t depthResolveCount = 0;
+    if (++depthResolveCount <= 12)
+      REXGPU_INFO("DepthResolve: {}x{}@{} sourceDesc={} destDesc={} colorBound={} "
+                  "viewport={},{},{}x{} (n={})", source->width, source->height,
+                  GetSampleCount(source), source->descriptorIndex, destTexture->descriptorIndex,
+                  g_renderTarget != nullptr, g_viewport.x, g_viewport.y, g_viewport.width,
+                  g_viewport.height, depthResolveCount);
+  }
+
+  if (base2D && surface != nullptr && destAsTexture != nullptr && !hasSrc && destX == 0 && destY == 0) {
     RegisterStretchRect(destAsTexture, surface);
     static uint64_t resolveDeferred = 0;
     if (++resolveDeferred <= 24 || resolveDeferred % 300 == 1) {
@@ -3928,7 +4107,7 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
   // both the explicit and implicit-full source rectangles to the destination.
   RenderRect clippedSrc =
       hasSrc ? srcRect : RenderRect(0, 0, int32_t(source->width), int32_t(source->height));
-  if (!ClipResolveCopyRegion(source, destTexture, clippedSrc, destX, destY)) {
+  if (!ClipResolveCopyRegion(source, destTexture, clippedSrc, destX, destY, destWidth, destHeight)) {
     static uint64_t resolveEmptySkip = 0;
     if (++resolveEmptySkip <= 24 || resolveEmptySkip % 300 == 1) {
       REXGPU_WARN("ResolveToTexture: empty/out-of-range region {}x{} -> {}x{} at {},{} (n={})",
@@ -3947,17 +4126,26 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
 
   const bool multiSampling =
       surface != nullptr && surface->sampleCount != RenderSampleCount::COUNT_1;
-  if (multiSampling) {
+  if (depthCopy) {
+    AddBarrier(source, RenderTextureLayout::COPY_SOURCE);
+    AddBarrier(destTexture, RenderTextureLayout::COPY_DEST);
+    FlushBarriers();
+    CommandList()->copyTexture(destTexture->texture, source->texture);
+  } else if (multiSampling) {
     AddBarrier(source, RenderTextureLayout::RESOLVE_SOURCE);
     AddBarrier(destTexture, RenderTextureLayout::RESOLVE_DEST);
     FlushBarriers();
-    const bool fullSubresource =
-        destX == 0 && destY == 0 && clippedSrc.left == 0 && clippedSrc.top == 0 &&
-        clippedSrc.right == int32_t(source->width) &&
-        clippedSrc.bottom == int32_t(source->height) && source->width == destTexture->width &&
-        source->height == destTexture->height;
+    const bool fullSubresource = IsFullResolveRegion(source->width, source->height,
+        destWidth, destHeight, destX, destY, true, clippedSrc);
     if (fullSubresource) {
-      CommandList()->resolveTexture(destTexture->texture, source->texture);
+      CommandList()->resolveTexture(destTexture->texture, source->texture, destLevel, destSlice);
+      if (!base2D) {
+        static uint32_t subresourceResolveTraces = 0;
+        if (++subresourceResolveTraces <= 12)
+          REXGPU_INFO("SubresourceResolve: destDesc={} mip={} slice={} {}x{} samples={}",
+                      destTexture->descriptorIndex, destLevel, destSlice,
+                      destWidth, destHeight, GetSampleCount(source));
+      }
     } else {
       CommandList()->resolveTextureRegion(destTexture->texture, destX, destY, source->texture,
                                           &clippedSrc);
@@ -3969,11 +4157,12 @@ void ProcResolveToTexture(GuestBaseTexture* destTexture, uint32_t destX, uint32_
     FlushBarriers();
     const RenderBox srcBox(clippedSrc.left, clippedSrc.top, clippedSrc.right, clippedSrc.bottom);
     CommandList()->copyTextureRegion(
-        RenderTextureCopyLocation::Subresource(destTexture->texture, 0),
+        RenderTextureCopyLocation::Subresource(destTexture->texture, destLevel, destSlice),
         RenderTextureCopyLocation::Subresource(source->texture, 0), destX, destY, 0, &srcBox);
   }
   MarkAttachmentInitialized(destTexture);
-  g_stretchRectPresentOverride.store(nullptr, std::memory_order_relaxed);
+  if (!depthCopy)
+    g_stretchRectPresentOverride.store(nullptr, std::memory_order_relaxed);
 }
 
 void TraceSavingDraw(uint32_t kind, uint32_t primitiveType, uint32_t count, uint32_t stride) {
@@ -4217,13 +4406,14 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
                          cmd.setScissorRect.right);
       break;
     case RenderCommandType::SetRenderTarget:
-      ProcSetRenderTarget(cmd.setRenderTarget.renderTarget);
+      ProcSetRenderTarget(cmd.setRenderTarget.renderTarget, cmd.setRenderTarget.caller);
       break;
     case RenderCommandType::SetImplicitRenderTarget:
       ProcSetImplicitRenderTarget(cmd.setImplicitRenderTarget.renderTarget);
       break;
     case RenderCommandType::SetDepthStencilSurface:
-      ProcSetDepthStencilSurface(cmd.setDepthStencilSurface.depthStencil);
+      ProcSetDepthStencilSurface(cmd.setDepthStencilSurface.depthStencil,
+                                 cmd.setDepthStencilSurface.caller);
       break;
     case RenderCommandType::SetRenderState:
       ApplyRenderState(cmd.setRenderState.state, cmd.setRenderState.value);
@@ -4247,11 +4437,17 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
           cmd.setStencilState.readMask, cmd.setStencilState.writeMask, cmd.setStencilState.ref);
       break;
     case RenderCommandType::SetTexture:
+      if (cmd.setTexture.index >= 16)
+        break;
+      g_sharedConstants.textureExponentAdjust[cmd.setTexture.index] = cmd.setTexture.exponentAdjust;
       ProcSetTexture(cmd.setTexture.index, cmd.setTexture.texture);
       TraceSavingAppliedBinding(cmd.setTexture.index, cmd.setTexture.guestAddress,
                                 cmd.setTexture.texture);
       break;
     case RenderCommandType::SetTextureBase:
+      if (cmd.setTextureBase.index >= 16)
+        break;
+      g_sharedConstants.textureExponentAdjust[cmd.setTextureBase.index] = cmd.setTextureBase.exponentAdjust;
       ProcSetTextureBase(cmd.setTextureBase.index, cmd.setTextureBase.texture);
       TraceSavingAppliedBinding(cmd.setTextureBase.index, cmd.setTextureBase.guestAddress,
                                 cmd.setTextureBase.texture);
@@ -4307,8 +4503,10 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
     case RenderCommandType::ResolveToTexture: {
       RenderRect srcRect(cmd.resolveToTexture.srcLeft, cmd.resolveToTexture.srcTop,
                          cmd.resolveToTexture.srcRight, cmd.resolveToTexture.srcBottom);
-      ProcResolveToTexture(cmd.resolveToTexture.destTexture, cmd.resolveToTexture.destX,
-                           cmd.resolveToTexture.destY, cmd.resolveToTexture.hasSrc, srcRect);
+      ProcResolveToTexture(cmd.resolveToTexture.destTexture, cmd.resolveToTexture.flags,
+                           cmd.resolveToTexture.destX,
+                           cmd.resolveToTexture.destY, cmd.resolveToTexture.hasSrc, srcRect,
+                           cmd.resolveToTexture.destLevel, cmd.resolveToTexture.destSlice);
       if (cmd.resolveToTexture.postClearFlags != 0) {
         // Predicated-tiling band sequences: hardware re-renders EDRAM between
         // band resolves, so resolve→clear→resolve is safe there. We render all
@@ -4323,8 +4521,11 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
         bool isIntermediateBand = false;
         if (dest != nullptr && cmd.resolveToTexture.hasSrc) {
           const int32_t copyHeight = srcRect.bottom - srcRect.top;
-          isIntermediateBand =
-              int32_t(cmd.resolveToTexture.destY) + copyHeight < int32_t(dest->height);
+          uint32_t width = 0, height = 0;
+          if (ResolveDestinationExtent(*dest, cmd.resolveToTexture.destLevel,
+                                       cmd.resolveToTexture.destSlice, width, height))
+            isIntermediateBand =
+                int32_t(cmd.resolveToTexture.destY) + copyHeight < int32_t(height);
         }
         if (!isIntermediateBand) {
           // A full-surface resolve is normally deferred until the next draw or
@@ -4382,6 +4583,60 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
                             cmd.createSurfaceHost.height, cmd.createSurfaceHost.format,
                             cmd.createSurfaceHost.sampleCount, cmd.createSurfaceHost.depth);
       break;
+    case RenderCommandType::ReinitializeSurfaceHost: {
+      const auto& update = cmd.createSurfaceHost;
+      GuestSurface* surface = update.surface;
+      if (surface == nullptr || IsDeviceLost())
+        break;
+      const RenderFormat format = ConvertFormat(update.format);
+      if (surface->MatchesHostLayout(update.width, SurfaceHostHeight(update.width, update.height),
+                                     format, update.sampleCount)) {
+        // Ordinary mode re-entry only rewrites XDK metadata; keep its contents
+        // and descriptors. No GPU allocation or wait is needed.
+        surface->guestFormat = update.format;
+        surface->tileGrownFromHeight =
+            SurfaceHostHeight(update.width, update.height) != update.height ? update.height : 0;
+        break;
+      }
+
+      // A genuine layout change belongs at resource reinitialization, not at
+      // draw/resolve time. Drain old users before replacing storage in place.
+      REXGPU_INFO("XGSetSurfaceHeader: rebuilding host surface {}x{}@{} -> {}x{}@{}",
+                  surface->width, surface->height, surface->sampleCount,
+                  update.width, SurfaceHostHeight(update.width, update.height), update.sampleCount);
+      FlushPendingStretchRectCommands();
+      FlushBarriers();
+      CommandList()->setFramebuffer(nullptr);
+      ProcWaitForGpu();
+      g_framebuffer = nullptr;
+      g_framebufferCache.clear();
+      g_initializedAttachments.erase(surface->texture);
+      g_barrierMap.erase(surface);
+      std::erase_if(g_lastDepthBySize, [surface](const auto& entry) {
+        return entry.second == surface;
+      });
+      surface->framebuffers.clear();
+      surface->textureView.reset();
+      surface->textureHolder.reset();
+      surface->texture = nullptr;
+      surface->layout = RenderTextureLayout::UNKNOWN;
+      if (surface->mappedMemory != nullptr) {
+        ghp::GuestFreeRaw(ghp::ToGuest(surface->mappedMemory));
+        surface->mappedMemory = nullptr;
+        surface->mappedSizeBytes = 0;
+      }
+      surface->type = update.depth ? ResourceType::DepthStencil : ResourceType::RenderTarget;
+      ProcCreateSurfaceHost(surface, update.width, update.height, update.format,
+                            update.sampleCount, update.depth);
+      if (g_depthStencil == surface) {
+        g_pipelineState.depthStencilFormat = surface->format;
+        g_lastDepthBySize[DepthSizeKey(surface->width, surface->height, surface->sampleCount)] = surface;
+      }
+      if (g_renderTarget == surface || g_depthStencil == surface)
+        SetDefaultViewport();
+      g_dirtyStates = DirtyStates(true);
+      break;
+    }
     case RenderCommandType::UnlockTextureRect:
       ProcUnlockTextureRect(cmd.unlockTextureRect.texture, cmd.unlockTextureRect.data,
                             cmd.unlockTextureRect.size, cmd.unlockTextureRect.level);
@@ -4528,6 +4783,64 @@ void TraceMr2BodyDraw(size_t commandIndex, const RenderCommand& command,
       g_sharedConstants.samplerIndices[6], g_sharedConstants.samplerIndices[10]);
 }
 
+// Diagnostic only: the paired sky/stadium captures consume mesh/material data
+// as camera matrices. Attribute each register to its actual replay writer;
+// never substitute matrices or infer ownership from the shader's appearance.
+void TraceRaceConstantProvenance(const RenderCommand* commands, size_t drawIndex,
+                                 const DeferredExecutionSnapshot* snapshot,
+                                 const uint32_t* inherited) {
+  const uint64_t hash = ShaderTraceId(g_pipelineState.vertexShader);
+  constexpr std::array<uint64_t, 3> shaders{
+      0xE7F8C02734364687ull, 0x80797CA0D8594DD4ull, 0x13610CEB9F46DFDDull};
+  const auto shader = std::find(shaders.begin(), shaders.end(), hash);
+  if (shader == shaders.end() || g_renderTarget == nullptr ||
+      g_renderTarget->width != 1280 || g_renderTarget->height != 720)
+    return;
+  static std::array<uint32_t, shaders.size()> counts{};
+  uint32_t& count = counts[size_t(shader - shaders.begin())];
+  if (count >= 8)
+    return;
+  ++count;
+  REXGPU_INFO("RaceConstantSource: shader={:016X} sample={} drawCommand={} snapshot={}",
+              hash, count, drawIndex, snapshot != nullptr);
+  for (uint32_t reg = 0; reg < 16; ++reg) {
+    int64_t writer = -1;
+    bool fixup = false;
+    for (size_t i = 0; i < drawIndex; ++i) {
+      const RenderCommand& command = commands[i];
+      if (command.type != RenderCommandType::SetVertexShaderConstants &&
+          command.type != RenderCommandType::ApplyVertexShaderConstantFixup)
+        continue;
+      const auto& constants = command.setShaderConstants;
+      if (reg * 4 >= constants.index &&
+          reg * 4 + 4 <= constants.index + constants.size / 4) {
+        writer = int64_t(i);
+        fixup = command.type == RenderCommandType::ApplyVertexShaderConstantFixup;
+      }
+    }
+    const bool emitted = snapshot != nullptr &&
+        (snapshot->vertexExecutionConstants.coverage[reg / 64] &
+         (uint64_t{1} << (reg % 64))) != 0;
+    std::array<uint32_t, 4> live{};
+    std::array<uint32_t, 4> emission{};
+    if (snapshot != nullptr) {
+      std::memcpy(live.data(), snapshot->vertexConstants.data() + reg * 16, 16);
+      std::memcpy(emission.data(), snapshot->vertexExecutionConstants.values.data() + reg * 4, 16);
+    }
+    // Print stored BE dwords consistently with the existing MR2 state trace.
+    const uint32_t* before = inherited + reg * 4;
+    const uint32_t* after = g_vertexShaderConstants + reg * 4;
+    REXGPU_INFO("RaceConstantRegister: shader={:016X} sample={} c{} writer={} fixup={} emitted={} "
+                "inherited={:08X}/{:08X}/{:08X}/{:08X} live={:08X}/{:08X}/{:08X}/{:08X} "
+                "emission={:08X}/{:08X}/{:08X}/{:08X} final={:08X}/{:08X}/{:08X}/{:08X}",
+                hash, count, reg, writer, fixup, emitted,
+                before[0], before[1], before[2], before[3],
+                live[0], live[1], live[2], live[3],
+                emission[0], emission[1], emission[2], emission[3],
+                after[0], after[1], after[2], after[3]);
+  }
+}
+
 void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
                                     const DeferredExecutionSnapshot* executionSnapshot) {
   if (commands == nullptr || count == 0)
@@ -4536,12 +4849,22 @@ void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
   std::lock_guard lock(RecordingMutex());
   FlushPendingStretchRectCommands();
 
+  if (executionSnapshot != nullptr) {
+    // Compilation uses a separate guest context but native setters share state.
+    // Enter the executing context before saving the template's scoped state, so
+    // its attachments also survive replay for subsequent direct draws. Apply
+    // even null bindings; recorded target commands remain authoritative later.
+    ProcSetRenderTarget(executionSnapshot->colorTarget, 0);
+    ProcSetDepthStencilSurface(executionSnapshot->depthTarget, 0);
+    const auto& viewport = executionSnapshot->viewport;
+    ProcSetViewport(viewport[0], viewport[1], viewport[2], viewport[3], viewport[4], viewport[5]);
+  }
+
   struct SavedState {
     PipelineState pipelineState;
     GuestBaseTexture* renderTarget;
     GuestBaseTexture* implicitRenderTarget;
     GuestSurface* depthStencil;
-    GuestSurface* implicitDepthStencil;
     RenderViewport viewport;
     bool viewportEnabled;
     GuestVertexDeclaration* boundVertexDeclaration;
@@ -4559,7 +4882,6 @@ void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
           g_renderTarget,
           g_implicitRenderTarget,
           g_depthStencil,
-          g_implicitDepthStencil,
           g_viewport,
           g_viewportEnabled,
           g_boundVertexDeclaration,
@@ -4607,6 +4929,32 @@ void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
                         type == RenderCommandType::DrawIndexedPrimitive ||
                         type == RenderCommandType::DrawPrimitiveUP;
     if (isDraw && executionSnapshot != nullptr) {
+      if (g_renderTarget == nullptr && executionSnapshot->guestColorTarget != 0) {
+        static size_t lastDump = 0;
+        static uint32_t dumps = 0;
+        if (lastDump != g_targetBindingTraceCount && dumps < 16) {
+          ++dumps;
+          lastDump = g_targetBindingTraceCount;
+          const size_t start = lastDump > g_targetBindingTrace.size()
+                                   ? lastDump - g_targetBindingTrace.size() : 0;
+          for (size_t entry = start; entry < lastDump; ++entry) {
+            const auto& trace = g_targetBindingTrace[entry % g_targetBindingTrace.size()];
+            REXGPU_WARN("TargetBindingHistory: frame={} dump={} seq={} owner={} caller=0x{:08X} color=0x{:08X} depth=0x{:08X}",
+                        CurrentFrameIndex(), dumps, entry, trace.owner, trace.caller, trace.color, trace.depth);
+          }
+        }
+        static std::unordered_set<uint64_t> missingTargetShaders;
+        const uint64_t shader = ShaderTraceId(g_pipelineState.vertexShader);
+        if (missingTargetShaders.size() < 64 && missingTargetShaders.insert(shader).second) {
+          REXGPU_WARN("ReplayTargetMismatch: frame={} command={} vs=0x{:016X} "
+                      "guestColor=0x{:08X} guestDepth=0x{:08X} nativeColor={} nativeDepth={} "
+                      "savedColor={} savedDepth={}",
+                      CurrentFrameIndex(), i, shader, executionSnapshot->guestColorTarget,
+                      executionSnapshot->guestDepthTarget, g_renderTarget != nullptr,
+                      g_depthStencil != nullptr, saved.renderTarget != nullptr,
+                      saved.depthStencil != nullptr);
+        }
+      }
       ProcSetBooleans(executionSnapshot->booleans.data());
       SetReverseZ(executionSnapshot->viewportReverseZ != 0);
     }
@@ -4614,26 +4962,33 @@ void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
       replayVertexFixups.OverlayAndClear(g_vertexShaderConstants, 256);
       replayPixelFixups.OverlayAndClear(g_pixelShaderConstants, 224);
     }
-    if (isDraw)
+    if (isDraw) {
+      TraceRaceConstantProvenance(commands, i, executionSnapshot, saved.vertexConstants.data());
       TraceMr2BodyDraw(i, commands[i], executionSnapshot);
+    }
     DispatchRenderCommand(commands[i]);
   }
 
   g_pipelineState = saved.pipelineState;
+  const bool targetsChanged = g_renderTarget != saved.renderTarget ||
+                              g_depthStencil != saved.depthStencil;
   g_renderTarget = saved.renderTarget;
   g_implicitRenderTarget = saved.implicitRenderTarget;
   g_depthStencil = saved.depthStencil;
-  g_implicitDepthStencil = saved.implicitDepthStencil;
+  if (targetsChanged)
+    TraceTargetBinding("replay-restore");
   g_viewport = saved.viewport;
   g_viewportEnabled = saved.viewportEnabled;
   g_boundVertexDeclaration = saved.boundVertexDeclaration;
   g_sharedConstants = saved.sharedConstants;
   g_sharedConstantsInitialized = saved.sharedConstantsInitialized;
   std::copy(saved.textures.begin(), saved.textures.end(), std::begin(g_textures));
-  std::copy(saved.vertexConstants.begin(), saved.vertexConstants.end(),
-            std::begin(g_vertexShaderConstants));
-  std::copy(saved.pixelConstants.begin(), saved.pixelConstants.end(),
-            std::begin(g_pixelShaderConstants));
+  RestoreDeferredShaderConstants(saved.vertexConstants.data(), g_vertexShaderConstants, 256,
+                                  executionSnapshot != nullptr
+                                      ? &executionSnapshot->vertexExecutionConstants : nullptr);
+  RestoreDeferredShaderConstants(saved.pixelConstants.data(), g_pixelShaderConstants, 224,
+                                  executionSnapshot != nullptr
+                                      ? &executionSnapshot->pixelExecutionConstants : nullptr);
   g_scissorTestEnable = saved.scissorTestEnable;
   g_scissorRect = saved.scissorRect;
   std::copy(saved.vertexBufferViews.begin(), saved.vertexBufferViews.end(),

@@ -29,6 +29,7 @@
 #include "render/render_queue.h"
 #include "render/render_state.h"
 #include "render/shaders/copy_ps.hlsl.dxil.h"
+#include "render/shaders/copy_msaa_ps.hlsl.dxil.h"
 #include "render/shaders/copy_vs.hlsl.dxil.h"
 
 using namespace plume;
@@ -97,6 +98,7 @@ std::unique_ptr<RenderPipelineLayout> g_pipelineLayout;
 
 std::unique_ptr<RenderShader> g_blitVertexShader;
 std::unique_ptr<RenderShader> g_blitPixelShader;
+std::unique_ptr<RenderShader> g_blitMsaaPixelShader;
 std::unordered_map<uint32_t, std::unique_ptr<RenderPipeline>> g_blitPipelines;
 
 bool g_initialized = false;
@@ -564,6 +566,8 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
       g_copy_vs_dxil, sizeof(g_copy_vs_dxil), "main", RenderShaderFormat::DXIL);
   g_blitPixelShader = g_device->createShader(
       g_copy_ps_dxil, sizeof(g_copy_ps_dxil), "main", RenderShaderFormat::DXIL);
+  g_blitMsaaPixelShader = g_device->createShader(
+      g_copy_msaa_ps_dxil, sizeof(g_copy_msaa_ps_dxil), "main", RenderShaderFormat::DXIL);
 
   g_initialized = true;
   REXGPU_INFO("Video::Init - swapchain {}x{} valid={}", g_swapChain->getWidth(),
@@ -749,14 +753,16 @@ RenderDescriptorSet* SamplerDescriptorSet() {
 
 RenderPipelineLayout* PipelineLayout() { return g_pipelineLayout.get(); }
 
-RenderPipeline* GetBlitPipeline(RenderFormat format) {
+RenderPipeline* GetBlitPipeline(RenderFormat format, bool multisampled) {
   if (g_device == nullptr) return nullptr;
-  auto& pipeline = g_blitPipelines[uint32_t(format)];
+  auto* pixelShader = multisampled ? g_blitMsaaPixelShader.get() : g_blitPixelShader.get();
+  if (pixelShader == nullptr || g_blitVertexShader == nullptr) return nullptr;
+  auto& pipeline = g_blitPipelines[(uint32_t(format) << 1) | uint32_t(multisampled)];
   if (pipeline == nullptr) {
     RenderGraphicsPipelineDesc desc;
     desc.pipelineLayout = g_pipelineLayout.get();
     desc.vertexShader = g_blitVertexShader.get();
-    desc.pixelShader = g_blitPixelShader.get();
+    desc.pixelShader = pixelShader;
     desc.renderTargetFormat[0] = format;
     desc.renderTargetBlend[0] = RenderBlendDesc::Copy();
     desc.renderTargetCount = 1;
@@ -981,6 +987,7 @@ void Video::Shutdown() {
   WaitForGPU();
   g_blitPipelines.clear();
   g_blitPixelShader.reset();
+  g_blitMsaaPixelShader.reset();
   g_blitVertexShader.reset();
   g_pipelineLayout.reset();
   g_defaultSampler.reset();

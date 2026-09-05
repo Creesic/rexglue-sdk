@@ -96,29 +96,48 @@ class RecordedRenderBatch {
     markers_.push_back({marker, commands_.size()});
   }
 
-  size_t AssociateTextureFixup(uint32_t handle, uint32_t guestAddress) {
-    TextureFixup* fixup = nullptr;
-    for (TextureFixup& candidate : textureFixups_) {
-      if (candidate.handle == handle) {
-        fixup = &candidate;
-        break;
-      }
+  // XDK handles are positive (type/flags in bits 24..30). Native-only
+  // texture fixups use bit 31 and never enter the guest packet patcher.
+  static bool IsNativeTextureFixup(uint32_t handle) {
+    return (handle & 0xFF000000u) == 0x87000000u;
+  }
+
+  uint32_t RegisterTextureFixup(uint32_t handle, uint32_t guestAddress,
+                                uint32_t startMarker, uint32_t stopMarker) {
+    size_t startIndex = 0;
+    size_t stopIndex = commands_.size();
+    if (guestAddress == 0 || handle == 0 ||
+        (startMarker != 0 && !FindMarker(startMarker, startIndex)) ||
+        (stopMarker != 0 && !FindMarker(stopMarker, stopIndex)) || startIndex > stopIndex) {
+      return handle;
     }
-    if (fixup == nullptr) {
-      textureFixups_.push_back({handle});
-      fixup = &textureFixups_.back();
-    }
-    fixup->commandIndices.clear();
-    for (size_t i = 0; i < commands_.size(); ++i) {
+
+    TextureFixup fixup;
+    for (size_t i = startIndex; i < stopIndex; ++i) {
       const RenderCommand& command = commands_[i];
       const uint32_t sourceAddress =
           command.type == RenderCommandType::SetTexture       ? command.setTexture.guestAddress
           : command.type == RenderCommandType::SetTextureBase ? command.setTextureBase.guestAddress
                                                               : 0;
       if (sourceAddress == guestAddress && sourceAddress != 0)
-        fixup->commandIndices.push_back(i);
+        fixup.commandIndices.push_back(i);
     }
-    return fixup->commandIndices.size();
+    if (fixup.commandIndices.empty())
+      return handle;
+    if (handle == UINT32_MAX) {
+      if (textureFixups_.size() >= 0x00FFFFFFu)
+        return UINT32_MAX;
+      handle = 0x87000000u | uint32_t(textureFixups_.size());
+    }
+    fixup.handle = handle;
+    for (TextureFixup& existing : textureFixups_) {
+      if (existing.handle == handle) {
+        existing = std::move(fixup);
+        return handle;
+      }
+    }
+    textureFixups_.push_back(std::move(fixup));
+    return handle;
   }
 
   bool SetTextureFixup(uint32_t handle, const RenderCommand& replacement) {
@@ -292,7 +311,7 @@ class RecordedRenderBatch {
   uint8_t* Copy(const uint8_t* source, uint32_t size) {
     if (source == nullptr || size == 0)
       return nullptr;
-    auto copy = std::make_unique<uint8_t[]>(size);
+    auto copy = std::make_shared<uint8_t[]>(size);
     std::memcpy(copy.get(), source, size);
     uint8_t* result = copy.get();
     payloads_.push_back(std::move(copy));
@@ -300,7 +319,9 @@ class RecordedRenderBatch {
   }
 
   std::vector<RenderCommand> commands_;
-  std::vector<std::unique_ptr<uint8_t[]>> payloads_;
+  // Clones share immutable snapshots, while command vectors and fixups copy
+  // by value. Changing a clone's fixups must never change its source/siblings.
+  std::vector<std::shared_ptr<const uint8_t[]>> payloads_;
   std::vector<CommandMarker> markers_;
   std::vector<TextureFixup> textureFixups_;
   std::vector<ShaderConstantFixup> shaderConstantFixups_;
@@ -327,17 +348,20 @@ struct RenderQueue {
   static bool IsOnRenderThread();
 
   // Record the native D3D command stream produced while FM2 builds a reusable
-  // guest command buffer, bind it to the returned clone, then replay it at the
-  // guest's later EmitDirtyStateAndDrawList call.
-  static void BeginRecording();
+  // guest command buffer. Finalize publishes the source; cloning also publishes
+  // an independent copy. Either can be submitted by EmitDirtyStateAndDrawList.
+  static void BeginRecording(uint32_t sourceAddress);
   static void EndRecording();
   static bool IsRecording();
   static void RecordPendingCommandBufferMarker(uint32_t marker);
-  static size_t AssociatePendingTextureFixup(uint32_t handle, uint32_t guestAddress);
+  static uint32_t RegisterRecordingTextureFixup(uint32_t sourceAddress, uint32_t handle,
+                                                uint32_t guestAddress, uint32_t startMarker,
+                                                uint32_t stopMarker);
   static size_t AssociatePendingShaderConstantFixup(uint32_t handle, bool pixelShader,
                                                     uint32_t startRegister, uint32_t registerCount,
                                                     uint32_t startMarker, uint32_t stopMarker);
-  static void BindPendingRecording(uint32_t cloneAddress);
+  static void BindPendingRecording(uint32_t cloneAddress, uint32_t sourceAddress,
+                                    uint32_t caller);
   static bool SetRecordingTextureFixup(uint32_t cloneAddress, uint32_t handle,
                                        const RenderCommand& replacement);
   static bool SetRecordingShaderConstantFixup(uint32_t cloneAddress, uint32_t handle,

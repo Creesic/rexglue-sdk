@@ -62,6 +62,8 @@ void UnlockIndexBuffer(GuestBuffer* buffer);
 GuestTexture* CreateTexture(uint32_t width, uint32_t height, uint32_t depth, uint32_t levels,
                             uint32_t usage, uint32_t format, uint32_t pool, uint32_t type);
 GuestSurface* CreateSurface(uint32_t width, uint32_t height, uint32_t format, uint32_t multiSample);
+void ReinitializeSurface(GuestSurface* surface, uint32_t width, uint32_t height,
+                         uint32_t format, uint32_t multiSample);
 void LockRect(GuestBaseTexture* texture, uint32_t level, uint32_t* outPitch, uint32_t* outBits);
 void UnlockGuestResource(GuestResource* resource);
 GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestElements);
@@ -71,6 +73,7 @@ GuestShader* CreateVertexShader(const uint32_t* function);
 GuestShader* CreatePixelShader(const uint32_t* function);
 void RegisterShaderAlias(uint32_t guestAddress, GuestShader* shader);
 GuestShader* LookupShaderAlias(uint32_t guestAddress);
+void RegisterSplitShader(uint32_t guestAddress, uint32_t physicalAddress, bool vertex);
 }  // namespace fm2::render
 
 namespace {
@@ -208,9 +211,62 @@ uint32_t CreateSurfaceHook(uint32_t width, uint32_t height, uint32_t format, uin
   return ghp::ToGuest(rr::CreateSurface(width, height, format, multiSample));
 }
 
+REX_IMPORT(__imp__sub_823C5DB8, g_origSetSurfaceHeader,
+           uint32_t(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
+
+uint32_t SetSurfaceHeaderHook(uint32_t width, uint32_t height, uint32_t format,
+                              uint32_t multiSample, uint32_t parameters,
+                              uint32_t surfaceAddress, uint32_t hierarchicalZSize) {
+  auto* surface = ghp::ToHost<GuestSurface>(surfaceAddress);
+  if (!rr::IsFm2Resource(surface))
+    return g_origSetSurfaceHeader(width, height, format, multiSample, parameters,
+                                  surfaceAddress, hierarchicalZSize);
+  if (surface->type != rr::ResourceType::RenderTarget &&
+      surface->type != rr::ResourceType::DepthStencil)
+    return 0;
+
+  // Run the XDK layout calculation on scratch guest memory. Never let its
+  // Common=4 / big-endian ReferenceCount=1 writes reach the live native object,
+  // even briefly: the render thread may still be consuming earlier draws.
+  auto* header = ghp::GuestNew<std::array<uint8_t, rr::kGuestResourceHeaderBytes>>();
+  if (header == nullptr) {
+    REXGPU_ERROR("XGSetSurfaceHeader: scratch allocation failed");
+    return 0;
+  }
+  std::memcpy(header->data() + 8, surface->guestHeader, sizeof(surface->guestHeader));
+  const uint32_t size = g_origSetSurfaceHeader(width, height, format, multiSample, parameters,
+                                              ghp::ToGuest(header), hierarchicalZSize);
+  rr::ReinitializeSurface(surface, width, height, format, multiSample);
+  surface->UpdateGuestHeader(header->data());
+  ghp::GuestDelete(header);
+  static std::atomic<uint32_t> updates{0};
+  if (updates.fetch_add(1, std::memory_order_relaxed) < 16)
+    REXGPU_INFO("XGSetSurfaceHeader: preserved native surface 0x{:08X} {}x{} fmt=0x{:08X} msaa={}",
+                surfaceAddress, width, height, format, multiSample);
+  return size;
+}
+
+REX_HOOK(sub_823C5DB8, SetSurfaceHeaderHook);
+
 uint32_t CreateVertexDeclarationHook(const GuestVertexElement* elements) {
   return ghp::ToGuest(rr::CreateVertexDeclaration(elements));
 }
+
+REX_IMPORT(__imp__sub_8236DF18, g_origRegisterVertexShader, void(uint32_t, uint32_t));
+REX_IMPORT(__imp__sub_8236DCD8, g_origRegisterPixelShader, void(uint32_t, uint32_t));
+
+void RegisterVertexShaderHook(uint32_t shader, uint32_t physicalPart) {
+  g_origRegisterVertexShader(shader, physicalPart);
+  rr::RegisterSplitShader(shader, physicalPart, true);
+}
+
+void RegisterPixelShaderHook(uint32_t shader, uint32_t physicalPart) {
+  g_origRegisterPixelShader(shader, physicalPart);
+  rr::RegisterSplitShader(shader, physicalPart, false);
+}
+
+REX_HOOK(sub_8236DF18, RegisterVertexShaderHook);
+REX_HOOK(sub_8236DCD8, RegisterPixelShaderHook);
 
 // Keep FM2's real shader object because its appended compiled-state table is
 // applied by Set*ShaderState. The alias supplies the native shader without
@@ -279,6 +335,10 @@ uint32_t IndexBufferLockHook(uint32_t bufferAddr, uint32_t offsetToLock, uint32_
   if (!rr::IsFm2Resource(buffer))
     return g_origIndexBufferLock(bufferAddr, offsetToLock, sizeToLock, flags);
   return rr::LockIndexBuffer(buffer, flags);
+}
+
+uint32_t TextureGetLevelCountHook(uint32_t textureAddr) {
+  return rr::GetTextureLevelCount(ghp::ToHost<const void>(textureAddr));
 }
 
 void SurfaceLockRectHook(uint32_t textureAddr, uint32_t lockedRectAddr, uint32_t rectAddr,
@@ -403,6 +463,7 @@ REX_HOOK(FM2_D3DVertexBuffer_Lock, VertexBufferLockHook);
 REX_HOOK(FM2_D3D_LockGpuBufferRaw, IndexBufferLockHook);
 REX_HOOK(FM2_D3DSurface_LockRect, SurfaceLockRectHook);
 REX_HOOK(FM2_D3DTexture_LockRect, TextureLockRectHook);
+REX_HOOK(sub_8236BC38, TextureGetLevelCountHook);  // D3DBaseTexture_GetLevelCount
 REX_HOOK(FM2_D3DResource_UnlockResource, UnlockResourceHook);
 REX_HOOK(FM2_D3DSurface_GetDesc, SurfaceGetDescHook);
 REX_HOOK(FM2_D3D_CreateTextureFromMemoryBuffer, CreateTextureFromMemoryBufferHook);
@@ -478,6 +539,12 @@ void MirrorRenderState(uint32_t renderContext, uint32_t d3drs, uint32_t value) {
   GuestDevice* device = DeviceForRenderContext(renderContext);
   if (device == nullptr)
     return;
+  if (d3drs == rr::D3DRS_ALPHATESTENABLE || d3drs == rr::D3DRS_ALPHAREF) {
+    static thread_local uint32_t alphaTraceCount = 0;
+    if (alphaTraceCount++ < 96)
+      REXGPU_INFO("RaceAlphaSetter: context=0x{:08X} state={} value={} recording={}",
+                  renderContext, d3drs, value, rr::RenderQueue::IsRecording());
+  }
   rr::SetRenderState(device, d3drs, value);
 }
 
@@ -709,19 +776,22 @@ REX_IMPORT(__imp__sub_823716F8, g_origBindSurfaceInternal, void(uint32_t, uint32
 namespace {
 
 rr::GuestBaseTexture* TranslateSurfaceForBind(uint32_t surfaceAddr) {
+  if (surfaceAddr == 0)
+    return nullptr;
   auto* gs = ghp::ToHost<GuestSurface>(surfaceAddr);
   // Unlike Lock/GetDesc/Unlock (which fall back to the original guest
   // function for a non-FM2 address), there's no "original" render-target-bind
   // path to fall back to here -- this is the only caller. Reject a garbage
   // address instead of handing back a wild pointer that SetRenderTargetInternal
   // would later store into g_renderTarget and dereference at present time.
-  if (!rr::IsFm2Resource(gs))
+  if (!rr::IsFm2Resource(gs)) {
+    static std::atomic<uint32_t> rejected{0};
+    if (++rejected <= 32)
+      REXGPU_WARN("TargetBindRejected: guest=0x{:08X} recording={}",
+                  surfaceAddr, rr::RenderQueue::IsRecording());
     return nullptr;
+  }
   return gs;
-}
-
-void SetRenderTargetNative(GuestDevice* device, uint32_t index, uint32_t surfaceAddr) {
-  rr::SetRenderTarget(device, index, TranslateSurfaceForBind(surfaceAddr));
 }
 
 }  // namespace
@@ -757,39 +827,39 @@ void Fm2BindIndexBuffer(uint32_t renderContext, uint32_t resourceAddr) {
   rr::SetIndices(device, ghp::ToHost<GuestBuffer>(resourceAddr));
 }
 
-// FM2_RenderContext_SetBoundSurface is the guest equivalent of BOTH
-// SetRenderTarget and SetDepthStencilSurface: classify by resource type and
-// route depth surfaces to the depth slot instead of always binding color
-// index 0 (otherwise depth is never bound and every depth-tested draw
-// sanitizes to an unknown depth-stencil format).
-void Fm2SetBoundSurface(uint32_t renderContext, uint32_t surfaceAddr, uint32_t surfaceArg) {
-  g_origSetBoundSurface(renderContext, surfaceAddr, surfaceArg);
+// Despite the old generated name, 0x82371A30 is SetDepthStencilSurface:
+// it writes device+0x2F90, including null, never the color slot at +0x2F80.
+REX_HOOK_RAW(FM2_RenderContext_SetBoundSurface) {
+  const uint32_t renderContext = ctx.r3.u32;
+  const uint32_t surfaceAddr = ctx.r4.u32;
+  const uint32_t caller = ctx.lr;
+  g_origSetBoundSurface.fn(ctx, base);
   GuestDevice* device = DeviceForRenderContext(renderContext);
-  if (device == nullptr || surfaceAddr == 0)
+  if (device == nullptr)
     return;
-  auto* gs = ghp::ToHost<GuestSurface>(surfaceAddr);
-  if (gs != nullptr && gs->type == rr::ResourceType::DepthStencil) {
-    rr::SetDepthStencilSurface(device, gs);
-  } else {
-    SetRenderTargetNative(device, 0, surfaceAddr);
-  }
+  auto* surface = TranslateSurfaceForBind(surfaceAddr);
+  rr::SetDepthStencilSurface(device,
+      surface != nullptr && surface->type == rr::ResourceType::DepthStencil
+          ? static_cast<GuestSurface*>(surface) : nullptr, caller);
 }
 
 // Forza binds its COLOR render target(s) via this internal path (slot 0 =
 // primary color RT), not the standard D3DDevice_SetRenderTarget. Without
 // this, the native render target is never bound and the screen stays at
 // its clear color.
-void Fm2BindSurface(uint32_t renderContext, uint32_t slot, uint32_t surfaceAddr) {
-  g_origBindSurfaceInternal(renderContext, slot, surfaceAddr);
+REX_HOOK_RAW(sub_823716F8) {
+  const uint32_t renderContext = ctx.r3.u32;
+  const uint32_t slot = ctx.r4.u32;
+  const uint32_t surfaceAddr = ctx.r5.u32;
+  const uint32_t caller = ctx.lr;
+  g_origBindSurfaceInternal.fn(ctx, base);
   GuestDevice* device = DeviceForRenderContext(renderContext);
-  if (device == nullptr || surfaceAddr == 0)
+  if (device == nullptr)
     return;
-  SetRenderTargetNative(device, slot, surfaceAddr);
+  rr::SetRenderTarget(device, slot, TranslateSurfaceForBind(surfaceAddr), caller);
 }
 
 REX_HOOK(FM2_RenderContext_BindIndexBuffer, Fm2BindIndexBuffer);
-REX_HOOK(FM2_RenderContext_SetBoundSurface, Fm2SetBoundSurface);
-REX_HOOK(sub_823716F8, Fm2BindSurface);
 
 // ---------------------------------------------------------------------------
 // Shader state.
@@ -802,17 +872,27 @@ REX_IMPORT(__imp__FM2_RenderContext_SetVertexShaderState, g_origSetVertexShaderS
 
 namespace {
 
-rr::GuestShader* ResolveShader(uint32_t shaderAddr) {
+rr::GuestShader* ResolveShader(uint32_t shaderAddr, bool vertex) {
   if (shaderAddr == 0)
     return nullptr;
   auto* shader = ghp::ToHost<rr::GuestShader>(shaderAddr);
   if (rr::IsFm2Resource(shader))
     return shader;
-  return rr::LookupShaderAlias(shaderAddr);
+  auto* resolved = rr::LookupShaderAlias(shaderAddr);
+  if (resolved == nullptr) {
+    static std::mutex mutex;
+    static std::unordered_set<uint64_t> logged;
+    std::lock_guard lock(mutex);
+    if (logged.size() < 128 && logged.insert(uint64_t(vertex) << 32 | shaderAddr).second) {
+      REXGPU_WARN("ShaderAliasMissing: stage={} object=0x{:08X} recording={}",
+                  vertex ? "VS" : "PS", shaderAddr, rr::RenderQueue::IsRecording());
+    }
+  }
+  return resolved;
 }
 
 void Fm2SetPixelShaderState(uint32_t renderContext, uint32_t shaderAddr) {
-  rr::GuestShader* shader = ResolveShader(shaderAddr);
+  rr::GuestShader* shader = ResolveShader(shaderAddr, false);
   g_origSetPixelShaderState(renderContext, shaderAddr);
   GuestDevice* device = DeviceForRenderContext(renderContext);
   if (device == nullptr)
@@ -835,7 +915,7 @@ void Fm2SetVertexShaderState(uint32_t renderContext, uint32_t shaderAddr) {
   GuestDevice* device = DeviceForRenderContext(renderContext);
   if (device == nullptr)
     return;
-  rr::SetVertexShader(device, ResolveShader(shaderAddr));
+  rr::SetVertexShader(device, ResolveShader(shaderAddr, true));
 }
 
 }  // namespace
@@ -904,6 +984,7 @@ namespace {
 struct ResolvedTextureBinding {
   rr::GuestBaseTexture* texture = nullptr;
   bool baseTexture = false;
+  int32_t exponentAdjust = 0;
 };
 
 thread_local uint32_t g_textureCaller = 0;
@@ -912,11 +993,15 @@ std::atomic<bool> g_savingTextureSeen{false};
 ResolvedTextureBinding ResolveTextureBinding(rr::GuestBaseTexture* texture) {
   if (texture == nullptr)
     return {};
+  // XDK texture fetch starts at +0x1C; dword3 is at +0x28. Snapshot
+  // before enqueue: the guest may restore this header immediately after bind.
+  const int32_t exponentAdjust = rr::TextureFetchExponentAdjust(
+      reinterpret_cast<const rex::be<uint32_t>*>(texture)[10].get());
   if (!rr::IsFm2Resource(texture))
-    return {rr::TranslateGuestTexture(texture, true), false};
+    return {rr::TranslateGuestTexture(texture, true), false, exponentAdjust};
   if (texture->type == rr::ResourceType::Texture ||
       texture->type == rr::ResourceType::VolumeTexture) {
-    return {texture, false};
+    return {texture, false, exponentAdjust};
   }
   if (texture->type == rr::ResourceType::RenderTarget ||
       texture->type == rr::ResourceType::DepthStencil) {
@@ -983,9 +1068,10 @@ void SetTextureHook(GuestDevice* device, uint32_t sampler, rr::GuestBaseTexture*
   }
 
   if (binding.baseTexture) {
-    rr::SetTextureBase(device, sampler, binding.texture, guestAddress);
+    rr::SetTextureBase(device, sampler, binding.texture, guestAddress, binding.exponentAdjust);
   } else {
-    rr::SetTexture(device, sampler, static_cast<rr::GuestTexture*>(binding.texture), guestAddress);
+    rr::SetTexture(device, sampler, static_cast<rr::GuestTexture*>(binding.texture), guestAddress,
+                   binding.exponentAdjust);
   }
 }
 
@@ -1021,12 +1107,10 @@ thread_local uint32_t g_resolveOwner = 0;
 
 // D3DDevice_Resolve(pDevice, Flags, pSourceRect, pDestTexture, pDestPoint,
 // DestLevel, DestSliceOrFace, pClearColor, ClearZ, ClearStencil,
-// pParameters). DestLevel/DestSliceOrFace/pParameters don't apply to our
-// single-level, single-slice-per-object resource model; accepted only so
-// PPC arg marshaling stays aligned for the params after them.
-void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceRect,
-                 uint32_t destTextureAddr, rr::GuestPoint* destPoint, uint32_t /*destLevel*/,
-                 uint32_t /*destSliceOrFace*/, const uint32_t* clearColor, float clearZ,
+// pParameters). Preserve the destination subresource through the native queue.
+void ResolveHook(GuestDevice* device, uint32_t flags, rr::GuestRect* sourceRect,
+                 uint32_t destTextureAddr, rr::GuestPoint* destPoint, uint32_t destLevel,
+                 uint32_t destSliceOrFace, const uint32_t* clearColor, float clearZ,
                  uint32_t /*clearStencil*/, const void* /*parameters*/) {
   uint32_t postClearFlags = 0;
   float postClearColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -1133,7 +1217,23 @@ void ResolveHook(GuestDevice* /*device*/, uint32_t flags, rr::GuestRect* sourceR
         sourceRect != nullptr ? sourceRect->bottom.get() : -1);
   }
 
-  rr::ResolveToTexture(reo, destPoint, sourceRect, postClearFlags, postClearColor, clearZ);
+  if (device != nullptr && reo->format == plume::RenderFormat::R8_UNORM) {
+    static thread_local std::unordered_map<uint32_t, uint32_t> traces;
+    if (traces.size() < 64 || traces.contains(reo->descriptorIndex)) {
+      auto& n = traces[reo->descriptorIndex];
+      if (n++ < 8) {
+        uint32_t color = 0, depth = 0;
+        std::memcpy(&color, reinterpret_cast<const uint8_t*>(device) + 0x2F80, 4);
+        std::memcpy(&depth, reinterpret_cast<const uint8_t*>(device) + 0x2F90, 4);
+        REXGPU_INFO("LightingResolveGuest: desc={} n={} caller=0x{:08X} flags=0x{:X} "
+                    "color=0x{:08X} depth=0x{:08X} recording={}",
+                    reo->descriptorIndex, n, g_resolveCaller, flags,
+                    std::byteswap(color), std::byteswap(depth), rr::RenderQueue::IsRecording());
+      }
+    }
+  }
+  rr::ResolveToTexture(reo, destPoint, sourceRect, flags, postClearFlags, postClearColor, clearZ,
+                       destLevel, destSliceOrFace);
 }
 
 }  // namespace
@@ -1482,6 +1582,51 @@ REX_HOOK_RAW(sub_82376830) {
 namespace {
 
 void TraceSavingGuestDraw(const PPCContext& ctx, uint32_t kind, uint32_t count) {
+  if (ctx.r3.u32 != 0) {
+    const auto* shader = rr::LookupShaderAlias(ReadGuestU32At(ctx.r3.u32 + 0x3080));
+    const uint64_t hash = shader != nullptr && shader->shaderCacheEntry != nullptr
+                              ? shader->shaderCacheEntry->hash : 0;
+    constexpr std::array<uint64_t, 3> tracedShaders{
+        0xE7F8C02734364687ull, 0x80797CA0D8594DD4ull, 0x13610CEB9F46DFDDull};
+    const auto traced = std::find(tracedShaders.begin(), tracedShaders.end(), hash);
+    if (traced != tracedShaders.end()) {
+      static std::array<std::atomic<uint32_t>, tracedShaders.size()> traceCounts{};
+      const uint32_t n = ++traceCounts[size_t(traced - tracedShaders.begin())];
+      if (n <= 16) {
+        const auto* device = ghp::ToHost<const GuestDevice>(ctx.r3.u32);
+        REXGPU_INFO("RaceConstantProducer: shader={:016X} n={} lr={:08X} device={:08X} "
+                    "recording={} dirty={:016X} kind={} count={}",
+                    hash, n, uint32_t(ctx.lr), ctx.r3.u32, rr::RenderQueue::IsRecording(),
+                    device->dirtyFlags[0].get(), kind, count);
+        for (uint32_t reg = 0; reg < 16; ++reg) {
+          const uint32_t* words = device->vertexShaderFloatConstants + reg * 4;
+          REXGPU_INFO("RaceConstantProducerRegister: shader={:016X} n={} c{} "
+                      "value={:08X}/{:08X}/{:08X}/{:08X}",
+                      hash, n, reg, words[0], words[1], words[2], words[3]);
+        }
+      }
+    }
+  }
+  // The race oracle's environment uses 24-byte streams. Keep this budget
+  // separate from the earlier saving/menu trace so loading cannot exhaust it.
+  if (ctx.r3.u32 != 0 && kind != 3) {
+    const auto* bytes = ghp::ToHost<const uint8_t>(ctx.r3.u32);
+    if (bytes[0x2FD8] == 6) {
+      static std::atomic<uint32_t> environmentDraws{0};
+      const uint32_t n = ++environmentDraws;
+      if (n <= 64 || n % 4096 == 0) {
+        REXGPU_INFO("RaceGuestDraw24: n={} lr=0x{:08X} device=0x{:08X} kind={} "
+                    "primitive={} count={} vs=0x{:08X} ps=0x{:08X} decl=0x{:08X} "
+                    "vb=0x{:08X} ib=0x{:08X} recording={}",
+                    n, uint32_t(ctx.lr), ctx.r3.u32, kind, ctx.r4.u32, count,
+                    ReadGuestU32At(ctx.r3.u32 + 0x3080),
+                    ReadGuestU32At(ctx.r3.u32 + 0x307C),
+                    ReadGuestU32At(ctx.r3.u32 + 0x2D14),
+                    ReadGuestU32At(ctx.r3.u32 + 0x2F94),
+                    ReadGuestU32At(ctx.r3.u32 + 0x2F7C), rr::RenderQueue::IsRecording());
+      }
+    }
+  }
   if (!g_savingTextureSeen.load(std::memory_order_relaxed) || ctx.r3.u32 == 0)
     return;
   static std::atomic<uint32_t> traceCount{0};
@@ -1530,7 +1675,7 @@ REX_HOOK_RAW(D3DDevice_DrawVerticesUP) {
 }
 
 REX_HOOK_RAW(FM2_D3D_BeginCommandBufferBatch) {
-  fm2::render::RenderQueue::BeginRecording();
+  fm2::render::RenderQueue::BeginRecording(ctx.r4.u32);
   g_origBeginCommandBufferBatch.fn(ctx, base);
 }
 
@@ -1540,23 +1685,32 @@ REX_HOOK_RAW(FM2_D3D_FinalizeCommandBufferBatch) {
 }
 
 REX_HOOK_RAW(FM2_D3D_CreateCommandBufferClone) {
+  const uint32_t source = ctx.r3.u32;
+  const uint32_t caller = ctx.lr;
   g_origCreateCommandBufferClone.fn(ctx, base);
-  fm2::render::RenderQueue::BindPendingRecording(ctx.r3.u32);
+  fm2::render::RenderQueue::BindPendingRecording(ctx.r3.u32, source, caller);
 }
 
 REX_HOOK_RAW(D3DCommandBuffer_CreateTextureFixup) {
+  const uint32_t sourceAddress = ctx.r3.u32;
   const uint32_t textureAddress = ctx.r5.u32;
+  const uint32_t startMarker = ctx.r6.u32;
+  const uint32_t stopMarker = ctx.r7.u32;
   g_origCreateTextureFixup.fn(ctx, base);
-  const uint32_t handle = ctx.r3.u32;
-  const size_t matches =
-      fm2::render::RenderQueue::AssociatePendingTextureFixup(handle, textureAddress);
+  const uint32_t guestHandle = ctx.r3.u32;
+  // SetTexture is a native replacement, so its recorded binds do not appear
+  // in the XDK packet scanner. Return a native handle for actual POD matches;
+  // otherwise the title sees -1 and skips SetTexture on the clone entirely.
+  const uint32_t handle = fm2::render::RenderQueue::RegisterRecordingTextureFixup(
+      sourceAddress, guestHandle, textureAddress, startMarker, stopMarker);
+  ctx.r3.u64 = handle;
   static std::atomic<uint32_t> fixupCount{0};
   const uint32_t count = fixupCount.fetch_add(1, std::memory_order_relaxed) + 1;
   if (count <= 16) {
     REXGPU_INFO(
-        "Deferred texture fixup recorded: n={} handle=0x{:08X} texture=0x{:08X} "
-        "matches={}",
-        count, handle, textureAddress, matches);
+        "Deferred texture fixup recorded: n={} source=0x{:08X} guestHandle=0x{:08X} "
+        "handle=0x{:08X} texture=0x{:08X} markers={}/{}",
+        count, sourceAddress, guestHandle, handle, textureAddress, startMarker, stopMarker);
   }
 }
 
@@ -1564,7 +1718,8 @@ REX_HOOK_RAW(D3DCommandBuffer_SetTexture) {
   const uint32_t cloneAddress = ctx.r3.u32;
   const uint32_t handle = ctx.r4.u32;
   const uint32_t textureAddress = ctx.r5.u32;
-  g_origSetCommandBufferTexture.fn(ctx, base);
+  if (!rr::RecordedRenderBatch::IsNativeTextureFixup(handle))
+    g_origSetCommandBufferTexture.fn(ctx, base);
 
   rr::GuestBaseTexture* texture =
       textureAddress != 0 ? ghp::ToHost<rr::GuestBaseTexture>(textureAddress) : nullptr;
@@ -1574,13 +1729,22 @@ REX_HOOK_RAW(D3DCommandBuffer_SetTexture) {
     replacement.type = fm2::render::RenderCommandType::SetTextureBase;
     replacement.setTextureBase.texture = binding.texture;
     replacement.setTextureBase.guestAddress = textureAddress;
+    replacement.setTextureBase.exponentAdjust = binding.exponentAdjust;
   } else {
     replacement.type = fm2::render::RenderCommandType::SetTexture;
     replacement.setTexture.texture = static_cast<rr::GuestTexture*>(binding.texture);
     replacement.setTexture.guestAddress = textureAddress;
+    replacement.setTexture.exponentAdjust = binding.exponentAdjust;
   }
   const bool applied =
       fm2::render::RenderQueue::SetRecordingTextureFixup(cloneAddress, handle, replacement);
+  if (!applied && rr::RecordedRenderBatch::IsNativeTextureFixup(handle)) {
+    static std::atomic<uint32_t> missedNativeFixups{0};
+    if (++missedNativeFixups <= 32) {
+      REXGPU_WARN("DeferredTextureFixupMissing: clone=0x{:08X} handle=0x{:08X} texture=0x{:08X}",
+                  cloneAddress, handle, textureAddress);
+    }
+  }
   static std::atomic<uint32_t> setFixupCount{0};
   const uint32_t count = setFixupCount.fetch_add(1, std::memory_order_relaxed) + 1;
   if (count <= 16) {
@@ -1594,6 +1758,7 @@ REX_HOOK_RAW(D3DCommandBuffer_SetTexture) {
 REX_HOOK_RAW(FM2_D3D_EmitDirtyStateAndDrawList) {
   const uint32_t contextAddress = ctx.r3.u32;
   const uint32_t cloneAddress = ctx.r4.u32;
+  const uint32_t caller = ctx.lr;
   fm2::render::DeferredExecutionSnapshot executionSnapshot{};
   const uint8_t* context = nullptr;
   if (contextAddress != 0 &&
@@ -1601,6 +1766,12 @@ REX_HOOK_RAW(FM2_D3D_EmitDirtyStateAndDrawList) {
     context = ghp::ToHost<const uint8_t>(contextAddress);
   }
   const bool captured = fm2::render::CaptureDeferredExecutionSnapshot(executionSnapshot, context);
+  if (captured) {
+    executionSnapshot.colorTarget = TranslateSurfaceForBind(executionSnapshot.guestColorTarget);
+    auto* depth = TranslateSurfaceForBind(executionSnapshot.guestDepthTarget);
+    executionSnapshot.depthTarget = depth != nullptr && depth->type == rr::ResourceType::DepthStencil
+                                       ? static_cast<GuestSurface*>(depth) : nullptr;
+  }
   auto* previousCapture = t_executionSnapshotCapture;
   t_executionSnapshotCapture = captured ? &executionSnapshot : nullptr;
   g_origEmitDirtyStateAndDrawList.fn(ctx, base);
@@ -1608,11 +1779,27 @@ REX_HOOK_RAW(FM2_D3D_EmitDirtyStateAndDrawList) {
 
   if (fm2::render::RenderQueue::ReplayRecording(cloneAddress,
                                                 captured ? &executionSnapshot : nullptr)) {
+    if (rr::RenderQueue::IsRecording()) {
+      static std::atomic<uint32_t> nestedReplays{0};
+      if (const uint32_t n = ++nestedReplays; n <= 32) {
+        REXGPU_WARN("DeferredNestedReplay: n={} lr=0x{:08X} context=0x{:08X} clone=0x{:08X}",
+                    n, caller, contextAddress, cloneAddress);
+      }
+    }
     static std::atomic<uint32_t> replayCount{0};
     const uint32_t count = replayCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (count <= 16 || count % 300 == 0) {
       REXGPU_INFO("Deferred D3D command buffer replay: n={} clone=0x{:08X} liveMaterial={}", count,
                   cloneAddress, captured);
+    }
+  } else {
+    static std::atomic<uint32_t> missedReplays{0};
+    const uint32_t n = ++missedReplays;
+    if (n <= 64 || n % 4096 == 0) {
+      REXGPU_WARN("DeferredReplayMissing: n={} lr=0x{:08X} context=0x{:08X} "
+                  "clone=0x{:08X} liveMaterial={} recording={}",
+                  n, caller, contextAddress, cloneAddress, captured,
+                  rr::RenderQueue::IsRecording());
     }
   }
 }

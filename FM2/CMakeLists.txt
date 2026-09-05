@@ -105,6 +105,9 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/plume/CMakeLists.
             src/render/shaders/copy_ps.hlsl ps_6_0 main g_copy_ps_dxil
             render/shaders copy_ps.hlsl)
         fm2_compile_dxil_shader(FM2_BLIT_SHADER_HEADERS
+            src/render/shaders/copy_msaa_ps.hlsl ps_6_0 main g_copy_msaa_ps_dxil
+            render/shaders copy_msaa_ps.hlsl)
+        fm2_compile_dxil_shader(FM2_BLIT_SHADER_HEADERS
             src/render/shaders/rectangle_gs.hlsl gs_6_0 main g_rectangle_gs_dxil
             render/shaders rectangle_gs.hlsl
             "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/rectangle_list.hlsli")
@@ -176,7 +179,7 @@ if(EXISTS "${FM2_XENOS_RECOMP_ROOT}/XenosRecomp/CMakeLists.txt")
             XenosRecomp
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake/RegenerateShaderCache.cmake"
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyShaderCache.cmake"
-        COMMENT "Regenerating the verified 158-shader FM2 cache"
+        COMMENT "Regenerating the verified FM2 shader cache"
         VERBATIM
         USES_TERMINAL
     )

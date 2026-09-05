@@ -32,7 +32,8 @@ bool IsWellFormedHashFallbackName(std::string_view filename, uint64_t hash) {
 }  // namespace
 
 int main() {
-  if (g_shaderCacheEntryCount == 0) return Fail("g_shaderCacheEntryCount == 0");
+  // Menu/race shaders, including the preloaded XGRegisterShader track corpus.
+  if (g_shaderCacheEntryCount != 371) return Fail("expected all 371 menu and race shaders");
   if (g_dxilCacheCompressedSize == 0) return Fail("g_dxilCacheCompressedSize == 0");
   if (g_dxilCacheDecompressedSize == 0) return Fail("g_dxilCacheDecompressedSize == 0");
   if (g_spirvCacheCompressedSize == 0) return Fail("g_spirvCacheCompressedSize == 0");
