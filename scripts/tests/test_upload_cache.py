@@ -50,6 +50,7 @@ using namespace plume;
 using namespace pgr4::render;
 #define REXGPU_ERROR(...) ((void)0)
 #define REXGPU_INFO(...) ((void)0)
+#define SCOPE_profile_cpu_f(name)
 uint64_t g_frameTraceIndex = 0;
 bool lost = false, createFails = false, mapFails = false;
 unsigned creates = 0, checks = 0, maps = 0, unmaps = 0;
@@ -100,11 +101,13 @@ struct Memory {
   Callback callback = nullptr;
   void* context = nullptr;
   bool armFails = false, invalidateOnArm = false;
+  unsigned arms = 0;
   void* RegisterPhysicalMemoryInvalidationCallback(Callback cb, void* ctx) {
     callback = cb; context = ctx; return this;
   }
   void UnregisterPhysicalMemoryInvalidationCallback(void*) { callback = nullptr; }
   bool EnablePhysicalMemoryAccessCallbacks(uint32_t address, uint32_t size, bool, bool) {
+    ++arms;
     if (invalidateOnArm) {
       invalidateOnArm = false;
       bytes[address] ^= 0xFF;
@@ -518,15 +521,20 @@ int main() {
   assert(tracked && trackedId);
   const unsigned initialHashes = hashCalls;
   uint64_t reusedId = 0;
+  const unsigned armsBefore = watched.arms;
   assert(SnapshotRawPhysicalBuffer(4096, 65536, 4, false, &reusedId) == tracked);
   assert(trackedId == reusedId && hashCalls == initialHashes);
-  // Change DURING arming must update this draw, not just the following one.
+  assert(watched.arms == armsBefore); // An armed, unwritten range is not re-armed.
+  // A faulting write bumps the revision, so the next draw re-arms; a change
+  // DURING that arming must update this draw, not just the following one.
+  watched.callback(watched.context, 4096, 4096, true);
   watched.invalidateOnArm = true;
   auto* armChanged = SnapshotRawPhysicalBuffer(4096, 65536, 4, false, &reusedId);
   assert(armChanged[3] == uint8_t(0x12 ^ 0xFF) && tracked[3] == 0x12);
   assert(reusedId != trackedId);
   // Failed protection cannot authorize reuse of a retained revision.
   SnapshotRawPhysicalBuffer(4096, 65536, 4, false, &reusedId);
+  watched.callback(watched.context, 4096 + 65535, 1, true);  // The write faults first.
   watched.armFails = true;
   watched.bytes[4096 + 65535] = 0x34;
   auto* unprotected = SnapshotRawPhysicalBuffer(4096, 65536, 4, false);

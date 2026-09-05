@@ -1895,3 +1895,53 @@ There are no GPU zones, and the Tracy symbol worker ran for 3.287 s.
 Evidence is saved under `out/tracy-pgr4-race9/`, with `analyze-resaved.py`
 pointing to the user-confirmed race1 filename. No renderer changes or new
 build were made during this capture review; visual/audio QA remains separate.
+
+## 2026-09-05: race capture, render queue batching, texture write watch
+
+`renderdoccaps/pgr4_race7.tracy` (old queue): frames ramp from 32 ms to
+65-81 ms during a race with a flat workload (4781 indexed draws, 3956
+SetTexture, 6000 SetStreamSource, 3460 SetIndices per frame). The main thread
+is the whole frame: 62-72% of it inside the D3D hooks, no waits, worker threads
+idle. Every hook call doubled in cost over the race (even SetVertexShader's
+median went 0.11 -> 0.26 us) and the >20 us tail exploded (draws 76 -> 236 per
+frame, 2.8 -> 11.3 ms): the per-command mutex/deque/condvar job path and its
+wake-ups. The SetTexture tail was the per-bind XXH3 hash of raw XG textures.
+
+Changes (commit 6a7bf06): the render queue is one vector appended under the
+lock and swapped out whole by the worker (Unleashed bulk-dequeue shape),
+producers notify only while the worker is parked, worker at above-normal
+priority; raw textures skip the hash while their physical write-watch revision
+is unchanged; Tracy zones on the render thread (`PGR4 Render Thread`,
+`RenderQueue::ExecuteBatch`, `ProcDrawIndexedPrimitive`, `ProcExecuteCommandList`)
+and guest side (`Video::Present wait`, `UploadGuestTextureData`).
+
+`renderdoccaps/pgr4_race2.tracy` (new build, 168 frames): 29-40 ms flat with
+5190 draws late in the capture. Draw hook 12-15 ms/frame (median 0.9-1.4 us
+per call, was 1.2-2.3 us rising), SetTexture 2.5-4 ms (was 6-17 ms), raw
+texture checks ~890/frame at 0.9 us, present wait 1.2-3.5 ms, render thread
+busy 15-24 ms/frame in ~7500 small batches. Main thread remains the limiter
+(~90% busy: 19-27 ms hooks + 9-13 ms guest code).
+
+`LocalRenderCommandQueue` no longer value-initialises 32 x 680-byte commands
+per draw (`pgr4_race3.tracy`: 0.14 us per draw, ~0.8 ms/frame; the memset was
+cache-resident and cheaper than estimated). `RenderCommand`
+is 680 bytes because `DrawGeometrySnapshot` is inline (16 x 40-byte streams);
+moving it out-of-line would save roughly 30 MB of memset/memcpy per frame
+(~1-1.5 ms) but touches recording/replay and test_upload_cache.py.
+Analysis tooling: the tracy MCP rejects numeric parameters from this client;
+`tracy-csvexport -u` plus a per-frame script (frames from `__imp__VdSwap`) was
+used instead.
+
+`pgr4_race4.tracy` with sub-zones inside the draw hook (`DrawState::Geometry`,
+`DrawState::RawSnapshot`, `DrawState::Constants`, `DrawState::Submit`): the raw
+physical-buffer snapshot is 72% of the draw hook (10.9 of 15.2 ms/frame) and
+runs on every indexed draw; constants are 3%, the queue push 6%. The cost is
+`PhysicalWriteWatch::BeginSnapshot` re-arming every raw vertex/index range on
+every draw: the SDK page walk (global lock, three heaps, one iteration per
+page) plus two per-page revision walks. Fix: the watch remembers the revision
+each range was armed at (thread-local map) and skips the SDK walk while the
+range's revision is unchanged (a write faults and bumps it first), and keeps
+per-256 KB block maxima so `Revision()` reads whole blocks in one load.
+test_physical_write_watch --benchmark: 34 -> 11 ms per 100k tracked snapshots.
+test_upload_cache now fires the fault callback before simulated writes, since
+an armed range is no longer re-armed on every draw.

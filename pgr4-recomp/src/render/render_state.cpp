@@ -3690,7 +3690,9 @@ void ProcSetShaderConstants(bool vertex, const uint8_t* memory, uint32_t index, 
 }
 
 struct LocalRenderCommandQueue {
-  std::array<RenderCommand, 32> commands{};
+  // Not value-initialised: that zeroed 32 x sizeof(RenderCommand) bytes per
+  // draw. Every Enqueue() site fills the member it uses.
+  std::array<RenderCommand, 32> commands;
   uint32_t count = 0;
 
   RenderCommand& Enqueue() {
@@ -3698,7 +3700,10 @@ struct LocalRenderCommandQueue {
     return commands[count++];
   }
 
-  void Submit() const { RenderQueue::EnqueueBulk(commands.data(), count); }
+  void Submit() const {
+    SCOPE_profile_cpu_f("DrawState::Submit");
+    RenderQueue::EnqueueBulk(commands.data(), count);
+  }
 };
 
 bool QueueConstantSnapshot(LocalRenderCommandQueue& queue, RenderCommandType type,
@@ -3720,6 +3725,7 @@ bool QueueConstantSnapshot(LocalRenderCommandQueue& queue, RenderCommandType typ
 
 void QueueDrawGeometrySnapshot(GuestDevice* device, LocalRenderCommandQueue& queue,
                                uint32_t startVertex, uint32_t vertexCount) {
+  SCOPE_profile_cpu_f("DrawState::Geometry");
   // Vertex/index bindings are mutable guest context state just like shader
   // constants. Capture them on the producer thread so a later unbind cannot
   // reach the render thread before this draw is flushed. Keep the exact offset
@@ -3760,8 +3766,11 @@ void QueueDrawGeometrySnapshot(GuestDevice* device, LocalRenderCommandQueue& que
           declaration, index, liveStride, DecodeRawBufferSize(fetchSize->get()),
           startVertex, vertexCount);
       uint64_t identity = 0;
-      uint8_t* rawData = SnapshotRawPhysicalBuffer(fetchBase->get(), rawSize, 4u, false,
-                                                  &identity);
+      uint8_t* rawData;
+      {
+        SCOPE_profile_cpu_f("DrawState::RawSnapshot");
+        rawData = SnapshotRawPhysicalBuffer(fetchBase->get(), rawSize, 4u, false, &identity);
+      }
       stream = {nullptr, 0, liveStride, rawData, rawData != nullptr ? rawSize : 0u, identity};
     } else if (stream.buffer != liveBuffer || stream.stride != liveStride) {
       stream = {liveBuffer, 0, liveStride};
@@ -3784,9 +3793,12 @@ void QueueDrawGeometrySnapshot(GuestDevice* device, LocalRenderCommandQueue& que
       if (common != nullptr && fetchBase != nullptr && fetchSize != nullptr) {
         geometry.rawIndexStride = (common->get() & 0x80000000u) != 0 ? 4u : 2u;
         geometry.rawIndexSize = DecodeRawBufferSize(fetchSize->get());
-        geometry.rawIndexData = SnapshotRawPhysicalBuffer(fetchBase->get(), geometry.rawIndexSize,
-                                                          geometry.rawIndexStride, true,
-                                                          &geometry.rawIndexIdentity);
+        {
+          SCOPE_profile_cpu_f("DrawState::RawSnapshot");
+          geometry.rawIndexData = SnapshotRawPhysicalBuffer(
+              fetchBase->get(), geometry.rawIndexSize, geometry.rawIndexStride, true,
+              &geometry.rawIndexIdentity);
+        }
         if (geometry.rawIndexData == nullptr) {
           geometry.rawIndexSize = 0;
           geometry.rawIndexStride = 0;
@@ -3851,6 +3863,7 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   }
   device->dirtyFlags[3] = samplerFlags;
 
+  SCOPE_profile_cpu_f("DrawState::Constants");
   uint64_t vsFlags = device->dirtyFlags[0].get();
   std::array<uint32_t, PendingShaderConstantFile::kRegisterCount *
                            PendingShaderConstantFile::kDwordsPerRegister>
