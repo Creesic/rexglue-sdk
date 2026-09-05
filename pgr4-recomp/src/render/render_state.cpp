@@ -405,21 +405,43 @@ void TraceIssuedDraw(uint32_t kind, const uint32_t* geometry, size_t geometryCou
   CaptureDrawDataTrace();
 }
 
+size_t RetainedSnapshotBytes();  // defined with the intermediary allocator below
+ByteSnapshotCache::Stats SnapshotStats();
+uint64_t RawBufferCreates();
+
 void LogAndResetFrameTrace() {
   const bool collected = CollectFrameTrace();
   ++g_frameTraceIndex;
   if (collected) {
+    static ByteSnapshotCache::Stats lastStats;
+    static uint64_t lastFaults = 0, lastFaultBytes = 0;
+    const ByteSnapshotCache::Stats stats = SnapshotStats();
+    const uint64_t faults = g_physicalWriteWatch.Invalidations();
+    const uint64_t faultBytes = g_physicalWriteWatch.InvalidatedBytes();
+    static uint64_t lastMirrors = 0;
+    const uint64_t mirrors = RawBufferCreates();
     REXGPU_INFO(
         "FrameTrace: n={} draws={}/{} skipped={} [nores={} nodecl={} psofail={} psocreate={}] clears={} resolves={} shape=0x{:016X} "
         "tex=0x{:016X} shared=0x{:016X} vs=0x{:016X} ps=0x{:016X} "
-        "vertex=0x{:016X} clear=0x{:016X}",
+        "vertex=0x{:016X} clear=0x{:016X} snapshotCacheMB={} entries={} suffixes={} "
+        "+suffixHits={} +hintHits={} +contentHits={} +creates={} +createdMB={} +faults={} +faultMB={} "
+        "+mirrors={}",
         g_frameTraceIndex, g_frameTrace.issuedDraws, g_frameTrace.attemptedDraws,
         g_frameTrace.attemptedDraws - g_frameTrace.issuedDraws, g_frameTrace.skipReasons[0],
         g_frameTrace.skipReasons[1], g_frameTrace.skipReasons[2], g_frameTrace.skipReasons[3],
         g_frameTrace.clears,
         g_frameTrace.resolves, g_frameTrace.shapeHash, g_frameTrace.textureHash,
         g_frameTrace.sharedHash, g_frameTrace.vertexConstantHash, g_frameTrace.pixelConstantHash,
-        g_frameTrace.vertexDataHash, g_frameTrace.clearHash);
+        g_frameTrace.vertexDataHash, g_frameTrace.clearHash,
+        RetainedSnapshotBytes() >> 20, stats.entries, stats.suffixes,
+        stats.suffixHits - lastStats.suffixHits, stats.hintHits - lastStats.hintHits,
+        stats.contentHits - lastStats.contentHits, stats.creates - lastStats.creates,
+        (stats.createdBytes - lastStats.createdBytes) >> 20, faults - lastFaults,
+        (faultBytes - lastFaultBytes) >> 20, mirrors - lastMirrors);
+    lastMirrors = mirrors;
+    lastStats = stats;
+    lastFaults = faults;
+    lastFaultBytes = faultBytes;
   }
   if (g_frameTraceIndex <= 64 && g_previousFrameShapeHash == g_frameTrace.shapeHash &&
       !g_currentDrawDataTrace.empty() &&
@@ -714,9 +736,19 @@ class IntermediaryUploadAllocator {
 
   void Reset() {
     std::lock_guard lock(mutex_);
-    cachedBytes_.Clear();
+    cachedBytes_.Retire();
     index_ = 0;
     offset_ = 0;
+  }
+
+  size_t RetainedSnapshotBytes() {
+    std::lock_guard lock(mutex_);
+    return cachedBytes_.RetainedBytes();
+  }
+
+  ByteSnapshotCache::Stats SnapshotStats() {
+    std::lock_guard lock(mutex_);
+    return cachedBytes_.stats();
   }
 
  private:
@@ -732,6 +764,14 @@ class IntermediaryUploadAllocator {
   uint64_t offset_ = 0;
 };
 IntermediaryUploadAllocator g_intermediaryUploadAllocator;
+
+size_t RetainedSnapshotBytes() {
+  return g_intermediaryUploadAllocator.RetainedSnapshotBytes();
+}
+
+ByteSnapshotCache::Stats SnapshotStats() {
+  return g_intermediaryUploadAllocator.SnapshotStats();
+}
 
 std::array<std::vector<GuestResource*>, kNumFrames> g_tempResources;
 
@@ -2353,14 +2393,21 @@ uint8_t* SnapshotRawPhysicalBuffer(uint32_t fetchBase, uint32_t size,
   const uint32_t physicalAddress =
       ghp::HeaderBaseToPhysical(fetchBase) & (preserveBaseLowBits ? 0x1FFFFFFFu : 0x1FFFFFFCu);
   if (memory == nullptr || size == 0 || size > 4u * 1024u * 1024u ||
-      uint64_t(physicalAddress) + size > 0x20000000ull ||
-      memory->GetPhysicalHeap()->QueryRangeAccess(physicalAddress, physicalAddress + size - 1u) ==
-          rex::memory::PageAccess::kNoAccess) {
+      uint64_t(physicalAddress) + size > 0x20000000ull) {
     return nullptr;
+  }
+  // An armed, unchanged range is known mapped and readable; only a miss pays
+  // the SDK access query (heap mutex, one iteration per page) and the arming.
+  uint64_t revision = g_physicalWriteWatch.ArmedRevision(memory, physicalAddress, size);
+  if (revision == 0) {
+    if (memory->GetPhysicalHeap()->QueryRangeAccess(physicalAddress, physicalAddress + size - 1u) ==
+        rex::memory::PageAccess::kNoAccess) {
+      return nullptr;
+    }
+    revision = g_physicalWriteWatch.BeginSnapshot(memory, physicalAddress, size);
   }
 
   const uint8_t* source = memory->TranslatePhysical<const uint8_t*>(physicalAddress);
-  const uint64_t revision = g_physicalWriteWatch.BeginSnapshot(memory, physicalAddress, size);
   auto* snapshot = g_intermediaryUploadAllocator.CopyCached(source, size, swapElementBytes, identity,
                                                           revision);
   if (revision != 0 && revision != g_physicalWriteWatch.Revision(physicalAddress, size)) {
@@ -2372,6 +2419,137 @@ uint8_t* SnapshotRawPhysicalBuffer(uint32_t fetchBase, uint32_t size,
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Raw XG vertex/index buffer mirrors. FM2 creates every raw buffer in
+// PGR4_Render_CreateVertexBuffer / PGR4_Render_CreateIndexBuffer (IDA
+// 0x82294538 / 0x822947F0): a header from a free list, the payload from an
+// arena, XGSet*BufferHeader, then XGOffsetResourceAddress, which is hooked.
+// Each header is mirrored into a host GuestBuffer there; draws bind the mirror
+// through the ordinary buffer path and re-upload only when the write watch
+// reports a changed payload (the Unleashed/reblue shape: upload once, bind a
+// handle). Headers the engine reuses simply re-register.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct RawBufferMirror {
+  GuestBuffer* buffer = nullptr;
+  uint32_t physical = 0;
+  uint32_t size = 0;
+  uint64_t revision = 0;     // Write-watch revision of the uploaded payload; 0 = none.
+  uint64_t uploadFrame = ~0ull;
+};
+
+std::mutex g_rawBufferMutex;
+std::unordered_map<uint32_t, RawBufferMirror> g_rawBuffers;  // by header guest address
+std::atomic<uint64_t> g_rawBufferCreates{0};
+
+uint64_t RawBufferCreates() {
+  return g_rawBufferCreates.load(std::memory_order_relaxed);
+}
+
+}  // namespace
+
+void RegisterRawBuffer(uint32_t headerAddress) {
+  const auto* header = ghp::ToHost<const rex::be<uint32_t>>(headerAddress);
+  if (header == nullptr)
+    return;
+  const uint32_t type = header[0].get() & 0xFu;
+  const bool index = type == 2u;
+  if (type != 1u && !index)
+    return;
+  // D3DVertexBuffer::Format and D3DIndexBuffer::Address/Size live at +0x18/+0x1C.
+  const uint32_t physical =
+      ghp::HeaderBaseToPhysical(header[6].get()) & (index ? 0x1FFFFFFFu : 0x1FFFFFFCu);
+  const uint32_t size = DecodeRawBufferSize(header[7].get());
+  if (size == 0 || size > 4u * 1024u * 1024u || uint64_t(physical) + size > 0x20000000ull)
+    return;
+  const uint32_t format = (header[0].get() & 0x80000000u) != 0 ? 6u /* D3DFMT_INDEX32 */ : 0u;
+  const ResourceType expected = index ? ResourceType::IndexBuffer : ResourceType::VertexBuffer;
+
+  std::lock_guard lock(g_rawBufferMutex);
+  RawBufferMirror& mirror = g_rawBuffers[headerAddress];
+  if (mirror.buffer != nullptr &&
+      (mirror.buffer->type != expected || mirror.buffer->dataSize < size ||
+       (index && mirror.buffer->guestFormat != format))) {
+    ScheduleResourceDestruction(mirror.buffer);
+    mirror.buffer = nullptr;
+  }
+  if (mirror.buffer == nullptr) {
+    mirror.buffer = index ? CreateIndexBuffer(size, format) : CreateVertexBuffer(size);
+    g_rawBufferCreates.fetch_add(1, std::memory_order_relaxed);
+  }
+  mirror.physical = physical;
+  mirror.size = size;
+  mirror.revision = 0;
+  mirror.uploadFrame = ~0ull;
+}
+
+bool BindRawBufferMirror(uint32_t headerAddress, uint32_t fetchBase, bool index,
+                         GuestBuffer** buffer, uint32_t* offset) {
+  if (RenderQueue::IsRecording())
+    return false;  // Recordings own their bytes; keep the snapshot path.
+  RawBufferMirror mirror;
+  {
+    std::lock_guard lock(g_rawBufferMutex);
+    const auto it = g_rawBuffers.find(headerAddress);
+    if (it == g_rawBuffers.end() || it->second.buffer == nullptr)
+      return false;
+    mirror = it->second;
+  }
+  auto* memory = ghp::GuestMemory();
+  const uint32_t physical =
+      ghp::HeaderBaseToPhysical(fetchBase) & (index ? 0x1FFFFFFFu : 0x1FFFFFFCu);
+  if (memory == nullptr || physical < mirror.physical || physical - mirror.physical >= mirror.size)
+    return false;
+  uint64_t revision = g_physicalWriteWatch.ArmedRevision(memory, mirror.physical, mirror.size);
+  if (revision == 0) {
+    if (memory->GetPhysicalHeap()->QueryRangeAccess(mirror.physical,
+                                                    mirror.physical + mirror.size - 1u) ==
+        rex::memory::PageAccess::kNoAccess) {
+      return false;
+    }
+    revision = g_physicalWriteWatch.BeginSnapshot(memory, mirror.physical, mirror.size);
+    if (revision == 0)
+      return false;  // Unwatchable payload: validate per draw as before.
+  }
+  if (mirror.revision != revision) {
+    const uint64_t frame = CurrentFrameIndex();
+    // A payload rewritten between two draws of one frame must not overwrite
+    // the copy the earlier draw still reads: those draws keep the snapshot path.
+    if (mirror.uploadFrame == frame)
+      return false;
+    // Changed or first use: snapshot once and copy it into the host buffer
+    // ahead of this draw. The cache keeps the bytes until the frame retires.
+    const uint32_t swapElementBytes =
+        index ? (mirror.buffer->format == plume::RenderFormat::R32_UINT ? 4u : 2u) : 4u;
+    const uint8_t* source = memory->TranslatePhysical<const uint8_t*>(mirror.physical);
+    uint64_t identity = 0;
+    uint8_t* bytes = g_intermediaryUploadAllocator.CopyCached(source, mirror.size,
+                                                            swapElementBytes, &identity, revision);
+    if (bytes == nullptr ||
+        revision != g_physicalWriteWatch.Revision(mirror.physical, mirror.size)) {
+      return false;
+    }
+    RenderCommand cmd{};
+    cmd.type = swapElementBytes == 2u ? RenderCommandType::UnlockBuffer16
+                                      : RenderCommandType::UnlockBuffer32;
+    cmd.unlockBuffer.buffer = mirror.buffer;
+    cmd.unlockBuffer.data = bytes;
+    cmd.unlockBuffer.size = mirror.size;
+    RenderQueue::Enqueue(cmd);
+    std::lock_guard lock(g_rawBufferMutex);
+    const auto it = g_rawBuffers.find(headerAddress);
+    if (it != g_rawBuffers.end() && it->second.buffer == mirror.buffer) {
+      it->second.revision = revision;
+      it->second.uploadFrame = frame;
+    }
+  }
+  *buffer = mirror.buffer;
+  *offset = physical - mirror.physical;
+  return true;
+}
 
 void SetStreamSource(GuestDevice* device, uint32_t index, GuestBuffer* buffer, uint32_t offset,
                      uint32_t stride) {
@@ -3762,11 +3940,22 @@ void QueueDrawGeometrySnapshot(GuestDevice* device, LocalRenderCommandQueue& que
       const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
           reinterpret_cast<const uint8_t*>(device) + 0x778u - index * 8u);
       const auto* fetchSize = fetchBase + 1;
+      GuestBuffer* mirror = nullptr;
+      uint32_t mirrorOffset = 0;
+      if (BindRawBufferMirror(address->get(), fetchBase->get(), false, &mirror, &mirrorOffset)) {
+        stream = {mirror, mirrorOffset, liveStride};
+        continue;
+      }
       const uint32_t rawSize = NonIndexedVertexSnapshotSize(
           declaration, index, liveStride, DecodeRawBufferSize(fetchSize->get()),
           startVertex, vertexCount);
       uint64_t identity = 0;
       uint8_t* rawData;
+      static std::atomic<uint32_t> s_dumpedStreams{0};
+      if (s_dumpedStreams.fetch_add(1, std::memory_order_relaxed) < 96) {
+        REXGPU_INFO("raw stream range: slot={} base=0x{:08X} size={} end=0x{:08X} stride={}",
+                    index, fetchBase->get(), rawSize, fetchBase->get() + rawSize, liveStride);
+      }
       {
         SCOPE_profile_cpu_f("DrawState::RawSnapshot");
         rawData = SnapshotRawPhysicalBuffer(fetchBase->get(), rawSize, 4u, false, &identity);
@@ -3790,9 +3979,22 @@ void QueueDrawGeometrySnapshot(GuestDevice* device, LocalRenderCommandQueue& que
       const auto* common = ghp::ToHost<const rex::be<uint32_t>>(indexAddress->get());
       const auto* fetchBase = ghp::ToHost<const rex::be<uint32_t>>(indexAddress->get() + 0x18u);
       const auto* fetchSize = ghp::ToHost<const rex::be<uint32_t>>(indexAddress->get() + 0x1Cu);
-      if (common != nullptr && fetchBase != nullptr && fetchSize != nullptr) {
+      GuestBuffer* mirror = nullptr;
+      uint32_t mirrorOffset = 0;
+      if (common != nullptr && fetchBase != nullptr &&
+          BindRawBufferMirror(indexAddress->get(), fetchBase->get(), true, &mirror,
+                              &mirrorOffset) &&
+          mirrorOffset == 0) {
+        geometry.indexBuffer = mirror;
+      } else if (common != nullptr && fetchBase != nullptr && fetchSize != nullptr) {
         geometry.rawIndexStride = (common->get() & 0x80000000u) != 0 ? 4u : 2u;
         geometry.rawIndexSize = DecodeRawBufferSize(fetchSize->get());
+        static std::atomic<uint32_t> s_dumpedIndices{0};
+        if (s_dumpedIndices.fetch_add(1, std::memory_order_relaxed) < 48) {
+          REXGPU_INFO("raw index range: base=0x{:08X} size={} end=0x{:08X} stride={}",
+                      fetchBase->get(), geometry.rawIndexSize,
+                      fetchBase->get() + geometry.rawIndexSize, geometry.rawIndexStride);
+        }
         {
           SCOPE_profile_cpu_f("DrawState::RawSnapshot");
           geometry.rawIndexData = SnapshotRawPhysicalBuffer(

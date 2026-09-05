@@ -33,16 +33,25 @@ class PhysicalWriteWatch {
     for (auto& block : blocks_) block.store(revision, std::memory_order_relaxed);
   }
 
+  // Nonzero when this thread armed the range and no page of it changed since:
+  // the pages are still protected and mapped (decommit, release and protect
+  // changes also bump the revision), so callers can skip the SDK access query
+  // and the arming walk.
+  uint64_t ArmedRevision(rex::memory::Memory* memory, uint32_t address, uint32_t size) const {
+    if (!Watchable(memory, address, size)) return 0;
+    const uint64_t revision = Revision(address, size);
+    const auto it = Armed().find(Key(address, size));
+    return it != Armed().end() && it->second == revision ? revision : 0;
+  }
+
   uint64_t BeginSnapshot(rex::memory::Memory* memory, uint32_t address, uint32_t size) {
-    if (!active_.load(std::memory_order_acquire) || memory != memory_ || size < kPageSize ||
-        uint64_t(address) + size > kPhysicalSize)
-      return 0;
+    if (!Watchable(memory, address, size)) return 0;
     const uint64_t revision = Revision(address, size);
     // Pages stay protected until a write bumps their revision, so a range this
     // thread armed at the same revision skips the SDK page walk (global lock,
     // three heaps, one iteration per page) that otherwise runs on every draw.
-    thread_local std::unordered_map<uint64_t, uint64_t> armed;
-    const uint64_t key = uint64_t(address) << 32 | size;
+    auto& armed = Armed();
+    const uint64_t key = Key(address, size);
     const auto it = armed.find(key);
     if (it != armed.end() && it->second == revision) return revision;
     // A write racing with arming must force validation on this draw too.
@@ -52,6 +61,10 @@ class PhysicalWriteWatch {
     armed[key] = revision;
     return revision;
   }
+
+  // Guest write faults and decommits routed through the SDK callback.
+  uint64_t Invalidations() const { return invalidations_.load(std::memory_order_relaxed); }
+  uint64_t InvalidatedBytes() const { return invalidatedBytes_.load(std::memory_order_relaxed); }
 
   uint64_t Revision(uint32_t address, uint32_t size) const {
     uint64_t revision = 1;
@@ -88,6 +101,16 @@ class PhysicalWriteWatch {
   }
 
  private:
+  bool Watchable(rex::memory::Memory* memory, uint32_t address, uint32_t size) const {
+    return active_.load(std::memory_order_acquire) && memory == memory_ &&
+           size >= kMinWatchBytes && uint64_t(address) + size <= kPhysicalSize;
+  }
+  static uint64_t Key(uint32_t address, uint32_t size) { return uint64_t(address) << 32 | size; }
+  static std::unordered_map<uint64_t, uint64_t>& Armed() {
+    thread_local std::unordered_map<uint64_t, uint64_t> armed;
+    return armed;
+  }
+
   static std::pair<uint32_t, uint32_t> Invalidated(void* context, uint32_t address,
                                                   uint32_t size, bool exact) {
     if (!exact) {
@@ -97,15 +120,22 @@ class PhysicalWriteWatch {
       address &= ~0xFFFFu;
       size = uint32_t(end - address);
     }
-    static_cast<PhysicalWriteWatch*>(context)->Written(address, size);
+    auto* watch = static_cast<PhysicalWriteWatch*>(context);
+    watch->invalidations_.fetch_add(1, std::memory_order_relaxed);
+    watch->invalidatedBytes_.fetch_add(size, std::memory_order_relaxed);
+    watch->Written(address, size);
     return {address, size};
   }
 
   static constexpr uint32_t kPageSize = 4096, kPhysicalSize = 0x20000000, kBlockPages = 64;
+  // Index buffers and small meshes are a few KB; below this the page walk and
+  // protection are not worth it and callers validate by content instead.
+  static constexpr uint32_t kMinWatchBytes = 256;
   std::array<std::atomic<uint64_t>, kPhysicalSize / kPageSize> pages_{};
   // Per-block (256 KB) maximum of pages_, kept by Written for cheap range reads.
   std::array<std::atomic<uint64_t>, kPhysicalSize / kPageSize / kBlockPages> blocks_{};
   std::atomic<uint64_t> serial_{1};
+  std::atomic<uint64_t> invalidations_{0}, invalidatedBytes_{0};
   std::atomic<bool> active_{false};
   rex::memory::Memory* memory_ = nullptr;
   void* handle_ = nullptr;

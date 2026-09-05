@@ -51,6 +51,8 @@ using namespace pgr4::render;
 #define REXGPU_ERROR(...) ((void)0)
 #define REXGPU_INFO(...) ((void)0)
 #define SCOPE_profile_cpu_f(name)
+// Raw buffer mirrors live in the runtime; this harness keeps the snapshot path.
+bool BindRawBufferMirror(uint32_t, uint32_t, bool, GuestBuffer**, uint32_t*) { return false; }
 uint64_t g_frameTraceIndex = 0;
 bool lost = false, createFails = false, mapFails = false;
 unsigned creates = 0, checks = 0, maps = 0, unmaps = 0;
@@ -101,7 +103,7 @@ struct Memory {
   Callback callback = nullptr;
   void* context = nullptr;
   bool armFails = false, invalidateOnArm = false;
-  unsigned arms = 0;
+  unsigned arms = 0, queries = 0;
   void* RegisterPhysicalMemoryInvalidationCallback(Callback cb, void* ctx) {
     callback = cb; context = ctx; return this;
   }
@@ -119,6 +121,7 @@ struct Memory {
   uint32_t lastAddress = 0;
   Memory* GetPhysicalHeap() { return this; }
   rex::memory::PageAccess QueryRangeAccess(uint32_t, uint32_t) {
+    ++queries;
     return readable ? rex::memory::PageAccess::kReadWrite : rex::memory::PageAccess::kNoAccess;
   }
   template<class T> T TranslatePhysical(uint32_t address) {
@@ -325,6 +328,24 @@ int main() {
     else assert(largeAllocations == warmAllocations);
   }
 
+  // A rewritten source keeps its previous version only until the frame
+  // retires; the released storage is reused for the next version.
+  ByteSnapshotCache versions;
+  std::vector<uint8_t> frameData(8192, 1);
+  uint64_t firstVersionId = 0, secondVersionId = 0, thirdVersionId = 0;
+  auto* firstVersion = versions.Copy(frameData.data(), 8192, 4, &firstVersionId);
+  frameData[0] = 2;
+  auto* secondVersion = versions.Copy(frameData.data(), 8192, 4, &secondVersionId);
+  assert(secondVersion != firstVersion && secondVersionId != firstVersionId);
+  assert(versions.RetainedBytes() == 4 * 8192 && firstVersion[3] == 1);
+  assert(!versions.Retire() && versions.RetainedBytes() == 2 * 8192);
+  frameData[0] = 3;
+  assert(versions.Copy(frameData.data(), 8192, 4, &thirdVersionId) == firstVersion);
+  assert(thirdVersionId != firstVersionId && thirdVersionId != secondVersionId);
+  assert(firstVersion[3] == 3 && versions.RetainedBytes() == 4 * 8192);
+  assert(versions.Copy(frameData.data(), 8192, 4, &thirdVersionId) == firstVersion);
+  assert(!versions.Retire() && versions.RetainedBytes() == 2 * 8192);
+
   // The real guest snapshot path must reuse unchanged full palettes, observe
   // mutations at the end, and retain old converted bytes for queued draws.
   constexpr uint32_t paletteBytes = 221760;
@@ -481,13 +502,14 @@ int main() {
   const auto immutableChanged = immutableUploads.UploadSnapshot(bytes, paletteBytes, identity);
   assert(immutableChanged.ref == immutableFirst.ref && immutableChanged.offset >= paletteBytes);
   assert(immutableBuffer->bytes[immutableFirst.offset + paletteBytes - 4] != bytes[paletteBytes - 4]);
-  // CPU address reuse across cache generations cannot alias a GPU upload.
+  // Unchanged content keeps its identity across cache generations, so the
+  // slot's GPU upload is reused too; only the slot reset starts over.
   g_intermediaryUploadAllocator.Reset();
   const uint64_t retiredIdentity = identity;
   bytes = capture(4, &identity);
-  assert(identity != retiredIdentity);
+  assert(identity == retiredIdentity);
   const auto regenerated = immutableUploads.UploadSnapshot(bytes, paletteBytes, identity);
-  assert(regenerated.offset > immutableChanged.offset);
+  assert(regenerated.offset == immutableChanged.offset);
   immutableUploads.Reset();
   assert(immutableUploads.UploadSnapshot(bytes, paletteBytes, identity).offset == 0);
   // Callers without immutable provenance still receive full content validation.
@@ -521,10 +543,11 @@ int main() {
   assert(tracked && trackedId);
   const unsigned initialHashes = hashCalls;
   uint64_t reusedId = 0;
-  const unsigned armsBefore = watched.arms;
+  const unsigned armsBefore = watched.arms, queriesBefore = watched.queries;
   assert(SnapshotRawPhysicalBuffer(4096, 65536, 4, false, &reusedId) == tracked);
   assert(trackedId == reusedId && hashCalls == initialHashes);
   assert(watched.arms == armsBefore); // An armed, unwritten range is not re-armed.
+  assert(watched.queries == queriesBefore); // ...nor re-queried for access.
   // A faulting write bumps the revision, so the next draw re-arms; a change
   // DURING that arming must update this draw, not just the following one.
   watched.callback(watched.context, 4096, 4096, true);
@@ -548,6 +571,28 @@ int main() {
   assert(g_physicalWriteWatch.BeginSnapshot(nullptr, 4096, 65536) == 0);
   assert(g_physicalWriteWatch.BeginSnapshot(&watched, 0x1FFFFFF0, 4096) == 0);
   assert(g_physicalWriteWatch.BeginSnapshot(&watched, 0, 8) == 0);
+  assert(g_physicalWriteWatch.BeginSnapshot(&watched, 8192, 1024) != 0);  // Sub-page ranges are watched.
+  // Ranges ending at the same address are suffixes of one guest buffer: a
+  // sub-range is served from the longest cached suffix without hashing or
+  // copying, gets a stable identity of its own, and only writes inside it
+  // invalidate it. A longer suffix seen later becomes the shared copy.
+  const unsigned suffixHashes = hashCalls;
+  uint64_t wholeId = 0, partId = 0, againId = 0;
+  auto* whole = SnapshotRawPhysicalBuffer(0x20000, 0x10000, 4, false, &wholeId);
+  assert(whole && wholeId && hashCalls == suffixHashes + 1);
+  auto* part = SnapshotRawPhysicalBuffer(0x24000, 0xC000, 4, false, &partId);
+  assert(part == whole + 0x4000 && partId != 0 && partId != wholeId && hashCalls == suffixHashes + 1);
+  assert(SnapshotRawPhysicalBuffer(0x24000, 0xC000, 4, false, &againId) == part && againId == partId);
+  watched.callback(watched.context, 0x20000 + 16, 4, true);  // Written outside the sub-range.
+  assert(SnapshotRawPhysicalBuffer(0x24000, 0xC000, 4, false, &againId) == part && againId == partId);
+  assert(hashCalls == suffixHashes + 1);
+  watched.callback(watched.context, 0x24008, 1, true);  // Written inside: the fault comes first.
+  watched.bytes[0x24008] ^= 0xFF;
+  auto* rewritten = SnapshotRawPhysicalBuffer(0x24000, 0xC000, 4, false, &againId);
+  assert(rewritten != part && againId != partId && rewritten[8 ^ 3] == uint8_t(0x12 ^ 0xFF));
+  auto* longer = SnapshotRawPhysicalBuffer(0x1F000, 0x11000, 4, false, &againId);
+  assert(longer && SnapshotRawPhysicalBuffer(0x24000, 0xC000, 4, false, &againId) == longer + 0x5000);
+  assert(SnapshotRawPhysicalBuffer(0x20000, 0x10000, 4, false, &againId) == longer + 0x1000);
   // Multiple sizes and endian views at one address keep distinct entries.
   ByteSnapshotCache revisions;
   uint64_t idA = 0, idB = 0;

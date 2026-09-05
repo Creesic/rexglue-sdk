@@ -79,6 +79,15 @@ void FlushPendingStretchRectCommands();
 // Unleashed DestructResource: queue destruction of an FM2 GuestResource until
 // the current recording frame's GPU fence retires (via OnRecordingFrameReady).
 void ScheduleResourceDestruction(GuestResource* resource);
+GuestBuffer* CreateVertexBuffer(uint32_t length);
+GuestBuffer* CreateIndexBuffer(uint32_t length, uint32_t format);
+
+// Raw XG vertex/index buffers (see the mirror section in render_state.cpp):
+// register a header at XGOffsetResourceAddress; bind its host mirror at draw
+// time (false = fall back to the per-draw snapshot).
+void RegisterRawBuffer(uint32_t headerAddress);
+bool BindRawBufferMirror(uint32_t headerAddress, uint32_t fetchBase, bool index,
+                         GuestBuffer** buffer, uint32_t* offset);
 
 void Clear(GuestDevice* device, uint32_t flags, const float* color, float z);
 

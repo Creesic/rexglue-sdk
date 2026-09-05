@@ -1945,3 +1945,125 @@ per-256 KB block maxima so `Revision()` reads whole blocks in one load.
 test_physical_write_watch --benchmark: 34 -> 11 ms per 100k tracked snapshots.
 test_upload_cache now fires the fault callback before simulated writes, since
 an armed range is no longer re-armed on every draw.
+
+`pgr4_race5.tracy` (arming skip): no change, raw snapshot still 11.2 ms/frame.
+Per call the path is cheap (15k calls/frame, median 0.13 us); the time is in
+the ~2200 calls per frame over 1 us, i.e. one per distinct range, because the
+intermediary allocator's ByteSnapshotCache was cleared every frame
+(OnRecordingFrameReady -> Reset -> Clear), so every raw vertex/index range was
+hashed, copied and byte-swapped again each frame. The cache now persists across
+frames (Retire keeps entries until a 512 MB budget forces a full clear; the
+write watch or the content check proves reuse), identities stay stable across
+frames, and the FrameTrace log carries `snapshotCacheMB`. test_upload_cache's
+"address reuse across generations" case now asserts the retained identity and
+GPU upload instead of fresh ones.
+
+`pgr4_race6.tracy` (persistent cache): frame 37.3 -> 33.3 ms mean, draw hook
+16.2 -> 10.4 ms, raw snapshot 11.4 -> 5.6 ms, draws over 20 us 92 -> 27 per
+frame. Remaining raw cost is two thirds flat per-call overhead (SDK access
+query under the heap mutex, two revision walks, two map lookups) and one third
+~200 rewritten ranges per frame. The FrameTrace log showed the retained cache
+at 471 MB by frame 901 and a budget clear: every mesh snapshots the entire
+remaining buffer from its own offset, so one vertex buffer was copied once per
+mesh. ByteSnapshotCache now keys the longest validated range per buffer end
+address and serves shorter ranges as offsets into it when no page of the
+sub-range was written since (sub-range identity = entry identity << 32 |
+offset). test_upload_cache covers sharing, outside/inside writes and a longer
+suffix superseding.
+
+`pgr4_race7.tracy` (14:19, suffix sharing) was no better and the log (build
+with cache/fault counters, first 96 stream and 48 index ranges) explained why:
+every mesh has its own 4-24 KB vertex range and 1-3 KB index range at distinct
+addresses, so nothing shares a suffix except one 221 KB per-frame instance
+buffer on stream 1 (two alternating bases). Per 300 frames: ~8700 content
+hits per frame (memcmp validations of ranges under 4 KB, which the watch never
+armed), ~11 creates per frame at 0.4 MB (that instance buffer rewritten every
+frame, every old version retained until the 512 MB budget clear, whose rehash
+of ~85 MB is the 22 ms raw-snapshot spike), and 126 guest write faults per
+frame (0.5 MB, the instance buffer's pages; ~2-3 ms of fault handling inside
+guest code, invisible to Tracy). Changes: ByteSnapshotCache releases the
+version a source superseded once the frame retires (generation-checked
+references, free-list slot reuse), so the budget never trips; the watch arms
+ranges down to 256 bytes so index buffers take the O(1) path. FrameTrace now
+logs entries/suffixes/+suffixHits/+hintHits/+contentHits/+creates/+createdMB/
++faults/+faultMB per interval.
+
+`pgr4_race1.tracy` (15:20, version release + sub-page watch): frame 35.6 ->
+33.8 ms mean, p90 43.7 -> 38.4, max 52 -> 45; raw snapshot 7.0 -> 5.4 ms;
+content hits ~8700 -> ~2400 per frame; cache 133 MB and flat, no budget
+clears. The ~120 invalidations per frame arrive through the exact-range path
+(guest protect/allocate/free calls), not write faults: write faults already
+unprotect 64 KB blocks via the callback's returned range. Next change:
+`PhysicalWriteWatch::ArmedRevision` lets SnapshotRawPhysicalBuffer skip the
+SDK access query (heap mutex, one iteration per page) when the range is
+armed and unchanged, since decommit/release/protect changes bump the revision.
+
+`pgr4_race2.tracy` (15:35, query skip): hooks 19.2 -> 17.6 ms, raw 5.4 ->
+4.8 ms; frame mean unchanged at 33.9 because that segment had 1.8 ms more
+guest code. Where Unleashed/reblue differ: they learn every buffer at creation
+(Create/Lock/Unlock hooks, or Blue Dragon's bdAllocRenderBuffer hook) and a
+draw binds a handle; this port discovered raw XG buffers at draw time and
+validated them per draw, then re-uploaded every snapshot per frame slot on the
+render thread. IDA (PGR4.i64): FM2 creates every raw buffer in
+PGR4_Render_CreateVertexBuffer 0x82294538 / PGR4_Render_CreateIndexBuffer
+0x822947F0 (renamed): header from a free list, payload from one of four arenas
+by pool kind, XGSet*BufferHeader (vertex setter at 0x826DE748, index at
+0x826DE7E0), then XGOffsetResourceAddress, which is already hooked. Raw buffer
+mirrors: RegisterRawBuffer (render_state.cpp) creates a host GuestBuffer per
+header at XGOffsetResourceAddress; BindRawBufferMirror at draw time binds it
+through ProcSetStreamSource/ProcSetIndices and re-uploads via the UnlockBuffer
+command only when the write watch revision changed (falls back to the snapshot
+path while recording, for unwatchable payloads, and for a second rewrite of
+the same payload inside one frame). The FM2 IDB (ida37) has the same setters
+named at 0x823C5C90 / 0x823C5D28.
+
+`pgr4_race3.tracy` (15:58, mirrors): raw snapshot 4.8 -> 0.9 ms/frame with
+14.7k -> 2.3k calls, draw hook 10.0 -> 8.8 ms, geometry 6.7 -> 5.2 ms, render
+thread 19.9 -> 17.6 ms, present wait 1.5 -> 1.0 ms; frame mean 33.9 -> 33.5 ms
+because unzoned guest time was 14.4 ms in that segment (11.5 / 13.3 / 14.4
+across the last three captures). The 2.3k remaining raw calls are unwatchable
+ranges (mostly under 256 bytes). The XGOffsetResourceAddress hook now carries a
+Tracy zone (raw hooks have none) and FrameTrace logs +mirrors (host buffers
+created), so the next log shows whether registration is what moved into guest
+time. The log's PIPELINE-TRACE lines are diagnostics at error level, not
+failures.
+
+`pgr4_race4.tracy` (16:24): mirrors are created only at load (+mirrors=9420
+then 0 per frame); hooks 14.3 ms, present wait 0.8 ms, render thread 15.4 ms,
+yet the frame stays 33.3 ms and unzoned time grows as hooks shrink (11.5 /
+13.3 / 14.4 / 16.8 ms over the last four captures). 116 of 121 frames are
+exactly two vsync intervals long. This is the XDK's presentation interval:
+q_PGR4_RenderThread_FrameLoop calls D3D::SynchronizeToPresentationInterval
+(0x82695738, via sub_82695BD8) every frame and before each Swap; it inserts
+wait-for-vblank packets and a SwapCallback into the ring with the interval
+from D3DRS_PRESENTINTERVAL (device+13580, value 2). Our command processor
+executes the ring on the worker thread, so its WAIT_REG_MEM parks at the 60 Hz
+emulated vblank; the ring stops draining, and the guest thread stalls in the
+ring allocator (sub_82699358 KickRing / CRingAllocList) until the worker
+passes the vblank wait. That stall is unhooked guest code, hence unzoned. The
+fence spin (D3D_CBlocker_Check, hooked to return 0) never ran in these frames
+and kernel waits total 0.04 ms/frame. Forza 2's port no-ops
+SynchronizeToPresentationInterval, BlockOnFence and BlockUntilIdle
+(ReXGlue080plume/FM2/src/render/d3d_hooks.cpp:1384). PGR4's manifest has no
+entry for 0x82695738, so the no-op needs a manifest addition and a
+regeneration; a no-rebuild experiment is `--pgr4_vsync_hz=120`, which halves
+the wait quantum (expect ~25 ms frames) and shows whether game speed follows
+the vblank count.
+
+Manifest: 0x82695738 = D3D_SynchronizeToPresentationInterval (hooked to a
+no-op via PGR4_D3D_GPU_NOOP) and 0x82697970 = D3D_CBlocker_Check (the existing
+return-0 hook was dormant without an entry; the XDK Swap's swap-count throttle
+and BlockOnFence spin through it). Codegen re-runs from the build (the
+manifest is in generated/default/codegen.d). Watch for game-speed changes:
+if the simulation follows vblank count rather than real time, the unlock also
+needs timing patches (Unleashed's frame-rate unlock approach).
+
+`pgr4_race5.tracy` (16:42, no presentation-interval pacing): race frames
+33.3 -> 26.5 ms mean (30.0 -> 37.7 fps), min 18.6, max 36.5; unzoned guest
+time 16.8 -> 8.7 ms (the pacing stall is gone, the rest is real game work);
+the log shows 50-86 fps in lighter segments. User reports the game plays
+normally, so the simulation follows real time, not the vblank count. The
+frame is now hooks 15.3 + guest 8.7 + present wait 1.0 + texture refresh 1.5.
+Remaining producer cost by hook: draw 8.1 (geometry snapshot 4.9, submit 1.3,
+constants 0.8), SetTexture 3.1, SetStreamSource 1.9, SetIndices 1.0; render
+thread busy 16.3 ms, so both threads need work for 60 fps.

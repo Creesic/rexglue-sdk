@@ -37,6 +37,7 @@
 #include <vector>
 
 #include <rex/hook.h>
+#include <rex/dbg.h>
 #include <rex/logging.h>
 #include <rex/types.h>
 
@@ -676,9 +677,11 @@ REX_HOOK(D3DResource_Release, D3DResourceReleaseHook);  // @ 0x82369E08
 // upload until first use, since the caller may still be filling the payload.
 REX_EXTERN(__imp__XGOffsetResourceAddress);
 REX_HOOK_RAW(XGOffsetResourceAddress) {
+  SCOPE_profile_cpu_f("XGOffsetResourceAddress");
   const uint32_t resource = ctx.r3.u32;
   __imp__XGOffsetResourceAddress(ctx, base);
   rr::InvalidateGuestTexture(ghp::ToHost<void>(resource));
+  rr::RegisterRawBuffer(resource);
 }
 
 // ---------------------------------------------------------------------------
@@ -1978,6 +1981,9 @@ REX_HOOK(D3D_CBlocker_Check, CBlockerCheckHook);
 #define PGR4_D3D_GPU_NOOP(name) \
   REX_HOOK_RAW(name) {}
 
+// The XDK's CPU-side pace to D3DRS_PRESENTINTERVAL: with the swap's vblank
+// waits gone the frame is bound by CPU work, not the emulated 60 Hz vblank.
+PGR4_D3D_GPU_NOOP(D3D_SynchronizeToPresentationInterval);
 PGR4_D3D_GPU_NOOP(D3DDevice_SetGammaRamp);
 PGR4_D3D_GPU_NOOP(D3DDevice_SetShaderGPRAllocation);
 PGR4_D3D_GPU_NOOP(D3DDevice_SetPredication);

@@ -18,6 +18,14 @@ includes = []
 # Native Plume renderer present trigger. Sole caller of the VdSwap import
 # (IDA: 1 xref); size 0x594 vs FM2's 0x598 for the same XDK routine.
 0x82695BE0 = { name = "D3DDevice_Swap" }
+# D3D::SynchronizeToPresentationInterval (IDA rex_SynchronizeToPresentationInterval_D3D_...):
+# called by the frame loop and before every Swap; inserts the wait-for-vblank
+# packets and SwapCallback that pace the game to D3DRS_PRESENTINTERVAL (2 =
+# 30 Hz). Hooked to a no-op like the Forza 2 port so frames are CPU-bound.
+0x82695738 = { name = "D3D_SynchronizeToPresentationInterval" }
+# D3D::CBlocker::Check, the spin used by BlockOnFence and the Swap swap-count
+# throttle. Its hook (returns "not blocked") was dormant without this entry.
+0x82697970 = { name = "D3D_CBlocker_Check" }
 
 # Remaining portable D3D surface for the native renderer, all verified in IDA.
 # Named here but NOT yet hooked -- codegen emits normal recompiled bodies until
