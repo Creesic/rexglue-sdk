@@ -76,7 +76,8 @@ uint32_t AllocTextureDescriptor();
 void FreeTextureDescriptor(uint32_t index);
 
 // Frame upload scratch (graphics CL path for UnlockTextureRect / constants).
-plume::RenderBufferReference UploadFrameData(const void* src, uint64_t size, bool byteSwap = false);
+plume::RenderBufferReference UploadFrameData(const void* src, uint64_t size, bool byteSwap = false,
+                                             uint64_t alignment = 256);
 // CPU staging owned until the queued render command has consumed it. Producer
 // threads use this to snapshot mutable guest lock memory before enqueueing.
 uint8_t* AllocateIntermediaryData(uint32_t size);

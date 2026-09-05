@@ -355,6 +355,7 @@ endif()
 
 #=============================================================================
 # Tracy Profiler (optional)
+# Pinned to upstream v0.14.0, compatible with protocol-82 profilers.
 #=============================================================================
 if(REXGLUE_ENABLE_TRACY)
     set(TRACY_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tracy)
@@ -375,7 +376,8 @@ if(REXGLUE_ENABLE_TRACY)
     target_link_libraries(TracyClient PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 
     if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_link_libraries(TracyClient PUBLIC ws2_32 dbghelp)
+        target_link_libraries(TracyClient PUBLIC ws2_32 dbghelp secur32)
+        target_compile_definitions(TracyClient PUBLIC WINVER=0x0A00 _WIN32_WINNT=0x0A00)
     endif()
 
     target_compile_definitions(TracyClient

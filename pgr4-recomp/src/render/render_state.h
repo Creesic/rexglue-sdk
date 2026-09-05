@@ -51,6 +51,8 @@ GuestTexture* TranslateGuestTexture(void* guestHeader, bool uploadGuestData);
 // Same translation, but starting directly from a raw
 // GPUTEXTURE_FETCH_CONSTANT rather than a full XG texture header.
 GuestTexture* TranslateGuestTextureFetch(const void* guestFetch, bool uploadGuestData);
+// A raw header was unlocked or assigned new backing memory.
+void InvalidateGuestTexture(void* guestHeader);
 
 void SetVertexShader(GuestDevice* device, GuestShader* shader);
 void SetPixelShader(GuestDevice* device, GuestShader* shader);

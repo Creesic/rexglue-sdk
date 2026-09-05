@@ -313,7 +313,7 @@ class PhysicalHeap : public BaseHeap {
   bool Protect(uint32_t address, uint32_t size, uint32_t protect,
                uint32_t* old_protect = nullptr) override;
 
-  void EnableAccessCallbacks(uint32_t physical_address, uint32_t length,
+  bool EnableAccessCallbacks(uint32_t physical_address, uint32_t length,
                              bool enable_invalidation_notifications, bool enable_data_providers);
   // Returns true if any page in the range was watched.
   bool TriggerCallbacks(std::unique_lock<std::recursive_mutex> global_lock_locked_once,
@@ -495,9 +495,14 @@ class Memory {
   // RegisterPhysicalMemoryInvalidationCallback.
   void UnregisterPhysicalMemoryInvalidationCallback(void* callback_handle);
 
+  // Notify caches AFTER native stores through TranslatePhysical, which bypass
+  // protected guest aliases. Does not change alias protection or watch flags.
+  void NotifyPhysicalMemoryWritten(uint32_t physical_address, uint32_t length);
+
   // Enables physical memory access callbacks for the specified memory range,
   // snapped to system page boundaries.
-  void EnablePhysicalMemoryAccessCallbacks(uint32_t physical_address, uint32_t length,
+  // Returns false if host protection fails; callers must not trust cached data.
+  bool EnablePhysicalMemoryAccessCallbacks(uint32_t physical_address, uint32_t length,
                                            bool enable_invalidation_notifications,
                                            bool enable_data_providers);
 

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cstdint>
@@ -142,13 +143,13 @@ struct GuestBaseTexture : GuestResource {
   uint32_t lockedLevel = 0;
   // Total mip levels of the host texture (1 for surfaces).
   uint32_t levels = 1;
-  // Frame index of the last guest-memory upload; lets us upload a sampled
-  // texture at most once per frame instead of once per draw (huge perf win).
+  // Last validated frame, protected by GuestTexture::guestUploadMutex for raw
+  // textures along with upload signatures and explicit invalidation.
   uint64_t lastUploadFrame = ~0ull;
   // PGR4: set once the texture has been a resolve destination. Its guest
   // memory is then stale (the exposure textures hold zeros there), so the
   // once-per-frame refresh must not clobber the GPU-resolved contents.
-  bool gpuResolved = false;
+  std::atomic<bool> gpuResolved{false};
   bool NeedsGuestUpload(bool requested, uint64_t frame) const {
     return requested && !gpuResolved && lastUploadFrame != frame;
   }
@@ -164,6 +165,15 @@ struct GuestBaseTexture : GuestResource {
 
 // D3DFMT_* texture/volume texture.
 struct GuestTexture : GuestBaseTexture {
+  // Raw XG resources may bypass Lock/Unlock. Validate their full source once
+  // per frame, but retain the host image until the content or layout changes.
+  std::mutex guestUploadMutex;
+  std::array<uint32_t, 17> guestLayoutKey{};
+  std::array<uint64_t, 2> guestUploadHash{};
+  bool guestUploadHashValid = false;
+  // Physical write-watch revisions of the base/mip ranges when the signature
+  // was last validated (0 = unwatched: hash every frame).
+  std::array<uint64_t, 2> guestWatchRevision{};
   uint32_t depth = 0;
   plume::RenderTextureViewDimension viewDimension = plume::RenderTextureViewDimension::TEXTURE_2D;
   std::unique_ptr<plume::RenderFramebuffer> framebuffer;

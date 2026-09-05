@@ -101,6 +101,8 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
     return status;
   };
 
+  rex::perf::Profiler::Startup();
+
   // Initialize SEH exception support for hardware exception handling
   rex::initialize_seh();
 

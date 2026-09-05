@@ -48,6 +48,7 @@ includes = []
 0x8269A3B0 = { name = "D3DIndexBuffer_Lock" }
 0x82693348 = { name = "D3DTexture_LockRect" }
 0x82699F80 = { name = "D3D_UnlockResource" }
+0x826DEE98 = { name = "XGOffsetResourceAddress" }
 0x82694E38 = { name = "D3DDevice_SetVertexDeclaration" }
 0x82694B28 = { name = "XGRegisterVertexShader" }
 0x826948E8 = { name = "XGRegisterPixelShader" }

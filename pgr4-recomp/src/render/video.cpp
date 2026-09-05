@@ -19,12 +19,16 @@
 #include <renderdoc_app.h>
 #endif
 #include <rex/chrono/clock.h>
+#include <rex/dbg.h>
 #include <rex/kernel/xboxkrnl/video.h>
 #include <rex/logging.h>
+#include <rex/perf/counter.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xthread.h>
 
 #include "render/guest_resources.h"
+#include "render/guest_heap.h"
+#include "render/physical_write_watch.h"
 #include "render/render_internal.h"
 #include "render/render_queue.h"
 #include "render/render_state.h"
@@ -290,6 +294,9 @@ void PresentAndAdvanceFrame() {
   RenderCommandSemaphore* signalSemaphores[] = {g_renderSemaphores[g_frame].get()};
   if (g_swapChainValid) {
     g_swapChainValid = g_swapChain->present(g_backBufferIndex, signalSemaphores, 1);
+    if (g_swapChainValid) {
+      rex::perf::Profiler::Flip();
+    }
   }
 
   // 2-frame pipelining: don't block on this slot's fence now. Advance to the
@@ -461,6 +468,7 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
 
   RenderSwapChainDesc swapChainDesc(g_window, kBackbufferFormat, 2);
   g_swapChain = g_queue->createSwapChain(swapChainDesc);
+  g_swapChain->setVsyncEnabled(false);
   // createSwapChain sizes from the HWND client rect; Video::Init's width/height
   // args are only the guest viewport hint. If they diverge, resize once now
   // (no framebuffers hold buffer refs yet) so EnsureFrameStarted does not
@@ -577,6 +585,7 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
   // Init/Shutdown cycle.
   g_deviceLost.store(false, std::memory_order_release);
 
+  pgr4::render::g_physicalWriteWatch.Initialize(pgr4::ghp::GuestMemory());
   pgr4::render::RenderQueue::Start();
   for (uint32_t i = 0; i < kNumFrames; ++i) {
     pgr4::render::OnRecordingFrameReady(i);
@@ -811,6 +820,39 @@ void ProcCopyBufferFromUpload(void* dst, void* src, uint64_t size) {
   g_copyQueue->waitForCommandFence(g_copyFence.get());
 }
 
+void CopyTextureSubresources(RenderCommandList* commands, RenderTexture* dst,
+                             RenderBufferReference src, uint32_t format,
+                             const TextureUploadRegion* regions, uint32_t regionCount) {
+  commands->barriers(RenderBarrierStage::COPY,
+                      RenderTextureBarrier(dst, RenderTextureLayout::COPY_DEST));
+  for (uint32_t i = 0; i < regionCount; ++i) {
+    const TextureUploadRegion& region = regions[i];
+    commands->copyTextureRegion(
+        RenderTextureCopyLocation::Subresource(dst, region.mip, region.arrayIndex),
+        RenderTextureCopyLocation::PlacedFootprint(src.ref, static_cast<RenderFormat>(format),
+                                                   region.width, region.height, 1,
+                                                   region.rowTexels, src.offset + region.srcOffset));
+  }
+}
+
+void ProcUploadTextureSubresources(void* dst, const void* data, uint64_t size, uint32_t format,
+                                   const TextureUploadRegion* regions, uint32_t regionCount,
+                                   bool* success) {
+  *success = false;
+  if (dst == nullptr || data == nullptr || size == 0 || regions == nullptr || regionCount == 0 ||
+      IsDeviceLost()) return;
+  std::lock_guard lock(RecordingMutex());
+  auto* commands = CommandList();
+  if (commands == nullptr || IsDeviceLost()) return;
+  // Reuse the same fence-owned upload arena as constants and geometry, with
+  // D3D12's 512-byte texture placement alignment (reblue/Unleashed pattern).
+  const auto upload = UploadFrameData(data, size, false, 512);
+  if (upload.ref == nullptr) return;
+  CopyTextureSubresources(commands, static_cast<RenderTexture*>(dst), upload,
+                          format, regions, regionCount);
+  *success = true;
+}
+
 void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t width, uint32_t height,
                                uint32_t rowTexels, uint32_t mip, uint32_t arrayIndex,
                                uint64_t srcOffset) {
@@ -821,24 +863,18 @@ void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t w
 void ProcCopyTextureSubresourcesFromUpload(void* dst, void* src, uint32_t format,
                                            const TextureUploadRegion* regions,
                                            uint32_t regionCount) {
-  if (dst == nullptr || src == nullptr || regions == nullptr || regionCount == 0) return;
-  auto* dstTex = static_cast<RenderTexture*>(dst);
-  auto* srcBuf = static_cast<RenderBuffer*>(src);
-  const auto fmt = static_cast<RenderFormat>(format);
-  std::lock_guard lock(g_copyMutex);
-  g_copyCommandList->begin();
-  g_copyCommandList->barriers(RenderBarrierStage::COPY,
-                              RenderTextureBarrier(dstTex, RenderTextureLayout::COPY_DEST));
-  for (uint32_t i = 0; i < regionCount; ++i) {
-    const TextureUploadRegion& region = regions[i];
-    g_copyCommandList->copyTextureRegion(
-        RenderTextureCopyLocation::Subresource(dstTex, region.mip, region.arrayIndex),
-        RenderTextureCopyLocation::PlacedFootprint(srcBuf, fmt, region.width, region.height, 1,
-                                                   region.rowTexels, region.srcOffset));
-  }
-  g_copyCommandList->end();
-  g_copyQueue->executeCommandLists(g_copyCommandList.get(), g_copyFence.get());
-  g_copyQueue->waitForCommandFence(g_copyFence.get());
+  std::unique_ptr<RenderBuffer> upload(static_cast<RenderBuffer*>(src));
+  if (dst == nullptr || upload == nullptr || regions == nullptr || regionCount == 0 ||
+      IsDeviceLost()) return;
+  auto* srcBuf = upload.get();
+  std::lock_guard lock(RecordingMutex());
+  auto* commands = CommandList();
+  if (commands == nullptr || IsDeviceLost()) return;
+  // Record in draw order, including updates to textures sampled earlier in
+  // the frame. The frame fence owns staging lifetime; no per-texture GPU wait.
+  RetainTempUploadBuffer(std::move(upload));
+  CopyTextureSubresources(commands, static_cast<RenderTexture*>(dst), srcBuf->at(0),
+                          format, regions, regionCount);
 }
 
 }  // namespace pgr4::render
@@ -911,7 +947,10 @@ bool Video::Present(pgr4::render::GuestBaseTexture* frontBuffer) {
   // device (INVALID_CALL, "not the current back buffer").
   pgr4::render::RenderCommand cmd{};
   cmd.type = pgr4::render::RenderCommandType::ExecuteCommandList;
-  pgr4::render::RenderQueue::Run(cmd);
+  {
+    SCOPE_profile_cpu_f("Video::Present wait");
+    pgr4::render::RenderQueue::Run(cmd);
+  }
 
   g_presentBusy.store(false, std::memory_order_release);
   return true;
@@ -968,6 +1007,7 @@ void Video::WaitForGPU() {
 namespace pgr4::render {
 
 void ProcExecuteCommandList() {
+  SCOPE_profile_cpu_f("ProcExecuteCommandList");
   // Atomic frame transaction, all on the render thread: submit the frame,
   // present the swapchain, advance the slot, and reopen bookkeeping. Splitting
   // these across guest/render threads let a guest-side Enqueue land between
@@ -1034,6 +1074,7 @@ void Video::Shutdown() {
   // comment in render_queue.cpp).
   pgr4::render::RenderQueue::Stop();
   WaitForGPU();
+  pgr4::render::g_physicalWriteWatch.Shutdown();
   g_blitPipelines.clear();
   g_blitPixelShader.reset();
   g_blitVertexShader.reset();

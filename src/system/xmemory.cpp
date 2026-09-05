@@ -679,15 +679,25 @@ void Memory::UnregisterPhysicalMemoryInvalidationCallback(void* callback_handle)
   delete entry;
 }
 
-void Memory::EnablePhysicalMemoryAccessCallbacks(uint32_t physical_address, uint32_t length,
+void Memory::NotifyPhysicalMemoryWritten(uint32_t physical_address, uint32_t length) {
+  physical_address &= 0x1FFFFFFF;
+  length = std::min(length, 0x20000000u - physical_address);
+  if (length == 0) return;
+  auto lock = global_critical_region_.Acquire();
+  for (const auto* entry : physical_memory_invalidation_callbacks_)
+    entry->first(entry->second, physical_address, length, true);
+}
+
+bool Memory::EnablePhysicalMemoryAccessCallbacks(uint32_t physical_address, uint32_t length,
                                                  bool enable_invalidation_notifications,
                                                  bool enable_data_providers) {
-  heaps_.vA0000000.EnableAccessCallbacks(physical_address, length,
+  bool success = heaps_.vA0000000.EnableAccessCallbacks(physical_address, length,
                                          enable_invalidation_notifications, enable_data_providers);
-  heaps_.vC0000000.EnableAccessCallbacks(physical_address, length,
+  success &= heaps_.vC0000000.EnableAccessCallbacks(physical_address, length,
                                          enable_invalidation_notifications, enable_data_providers);
-  heaps_.vE0000000.EnableAccessCallbacks(physical_address, length,
+  success &= heaps_.vE0000000.EnableAccessCallbacks(physical_address, length,
                                          enable_invalidation_notifications, enable_data_providers);
+  return success;
 }
 
 uint32_t Memory::SystemHeapAlloc(uint32_t size, uint32_t alignment, uint32_t system_heap_flags) {
@@ -1936,7 +1946,7 @@ bool PhysicalHeap::AllocFixed(uint32_t base_address, uint32_t size, uint32_t ali
 
   // Global critical region before heap_mutex_ - see
   // AcquireHostPageReconcileLock for why the order matters.
-  auto global_lock = AcquireHostPageReconcileLock();
+  auto global_lock = global_critical_region_.Acquire();
   std::lock_guard<std::recursive_mutex> heap_lock(heap_mutex_);
 
   // Allocate from parent heap (gets our physical address in 0-512mb).
@@ -1958,6 +1968,12 @@ bool PhysicalHeap::AllocFixed(uint32_t base_address, uint32_t size, uint32_t ali
     return false;
   }
 
+  // Recommitting an existing allocation can restore host write access even
+  // though its watch flags are still set. Invalidate and clear them before
+  // another snapshot can trust the old protection state.
+  // A newly mapped alias can also replace memory cached through another alias.
+  memory_->NotifyPhysicalMemoryWritten(parent_base_address, size);
+  TriggerCallbacks(std::move(global_lock), address, size, true, true);
   return true;
 }
 
@@ -2062,29 +2078,29 @@ bool PhysicalHeap::Protect(uint32_t address, uint32_t size, uint32_t protect,
   return BaseHeap::Protect(address, size, protect);
 }
 
-void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t length,
+bool PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t length,
                                          bool enable_invalidation_notifications,
                                          bool enable_data_providers) {
   // TODO(Triang3l): Implement data providers.
   assert_false(enable_data_providers);
   if (!enable_invalidation_notifications && !enable_data_providers) {
-    return;
+    return true;
   }
   uint32_t physical_address_offset = GetPhysicalAddress(heap_base_);
   if (physical_address < physical_address_offset) {
     if (physical_address_offset - physical_address >= length) {
-      return;
+      return true;
     }
     length -= physical_address_offset - physical_address;
     physical_address = physical_address_offset;
   }
   uint32_t heap_relative_address = physical_address - physical_address_offset;
   if (heap_relative_address >= heap_size_) {
-    return;
+    return true;
   }
   length = std::min(length, heap_size_ - heap_relative_address);
   if (length == 0) {
-    return;
+    return true;
   }
 
   uint32_t system_page_first = (heap_relative_address + host_address_offset()) / system_page_size_;
@@ -2101,6 +2117,16 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
   uint8_t* protect_base = membase_ + heap_base_;
   uint32_t protect_system_page_first = UINT32_MAX;
   auto global_lock = global_critical_region_.Acquire();
+  bool success = true;
+  const auto protect_run = [&](uint32_t first, uint32_t end) {
+    if (rex::memory::Protect(protect_base + first * system_page_size_,
+                             (end - first) * system_page_size_, protect_access)) return;
+    // Do not leave flags claiming protection when the host rejected it. A
+    // later attempt must retry, and this caller must validate cached bytes.
+    success = false;
+    for (uint32_t page = first; page < end; ++page)
+      system_page_flags_[page >> 6].notify_on_invalidation &= ~(uint64_t(1) << (page & 63));
+  };
   for (uint32_t i = system_page_first; i <= system_page_last; ++i) {
     // Check if need to enable callbacks for the page and raise its protection.
     //
@@ -2110,8 +2136,8 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
     // - Page seen as writable by the guest, but only needs data providers -
     //   just set the bits to enable invalidation notifications (already has
     //   even stricter protection than needed).
-    // - Page not writable as requested by the game - don't do anything (need
-    //   real access violations here).
+    // - Read-only page: record invalidation without changing host protection.
+    // - Inaccessible page: leave it alone (need real access violations here).
     // If enabling data providers:
     // - Page accessible (either read/write or read-only) and didn't need data
     //   providers initially - protect and enable data providers.
@@ -2131,24 +2157,23 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
       REXSYS_ERROR("Access callback page OOB: system_page={} guest_page={} offset=0x{:X}", i,
                    guest_page_number, host_address_offset());
       assert_always();
+      success = false;
       continue;
     }
     rex::memory::PageAccess current_page_access =
         ToPageAccess(page_table_[guest_page_number].current_protect);
     bool protect_system_page = false;
-    // Don't do anything with inaccessible pages - don't protect, don't enable
-    // callbacks - because real access violations are needed there. And don't
-    // enable invalidation notifications for read-only pages for the same
-    // reason.
+    // Inaccessible pages need real access violations. Read-only pages need
+    // no stricter host protection, but retain invalidation flags so a later
+    // Protect(write), decommit, or release invalidates cached contents.
     if (current_page_access != rex::memory::PageAccess::kNoAccess) {
       // TODO(Triang3l): Enable data providers.
       if (enable_invalidation_notifications) {
-        if (current_page_access != rex::memory::PageAccess::kReadOnly &&
-            (page_flags_block.notify_on_invalidation & page_flags_bit) == 0) {
+        if ((page_flags_block.notify_on_invalidation & page_flags_bit) == 0) {
           // TODO(Triang3l): Check if data providers are already enabled.
           // If data providers are already enabled for the page, it has even
           // stricter protection.
-          protect_system_page = true;
+          protect_system_page = current_page_access != rex::memory::PageAccess::kReadOnly;
           page_flags_block.notify_on_invalidation |= page_flags_bit;
         }
       }
@@ -2159,17 +2184,15 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address, uint32_t len
       }
     } else {
       if (protect_system_page_first != UINT32_MAX) {
-        rex::memory::Protect(protect_base + protect_system_page_first * system_page_size_,
-                             (i - protect_system_page_first) * system_page_size_, protect_access);
+        protect_run(protect_system_page_first, i);
         protect_system_page_first = UINT32_MAX;
       }
     }
   }
   if (protect_system_page_first != UINT32_MAX) {
-    rex::memory::Protect(protect_base + protect_system_page_first * system_page_size_,
-                         (system_page_last + 1 - protect_system_page_first) * system_page_size_,
-                         protect_access);
+    protect_run(protect_system_page_first, system_page_last + 1);
   }
+  return success;
 }
 
 bool PhysicalHeap::TriggerCallbacks(std::unique_lock<std::recursive_mutex> global_lock_locked_once,

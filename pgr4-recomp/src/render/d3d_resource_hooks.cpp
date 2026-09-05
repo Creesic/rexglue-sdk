@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <plume_render_interface.h>
+#include <rex/dbg.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/xenos.h>
 #include <rex/hash.h>  // XXH3_64bits
@@ -28,6 +29,7 @@
 #include "render/guest_device.h"
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
+#include "render/physical_write_watch.h"
 #include "render/render_commands.h"
 #include "render/render_internal.h"
 #include "render/render_queue.h"
@@ -726,9 +728,9 @@ void ProcUnlockTextureRect(GuestBaseTexture* texture) {
     }
   }
 
-  RenderBufferReference ref = UploadFrameData(uploadSrc, slicePitch, false);
+  RenderBufferReference ref = UploadFrameData(uploadSrc, slicePitch, false, 512);
   if (ref.ref == nullptr) {
-    // Frame upload exhausted -- fall back to a dedicated staging buffer + copy queue.
+    // Frame upload exhausted -- retain a dedicated staging buffer for this frame.
     auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(slicePitch));
     if (!upload) {
       REXGPU_ERROR("UnlockTextureRect: failed to create staging upload buffer (size={})", slicePitch);
@@ -739,9 +741,8 @@ void ProcUnlockTextureRect(GuestBaseTexture* texture) {
     std::memcpy(mapped, uploadSrc, slicePitch);
     upload->unmap();
 
-    // Already on the render thread (Dispatch); call Proc* directly so staging
-    // stays live across the copy-queue submit without nested Run().
-    ProcCopyTextureFromUpload(texture->texture, upload.get(), uint32_t(texture->format),
+    // Already on the render thread; transfer staging to the frame fence.
+    ProcCopyTextureFromUpload(texture->texture, upload.release(), uint32_t(texture->format),
                               mipWidth, mipHeight,
                               pitch / FormatBytes(texture->format), level, 0, 0);
     texture->hostInitialized = true;
@@ -844,6 +845,17 @@ struct XenosTextureInfo {
   bool packedMips = false;
   bool valid = false;
 };
+
+std::array<uint32_t, 17> GuestTextureLayoutKey(const XenosTextureInfo& info) {
+  // A packed-mip flag has no effect on a large single-level base image.
+  const bool packed = info.packedMips &&
+                      (info.mipLevels > 1 || std::min(info.width, info.height) <= 16);
+  return {uint32_t(info.format), info.gpuFormat, info.width, info.height,
+          info.baseAddress, info.mipAddress, info.mipMaxLevel, info.mipLevels,
+          info.pitchTexels, info.blockDim, info.bytesPerBlock, info.endian,
+          info.expand16From, uint32_t(info.cube), info.arraySize,
+          uint32_t(info.tiled), uint32_t(packed)};
+}
 
 constexpr void GetPackedBaseOffsetBlocks(const XenosTextureInfo& info, uint32_t& outX,
                                          uint32_t& outY) {
@@ -1068,15 +1080,52 @@ GuestTextureSource GetGuestTextureSource(uint32_t address, uint32_t size) {
   return source;
 }
 
+void HashGuestTextureSource(XXH3_state_t& hash, const GuestTextureSource& source,
+                            const uint8_t* data) {
+  const uint32_t range[] = {source.physical, source.size};
+  XXH3_128bits_update(&hash, range, sizeof(range));
+  XXH3_128bits_update(&hash, source.readablePages.data(), source.readablePages.size());
+  if (source.size == 0 || data == nullptr)
+    return;
+  if (source.CanRead(0, source.size)) {
+    XXH3_128bits_update(&hash, data, source.size);
+    return;
+  }
+  // Preserve the upload's sparse-page behavior without reading inaccessible
+  // memory. Mapping changes are part of the signature as well as readable bytes.
+  for (uint32_t offset = 0; offset < source.size;) {
+    const uint32_t count = std::min(source.size - offset,
+                                   0x1000u - ((source.physical + offset) & 0xFFFu));
+    if (source.CanRead(offset, count))
+      XXH3_128bits_update(&hash, data + offset, count);
+    offset += count;
+  }
+}
+
+// Physical write-watch revision of a texture source range (0 when the range
+// is empty or outside guest physical memory).
+uint64_t WatchRevision(const GuestTextureSource& source) {
+  return source.size != 0 && !source.readablePages.empty()
+             ? g_physicalWriteWatch.Revision(source.physical, source.size)
+             : 0;
+}
+
 bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info) {
   if (IsDeviceLost() || texture == nullptr || texture->texture == nullptr || !info.valid)
     return false;
+  std::lock_guard lock(texture->guestUploadMutex);
+  const uint64_t frame = CurrentFrameIndex();
+  if (!texture->NeedsGuestUpload(true, frame))
+    return true;
+  SCOPE_profile_cpu_f("UploadGuestTextureData");
   if (texture->width != info.width || texture->height != info.height ||
       texture->format != info.format || texture->levels != info.mipLevels) {
     return false;
   }
-  if (RenderFormatIsDepth(info.format))
+  if (RenderFormatIsDepth(info.format)) {
+    texture->lastUploadFrame = frame;
     return true;  // content arrives through Resolve from the depth surface
+  }
 
   const auto dimension = info.cube ? rex::graphics::xenos::DataDimension::kCube
                                    : rex::graphics::xenos::DataDimension::k2DOrStacked;
@@ -1105,6 +1154,53 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
     return false;
   }
 
+  auto* mem = ghp::GuestMemory();
+  const uint8_t* baseData = mem->TranslatePhysical<const uint8_t*>(baseSource.physical);
+  const uint8_t* mipData = info.mipMaxLevel != 0
+                               ? mem->TranslatePhysical<const uint8_t*>(mipSource.physical)
+                               : nullptr;
+  // Watched physical memory keeps the host image until a page is written:
+  // an unchanged page revision means the pages are still protected, so skip
+  // both re-arming and the content hash (native mirrors never hash on bind).
+  const std::array<uint64_t, 2> currentRevision{WatchRevision(baseSource),
+                                                WatchRevision(mipSource)};
+  if (texture->guestUploadHashValid && texture->guestWatchRevision[0] != 0 &&
+      texture->guestWatchRevision == currentRevision) {
+    texture->lastUploadFrame = frame;
+    return true;
+  }
+  // Arm before reading; a write racing the hash or upload then leaves the
+  // stored revision at zero and the next frame hashes again.
+  std::array<uint64_t, 2> armedRevision{
+      g_physicalWriteWatch.BeginSnapshot(mem, baseSource.physical, baseSource.size),
+      mipSource.size != 0
+          ? g_physicalWriteWatch.BeginSnapshot(mem, mipSource.physical, mipSource.size)
+          : 0};
+  if (armedRevision[0] == 0 || (mipSource.size != 0 && armedRevision[1] == 0))
+    armedRevision = {};
+  const auto publishWatch = [&] {
+    const std::array<uint64_t, 2> now{WatchRevision(baseSource), WatchRevision(mipSource)};
+    texture->guestWatchRevision = armedRevision[0] != 0 && armedRevision == now
+                                      ? armedRevision
+                                      : std::array<uint64_t, 2>{};
+  };
+  // Native mirrors (reblue/Unleashed) upload at resource creation or update,
+  // not on bind. Raw PGR4 headers can be written without Unlock, so use a full
+  // 128-bit content signature as their fallback change detector, once per frame.
+  XXH3_state_t hash;
+  XXH3_128bits_reset(&hash);
+  const auto layoutKey = GuestTextureLayoutKey(info);
+  XXH3_128bits_update(&hash, layoutKey.data(), sizeof(layoutKey));
+  HashGuestTextureSource(hash, baseSource, baseData);
+  HashGuestTextureSource(hash, mipSource, mipData);
+  const auto digest = XXH3_128bits_digest(&hash);
+  const std::array<uint64_t, 2> contentHash{digest.low64, digest.high64};
+  if (texture->guestUploadHashValid && texture->guestUploadHash == contentHash) {
+    publishWatch();
+    texture->lastUploadFrame = frame;
+    return true;
+  }
+
   const uint32_t arraySize = info.cube ? 6u : info.arraySize;
   const uint32_t hostBytesPerBlock = info.expand16From != 0 ? 4u : info.bytesPerBlock;
   std::vector<TextureUploadRegion> regions;
@@ -1128,29 +1224,13 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
   if (uploadSize == 0 || uploadSize > 0x4000000ull)
     return false;
 
-  auto upload = Device()->createBuffer(RenderBufferDesc::UploadBuffer(uploadSize));
-  if (!upload) {
-    static std::atomic<uint32_t> failures{0};
-    if (++failures <= 4) {
-      REXGPU_ERROR("UploadGuestTextureData: failed to create staging upload buffer (size={})",
-                   uploadSize);
-    }
-    CheckDeviceLost("UploadGuestTextureData::createBuffer");
-    return false;
-  }
-  auto* mapped = reinterpret_cast<uint8_t*>(upload->map());
-  if (mapped == nullptr) {
-    CheckDeviceLost("UploadGuestTextureData::map");
-    return false;
-  }
-  std::memset(mapped, 0, size_t(uploadSize));
+  // Synchronous Run consumes this CPU scratch before reuse. The render worker
+  // copies it into its retained GPU-frame arena, avoiding one committed upload
+  // buffer allocation/map/destruction per changed texture.
+  thread_local std::vector<uint8_t> staging;
+  staging.assign(size_t(uploadSize), 0);
+  auto* mapped = staging.data();
 
-  auto* mem = ghp::GuestMemory();
-  const uint8_t* baseData = mem->TranslatePhysical<const uint8_t*>(baseSource.physical);
-  const uint8_t* mipData = info.mipMaxLevel != 0
-                               ? mem->TranslatePhysical<const uint8_t*>(mipSource.physical)
-                               : nullptr;
-  const uint32_t bytesPerBlockLog2 = std::countr_zero(info.bytesPerBlock);
   for (const TextureUploadRegion& region : regions) {
     const uint32_t mip = region.mip;
     const uint32_t widthBlocks = (region.width + info.blockDim - 1u) / info.blockDim;
@@ -1188,67 +1268,111 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
     const uint32_t sourceExtent = sourceLayout->array_slice_data_extent_bytes;
 
     uint8_t* destination = mapped + region.srcOffset;
-    std::vector<uint8_t> expandedSourceRow(info.expand16From != 0 ? guestRowBytes : 0);
-    for (uint32_t by = 0; by < heightBlocks; ++by) {
-      uint8_t* destinationRow = destination + uint64_t(by) * hostRowPitch;
-      uint8_t* guestRow = info.expand16From != 0 ? expandedSourceRow.data() : destinationRow;
-      if (info.expand16From != 0)
+    // Gather and swap a cacheable row before copying or expanding it into
+    // the CPU staging image. The render worker copies that image to the GPU arena.
+    std::vector<uint8_t> sourceRow(guestRowBytes);
+    const auto copyRows = [&]<uint32_t blockBytes>() {
+      constexpr uint32_t bytesPerBlockLog2 = std::countr_zero(blockBytes);
+      for (uint32_t by = 0; by < heightBlocks; ++by) {
+        uint8_t* destinationRow = destination + uint64_t(by) * hostRowPitch;
+        uint8_t* guestRow = sourceRow.data();
         std::memset(guestRow, 0, guestRowBytes);
 
-      for (uint32_t bx = 0; bx < widthBlocks; ++bx) {
-        int64_t sourceOffset;
-        if (info.tiled) {
-          sourceOffset = rex::graphics::texture_util::GetTiledOffset2D(
-              int32_t(packedX + bx), int32_t(packedY + by), pitchBlocks,
-              bytesPerBlockLog2);
-        } else {
-          sourceOffset = int64_t(packedY + by) * sourceLayout->row_pitch_bytes +
-                         int64_t(packedX + bx) * info.bytesPerBlock;
-        }
-        if (sourceOffset < 0 || uint64_t(sourceOffset) + info.bytesPerBlock > sourceExtent ||
-            !sourceRange->CanRead(sourceBaseOffset + uint64_t(sourceOffset),
-                                  info.bytesPerBlock)) {
-          continue;
-        }
-        std::memcpy(guestRow + uint64_t(bx) * info.bytesPerBlock,
-                    sourceData + sourceOffset, info.bytesPerBlock);
-      }
-      EndianSwapBuffer(guestRow, guestRowBytes, info.endian);
-
-      if (info.expand16From != 0) {
-        const auto* src16 = reinterpret_cast<const uint16_t*>(guestRow);
-        for (uint32_t bx = 0; bx < widthBlocks; ++bx) {
-          const uint16_t v = src16[bx];
-          uint8_t* d = destinationRow + bx * 4;
-          if (info.expand16From == 4) {
-            const uint32_t r = (v >> 10) & 0x1F, g = (v >> 5) & 0x1F, b = v & 0x1F;
-            d[0] = uint8_t((r << 3) | (r >> 2));
-            d[1] = uint8_t((g << 3) | (g >> 2));
-            d[2] = uint8_t((b << 3) | (b >> 2));
-            d[3] = (v & 0x8000) ? 0xFF : 0x00;
+        for (uint32_t bx = 0; bx < widthBlocks;) {
+          uint32_t copyBlocks = widthBlocks - bx;
+          int64_t sourceOffset;
+          if (info.tiled) {
+            // Xenos stores aligned X runs contiguously: 8 bytes for 1-byte
+            // blocks, 16 bytes otherwise (texture_util's tiled layout contract).
+            const uint32_t runBlocks = blockBytes == 1 ? 8u : 16u >> bytesPerBlockLog2;
+            copyBlocks = std::min(copyBlocks, runBlocks - ((packedX + bx) & (runBlocks - 1u)));
+            sourceOffset = rex::graphics::texture_util::GetTiledOffset2D(
+                int32_t(packedX + bx), int32_t(packedY + by), pitchBlocks,
+                bytesPerBlockLog2);
           } else {
-            const uint32_t r = (v >> 11) & 0x1F, g = (v >> 5) & 0x3F, b = v & 0x1F;
-            d[0] = uint8_t((r << 3) | (r >> 2));
-            d[1] = uint8_t((g << 2) | (g >> 4));
-            d[2] = uint8_t((b << 3) | (b >> 2));
-            d[3] = 0xFF;
+            sourceOffset = int64_t(packedY + by) * sourceLayout->row_pitch_bytes +
+                           int64_t(packedX + bx) * blockBytes;
+          }
+          const auto canRead = [&](uint32_t bytes) {
+            return sourceOffset >= 0 && uint64_t(sourceOffset) + bytes <= sourceExtent &&
+                   sourceRange->CanRead(sourceBaseOffset + uint64_t(sourceOffset), bytes);
+          };
+          uint32_t copyBytes = copyBlocks * blockBytes;
+          bool readable = canRead(copyBytes);
+          if (!readable && copyBlocks > 1) {
+            // A sparse page or truncated extent may cut through this run.
+            // Retain the original per-block zero-fill behavior at that boundary.
+            copyBlocks = 1;
+            copyBytes = blockBytes;
+            readable = canRead(copyBytes);
+          }
+          if (readable) {
+            auto* target = guestRow + uint64_t(bx) * blockBytes;
+            // Fixed-size copies inline the common tiled runs, including BC blocks,
+            // instead of entering the CRT memcpy routine for every tiny copy.
+            if (copyBytes == 16)
+              std::memcpy(target, sourceData + sourceOffset, 16);
+            else if (copyBytes == 8)
+              std::memcpy(target, sourceData + sourceOffset, 8);
+            else
+              std::memcpy(target, sourceData + sourceOffset, copyBytes);
+          }
+          bx += copyBlocks;
+        }
+        EndianSwapBuffer(guestRow, guestRowBytes, info.endian);
+
+        if (info.expand16From == 0) {
+          std::memcpy(destinationRow, guestRow, guestRowBytes);
+        } else {
+          const auto* src16 = reinterpret_cast<const uint16_t*>(guestRow);
+          for (uint32_t bx = 0; bx < widthBlocks; ++bx) {
+            const uint16_t v = src16[bx];
+            uint8_t* d = destinationRow + bx * 4;
+            if (info.expand16From == 4) {
+              const uint32_t r = (v >> 10) & 0x1F, g = (v >> 5) & 0x1F, b = v & 0x1F;
+              d[0] = uint8_t((r << 3) | (r >> 2));
+              d[1] = uint8_t((g << 3) | (g >> 2));
+              d[2] = uint8_t((b << 3) | (b >> 2));
+              d[3] = (v & 0x8000) ? 0xFF : 0x00;
+            } else {
+              const uint32_t r = (v >> 11) & 0x1F, g = (v >> 5) & 0x3F, b = v & 0x1F;
+              d[0] = uint8_t((r << 3) | (r >> 2));
+              d[1] = uint8_t((g << 2) | (g >> 4));
+              d[2] = uint8_t((b << 3) | (b >> 2));
+              d[3] = 0xFF;
+            }
           }
         }
       }
+    };
+    // Specialize the small copies and tiled address arithmetic once per region.
+    switch (info.bytesPerBlock) {
+      case 1: copyRows.operator()<1>(); break;
+      case 2: copyRows.operator()<2>(); break;
+      case 4: copyRows.operator()<4>(); break;
+      case 8: copyRows.operator()<8>(); break;
+      case 16: copyRows.operator()<16>(); break;
     }
   }
-  upload->unmap();
-
+  bool uploaded = false;
   RenderCommand cmd{};
-  cmd.type = RenderCommandType::CopyTextureSubresourcesFromUpload;
-  cmd.copyTextureSubresourcesFromUpload.dst = texture->texture;
-  cmd.copyTextureSubresourcesFromUpload.src = upload.get();
-  cmd.copyTextureSubresourcesFromUpload.format = uint32_t(info.format);
-  cmd.copyTextureSubresourcesFromUpload.regions = regions.data();
-  cmd.copyTextureSubresourcesFromUpload.regionCount = uint32_t(regions.size());
+  cmd.type = RenderCommandType::UploadTextureSubresources;
+  cmd.uploadTextureSubresources.dst = texture->texture;
+  cmd.uploadTextureSubresources.data = staging.data();
+  cmd.uploadTextureSubresources.size = uploadSize;
+  cmd.uploadTextureSubresources.format = uint32_t(info.format);
+  cmd.uploadTextureSubresources.regions = regions.data();
+  cmd.uploadTextureSubresources.regionCount = uint32_t(regions.size());
+  cmd.uploadTextureSubresources.success = &uploaded;
   RenderQueue::Run(cmd);
+  if (!uploaded)
+    return false;
   texture->hostInitialized = true;
   texture->layout = RenderTextureLayout::COPY_DEST;
+  texture->guestUploadHash = contentHash;
+  texture->guestUploadHashValid = true;
+  publishWatch();
+  texture->lastUploadFrame = frame;
   return true;
 }
 
@@ -1266,6 +1390,7 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
 
   auto textureStorage = std::make_unique<GuestTexture>();
   GuestTexture* texture = textureStorage.get();
+  texture->guestLayoutKey = GuestTextureLayoutKey(info);
   texture->type = ResourceType::Texture;
   texture->viewDimension = info.cube ? RenderTextureViewDimension::TEXTURE_CUBE
                                      : RenderTextureViewDimension::TEXTURE_2D;
@@ -1289,8 +1414,8 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
     return nullptr;
   }
 
-  if (uploadGuestData && UploadGuestTextureData(texture, info))
-    texture->lastUploadFrame = CurrentFrameIndex();
+  if (uploadGuestData)
+    UploadGuestTextureData(texture, info);
 
   REXGPU_INFO(
       "TranslateGuestTexture: base=0x{:08X} mip=0x{:08X} {}x{} levels={} fmt={} cube={} "
@@ -1314,27 +1439,46 @@ GuestTexture* FindAndRefreshGuestTexture(const XenosTextureInfo& info, bool uplo
     if (it == g_guestTextureAliases.end() || it->second == nullptr)
       return nullptr;
     cached = it->second;
-    if (cached->width != info.width || cached->height != info.height ||
-        cached->format != info.format || cached->levels != info.mipLevels ||
-        (cached->viewDimension == RenderTextureViewDimension::TEXTURE_CUBE) != info.cube) {
+    if (cached->guestLayoutKey != GuestTextureLayoutKey(info)) {
       g_guestTextureAliases.erase(it);
       return nullptr;
     }
   }
 
-  const uint64_t frame = CurrentFrameIndex();
-  if (cached->NeedsGuestUpload(uploadGuestData, frame) && UploadGuestTextureData(cached, info))
-    cached->lastUploadFrame = frame;
+  if (uploadGuestData)
+    UploadGuestTextureData(cached, info);
   return cached;
 }
 
 }  // namespace
 
+void InvalidateGuestTexture(void* guestHeader) {
+  if (guestHeader == nullptr || IsFm2Resource(guestHeader))
+    return;
+  const auto* header = static_cast<const rex::be<uint32_t>*>(guestHeader);
+  if ((header[0].get() & 0xFu) != 3)
+    return;
+  const auto info = ParseTextureFetchConstant(header + 7);
+  if (!info.valid)
+    return;
+  GuestTexture* texture = nullptr;
+  {
+    std::lock_guard lock(g_guestTextureAliasMutex);
+    const auto it = g_guestTextureAliases.find(info.baseAddress);
+    if (it == g_guestTextureAliases.end())
+      return;
+    texture = it->second;
+  }
+  std::lock_guard lock(texture->guestUploadMutex);
+  texture->guestUploadHashValid = false;
+  texture->lastUploadFrame = ~0ull;
+  texture->gpuResolved = false;
+}
+
 // Translates a raw Xenos GPUTEXTURE_FETCH_CONSTANT (as written by the guest
 // PM4 command stream / XG* API, not a GuestTexture) into a native texture.
-// Re-uploads a cache hit's guest data at most once per frame rather than
-// once per draw -- many draws sample the same texture every frame, and
-// uploading per draw would flood the GPU with synchronous copies.
+// Checks cached guest data at most once per frame (or after explicit invalidation)
+// and uploads only changed contents.
 GuestTexture* TranslateGuestTextureFetch(const void* guestFetch, bool uploadGuestData) {
   if (guestFetch == nullptr || Device() == nullptr)
     return nullptr;
@@ -1675,25 +1819,22 @@ GuestTexture* LoadTextureFromMemory(const uint8_t* data, uint32_t size) {
   }
   upload->unmap();
 
-  RenderTexture* dstTex = texture->texture;
-  RenderBuffer* srcBuf = upload.get();
-  const RenderFormat fmt = dds.format;
   const uint32_t blockW = dds.blockWidth, bpb = dds.bytesPerBlock;
+  std::vector<TextureUploadRegion> regions;
+  regions.reserve(slices.size());
   for (uint32_t i = 0; i < slices.size(); ++i) {
     const Slice& s = slices[i];
     const uint32_t rowTexels = (s.dstRowPitch / bpb) * blockW;
-    RenderCommand cmd{};
-    cmd.type = RenderCommandType::CopyTextureFromUpload;
-    cmd.copyTextureFromUpload.dst = dstTex;
-    cmd.copyTextureFromUpload.src = srcBuf;
-    cmd.copyTextureFromUpload.format = uint32_t(fmt);
-    cmd.copyTextureFromUpload.width = s.width;
-    cmd.copyTextureFromUpload.height = s.height;
-    cmd.copyTextureFromUpload.rowTexels = rowTexels;
-    cmd.copyTextureFromUpload.mip = i;
-    cmd.copyTextureFromUpload.srcOffset = s.dstOffset;
-    RenderQueue::Run(cmd);
+    regions.push_back({s.width, s.height, rowTexels, i, 0, s.dstOffset});
   }
+  RenderCommand cmd{};
+  cmd.type = RenderCommandType::CopyTextureSubresourcesFromUpload;
+  cmd.copyTextureSubresourcesFromUpload.dst = texture->texture;
+  cmd.copyTextureSubresourcesFromUpload.src = upload.release();
+  cmd.copyTextureSubresourcesFromUpload.format = uint32_t(dds.format);
+  cmd.copyTextureSubresourcesFromUpload.regions = regions.data();
+  cmd.copyTextureSubresourcesFromUpload.regionCount = uint32_t(regions.size());
+  RenderQueue::Run(cmd);
 
   return texture;
 }

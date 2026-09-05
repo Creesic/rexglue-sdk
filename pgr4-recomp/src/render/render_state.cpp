@@ -25,12 +25,14 @@
 
 #include <plume_render_interface.h>
 
+#include <rex/dbg.h>
 #include <rex/hash.h>  // XXH3_64bits
 #include <rex/logging.h>
 
 #include "render/guest_device.h"
 #include "render/guest_heap.h"
 #include "render/guest_resources.h"
+#include "render/physical_write_watch.h"
 #include "render/render_internal.h"
 #include "render/render_queue.h"
 #include "render/render_state.h"
@@ -175,6 +177,8 @@ struct DirtyStates {
   bool viewport;
   bool pipelineState;
   bool scissorRect;
+  bool vertexShaderConstants;
+  bool pixelShaderConstants;
   uint8_t vertexStreamFirst;
   uint8_t vertexStreamLast;
   bool indices;
@@ -183,6 +187,8 @@ struct DirtyStates {
         viewport(value),
         pipelineState(value),
         scissorRect(value),
+        vertexShaderConstants(value),
+        pixelShaderConstants(value),
         vertexStreamFirst(value ? 0 : 15),
         vertexStreamLast(value ? 15 : 0),
         indices(value) {}
@@ -257,7 +263,7 @@ RenderVertexBufferView g_vertexBufferViews[16];
 RenderInputSlot g_inputSlots[16];
 RenderIndexBufferView g_indexBufferView{RenderBufferReference{}, 0, RenderFormat::R16_UINT};
 DirtyStates g_dirtyStates(true);
-uint64_t g_frameIndex = 0;
+std::atomic<uint64_t> g_frameIndex{0};  // Render worker publishes to guest texture validation.
 
 struct FrameTraceStats {
   uint32_t attemptedDraws = 0;
@@ -296,11 +302,19 @@ std::vector<DrawDataTrace> g_currentDrawDataTrace;
 std::vector<DrawDataTrace> g_previousDrawDataTrace;
 uint64_t g_previousFrameShapeHash = 0;
 
+bool CollectFrameTrace() {
+  // LogAndResetFrameTrace increments the index before logging. Collect only
+  // the first 64 frames and then frame 301, 601, ... that it will print.
+  return g_frameTraceIndex < 64 || g_frameTraceIndex % 300 == 0;
+}
+
 void MixFrameTrace(uint64_t& hash, uint64_t value) {
   hash ^= value + 0x9E3779B97F4A7C15ull + (hash << 6) + (hash >> 2);
 }
 
 void MixFrameTraceBytes(uint64_t& hash, const void* data, size_t size) {
+  if (!CollectFrameTrace())
+    return;
   MixFrameTrace(hash, XXH3_64bits(data, size));
 }
 
@@ -363,6 +377,8 @@ void CaptureDrawDataTrace() {
 void TraceIssuedDraw(uint32_t kind, const uint32_t* geometry, size_t geometryCount,
                      const void* vertexData = nullptr, size_t vertexDataSize = 0) {
   ++g_frameTrace.issuedDraws;
+  if (!CollectFrameTrace())
+    return;
   MixFrameTrace(g_frameTrace.shapeHash, kind);
   PipelineState semanticPipeline = g_pipelineState;
   semanticPipeline.vertexShader = nullptr;
@@ -390,8 +406,9 @@ void TraceIssuedDraw(uint32_t kind, const uint32_t* geometry, size_t geometryCou
 }
 
 void LogAndResetFrameTrace() {
+  const bool collected = CollectFrameTrace();
   ++g_frameTraceIndex;
-  if (g_frameTraceIndex <= 64 || g_frameTraceIndex % 300 == 1) {
+  if (collected) {
     REXGPU_INFO(
         "FrameTrace: n={} draws={}/{} skipped={} [nores={} nodecl={} psofail={} psocreate={}] clears={} resolves={} shape=0x{:016X} "
         "tex=0x{:016X} shared=0x{:016X} vs=0x{:016X} ps=0x{:016X} "
@@ -467,6 +484,8 @@ class UploadAllocator {
     }
     writtenBytes_ = reusedBytes_ = 0;
     cachedUploads_.clear();
+    snapshotUploads_.clear();
+    shaderConstantUploads_ = {};
     cachedBytes_.Clear();
     failed_ = false;
     currentChunk_ = 0;
@@ -488,7 +507,7 @@ class UploadAllocator {
 
   RenderBufferReference UploadCached(const void* src, uint32_t size, bool byteSwap) {
     if (failed_ || IsDeviceLost()) return {};
-    const uint8_t* bytes = cachedBytes_.Copy(src, size, byteSwap);
+    const uint8_t* bytes = cachedBytes_.Copy(src, size, byteSwap ? 4u : 0u);
     if (bytes == nullptr) return {};
     const auto it = cachedUploads_.find(bytes);
     if (it != cachedUploads_.end()) {
@@ -500,6 +519,21 @@ class UploadAllocator {
     return ref;
   }
 
+  RenderBufferReference UploadSnapshot(const void* src, uint32_t size, uint64_t identity) {
+    if (identity == 0) return UploadCached(src, size, false);
+    if (src == nullptr || size == 0 || failed_ || IsDeviceLost()) return {};
+    const auto it = snapshotUploads_.find(identity);
+    if (it != snapshotUploads_.end()) {
+      reusedBytes_ += size;
+      return it->second;
+    }
+    // The producer validated guest bytes and owns an immutable converted copy.
+    // Copy it straight to the GPU once; no second CPU snapshot or byte scan.
+    const auto ref = Upload(src, size, false);
+    if (ref.ref != nullptr) snapshotUploads_.emplace(identity, ref);
+    return ref;
+  }
+
   // Copies `size` bytes from `src` into the next aligned region of the
   // frame's upload buffer, returning a reference usable as a root CBV or a
   // vertex/index buffer view. If `byteSwap`, swaps complete big-endian dwords
@@ -507,21 +541,19 @@ class UploadAllocator {
   // copy for host-native data.
   // Grows in reusable chunks so large menu/resource upload bursts do not
   // create and retain one D3D12 upload resource for every guest Unlock.
-  RenderBufferReference Upload(const void* src, uint64_t size, bool byteSwap) {
+  RenderBufferReference Upload(const void* src, uint64_t size, bool byteSwap,
+                                uint64_t alignment = kAlignment) {
     if (src == nullptr || size == 0 || failed_ || IsDeviceLost())
       return RenderBufferReference{};
-    Chunk* chunk = AcquireChunk(size);
+    Chunk* chunk = AcquireChunk(size, alignment);
     if (chunk == nullptr)
       return RenderBufferReference{};
 
-    chunk->offset = Align(chunk->offset);
+    chunk->offset = Align(chunk->offset, alignment);
 
     uint8_t* dst = chunk->mapped + chunk->offset;
     if (byteSwap) {
-      const uint32_t* s = reinterpret_cast<const uint32_t*>(src);
-      uint32_t* d = reinterpret_cast<uint32_t*>(dst);
-      for (uint64_t i = 0; i < size / sizeof(uint32_t); ++i)
-        d[i] = std::byteswap(s[i]);
+      rex::memory::copy_and_swap_32_unaligned(dst, src, size / sizeof(uint32_t));
       const uint64_t swappedBytes = size & ~uint64_t{3};
       if (swappedBytes != size) {
         std::memcpy(dst + swappedBytes, static_cast<const uint8_t*>(src) + swappedBytes,
@@ -537,10 +569,23 @@ class UploadAllocator {
   }
 
   bool UploadAndBindRootDescriptor(const void* src, uint32_t size, uint32_t rootIndex,
-                                   bool byteSwap) {
-    RenderBufferReference ref = UploadCached(src, size, byteSwap);
-    if (ref.ref == nullptr)
-      return false;
+                                   bool byteSwap, bool& dirty) {
+    if (rootIndex >= shaderConstantUploads_.size() || src == nullptr || size == 0 ||
+        failed_ || IsDeviceLost()) return false;
+    auto& ref = shaderConstantUploads_[rootIndex];
+    if (dirty || ref.ref == nullptr) {
+      // The render-thread register file owns change detection. Like Unleashed,
+      // copy changed constants straight into the fence-owned upload arena.
+      // These small files need neither a second CPU copy nor content maps.
+      const auto next = Upload(src, size, byteSwap);
+      if (next.ref == nullptr) return false;
+      ref = next;
+      dirty = false;
+    } else {
+      reusedBytes_ += size;
+    }
+    // Layout/command-list changes may invalidate bindings without changing
+    // bytes. Always rebind the retained allocation, even on a clean draw.
     CommandList()->setGraphicsRootDescriptor(ref, rootIndex);
     return true;
   }
@@ -559,12 +604,14 @@ class UploadAllocator {
   static constexpr uint64_t kChunkSize = 64 * 1024 * 1024;
   static constexpr uint64_t kAlignment = 256;
 
-  static uint64_t Align(uint64_t value) { return (value + kAlignment - 1) & ~(kAlignment - 1); }
+  static uint64_t Align(uint64_t value, uint64_t alignment = kAlignment) {
+    return (value + alignment - 1) & ~(alignment - 1);
+  }
 
-  Chunk* AcquireChunk(uint64_t size) {
+  Chunk* AcquireChunk(uint64_t size, uint64_t alignment) {
     for (size_t i = currentChunk_; i < chunks_.size(); ++i) {
       Chunk& chunk = chunks_[i];
-      if (Align(chunk.offset) + size <= chunk.capacity) {
+      if (Align(chunk.offset, alignment) + size <= chunk.capacity) {
         currentChunk_ = i;
         if (chunk.mapped == nullptr) {
           const RenderRange noRead(0, 0);
@@ -580,7 +627,7 @@ class UploadAllocator {
       }
     }
 
-    const uint64_t capacity = std::max(kChunkSize, Align(size));
+    const uint64_t capacity = std::max(kChunkSize, Align(size, alignment));
     auto buffer = Device()->createBuffer(RenderBufferDesc::UploadBuffer(
         capacity, RenderBufferFlag::CONSTANT | RenderBufferFlag::VERTEX | RenderBufferFlag::INDEX));
     if (buffer == nullptr) {
@@ -609,6 +656,8 @@ class UploadAllocator {
   uint64_t writtenBytes_ = 0, reusedBytes_ = 0;
   ByteSnapshotCache cachedBytes_;
   std::unordered_map<const uint8_t*, RenderBufferReference> cachedUploads_;
+  std::unordered_map<uint64_t, RenderBufferReference> snapshotUploads_;
+  std::array<RenderBufferReference, 2> shaderConstantUploads_{};
 };
 std::array<UploadAllocator, kNumFrames> g_uploadAllocators;
 std::array<std::vector<std::unique_ptr<RenderBuffer>>, kNumFrames> g_tempUploadBuffers;
@@ -655,8 +704,17 @@ class IntermediaryUploadAllocator {
     return dst;
   }
 
+  uint8_t* CopyCached(const void* src, uint32_t size, uint32_t swapElementBytes,
+                      uint64_t* identity = nullptr, uint64_t revision = 0) {
+    std::lock_guard lock(mutex_);
+    // Watched physical memory can reuse a version until invalidation. All
+    // other sources validate bytes. Queued versions stay immutable until Reset.
+    return cachedBytes_.Copy(src, size, swapElementBytes, identity, revision);
+  }
+
   void Reset() {
     std::lock_guard lock(mutex_);
+    cachedBytes_.Clear();
     index_ = 0;
     offset_ = 0;
   }
@@ -668,6 +726,7 @@ class IntermediaryUploadAllocator {
   };
 
   std::mutex mutex_;
+  ByteSnapshotCache cachedBytes_;
   std::vector<Chunk> chunks_;
   size_t index_ = 0;
   uint64_t offset_ = 0;
@@ -1454,8 +1513,9 @@ GuestBaseTexture* ConsumeStretchRectPresentOverride() {
   return tex;
 }
 
-RenderBufferReference UploadFrameData(const void* src, uint64_t size, bool byteSwap) {
-  return CurrentUploadAllocator().Upload(src, size, byteSwap);
+RenderBufferReference UploadFrameData(const void* src, uint64_t size, bool byteSwap,
+                                      uint64_t alignment) {
+  return CurrentUploadAllocator().Upload(src, size, byteSwap, alignment);
 }
 
 uint8_t* AllocateIntermediaryData(uint32_t size) {
@@ -2099,7 +2159,7 @@ void ProcSetDrawGeometrySnapshot(const DrawGeometrySnapshot& snapshot) {
     }
 
     const RenderBufferReference ref =
-        CurrentUploadAllocator().UploadCached(stream.rawData, stream.rawSize, false);
+        CurrentUploadAllocator().UploadSnapshot(stream.rawData, stream.rawSize, stream.rawIdentity);
     SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexStrides[index],
                   uint8_t(ref.ref != nullptr ? stream.stride : 0u));
     bool dirty = false;
@@ -2122,7 +2182,8 @@ void ProcSetDrawGeometrySnapshot(const DrawGeometrySnapshot& snapshot) {
   if (snapshot.rawIndexData != nullptr && snapshot.rawIndexSize != 0 &&
       (snapshot.rawIndexStride == 2u || snapshot.rawIndexStride == 4u)) {
     const RenderBufferReference ref =
-        CurrentUploadAllocator().UploadCached(snapshot.rawIndexData, snapshot.rawIndexSize, false);
+        CurrentUploadAllocator().UploadSnapshot(snapshot.rawIndexData, snapshot.rawIndexSize,
+                                                snapshot.rawIndexIdentity);
     SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.buffer, ref);
     SetDirtyValue(g_dirtyStates.indices, g_indexBufferView.format,
                   snapshot.rawIndexStride == 4u ? RenderFormat::R32_UINT : RenderFormat::R16_UINT);
@@ -2251,7 +2312,25 @@ void SetPixelShader(GuestDevice* /*device*/, GuestShader* shader) {
   RenderQueue::Enqueue(cmd);
 }
 
-void SetVertexDeclaration(GuestDevice* /*device*/, GuestVertexDeclaration* declaration) {
+namespace {
+
+struct ProducerGeometryState {
+  DrawGeometrySnapshot geometry{};
+  GuestVertexDeclaration* declaration = nullptr;
+};
+
+std::mutex g_producerGeometryMutex;
+std::unordered_map<GuestDevice*, ProducerGeometryState> g_producerGeometry;
+
+}  // namespace
+
+void SetVertexDeclaration(GuestDevice* device, GuestVertexDeclaration* declaration) {
+  // Replay restores the live render state, so recorded binds must not change
+  // the producer's live declaration mirror.
+  if (device != nullptr && !RenderQueue::IsRecording()) {
+    std::lock_guard lock(g_producerGeometryMutex);
+    g_producerGeometry[device].declaration = declaration;
+  }
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetVertexDeclaration;
   cmd.setVertexDeclaration.declaration = declaration;
@@ -2260,17 +2339,15 @@ void SetVertexDeclaration(GuestDevice* /*device*/, GuestVertexDeclaration* decla
 
 namespace {
 
-std::mutex g_producerGeometryMutex;
-std::unordered_map<GuestDevice*, DrawGeometrySnapshot> g_producerGeometry;
-
 uint32_t DecodeRawBufferSize(uint32_t fetchSize) {
   return ((fetchSize >> 2) & 0xFFFFFFu) * 4u;
 }
 
-uint8_t* SnapshotRawPhysicalBuffer(uint32_t fetchBase, uint32_t fetchSize,
-                                   uint32_t swapElementBytes, bool preserveBaseLowBits) {
+uint8_t* SnapshotRawPhysicalBuffer(uint32_t fetchBase, uint32_t size,
+                                   uint32_t swapElementBytes, bool preserveBaseLowBits,
+                                   uint64_t* identity = nullptr) {
+  if (identity != nullptr) *identity = 0;
   auto* memory = ghp::GuestMemory();
-  const uint32_t size = DecodeRawBufferSize(fetchSize);
   // Device vertex fetch constants are GPU physical already; raw index-buffer
   // headers hand us the CPU virtual alias (see ghp::HeaderBaseToPhysical).
   const uint32_t physicalAddress =
@@ -2283,31 +2360,15 @@ uint8_t* SnapshotRawPhysicalBuffer(uint32_t fetchBase, uint32_t fetchSize,
   }
 
   const uint8_t* source = memory->TranslatePhysical<const uint8_t*>(physicalAddress);
-  uint8_t* copy = g_intermediaryUploadAllocator.Allocate(size);
-  if (source == nullptr || copy == nullptr)
-    return nullptr;
-
-  if (swapElementBytes == 4u) {
-    const uint32_t dwordCount = size / 4u;
-    const auto* sourceWords = reinterpret_cast<const uint32_t*>(source);
-    auto* copyWords = reinterpret_cast<uint32_t*>(copy);
-    for (uint32_t index = 0; index < dwordCount; ++index)
-      copyWords[index] = std::byteswap(sourceWords[index]);
-    const uint32_t swappedBytes = dwordCount * 4u;
-    if (swappedBytes != size)
-      std::memcpy(copy + swappedBytes, source + swappedBytes, size - swappedBytes);
-  } else if (swapElementBytes == 2u) {
-    const uint32_t wordCount = size / 2u;
-    const auto* sourceWords = reinterpret_cast<const uint16_t*>(source);
-    auto* copyWords = reinterpret_cast<uint16_t*>(copy);
-    for (uint32_t index = 0; index < wordCount; ++index)
-      copyWords[index] = std::byteswap(sourceWords[index]);
-    if ((size & 1u) != 0)
-      copy[size - 1u] = source[size - 1u];
-  } else {
-    std::memcpy(copy, source, size);
+  const uint64_t revision = g_physicalWriteWatch.BeginSnapshot(memory, physicalAddress, size);
+  auto* snapshot = g_intermediaryUploadAllocator.CopyCached(source, size, swapElementBytes, identity,
+                                                          revision);
+  if (revision != 0 && revision != g_physicalWriteWatch.Revision(physicalAddress, size)) {
+    // Invalidation while taking the allocator lock/copying cannot reuse the
+    // preceding version. Untagged validation also prevents trusting a torn copy.
+    snapshot = g_intermediaryUploadAllocator.CopyCached(source, size, swapElementBytes, identity);
   }
-  return copy;
+  return snapshot;
 }
 
 }  // namespace
@@ -2316,7 +2377,7 @@ void SetStreamSource(GuestDevice* device, uint32_t index, GuestBuffer* buffer, u
                      uint32_t stride) {
   if (device != nullptr && index < 16u) {
     std::lock_guard lock(g_producerGeometryMutex);
-    DrawGeometrySnapshot& snapshot = g_producerGeometry[device];
+    DrawGeometrySnapshot& snapshot = g_producerGeometry[device].geometry;
     snapshot.streams[index] = {buffer, offset, stride};
   }
   RenderCommand cmd{};
@@ -2331,7 +2392,7 @@ void SetStreamSource(GuestDevice* device, uint32_t index, GuestBuffer* buffer, u
 void SetIndices(GuestDevice* device, GuestBuffer* buffer) {
   if (device != nullptr) {
     std::lock_guard lock(g_producerGeometryMutex);
-    g_producerGeometry[device].indexBuffer = buffer;
+    g_producerGeometry[device].geometry.indexBuffer = buffer;
   }
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetIndices;
@@ -2821,6 +2882,42 @@ bool DeclarationFitsStreamStride(const GuestVertexDeclaration* decl, uint32_t st
       return false;
   }
   return true;
+}
+
+uint32_t NonIndexedVertexSnapshotSize(const GuestVertexDeclaration* decl, uint32_t stream,
+                                      uint32_t stride, uint32_t fullSize,
+                                      uint32_t startVertex, uint32_t vertexCount) {
+  // CompleteVertexDeclaration also puts implicit fallback attributes on slot 15.
+  if (decl == nullptr || decl->vertexElements == nullptr || stream >= 15u ||
+      stride == 0 || vertexCount == 0)
+    return fullSize;
+
+  uint32_t elementEnd = 0;
+  for (uint32_t i = 0; i < decl->vertexElementCount; ++i) {
+    const auto& element = decl->vertexElements[i];
+    if (element.stream != stream)
+      continue;
+    // POSITION1..3 are shader-indexed palettes, independent of the draw range.
+    // Unknown fetch methods/layouts must also retain their complete range.
+    if (element.method != 0 ||
+        (element.usage == D3DDECLUSAGE_POSITION && element.usageIndex != 0))
+      return fullSize;
+    const uint32_t bytes = DeclTypeByteSize(element.type);
+    const uint32_t end = uint32_t(element.offset) + bytes;
+    if (bytes == 0 || end > stride)
+      return fullSize;
+    elementEnd = std::max(elementEnd, end);
+  }
+  if (elementEnd == 0)
+    return fullSize;
+
+  // Keep the prefix so StartVertexLocation and converted quad/fan indices do
+  // not change. Clamp before multiplying to avoid overflow on malformed draws.
+  const uint64_t lastVertex = uint64_t(startVertex) + vertexCount - 1u;
+  if (lastVertex >= uint64_t(fullSize) / stride)
+    return fullSize;
+  const uint64_t end = lastVertex * stride + elementEnd;
+  return uint32_t(std::min<uint64_t>((end + 3u) & ~uint64_t{3}, fullSize));
 }
 
 uint32_t DeclarationStream0PackedEnd(const GuestVertexDeclaration* decl) {
@@ -3586,7 +3683,10 @@ void ProcSetShaderConstants(bool vertex, const uint8_t* memory, uint32_t index, 
       size / sizeof(uint32_t) > capacity - index) {
     return;
   }
-  std::memcpy(destination + index, memory, size);
+  if (std::memcmp(destination + index, memory, size) != 0) {
+    std::memcpy(destination + index, memory, size);
+    (vertex ? g_dirtyStates.vertexShaderConstants : g_dirtyStates.pixelShaderConstants) = true;
+  }
 }
 
 struct LocalRenderCommandQueue {
@@ -3618,25 +3718,28 @@ bool QueueConstantSnapshot(LocalRenderCommandQueue& queue, RenderCommandType typ
   return true;
 }
 
-void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue) {
-  if (device == nullptr)
-    return;
-
-  thread_local GuestDevice* lastDevice = nullptr;
-  const bool forceFullSnapshot = lastDevice != device || RenderQueue::IsRecording();
-  lastDevice = device;
-
+void QueueDrawGeometrySnapshot(GuestDevice* device, LocalRenderCommandQueue& queue,
+                               uint32_t startVertex, uint32_t vertexCount) {
   // Vertex/index bindings are mutable guest context state just like shader
   // constants. Capture them on the producer thread so a later unbind cannot
   // reach the render thread before this draw is flushed. Keep the exact offset
   // observed by SetStreamSource when the live guest pointer/stride still match.
-  DrawGeometrySnapshot geometry{};
+  ProducerGeometryState state{};
   {
     std::lock_guard lock(g_producerGeometryMutex);
     const auto it = g_producerGeometry.find(device);
     if (it != g_producerGeometry.end())
-      geometry = it->second;
+      state = it->second;
   }
+  DrawGeometrySnapshot& geometry = state.geometry;
+  // Only use the explicit declaration when ResolveVertexDeclaration will use
+  // it too. Indexed draws and recordings keep full ranges (replay can inherit
+  // a different declaration); UP draws can override stream-0 layout/stride.
+  const GuestVertexDeclaration* declaration = state.declaration;
+  if (vertexCount == 0 || RenderQueue::IsRecording() || declaration == nullptr ||
+      !IsFm2Resource(declaration) || declaration->type != ResourceType::VertexDeclaration ||
+      !DeclarationFitsStreamStride(declaration, uint32_t(device->streamStrideDwords[0]) * 4u))
+    declaration = nullptr;
   for (uint32_t index = 0; index < std::size(geometry.streams); ++index) {
     const auto* address = &device->streamSources[index];
     const uint8_t strideDwords = device->streamStrideDwords[index];
@@ -3648,14 +3751,18 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
       stream = {};
     } else if (!IsFm2Resource(liveBuffer)) {
       // Vertex fetch constants count down from Fetch[31] (see GuestDevice).
-      // Preserve the whole palette: shader-computed indices can address beyond
-      // the draw's vertex count. The fetch base includes the stream byte offset.
+      // The fetch base includes the stream byte offset, but its size covers
+      // the entire remaining buffer, often much larger than this draw's slice.
       const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
           reinterpret_cast<const uint8_t*>(device) + 0x778u - index * 8u);
       const auto* fetchSize = fetchBase + 1;
-      uint32_t rawSize = DecodeRawBufferSize(fetchSize->get());
-      uint8_t* rawData = SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), 4u, false);
-      stream = {nullptr, 0, liveStride, rawData, rawData != nullptr ? rawSize : 0u};
+      const uint32_t rawSize = NonIndexedVertexSnapshotSize(
+          declaration, index, liveStride, DecodeRawBufferSize(fetchSize->get()),
+          startVertex, vertexCount);
+      uint64_t identity = 0;
+      uint8_t* rawData = SnapshotRawPhysicalBuffer(fetchBase->get(), rawSize, 4u, false,
+                                                  &identity);
+      stream = {nullptr, 0, liveStride, rawData, rawData != nullptr ? rawSize : 0u, identity};
     } else if (stream.buffer != liveBuffer || stream.stride != liveStride) {
       stream = {liveBuffer, 0, liveStride};
     }
@@ -3665,6 +3772,7 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   geometry.rawIndexData = nullptr;
   geometry.rawIndexSize = 0;
   geometry.rawIndexStride = 0;
+  geometry.rawIndexIdentity = 0;
   if (indexAddress->get() != 0) {
     GuestBuffer* liveIndexBuffer = ghp::ToHost<GuestBuffer>(indexAddress->get());
     if (IsFm2Resource(liveIndexBuffer)) {
@@ -3676,8 +3784,9 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
       if (common != nullptr && fetchBase != nullptr && fetchSize != nullptr) {
         geometry.rawIndexStride = (common->get() & 0x80000000u) != 0 ? 4u : 2u;
         geometry.rawIndexSize = DecodeRawBufferSize(fetchSize->get());
-        geometry.rawIndexData = SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(),
-                                                          geometry.rawIndexStride, true);
+        geometry.rawIndexData = SnapshotRawPhysicalBuffer(fetchBase->get(), geometry.rawIndexSize,
+                                                          geometry.rawIndexStride, true,
+                                                          &geometry.rawIndexIdentity);
         if (geometry.rawIndexData == nullptr) {
           geometry.rawIndexSize = 0;
           geometry.rawIndexStride = 0;
@@ -3688,6 +3797,17 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   RenderCommand& geometryCommand = queue.Enqueue();
   geometryCommand.type = RenderCommandType::SetDrawGeometrySnapshot;
   geometryCommand.setDrawGeometrySnapshot = geometry;
+}
+
+void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue,
+                             uint32_t startVertex = 0, uint32_t vertexCount = 0) {
+  if (device == nullptr)
+    return;
+
+  QueueDrawGeometrySnapshot(device, queue, startVertex, vertexCount);
+  thread_local GuestDevice* lastDevice = nullptr;
+  const bool forceFullSnapshot = lastDevice != device || RenderQueue::IsRecording();
+  lastDevice = device;
 
   // PGR4's Set*ShaderConstantB/I rotate 1 left by 56 into
   // m_Pending.m_Mask[4] (IDA 0x82694608 / 0x82694758).
@@ -4049,9 +4169,11 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   // persistent render-thread files. Never dereference mutable guest state here:
   // the producer may already be preparing the next draw.
   if (!CurrentUploadAllocator().UploadAndBindRootDescriptor(g_vertexShaderConstants,
-                                                            kVsFloatConstantBytes, 0, true) ||
+                                                            kVsFloatConstantBytes, 0, true,
+                                                            g_dirtyStates.vertexShaderConstants) ||
       !CurrentUploadAllocator().UploadAndBindRootDescriptor(g_pixelShaderConstants,
-                                                            kPsFloatConstantBytes, 1, true))
+                                                            kPsFloatConstantBytes, 1, true,
+                                                            g_dirtyStates.pixelShaderConstants))
     return;
   // Reuse the immutable geometry uploads. Each semantic may use a different
   // stream; the declaration owns both the element offset and storage format.
@@ -4446,7 +4568,7 @@ static const uint8_t* ReadStream0(GuestDevice* device, uint32_t& stride, uint64_
       reinterpret_cast<const uint8_t*>(device) + 0x778u);
   const auto* fetchSize = fetchBase + 1;
   size = DecodeRawBufferSize(fetchSize->get());
-  return SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), 4u, false);
+  return SnapshotRawPhysicalBuffer(fetchBase->get(), uint32_t(size), 4u, false);
 }
 
 // Same for the bound index buffer; indexStride is 2 or 4.
@@ -4467,7 +4589,7 @@ static const uint8_t* ReadIndexBuffer(GuestDevice* device, uint32_t& indexStride
   if (common == nullptr || fetchBase == nullptr || fetchSize == nullptr) return nullptr;
   indexStride = (common->get() & 0x80000000u) != 0 ? 4u : 2u;
   size = DecodeRawBufferSize(fetchSize->get());
-  return SnapshotRawPhysicalBuffer(fetchBase->get(), fetchSize->get(), indexStride, true);
+  return SnapshotRawPhysicalBuffer(fetchBase->get(), uint32_t(size), indexStride, true);
 }
 
 void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVertex,
@@ -4488,7 +4610,7 @@ void DrawVertices(GuestDevice* device, uint32_t primitiveType, uint32_t startVer
     }
   }
   LocalRenderCommandQueue queue;
-  QueueDrawStateSnapshots(device, queue);
+  QueueDrawStateSnapshots(device, queue, startVertex, vertexCount);
   RenderCommand& cmd = queue.Enqueue();
   cmd.type = RenderCommandType::DrawPrimitive;
   cmd.drawPrimitive.device = device;
@@ -4656,7 +4778,7 @@ void DrawUserPointerVertices(GuestDevice* device, uint32_t primitiveType, uint32
   queue.Submit();
 }
 
-void DispatchRenderCommand(const RenderCommand& cmd) {
+static void DispatchRenderCommandUnlocked(const RenderCommand& cmd) {
   // WaitForGPU holds RecordingMutex on the guest thread across Run(); taking
   // it again here on the render thread would deadlock.
   if (cmd.type == RenderCommandType::WaitForGpu) {
@@ -4676,7 +4798,6 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
     return;
   }
 
-  std::lock_guard lock(RecordingMutex());
   switch (cmd.type) {
     case RenderCommandType::DestructResource:
       ProcDestructResource(cmd.destructResource.resource);
@@ -4806,21 +4927,28 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
       }
       break;
     }
-    case RenderCommandType::DrawPrimitive:
+    case RenderCommandType::DrawPrimitive: {
+      SCOPE_profile_cpu_f("ProcDrawPrimitive");
       ProcDrawPrimitive(cmd.drawPrimitive.device, cmd.drawPrimitive.primitiveType,
                         cmd.drawPrimitive.startVertex, cmd.drawPrimitive.vertexCount);
       break;
-    case RenderCommandType::DrawIndexedPrimitive:
+    }
+    case RenderCommandType::DrawIndexedPrimitive: {
+      SCOPE_profile_cpu_f("ProcDrawIndexedPrimitive");
       ProcDrawIndexedPrimitive(
           cmd.drawIndexedPrimitive.device, cmd.drawIndexedPrimitive.primitiveType,
           cmd.drawIndexedPrimitive.baseVertexIndex, cmd.drawIndexedPrimitive.startIndex,
           cmd.drawIndexedPrimitive.indexCount);
       break;
+    }
     case RenderCommandType::DrawPrimitiveUP:
       ProcDrawPrimitiveUP(cmd.drawPrimitiveUP.device, cmd.drawPrimitiveUP.primitiveType,
                           cmd.drawPrimitiveUP.vertexCount, cmd.drawPrimitiveUP.vertexData,
                           cmd.drawPrimitiveUP.stride, cmd.drawPrimitiveUP.bytes);
       break;
+    case RenderCommandType::Signal:
+    case RenderCommandType::ReplayRecording:
+      break;  // Queue control: consumed by render_queue.cpp, never dispatched.
     case RenderCommandType::ExecuteCommandList:
       LogAndResetFrameTrace();
       ProcExecuteCommandList();
@@ -4872,9 +5000,45 @@ void DispatchRenderCommand(const RenderCommand& cmd) {
           cmd.copyTextureSubresourcesFromUpload.regions,
           cmd.copyTextureSubresourcesFromUpload.regionCount);
       break;
+    case RenderCommandType::UploadTextureSubresources:
+      ProcUploadTextureSubresources(cmd.uploadTextureSubresources.dst,
+                                    cmd.uploadTextureSubresources.data,
+                                    cmd.uploadTextureSubresources.size,
+                                    cmd.uploadTextureSubresources.format,
+                                    cmd.uploadTextureSubresources.regions,
+                                    cmd.uploadTextureSubresources.regionCount,
+                                    cmd.uploadTextureSubresources.success);
+      break;
     case RenderCommandType::CreateTranslatedTextureHost:
       break;  // handled above
   }
+}
+
+void DispatchRenderCommands(const RenderCommand* commands, size_t count) {
+  if (commands == nullptr)
+    return;
+  const auto needsLock = [](RenderCommandType type) {
+    // These synchronous commands must run while a producer holds the mutex.
+    return type != RenderCommandType::WaitForGpu &&
+           type != RenderCommandType::CreateTranslatedTextureHost;
+  };
+  size_t i = 0;
+  while (i < count) {
+    if (!needsLock(commands[i].type)) {
+      DispatchRenderCommandUnlocked(commands[i++]);
+      continue;
+    }
+    // Keep a draw and its snapshots under one lock, releasing it before any
+    // command that needs the existing cross-thread wait/creation exception.
+    std::lock_guard lock(RecordingMutex());
+    do {
+      DispatchRenderCommandUnlocked(commands[i++]);
+    } while (i < count && needsLock(commands[i].type));
+  }
+}
+
+void DispatchRenderCommand(const RenderCommand& cmd) {
+  DispatchRenderCommands(&cmd, 1);
 }
 
 void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
@@ -4943,7 +5107,9 @@ void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
                              uint32_t(executionSnapshot->pixelConstants.size()));
       ProcSetBooleans(executionSnapshot->booleans.data());
     }
-    DispatchRenderCommand(commands[i]);
+    // This replay already owns RecordingMutex and only contains recordable
+    // draw/state commands (see RenderQueue::IsRecordable).
+    DispatchRenderCommandUnlocked(commands[i]);
   }
 
   g_pipelineState = saved.pipelineState;
@@ -4957,10 +5123,10 @@ void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
   g_sharedConstants = saved.sharedConstants;
   g_sharedConstantsInitialized = saved.sharedConstantsInitialized;
   std::copy(saved.textures.begin(), saved.textures.end(), std::begin(g_textures));
-  std::copy(saved.vertexConstants.begin(), saved.vertexConstants.end(),
-            std::begin(g_vertexShaderConstants));
-  std::copy(saved.pixelConstants.begin(), saved.pixelConstants.end(),
-            std::begin(g_pixelShaderConstants));
+  ProcSetShaderConstants(true, reinterpret_cast<const uint8_t*>(saved.vertexConstants.data()), 0,
+                         uint32_t(sizeof(g_vertexShaderConstants)));
+  ProcSetShaderConstants(false, reinterpret_cast<const uint8_t*>(saved.pixelConstants.data()), 0,
+                         uint32_t(sizeof(g_pixelShaderConstants)));
   g_scissorTestEnable = saved.scissorTestEnable;
   g_scissorRect = saved.scissorRect;
   std::copy(saved.vertexBufferViews.begin(), saved.vertexBufferViews.end(),

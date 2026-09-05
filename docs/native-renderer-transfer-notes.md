@@ -895,3 +895,1003 @@ texture refresh work remain performance candidates.
 The user's subsequent run still has abysmal FPS. No performance improvement
 is confirmed; the race presentation result was not separately reported. This
 is a checkpoint of the rendering fixes and upload work, with performance open.
+
+## 2026-09-04: first Tracy capture and texture upload CPU reads
+
+`renderdoccaps/pgr4_main.tracy` (26,251,987 bytes, captured at 17:51:41)
+contains 6.132 seconds of recorded CPU work. Main XThread, OS TID 20204,
+spends 5.215 seconds in 33,851 `D3DDevice_SetTexture` calls (85.1% of the
+recorded interval), followed by 0.536 seconds in indexed draws. Scheduling
+data reports 5.050 seconds actually running on this thread. Of its 40,071
+periodic CPU samples, 29,468 land in the texture upload's inlined 16-bit
+byte swap. Stacks lead through `FindAndRefreshGuestTexture` and
+`UploadGuestTextureData`, confirming CPU texture conversion as the first
+optimization target. Other game threads have much less running time. Tracy's
+own symbol worker also runs for 4.789 seconds; allow symbol resolution to
+settle before the next measurement.
+
+Non-expanded textures were untiled directly into a mapped D3D12 upload heap,
+then byte-swapped in place. Upload heap memory is write-combined, making those
+CPU reads expensive. The row scratch already used for 16-bit expansion now
+serves every format. Untiling and swapping happen in ordinary CPU memory,
+followed by writes to the upload heap. Sparse-page zeros, mip layout, expansion,
+and refresh frequency are preserved. Mapping declares no CPU reads, and
+unmapping reports the complete written range.
+
+`python scripts/tests/test_texture_upload_rows.py` passes 84 cases covering
+linear/tiled layouts, endian modes, 16-bit expansion, unreadable pages, row
+padding and partial endian groups. It executes the production row loop and
+rejects byte-swapping the upload destination. A separate Windows
+`PAGE_WRITECOMBINE` microbenchmark of the old/new production loops, with a
+1 MiB output and 16-bit swapping, measured median 12.725 ms versus 0.464 ms
+(27.4x), with identical bytes. This measures conversion, not gameplay FPS.
+Raw analysis and benchmark artifacts are under `out/tracy-pgr4-main/`.
+
+This capture has no GPU zones or native game frame markers; its default frame
+set contains initialization, missed time, and the entire recorded interval.
+Successful native swapchain presentation now calls `Profiler::Flip()` so the
+next capture can be analyzed by game frame. The RelWithDebInfo Plume game
+rebuild passed. Visual correctness and gameplay FPS await a fresh user run.
+
+## 2026-09-04: second Tracy capture and unused diagnostic hashing
+
+`renderdoccaps/pgr4_main2.tracy` (25,915,046 bytes, captured at 18:04:31)
+records 3.742 seconds. Native presentation markers now work: excluding the
+partial first/last intervals, 31 complete frames average 119.10 ms (8.40 FPS).
+The final 11 complete frames average 101.13 ms (9.89 FPS). Tracy's symbol worker
+still has 2.910 seconds of recorded running time, so this includes profiling
+startup overhead and is not an unprofiled FPS measurement.
+
+`SetTexture` averages 49.15 us over 45,629 calls, versus 154.05 us in the first
+capture (3.13x lower time per call). It still occupies 2.243 seconds, or 59.9%
+of the recorded interval. Indexed draws occupy 0.890 seconds. In representative
+GUI frame 432 (95.10 ms), texture binds take 56.63 ms and indexed draws 22.60 ms.
+Main-thread samples now show geometry snapshot byte swaps as a major CPU cost;
+the former texture byte-swap hotspot has dropped substantially.
+
+Render thread 73624 has 2.293 seconds of recorded running time. At least 3,016
+of its 17,974 periodic samples (16.78%) have `MixFrameTrace` on their stack.
+This is a lower bound from the top 500 stacks, covering 64.3% of its samples.
+The code hashed complete vertex/index payloads and draw state every frame,
+although diagnostic output only used frames 1..64, 301, 601, etc. Collection
+now follows that same cadence. Rendering, upload-cache content verification,
+draw counters, and explicit capture triggers retain their previous behavior.
+
+`python scripts/tests/test_frame_trace_cadence.py` exercises the production
+collection and hashing functions: 67 of the first 1,000 frames hash data, and
+the other 933 do not access their payloads. The RelWithDebInfo Plume executable
+rebuild passed. Evidence is in `out/tracy-pgr4-main2/`; the effect of this
+diagnostic change still requires a same-scene recapture. Texture refresh work
+and repeated full geometry snapshots remain performance targets.
+
+## 2026-09-04: third Tracy capture and producer geometry reuse
+
+`renderdoccaps/pgr4_main3.tracy` (26,487,990 bytes) records 3.701 seconds,
+from 148189587855 to 151890379172 ns. Its 35 complete native frames (indices
+3..37, excluding initialization, missed time and partial edges) average
+104.82 ms / 9.54 FPS, versus 119.10 ms / 8.40 FPS in main2. The median is
+103.13 ms. These are separate short captures with variable frame times,
+not a controlled measurement of the diagnostic change's FPS effect. There
+are still no GPU zones, and Tracy's symbol worker ran for 2.416 seconds.
+
+Main XThread 42972 spends 2.147 seconds in 51,056 texture binds (42.05 us
+per call) and 0.934 seconds in 69,894 indexed draws (13.37 us per call).
+GUI frame 4227 takes 103.13 ms: 59.39 ms in texture binds and 26.92 ms in
+indexed draws. The main thread has 15,629 periodic samples; 4,096 (26.2%)
+land in the dword byte-swap symbol. Top stacks trace that work through
+`QueueDrawStateSnapshots` and its full raw geometry snapshot conversion.
+
+Render thread 62776 has 18,073 samples. Its top 500 stacks cover 65.1%:
+only 11 samples have `MixFrameTrace` in the stack, versus 3,016 in main2's
+top 500. At least 6,797 (37.6% of all render-thread samples) still have
+`UploadAllocator` on their stack, including content hashing and byte checks.
+These stack counts are lower bounds, and overlapping categories must not
+be added. Full evidence is saved under `out/tracy-pgr4-main3/`.
+
+`SnapshotRawPhysicalBuffer` now uses the existing `ByteSnapshotCache` owned
+by the intermediary allocator. Each draw still validates access and hashes
+the entire guest range, followed by exact byte comparison before reuse.
+Unchanged geometry reuses its immutable converted bytes; any changed byte
+creates a separate version for later draws. The cache now supports both
+16-bit indices and 32-bit data, preserving trailing bytes. Its mutex and
+queue-drain reset follow the intermediary allocator's existing lifetime;
+recorded batches retain their own copies. Full palettes, texture refreshes
+and the GPU upload cache's content checks remain intact.
+
+`python scripts/tests/test_upload_cache.py` passes with normal hashes and
+with forced collisions. It executes the production guest snapshot helper,
+CPU/GPU allocators and recorded batch type, checking concurrent producer
+reuse, changed final palette elements, endian modes, invalid ranges, lost
+access, reset and independent batch lifetime. A seven-measurement median
+microbenchmark of 2,000 unchanged 221,760-byte snapshots with the actual
+old/new helpers measures 27.879 ms versus 16.713 ms, with identical bytes.
+This is snapshot throughput, not a gameplay FPS result. The existing
+RelWithDebInfo Plume target rebuilt successfully with the throttled launcher.
+Gameplay performance and crowd/flag correctness require the next user run.
+
+## 2026-09-04: fourth Tracy capture and repeated-source hash avoidance
+
+The user confirmed the preceding build's visuals and supplied
+`renderdoccaps/pgr4_main4.tracy` (27,214,187 bytes). It records 3.721 seconds,
+from 18140679077 to 21862140884 ns. Complete native frames 3..38 average
+101.15 ms / 9.89 FPS, versus 104.82 ms / 9.54 FPS in main3; the median is
+99.98 ms. This modest difference between separate captures is not proof of
+a material gameplay improvement. There are no GPU zones, and Tracy's symbol
+worker still ran for 2.469 seconds during the captured interval.
+
+Main XThread 87192 spends 1.887 seconds in 53,085 texture binds (35.55 us per
+call) and 1.005 seconds in 72,985 indexed draws (13.77 us per call, versus
+13.37 us in main3). GUI frame 379 takes 99.89 ms: texture binds occupy
+48.09 ms and indexed draws 28.57 ms. The top 500 main-thread stacks cover
+47.9% of its 17,474 periodic samples. Dword-swap stacks drop from 4,075
+samples (26.1% of all samples) in main3 to 223 (1.3%) in main4. The cache
+now accounts for substantial hashing and byte comparison work: 1,605 samples
+have XXH3 on their stack. Render thread 76660 has 17,554 samples; its top
+500 stacks cover 61.7%, including 2,197 XXH3 samples and 6,243 samples in
+the upload allocator. These categories overlap and the counts are lower
+bounds. Raw capture evidence is under `out/tracy-pgr4-main4/`.
+
+The shared byte snapshot cache now remembers a source address's previous
+content hash as a lookup hint. It compares size and every byte against the
+immutable cached payload before reuse, avoiding another full hash pass for
+unchanged sources. Misses still hash and perform exact collision checks.
+When a source's hash changes, its next lookup hashes first until the content
+stabilizes, avoiding an additional comparison against the prior version on
+every changing draw. Hints contain hashes rather than entry pointers, so
+cache copies remain independent; Clear removes hints with their entries.
+Existing producer locking and queue/GPU/batch ownership remain in force.
+
+The upload-cache check passes with real hashes and forced collisions. Added
+checks cover hash avoidance, size changes and address aliases, cache copying,
+reset, and a changing source becoming stable again. A seven-measurement
+median benchmark of 2,000 producer-plus-GPU snapshots of 221,760 bytes shows
+the unchanged case at 33.989 ms before versus 14.121 ms after, reducing
+4,000 hashes to 2 with identical output. The mutation-heavy case (last byte
+changes every draw, cycling through 256 versions) regressed from 84.316 to
+100.096 ms despite fewer hashes. Additional alternating executions varied
+from 83.192..91.818 ms before and 89.608..94.618 ms after. A producer-only
+probe was approximately neutral for mutations (51.253 vs 52.693 ms), putting
+the remaining tradeoff in consumer validation of many distinct snapshots.
+This is a candidate optimization for the observed repeated-buffer workload;
+the benchmark does not establish a gameplay gain. The existing Plume
+RelWithDebInfo target rebuilt successfully through the throttled launcher.
+The next same-scene user capture must decide the end-to-end result.
+
+## 2026-09-04: fifth Tracy capture and per-texture GPU fence stalls
+
+`renderdoccaps/pgr4_main5.tracy` (26,788,702 bytes) records 3.387 seconds,
+19797161718..23184598238 ns. Complete native frames 3..38 average 77.38 ms
+/ 12.92 FPS, versus main4's 101.15 ms / 9.89 FPS; the median is 72.93 ms.
+The trailing 541.19 ms interval has no closing present and is excluded.
+The full 31% FPS difference cannot be attributed to the cache change:
+later frames have fewer draws, and recorded Tracy symbol-worker running
+time drops from 2.469 to 0.723 seconds. Main/render scheduling data also
+leaves 1.219 seconds uncovered, so it cannot describe the entire interval.
+There are still no GPU zones.
+
+Hashing fell in the sampled hot stacks: main-thread XXH3 stacks account for
+230/10,186 samples (2.26%) versus 1,605/17,474 (9.19%) in main4; render-thread
+XXH3 stacks account for 171/10,706 (1.60%) versus 2,197/17,554 (12.52%).
+These are lower bounds from the top 500 stacks (48.3% main / 57.9% render
+coverage in main5). Content comparisons and memory copies remain prominent.
+
+Texture binds occupy 1.522 seconds across 49,092 calls (31.00 us/call),
+and indexed draws occupy 0.705 seconds across 69,844 calls (10.09 us/call).
+GUI frame 350 has 1,435 texture binds / 1,987 indexed draws, comparable to
+main4's frame 379 with 1,436 / 1,989. Its frame duration is 81.32 versus
+99.89 ms; texture binds take 43.97 versus 48.09 ms, indexed draws 18.37
+versus 28.57 ms. Later main5 frame 364 takes 58.06 ms but has only 1,188
+texture binds / 1,737 indexed draws. Evidence and complete thread analysis
+are in `out/tracy-pgr4-main5/`; one zero-sample thread has no scheduling data.
+
+The remaining texture-upload path submits a separate copy command list and
+waits for its GPU fence for every translated texture. The shared texture-copy
+handler now records copies on the existing graphics frame command list and
+transfers staging ownership to `RetainTempUploadBuffer`. Buffers are released
+by the existing frame-slot retirement path after that slot's fence completes.
+Copies stay ordered with draws and subsequent updates to the same texture.
+`RenderQueue::Run` still consumes the borrowed region array synchronously,
+but no longer waits for a texture's GPU copy. Translated base/mip/array uploads,
+DDS mip chains and the dedicated LockRect staging fallback all transfer their
+buffer exactly once; DDS levels are submitted as one region batch. Byte
+conversion, guest refresh frequency and GPU-resolved texture protection are
+unchanged. Buffer-copy commands keep their existing synchronous semantics.
+
+`test_texture_upload_lifetime.py` executes the production copy handlers,
+retention, slot retirement and recording classification with a delayed command
+executor. It verifies draw/copy ordering, mip/array footprints, borrowed region
+consumption, survival across retirement of the other frame slot, exact cleanup
+after the owning slot retires, and cleanup on invalid arguments or device loss.
+The 84 texture-row conversion cases also pass. The RelWithDebInfo Plume game
+rebuilt through the throttled launcher. No game launch was automated; visual
+correctness and the effect of removing GPU waits require the next user run.
+Staging memory now remains live for its GPU frame rather than one upload.
+
+## 2026-09-04: sixth Tracy capture and immutable geometry upload identities
+
+`renderdoccaps/pgr4_main6.tracy` (26,391,414 bytes) records 3.348 seconds,
+14399027768..17746707694 ns. Its 49 complete native frames (indices 3..51)
+average 57.55 ms / 17.38 FPS, versus main5's 77.38 ms / 12.92 FPS; the median
+is 58.90 ms. The first partial and final unclosed 497.60 ms intervals are
+excluded. Later frames still draw a lighter workload, so the overall FPS
+ratio is not a controlled measurement of just the upload change. GPU zones
+remain absent; Tracy's symbol worker records 1.756 seconds of running time.
+
+Texture binds take 1.071 seconds across 66,406 calls (16.12 us/call versus
+31.00 us in main5). Indexed draws take 0.860 seconds across 93,505 calls
+(9.19 us/call versus 10.09 us). Main thread 84716 records 0.491 seconds
+waiting versus main5's 0.861 seconds over nearly equal scheduling coverage
+(2.141 versus 2.169 seconds); 1.206 seconds of main6 is uncovered. GUI frame
+326 has 1,436 texture binds / 1,990 indexed draws and takes 67.97 ms, with
+25.97 ms in texture binds and 19.45 ms in indexed draws. Main5's comparable
+frame 350 had 1,435 / 1,987 calls, taking 81.32 ms overall and 43.97 ms in
+texture binds. Evidence is saved under `out/tracy-pgr4-main6/`.
+
+Render thread 81164 has 11,497 periodic samples. Its top 500 stacks cover
+67.8%, with at least 4,500 samples (39.1% of all samples) under the upload
+allocator and 1,701 (14.8%) under the byte snapshot cache. These categories
+overlap. The largest stack is the exact byte comparison from
+`ByteSnapshotCache::Find` through `UploadAllocator::UploadCached`. The
+consumer still makes and validates a second CPU copy of geometry that the
+producer already snapshotted immutably.
+
+The snapshot cache now optionally supplies a process-wide identity for each
+immutable payload and endian variant. IDs survive ordinary reuse and are
+never based on a guest address; new cache generations get new IDs, preventing
+staging address reuse from aliasing an old GPU upload. Draw snapshots carry
+these host identities, and recorded batches assign identities to their own
+owned copies. The GPU frame allocator uploads each identity directly once
+and reuses its buffer reference without a second CPU copy/hash/byte scan.
+It clears these references only at the existing frame-fence retirement.
+Identity zero retains the full content-checking path for other callers.
+All guest access and full-payload validation still occur on the producer.
+
+The production upload-cache check passes with normal hashes and forced
+collisions. Added checks cover changed final palette elements, endian-variant
+identity separation, recorded ownership, source-cache retirement, GPU reuse,
+zero-ID fallback and device loss. The RelWithDebInfo Plume target rebuilt
+with the throttled launcher. A seven-measurement median of 2,000 producer-plus-
+GPU snapshots of 221,760 bytes measures 13.796 -> 7.704 ms for unchanged data
+and 85.331 -> 67.378 ms when the last byte changes every draw. Output bytes
+match in both cases. These are isolated CPU/upload benchmarks; the next user
+run must confirm gameplay performance and graphics correctness.
+
+## 2026-09-04: seventh Tracy capture and render queue overhead
+
+`renderdoccaps/pgr4_main7.tracy` (31,232,738 bytes) records 4.928 seconds,
+17092618092..22020311861 ns. Its 76 complete native frames (indices 3..78)
+average 64.60 ms / 15.48 FPS, versus main6's 57.55 ms / 17.38 FPS; median
+is 62.98 ms. Initialization, missed frames, the first partial interval and
+the final unclosed interval are excluded. This capture does not establish an
+overall FPS gain from the immutable geometry upload change. GUI frame 409
+has 1,438 texture binds and 1,990 indexed draws in 67.56 ms, close to main6's
+frame 326 (1,436 / 1,990 calls in 67.97 ms). Frame 430 has nearly the same
+call counts but takes 83.86 ms. Scene cost and scheduling vary within a run.
+
+SetTexture takes 1.864 seconds over 109,848 calls (16.97 us/call versus
+16.12 us in main6). Indexed draws take 1.504 seconds over 151,366 calls
+(9.93 us/call versus 9.19 us). Main thread 99892 has 3.711 seconds recorded
+running and 0.839 seconds waiting; render thread 48656 has 2.694 seconds
+running and 1.856 seconds waiting. Each has about 0.378 seconds uncovered,
+versus main6's 1.206 seconds, so raw running/waiting totals are not directly
+comparable. Tracy's symbol worker records 3.446 seconds running. GPU zones
+remain absent. Raw capture, frame, zone and stack evidence is saved under
+`out/tracy-pgr4-main7/`.
+
+The render thread's top 500 stacks cover 13,110 of 20,435 periodic samples.
+ByteSnapshotCache now accounts for at least 813 samples (3.98% of all samples,
+down from 14.80%); XXH3 accounts for 20 (0.10%, down from 2.52%). Remaining
+cache work includes shader constants. UploadAllocator accounts for 4,468
+(21.86%, down from 39.14%). These are overlapping lower bounds, not additive
+time percentages. Queue mutex acquisition/release and condition-variable
+paths are now prominent; the largest individual stack is the worker's mutex
+release. The main thread still spends substantial sampled work capturing
+geometry and converting/uploading textures.
+
+Every queue Job previously embedded and moved a 3,808-byte deferred execution
+snapshot, including ordinary state changes that never used it. The existing
+Job now owns an optional snapshot allocation only for replays. The worker
+swaps the pending deque into its local deque under the queue mutex, then
+dispatches and retires jobs in FIFO order outside that mutex. This removes
+per-command dequeue locking, default initialization and moves. Producer bulk
+atomicity, synchronous Run completion, nested render-thread dispatch and
+recording/GPU mutex behavior are preserved. Replay templates, execution-time
+snapshots and payloads keep their independent ownership.
+
+`python scripts/tests/test_render_queue.py` compiles the actual queue with
+stub dispatch handlers and passes FIFO, concurrent bulk ordering, synchronous
+and nested Run, queued command copies, replay ownership after input mutation
+and recording replacement, shutdown drain and restart checks. The
+RelWithDebInfo Plume game target rebuilt with the throttled launcher. Jobs
+shrink from 4,544 to 736 bytes. Seven measured runs of 200,000 commands give
+median queue-only times of 127.707 -> 8.830 ms for single-command submissions
+and 128.058 -> 15.862 ms for eight-command batches, with matching checksums.
+These isolated tests do not include GPU dispatch or prove gameplay speed;
+the next user-driven capture must measure that and confirm visual behavior.
+
+## 2026-09-04: eighth Tracy capture and contiguous texture copies
+
+`renderdoccaps/pgr4_main8.tracy` (26,421,359 bytes) records 3.297 seconds,
+12615251864..15911993425 ns. Its 57 complete native frames (indices 3..59)
+average 56.82 ms / 17.60 FPS, versus main7's 64.60 ms / 15.48 FPS, with a
+56.10 ms median. Initialization, missed frames, the first partial interval
+and the final unclosed interval are excluded. The measured FPS increases
+13.7%; scene variation and profiler overhead prevent attributing the entire
+increase to the queue change. GPU zones remain absent. GUI frame 298 takes
+56.52 ms for 1,439 texture binds and 1,988 indexed draws, versus main7's frame
+409 at 67.56 ms for 1,438 / 1,990 calls. Texture binds in those frames take
+23.95 versus 24.69 ms; indexed draws take 15.87 versus 21.62 ms.
+
+Across the capture, SetTexture takes 1.353 seconds over 83,685 calls
+(16.16 us/call versus 16.97 us in main7). Indexed draws take 0.937 seconds
+over 115,466 calls (8.12 us/call versus 9.93 us). Main thread 89028 records
+2.325 seconds running, 0.590 seconds waiting and 0.382 seconds uncovered;
+render thread 80132 records 1.633 seconds running, 1.284 seconds waiting and
+0.380 seconds uncovered. Tracy's symbol worker records 1.619 seconds running.
+Capture/zone/frame evidence and sample stacks are under `out/tracy-pgr4-main8/`.
+
+The render thread's top 500 stacks cover 7,461 of 12,321 periodic samples.
+Mutex acquisition/release paths fall to at least 2.87% / 2.92% of all samples,
+from main7's 7.41% / 6.13%. Remaining lock stacks include command recording;
+the former worker dequeue-lock hotspot has receded. The main thread's top
+500 stacks cover 9,238 of 18,067 samples. Geometry snapshots account for at
+least 5,282 samples (29.24%) and UploadGuestTextureData for 2,452 (13.57%).
+These categories are overlapping lower bounds. Of the texture-upload samples,
+1,948 land at the tiny per-block memcpy on line 1215 and 238 at the tiled
+address calculation. This motivates reducing block-copy calls without changing
+texture freshness or resource lifetime.
+
+The upload row loop now copies contiguous source runs: full readable linear
+rows, or the SDK's documented tiled X runs (8 bytes for 1-byte blocks,
+16 bytes otherwise). Packed offsets bound each tiled run correctly. Partial
+extents and unreadable pages fall back to the previous per-block validity and
+zero-fill behavior. The loop specializes the five supported block sizes once
+per region so the compiler can inline the small copies and simplify address
+arithmetic. Endian conversion still happens in cacheable CPU row memory, and
+only writes reach the GPU upload mapping. Existing layout, per-frame refresh,
+GPU-resolved texture protection and upload-buffer retirement remain in place.
+
+The production row-conversion check passes 504 cases, including linear/tiled
+layouts, all existing endian/16-bit expansion modes, packed and slice offsets,
+truncated extents, unaligned page crossings, sparse pages and output padding.
+The RelWithDebInfo Plume target rebuilt with the throttled launcher. Seven
+measured runs converting eight 1024x1024-block surfaces give median tiled
+times of 23.819 -> 2.530 ms (1-byte blocks), 23.886 -> 3.364 ms (2-byte),
+27.260 -> 6.319 ms (4-byte), 28.572 -> 16.920 ms (8-byte), and 37.696 ->
+35.877 ms (16-byte). Linear cases improve from 16.265..24.060 ms to
+0.325..9.160 ms, depending on block size. Before/after output checksums match.
+These are CPU conversion benchmarks; the next gameplay capture must establish
+the real speed change and confirm the rendered textures remain correct.
+
+## 2026-09-04: ninth capture, VSync off and recycled surface headers
+
+`renderdoccaps/pgr4_main9.tracy` (32,136,250 bytes) spans
+17129900620..21928790911 ns. Its 80 complete native frames (indices 3..82)
+average 59.21 ms / 16.89 FPS, with a 57.73 ms median, versus main8's
+56.82 ms / 17.60 FPS. This does not demonstrate a whole-game speed gain.
+GPU zones remain absent; evidence is in `out/tracy-pgr4-main9/analysis.json`.
+Native swapchain VSync is now disabled through `setVsyncEnabled(false)`.
+Guest VBlank workers remain active because the guest depends on their events.
+
+ReXFM2P HEAD `592e5da3` and its newer uncommitted renderer changes were
+inspected read-only. FM2's surface-header repair preserves native objects
+when XGSetSurfaceHeader rewrites guest headers. PGR4 instead translates raw
+headers into separate native proxies, but its translation cache identified
+each surface only by its address and never checked for header reuse.
+
+IDA38's PGR4 colour allocator `0x828389A8` and depth allocator `0x82838AF8`
+both obtain headers from the free list at `0x82BD0D54`, protected by the
+lock at `0x82BD0D5C`, then call XGSetSurfaceHeader (`0x826DE870`) and
+XGOffsetSurfaceAddress (`0x826DEDD0`). The internal layout writer at
+`0x82692D50` writes size at +0x24, full format at +0x28, samples at +0x18
+and EDRAM base at +0x1C. An address can therefore change from colour to depth.
+
+The latest pre-fix runtime log, `pgr4_recompiled_169.log`, records two failed
+pipelines at 20:32:32.841 with `rt=10 ds=10`, followed immediately by a failed
+353,024-byte staging allocation and `GetDeviceRemovedReason=0x887A0001`.
+The depth slot contains a colour format. Stale surface translation explains
+this invalid state; a new race run must confirm the device-loss outcome.
+
+TranslateRawSurface now compares width, height, full format, sample count and
+EDRAM base on every bind. Changed headers acquire the appropriate object
+through the existing EDRAM registry and release the previous cache reference.
+The registry retains old objects for queued draws and continues sharing the
+compatible colour aliases used by Bink. Texture-level headers cannot return
+a stale standalone proxy. The first 16 replacements are logged.
+
+`python scripts/tests/test_surface_header_reuse.py` compiles the production
+translation, format conversion, EDRAM registry and release code with guest
+memory/GPU creation stubbed out. It passes colour/depth reuse, dimensions,
+MSAA, tile base, compatible-format aliases, A-to-B-to-A reuse, queued-object
+lifetime and balanced references. Substituting the pre-fix translation fails
+at the colour-to-depth assertion. The RelWithDebInfo/Tracy Plume executable
+rebuilt through `cmake-throttled.cmd`; build evidence is
+`out/tracy-pgr4-main9/game-build.log`. Gameplay visibility remains user-QA
+pending; the game was not launched automatically.
+
+## 2026-09-04: visible gameplay and first race profile
+
+The user confirms gameplay is now visible. `pgr4_recompiled_170.log` also
+confirms the surface-reuse diagnosis: at 20:51:33.192, header `0x4082D3C0`
+changes from colour format `0x1A2201BF` to depth `0x1A220197` at 1280x720,
+EDRAM base `0x2D0`. Other recycled headers change dimensions and formats.
+This run has no device-loss or failed-pipeline messages.
+
+`renderdoccaps/pgr4_race1.tracy` (35,791,314 bytes) spans
+36801287230..44029013556 ns, 7.228 seconds. Excluding initialization, missed
+frames and both partial intervals, its 38 complete native frames (indices
+3..40) average 184.14 ms / 5.43 FPS, with a 182.88 ms median. This is the
+first visible-race baseline with native VSync disabled; the earlier menu
+captures are different workloads. GPU zones remain absent.
+
+Main guest thread 86232 records 4.920 seconds running, 1.461 seconds waiting
+and 0.846 seconds uncovered, with 38,124 periodic samples. Render thread
+82124 records 3.241 seconds running, 3.141 seconds waiting and 0.846 seconds
+uncovered, with 24,453 samples. Tracy's symbol worker records 5.679 seconds
+running, so profiling overhead remains material. Capture/thread evidence is
+saved under `out/tracy-pgr4-race1/analysis.json`; sampled stacks are in
+`stacks.jsonl` and zone evidence is in `zone-evidence.json`.
+
+Texture binds total 3.735 seconds over 151,094 calls (24.72 us/call).
+Indexed draws total 1.132 seconds over 185,842 calls (6.09 us/call), while
+1,539 nonindexed draws total 1.076 seconds (699.00 us/call). GUI frame 756
+takes 192.25 ms: 3,797 texture binds consume 102.22 ms, 4,694 indexed draws
+28.81 ms and 39 nonindexed draws 28.07 ms. The main thread's top 500 stacks
+cover 16,738 samples; geometry snapshots account for at least 26.92% of all
+samples and texture upload for at least 11.72%. These are overlapping lower
+bounds, not additive wall-clock percentages.
+
+ByteSnapshotCache now uses the existing runtime SIMD copy-and-swap helpers
+for its 16/32-bit converted payloads instead of the scalar variable-stride
+loop. It still validates complete content, retains immutable versions for
+queued draws, preserves trailing bytes and copies full shader-addressable
+palettes. No draw ranges or texture freshness rules changed.
+
+`test_upload_cache.py` passes normal and forced-hash-collision runs, including
+520 new byte-level cases around SIMD boundaries, odd lengths and unaligned
+sources. `test_render_queue.py` passes its ordering/lifetime checks. Seven
+alternating before/after benchmark runs have identical output checksums:
+for 221,760-byte payloads, 16-bit conversion changes 20.699 -> 15.694 ms and
+32-bit conversion 18.530 -> 14.617 ms; for 2 MiB payloads, the corresponding
+times are 60.631 -> 51.084 ms and 55.529 -> 49.459 ms. These times include
+cache insertion, allocation, hashing, conversion and retirement across the
+benchmark workload, not a single-buffer or whole-game timing.
+`benchmark.py` and `benchmark-results.json` retain the experiment. The
+RelWithDebInfo/Tracy game rebuilt through the throttled launcher. The next
+race capture must establish the FPS impact; repeated texture conversion and
+upload remains the larger follow-up target.
+
+## 2026-09-04: oracle-guided persistent textures and pooled uploads
+
+Read-only comparison used reblue HEAD `957ac62` and UnleashedRecomp HEAD
+`5e8695a`. reblue's `src/gpu/native_texture_mirror.cpp:396` builds mirrors at
+allocation/replacement, while its lookup path at 546 returns the existing
+object. `src/gpu/hooks/resource.cpp:514` uploads dynamic textures on unlock;
+the allocation hook at 550 creates the asset mirror. Its
+`src/gpu/texture_upload.cpp:107` uses the shared upload arena with 0x200
+alignment. UnleashedRecomp's `UnleashedRecomp/gpu/video.cpp:465` retains
+upload buffers across frames; `ProcUnlockTextureRect` at 2190 allocates from
+that pool. `SetTexture`/`ProcSetTexture` at 3757/3807 bind existing textures.
+
+PGR4 was instead converting and uploading raw XG textures once each frame,
+with one committed staging buffer per upload. Native images now retain their
+contents across frames. Full decoded layout identity detects backing-address,
+pitch, format, endian, tiling, mip and array changes. XXH3-128 signatures cover
+all readable base/mip/array source bytes and page readability; unchanged
+signatures skip conversion and the synchronous upload command. Inaccessible
+pages preserve the existing zero-fill behavior. Failed uploads remain retryable.
+
+IDA38 verifies `XGOffsetResourceAddress` at `0x826DEE98` assigns backing
+addresses after header construction in raw allocators `0x82838CF8`,
+`0x82293CE8` and cube helper `0x82292FB8`. These hooks invalidate cached
+contents after the original guest call. The existing `D3D_UnlockResource`
+hook (`0x82699F80`) now invalidates raw textures after unlock, including a
+previous resolve destination rewritten by the CPU. Upload is deferred until
+use because callers may still populate the newly assigned backing memory.
+The once-per-frame full-data check remains for writers bypassing these hooks.
+Validation and invalidation share the texture mutex, including frame-marker
+publication; the render-frame counter and resolve flag are atomic. Existing
+storage retains replaced native objects for queued references.
+
+Changed raw textures use reusable CPU scratch and the existing frame upload
+arena. The synchronous command consumes scratch and subresource descriptions
+before returning; GPU bytes live until the recording frame's fence retires.
+Texture placements request 512-byte alignment, including the existing native
+UnlockRect path; chunk-capacity checks account for alignment padding.
+
+Focused checks passed: `test_native_texture_cache.py` exercises production
+parsing/layout/conversion, unchanged-frame skips, base/mip/array mutations,
+sparse mappings, layout reuse, explicit invalidation, resolve protection and
+failure retries. `test_upload_cache.py` passes normal/collision variants and
+mixed 256/512-byte placements at chunk boundaries. Texture upload lifetime,
+render queue, 504 row-conversion cases and surface-header reuse checks pass.
+
+`out/tracy-pgr4-race1/texture-cache-benchmark.py` measures 120 unchanged frames
+over seven alternating runs using the production texture path with fake guest
+memory and GPU queue. Forced refresh versus retained signatures: 128x128
+linear BGRA8, 0.5843 -> 0.2070 ms; 256x256 tiled BGRA8, 8.6938 -> 0.7856 ms;
+1024x1024 tiled BC1, 17.7138 -> 1.5652 ms. Each retained run submits zero
+uploads after initialization versus 120 forced uploads, with identical output
+checksums. Forced refresh includes hashing; these are CPU workload timings,
+not measurements of D3D allocation costs, GPU execution or whole-game FPS.
+Results are in `texture-cache-benchmark-results.json` in the same directory.
+
+The RelWithDebInfo/Tracy Plume target builds through `cmake-throttled.cmd`;
+build evidence is `out/tracy-pgr4-race1/oracle-build.log`. Native VSync remains
+disabled. The next same-race run must confirm texture updates, visual
+correctness and frame-time improvement; no game launch was automated.
+
+## 2026-09-04: race2 texture gains and geometry snapshot storage reuse
+
+`renderdoccaps/pgr4_race2.tracy` (27,855,723 bytes) spans
+31077377154..34845341229 ns. Its 49 complete native frames (indices 3..51,
+excluding initialization, missed frames and both partial intervals) average
+74.46 ms / 13.43 FPS, with a 73.21 ms median. Race1 averaged 184.14 ms /
+5.43 FPS: race2 is 2.47x faster with 59.6% lower average frame time.
+These are separate race runs, not deterministic replays. No GPU zones exist.
+
+SetTexture falls from 24.72 to 2.30 us/call: race2 has 182,693 calls totaling
+420.45 ms. Nonindexed draws still average 605.08 us/call (1,812 calls,
+1.096 s); indexed draws average 4.54 us/call (224,493 calls, 1.020 s).
+Median frame index 34 / GUI 782 takes 73.21 ms: 35 nonindexed draws cost
+21.41 ms, 4,750 indexed draws cost 21.07 ms, and 3,858 texture binds cost
+6.88 ms. Evidence is under `out/tracy-pgr4-race2/`: `analysis.json`,
+`zone-evidence.json`, `median-frame.json` and `stacks.jsonl`.
+
+Main guest thread 51532 has 18,111 periodic samples. Its top 500 stacks
+cover 10,314 samples; QueueDrawStateSnapshots accounts for at least 49.72%
+of all samples, with copying, conversion and comparison in CopyCached.
+Render thread 67904 has 13,572 samples; IntermediaryUploadAllocator::Reset
+accounts for at least 14.68%, with heap release stacks. These inclusive
+percentages overlap and are lower bounds, not additive time fractions.
+Context switches cover about 2.76 s, leaving about 1.01 s uncovered:
+main running/waiting 2.262/0.498 s, render 1.741/1.020 s. Tracy's symbol
+worker consumes 1.474 s running, so profiler overhead remains material.
+Matching runtime log `pgr4_recompiled_172.log` has no device-loss/upload-failure
+messages; it does report draws skipped for missing vertex/pixel shaders.
+The capture alone cannot establish visual correctness.
+
+The next change follows UnleashedRecomp's retained intermediary storage
+(`gpu/video.cpp:533..578`) and reblue's reset-by-offset frame upload storage
+(`src/gpu/constant_buffers.cpp:222`). ByteSnapshotCache previously destroyed
+all raw/converted payload vectors at frame retirement. It now resets lookup
+state and reuses those vectors on subsequent frames. Slot indices preserve
+lookup validity when the owning vector grows and when the cache is deep-copied.
+Converted variants are invalidated per new payload and written directly from
+the raw snapshot, removing the preliminary full memcpy. Complete comparisons,
+forced-hash-collision behavior, full geometry palettes, immutable in-frame
+versions, fresh identities and recorded-batch lifetime remain intact.
+Per-slot peak capacities are retained; varying workloads can raise retained
+memory, as with other frame upload pools.
+
+The added allocation regression fails against the pre-change cache and passes
+afterward: large byte allocations stop after warm-up across repeated retired
+generations, while contents and identities refresh. `test_upload_cache.py`
+passes normal and forced-collision variants, including SIMD boundaries and
+deep copies; `test_render_queue.py` passes FIFO and recorded ownership checks.
+Seven alternating before/after CPU benchmark runs have identical checksums:
+4 KiB payloads, 25.618 -> 5.402 ms (16-bit swap), 25.448 -> 5.532 ms (32-bit);
+221,760 bytes, 17.471 -> 3.327 ms and 16.858 -> 3.454 ms; 2 MiB,
+49.998 -> 20.046 ms and 52.163 -> 21.798 ms. These timings cover the same
+eight-generation cache workload including hashing, conversion and retirement;
+they do not measure whole-game FPS. `benchmark.py`, `benchmark-results.json`
+and `byte_snapshot_cache-before.h` preserve the experiment.
+
+The RelWithDebInfo/Tracy target rebuilt through `cmake-throttled.cmd`; evidence
+is `out/tracy-pgr4-race2/game-build.log`. This new snapshot-storage change
+needs a race3 capture and user visual confirmation. No game was launched.
+
+## 2026-09-04: race3 workload comparison and windowed startup
+
+`renderdoccaps/pgr4_race3.tracy` (33,794,573 bytes) spans
+39433800637..44609163963 ns, 5.175 seconds. The 57 complete native frames
+(indices 3..59, excluding initialization, missed frames and both partial
+intervals) average 89.12 ms / 11.22 FPS, median 88.85 ms. Race2 averaged
+74.46 ms / 13.43 FPS, so this run is slower overall. The workloads differ:
+race3's median frame (index 46 / GUI 940) has 88 nonindexed draws versus 35
+in race2's median frame; indexed counts remain close, 4,781 versus 4,750.
+This is not a controlled before/after performance comparison.
+
+Nonindexed draws average 410.69 us/call versus race2's 605.08 us/call;
+race3 has 5,104 calls totaling 2.096 s. Indexed draws average 5.39 us/call
+(278,027 calls, 1.499 s). SetTexture remains about 2.26 us/call
+(230,107 calls, 519.17 ms), retaining the earlier texture-path improvement.
+The median frame spends 34.62 ms in nonindexed draws, 26.39 ms in indexed
+draws and 9.94 ms in texture binds. Evidence is in
+`out/tracy-pgr4-race3/analysis.json`, `zone-evidence.json` and `stacks.jsonl`.
+
+The main guest thread (82036) has 33,935 periodic samples, 22,184 covered
+by its top 500 stacks. QueueDrawStateSnapshots accounts for at least 58.83%
+of all samples; 7,003 samples in one stack alone are the 32-bit copy/swap
+called from ByteSnapshotCache. Render thread 97480 has 24,008 samples;
+UploadSnapshot accounts for at least 32.36%. IntermediaryUploadAllocator::Reset
+has 180 samples (0.75%) versus race2's 1,992 (14.68%); retirement no longer
+dominates the sampled render-thread work. Percentages are inclusive lower
+bounds and cannot be added. Main running/waiting time is 4.237/0.194 s;
+render 3.000/1.431 s, with about 0.744 s uncovered on each. Tracy's symbol
+worker consumes 3.178 s running. No GPU zones are recorded.
+
+Matching log `pgr4_recompiled_173.log` at frame 901 reports 752 MiB requested,
+207 MiB written and 544 MiB reused in the frame upload pool. Vertex/pixel
+shader-miss draw skips remain logged. The next performance target is the
+volume of geometry snapshots and uploads, preserving shader-addressable
+palette ranges; the differing workload does not justify reverting storage
+reuse or claiming an overall speedup from race3.
+
+At the user's request, Pgr4RecompiledApp::OnPostInitLogging now changes the
+fullscreen cvar to false only when its source is the compiled default.
+ReXApp loads config before this hook and creates the window afterward, so
+PGR4 starts windowed while explicit config/environment/command-line choices
+retain precedence. The shared runtime default is unchanged. The build folder
+has no PGR4 TOML override, and this task's environment has no REX_FULLSCREEN.
+The RelWithDebInfo/Tracy Plume target rebuilt successfully through the
+throttled launcher (`out/tracy-pgr4-race3/game-build.log`). This build changes
+startup mode; no additional renderer optimization was applied during race3
+analysis, and no game launch was automated.
+
+## 2026-09-04: bound nonindexed geometry snapshots to the draw
+
+Race3's hottest copy stack reaches `sub_823DB2C8` through `sub_823DD7E0`.
+IDA38 confirms this caller binds the shared buffer returned by `sub_823D4D78`
+at byte offset `28 * sliceStart`, clears indices, and issues a QUADLIST draw
+of `4 * quadCount` vertices (at most 2,048 quads). Its setup in `sub_823DBA38`
+binds an explicit vertex declaration. `D3DDevice_SetStreamSource` at 0x82690618
+sets fetch size to buffer size minus offset. Copying that whole suffix on
+every slice was unnecessary work on both producer and upload threads.
+
+The producer now retains the live queued declaration alongside geometry
+bindings. For nonindexed draws with a compatible explicit declaration, each
+ordinary raw stream ends at the last vertex's declared attribute footprint,
+rounded to a dword and clamped to the fetch range. The prefix and startVertex
+are preserved, including for generated quad/fan indices. One byte size drives
+the immutable CPU snapshot, identity, GPU upload and vertex-buffer view.
+Raw physical snapshots now take decoded byte sizes; every caller was updated.
+
+POSITION1+ streams retain their full shader-indexed palettes. Unknown formats,
+methods, incompatible/absent declarations and implicit fallback slot 15 keep
+full ranges. Indexed, user-pointer and recorded draws also retain full ranges;
+replay can inherit another declaration. Recorded declaration binds do not
+alter the producer's live mirror, matching replay's render-state restoration.
+The existing memory access checks and immutable queued versions remain.
+
+`test_upload_cache.py` exercises the production geometry snapshot producer
+with normal and forced-collision hashes: nonzero starts, fetch flags, partial
+footprints, endian rounding, huge inputs, unknown declarations, palettes on
+streams 0/1/7/15, recording isolation, mutations inside/outside the copied
+range, memory-backed GPU uploads, and recorded ownership after retirement.
+`test_render_queue.py` passes FIFO, concurrent batches and replay ownership.
+
+Five alternating before/after benchmark runs use the actual snapshot and
+upload allocators with memory-backed GPU buffers: 88 slices of a 1 MiB shared
+VB per frame, stride 28, four timed frames after warm-up. Median total times:
+4 vertices, 70.228 -> 0.085 ms; 64, 69.698 -> 0.139 ms; 1,024,
+69.350 -> 1.361 ms; 8,192, 75.139 -> 15.091 ms. Snapshot bytes per frame fall
+from 85,414,912 to 13,552 / 161,392 / 2,526,832 / 20,188,784 respectively.
+All drawn-byte checksums match. These are isolated CPU workload measurements,
+not whole-game FPS or GPU timings. Evidence and pre-change source are in
+`out/tracy-pgr4-race3/geometry-benchmark.py`, `geometry-benchmark-results.json`
+and `render_state-before.cpp`.
+
+The RelWithDebInfo/Tracy Plume target rebuilt via `cmake-throttled.cmd`
+(`out/tracy-pgr4-race3/performance-build.log`). Windowed startup remains the
+default and native VSync remains off. Same-scene race FPS, gameplay visuals,
+crowd and flags still require user verification; no game was launched.
+
+## 2026-09-04: race4 results and draw-batch dispatch
+
+The user reports gameplay is getting much better. `pgr4_race4.tracy`
+(56,636,870 bytes) spans 36995998902..46564792200 ns. Its 193 complete native
+frames (indices 3..195) average 49.27 ms / 20.30 FPS, median 48.07 ms, versus
+race3's 89.12 ms / 11.22 FPS. Scene workloads still differ: median frame 170 /
+GUI 893 has 56 nonindexed and 5,126 indexed draws versus race3's 88 / 4,781.
+The nonindexed hook averages 2.37 us (15,229 calls, 36.11 ms total), down from
+410.69 us. Indexed draws average 4.93 us (960,297 calls, 4.736 s); SetTexture
+averages 2.08 us (776,971 calls, 1.618 s). The median frame spends 23.47 ms in
+indexed draws, 7.71 ms in texture binds and 0.228 ms in nonindexed draws.
+
+Main thread 80080 has 66,576 periodic samples; the top 500 stacks cover
+28,484. QueueDrawGeometrySnapshot accounts for at least 30.87% and
+ByteSnapshotCache::Find 21.06%. The largest single stack (4,622 samples)
+passes through DrawIndexedVertices and `sub_823DCD20`. IDA38 identifies this
+as crowd rendering, binding mesh stream 0 and a separate stream 1; indexed
+palette preservation remains necessary. Render thread 50484 has 52,616
+samples; 2,706 acquire and 2,106 release samples explicitly reach the outer
+DispatchRenderCommand recording mutex through ExecuteJob. UploadSnapshot
+accounts for at least 3.85%, versus 32.36% in race3. These are inclusive
+sample lower bounds, not additive elapsed-time measurements. Tracy's symbol
+worker runs for 7.285 s of this 9.569 s capture, so profiler overhead remains
+material. There are no GPU zones. Matching log `pgr4_recompiled_175.log`
+reports late-race uploads around 651 MiB requested / 39 MiB written / 611 MiB
+reused, with varying draw workloads. Evidence is saved in
+`out/tracy-pgr4-race4/{analysis.json,stacks.jsonl,zone-evidence.json}`.
+
+The next change keeps each LocalRenderCommandQueue draw batch intact as one
+owning FIFO job. Previously EnqueueBulk split it into one large deque node
+per command, and each dispatch acquired RecordingMutex. A batch now owns a
+contiguous command vector and dispatches ordinary commands under one lock.
+Single-command jobs keep their existing inline storage. WaitForGpu and
+CreateTranslatedTextureHost release the batch's lock before their existing
+exception paths; replay retains its own lock and saved-state restoration.
+This follows the oracle's bulk-command processing (`UnleashedRecomp/gpu/
+video.cpp:5260`) while preserving PGR4's cross-thread synchronization rules.
+
+The production queue/dispatcher check passes batch ownership, FIFO and
+concurrent producer ordering, exact lock scopes, both mutex-held synchronous
+exceptions, nested Run, replay ownership, draining Stop and restart. The
+upload/snapshot checks also pass normal and forced-collision variants.
+Seven alternating queue benchmark runs submit 20,000 batches after warm-up,
+with GPU operations replaced by checksum work: 2 commands/batch takes
+9.834 -> 3.304 ms; 4 takes 19.506 -> 4.518 ms; 8 takes 38.813 -> 5.865 ms.
+Median allocations fall from 38,017 / 78,583 / 152,018 to
+20,000 / 20,112 / 20,048. Output checksums match. These are isolated FIFO and
+dispatch measurements, not a whole-game FPS prediction. The scripts, full
+results and pre-change sources are in `out/tracy-pgr4-race4/`.
+
+The RelWithDebInfo/Tracy Plume target rebuilt with the throttled launcher
+(`performance-build.log`). Windowed startup and disabled native VSync remain.
+Race5 and gameplay visual confirmation are pending; no game was launched.
+
+## 2026-09-05: race5 results and watched geometry snapshots
+
+`pgr4_race5.tracy` (44,485,473 bytes) contains 136 complete native frames
+(indices 3..138), averaging 49.388 ms / 20.248 FPS, median 48.628 ms.
+Race4 averaged 49.27 ms / 20.30 FPS: batch dispatch did not improve measured
+whole-game throughput. Nonindexed draws remain cheap (2.431 us/call);
+indexed draws average 5.080 us and SetTexture 2.022 us. Frame 132 / GUI 1041
+takes 48.701 ms, with 4,867 indexed draws totaling 23.585 ms and 4,102 texture
+binds totaling 7.536 ms. Main thread 98040 has 44,650 samples; its top 500
+stacks put at least 30.67% in QueueDrawGeometrySnapshot and 20.63% in
+ByteSnapshotCache::Find. The latter repeatedly compares full indexed crowd
+mesh/palette buffers. Render thread 93720 still spends samples in constant
+uploads (UploadAndBindRootDescriptor >=14.17%, UploadCached >=13.48%). These
+inclusive sampled percentages are lower bounds and are not additive frame
+timings. The capture has no GPU zones; Tracy's symbol worker ran for 4.465 s.
+Evidence: `out/tracy-pgr4-race5/{analysis.json,stacks.jsonl,zone-evidence.json}`.
+
+Large raw physical snapshots now use the SDK's existing guest-memory write
+callbacks to retain a revision for unchanged contents. A matching revision,
+source and byte count can reuse an immutable cache entry without hashing or
+comparing the entire palette. Untagged sources, small snapshots, and failed
+protection retain full byte validation. Revisions are checked around arming
+and snapshot lookup; concurrent invalidation forces untagged validation on
+that draw. Full indexed/palette ranges, endian views, immutable queued
+versions, and recorded ownership remain intact. Write callbacks use atomics
+only; arming happens outside the upload allocator lock.
+
+The real-memory tests exposed two SDK gaps that would have made reuse stale:
+initially read-only pages lacked invalidation flags, and recommitting an
+allocation could restore host write access without retiring its flags. The
+SDK now tracks read-only transitions, invalidates recommits/new aliases,
+reports protection failure, and clears failed protection flags for retry.
+`NotifyPhysicalMemoryWritten` covers direct native PM4 and XMA output stores
+that bypass guest alias protection. The existing physical file-read path
+already triggers invalidation after its direct stores.
+
+`test_upload_cache.py` passes normal and forced-collision variants, including
+write-during-arm and protection-failure fallback, sizes/endian views, deep
+copies, reset and previous palette/mutation tests. `test_render_queue.py`
+passes. `test_physical_write_watch.py` uses the actual SDK DLL and Windows
+page faults through A/C/E aliases; it checks thread writes, direct stores,
+initial read-only protection, recommit, decommit, release and another alias
+mapping the same physical allocation. No game is launched by these tests.
+
+Its optional benchmark runs the production SnapshotRawPhysicalBuffer and
+IntermediaryUploadAllocator against actual guest memory: 50 frames with a
+221,760-byte payload, mutation/reset each frame, and 2,000 repeated snapshots
+per frame, including faults and endian conversion. Across three alternating
+runs, median time is 195.629 ms with tracking disabled and 38.552 ms enabled
+(5.07x); checksums match at 2,450,000. This is an isolated CPU workload, not
+a gameplay FPS prediction. Results: `out/tracy-pgr4-race5/write-watch-test.log`.
+
+The SDK and Plume target rebuilt successfully using the throttled launcher;
+SDK/build logs are saved beside that evidence. `pgr4_recompiled.exe` is
+51,193,856 bytes, built at 2026-09-05 10:38:29 local time. The built,
+installed and deployed `rexruntimerd.dll` hashes match
+(`201A5DAB4CF3BD6AED0DB51218EC25344CA6C774671B7F0B0FCC45E4FADBCCDF`).
+The next same-scene capture must establish game performance and confirm
+gameplay, crowd/flags and audio. Windowed startup and disabled native VSync
+remain in place.
+
+## 2026-09-05: race6 results and shader constant uploads
+
+`pgr4_race6.tracy` (40,557,941 bytes) spans 42904690317..48078895852 ns.
+Its 129 complete frames (indices 3..131, excluding capture boundaries) average
+39.783 ms / 25.136 FPS, median 38.773 ms. Race5 averaged 49.388 ms / 20.248
+FPS: throughput improved 24.1%. Indexed draw hooks average 3.118 us, down
+from 5.080 us; nonindexed draws average 2.614 us and SetTexture 2.116 us.
+Median frame 78 / GUI 1250 has 4,781 indexed draws totaling 13.572 ms and
+3,956 texture binds totaling 9.368 ms. Race5's representative frame had
+4,867 indexed draws totaling 23.585 ms, so draw counts are close but the
+captures are still separate workloads.
+
+Main thread 68404 has 34,364 samples; its top 500 stacks cover 10,890.
+QueueDrawGeometrySnapshot accounts for at least 15.78% (race5: 30.67%).
+The render thread 16884 has 29,245 samples, with 19,170 in its top 500 stacks;
+UploadAndBindRootDescriptor accounts for at least 18.44% and UploadCached
+17.62%. Constant upload hashing, content-map allocation and reset now form
+a larger render-thread cost. These inclusive samples are not additive frame
+times. There are no GPU zones, and Tracy's symbol worker runs for 3.765 s.
+Evidence is saved under `out/tracy-pgr4-race6/`. Log 177 shows late-race upload
+slots around 585 MiB requested / 40 MiB written / 544 MiB reused.
+
+The next change follows Unleashed's dirty vertex/pixel constant files
+(`UnleashedRecomp/gpu/video.cpp:4520`): ProcSetShaderConstants compares the
+written range and marks only the changed stage. Changed constants convert
+directly into the existing upload arena; clean draws reuse that stage's
+allocation, without CPU snapshots, hashing or content-map nodes. Bindings
+are still issued on every draw because pipeline/command-list changes may
+invalidate them. The arena clears both cached references after its frame
+fence; frame begin and recorded replay mark constants dirty. Replay restores
+the register files through the same setter. Shared constants and geometry
+retain their existing content/identity caches.
+
+The extended upload check passes normal and forced-collision variants:
+independent stage updates, high registers, repeated unchanged updates,
+immutable prior draw bytes, replay-style restoration, frame-slot retirement,
+invalid ranges and failure retry. The render-queue check passes too.
+The isolated benchmark executes both versions' production allocator and
+constant setter over 40 frames of 2,000 draws. Three-run median times for
+changes every 1 / 8 / 64 draws are 178.734 -> 15.698 ms,
+29.399 -> 6.471 ms, and 22.542 -> 5.615 ms; uploaded byte counts and checksums
+match for these workloads. Alternating between two old states every draw
+takes 39.711 -> 17.631 ms but uploads 655,360,000 rather than 655,360 bytes
+over the 40 frames. That is the deliberate tradeoff: CPU/map overhead falls,
+while repeating an older changed state uses another arena allocation.
+Script/results: `constant-benchmark.py`, `constant-benchmark-results.json`.
+These isolated measurements do not predict gameplay FPS.
+
+The throttled Plume build succeeds (`performance-build.log`), producing
+`pgr4_recompiled.exe` at 2026-09-05 11:00:40 local time, 51,194,368 bytes.
+Windowed startup and native VSync-off remain. Race7 and gameplay visual/audio
+confirmation are pending; no game was launched.
+
+## 2026-09-05: race7 results and indexed vertex snapshot bounds
+
+`pgr4_race7.tracy` (38,449,991 bytes) spans 43061221873..47858954106 ns.
+Its 101 complete frames (indices 3..103) average 47.112 ms / 21.226 FPS,
+median 45.132 ms. Race6 averaged 39.783 ms / 25.136 FPS, so overall throughput
+regressed despite the constant-upload CPU reduction. Render thread 72776's
+top 500 stacks contain UploadAndBindRootDescriptor in at least 2.91% of its
+22,765 samples (race6: 18.44%), and UploadCached in 2.17% (race6: 17.62%).
+Queue waiting accounts for at least 15.87%; the thread ran for 2.897 s and
+waited for 1.282 s. Log 178 reports late-race upload slots around 585 MiB
+requested / 48 MiB written / 537 MiB reused, versus race6's 40 MiB written.
+The capture does not establish the cause of the total regression.
+
+Main thread 58852 has 31,057 samples, with 9,085 in its top 500 stacks.
+QueueDrawGeometrySnapshot accounts for at least 14.73%, CopyCached 10.34%,
+and ByteSnapshotCache::Find 0.72%. Large stacks copy/hash/convert geometry
+through `sub_8238FC78`. Indexed draw hooks average 3.824 us over 488,037 calls
+(race6: 3.118 us); SetTexture averages 2.471 us (race6: 2.116 us). Median
+frame 7 / GUI 884 contains 4,791 indexed draws totaling 14.773 ms and 3,949
+texture binds totaling 8.227 ms. Race6's representative frame had 4,781
+indexed draws, but these remain separate workloads. Sample percentages are
+inclusive lower bounds, not additive frame times. There are no GPU zones;
+Tracy's symbol worker ran for 3.007 s. Evidence is under
+`out/tracy-pgr4-race7/{analysis.json,stacks.jsonl,zone-evidence.json}`.
+
+Ordinary indexed draws now reuse the existing vertex snapshot sizing helper.
+The producer first owns and endian-converts the index buffer, then scans only
+the indices consumed by this draw to bound ordinary raw vertex streams.
+The queued draw uses those same immutable indices. The original vertex
+prefix, startIndex and signed baseVertexIndex remain unchanged. Full ranges
+remain for POSITION1+ palettes, recordings, UP draws, native index buffers,
+missing/incompatible declarations, unknown layouts/topologies, invalid
+ranges and restart/sentinel indices. This extends the earlier nonindexed
+optimization while retaining its palette and replay safeguards.
+
+`test_upload_cache.py` passes normal and forced-hash-collision variants,
+including actual producer snapshots with 16/32-bit unaligned index sources,
+start offsets, signed bases, invalid-range fallbacks, guest mutations,
+palette-tail visibility and recorded ownership after staging retirement.
+`test_render_queue.py` also passes. Their logs are in the evidence directory.
+
+The isolated benchmark uses production before/after snapshot code with the
+actual SDK DLL, guest physical memory and Windows write faults. It mutates
+32 mesh buffers and a separate full palette each frame, retires staging,
+and checks consumed vertices over 20 timed frames of 128 draws. Three
+alternating runs give these medians for 221,760-byte meshes, stride 28:
+
+| Vertex span | Before ms | After ms | Before snapshot bytes | After snapshot bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 64 | 12.445 | 3.490 | 141,926,400 | 1,146,880 |
+| 1,024 | 12.896 | 7.281 | 141,926,400 | 18,350,080 |
+| 4,096 | 12.917 | 9.628 | 141,926,400 | 73,400,320 |
+| 7,920 (full) | 13.423 | 13.667 | 141,926,400 | 141,926,400 |
+
+Checksums match. Scanning adds about 1.8% in this full-buffer case; smaller
+ranges reduce snapshot work. These CPU measurements do not predict gameplay
+FPS or establish visual correctness. Script, sources and results are saved
+as `indexed-benchmark*` under the evidence directory.
+
+The throttled Plume build succeeds (`performance-build.log`), producing
+`pgr4_recompiled.exe` at 2026-09-05 11:52:42 local time, 51,194,880 bytes.
+Windowed startup and disabled native VSync remain. Race8 and gameplay,
+crowd/flags and audio confirmation are pending; no game was launched.
+
+## 2026-09-05: race8 regression and removal of indexed snapshot bounds
+
+`pgr4_race8.tracy` (41,117,975 bytes) spans 31643517364..37775646501 ns.
+Its 82 complete frames (indices 3..84) average 74.072 ms / 13.500 FPS,
+median 74.277 ms, versus race7's 47.112 ms / 21.226 FPS. Representative
+frame 20 / GUI 766 has 4,791 indexed draws totaling 35.494 ms (race7:
+4,791 / 14.773 ms) and 3,948 texture binds totaling 13.636 ms. Across the
+capture, indexed hooks average 7.620 us, nonindexed 4.316 us and SetTexture
+3.222 us. Log 179 reports late-race uploads around 484 MiB requested /
+56 MiB written / 427 MiB reused: requested bytes fell from race7's 585 MiB,
+but actual writes rose from 48 MiB.
+
+Main thread 94496 has 44,250 samples; its top 500 stacks cover 13,206.
+QueueDrawGeometrySnapshot accounts for at least 18.53%, CopyCached 15.38%,
+ByteSnapshotCache::Find 3.27%, and the new index scan 2.22%. Race7's
+corresponding first three shares were 14.73%, 10.34%, and 0.72%. Render
+thread 93068 ran for 4.002 s and waited for 1.843 s; constant-upload samples
+remain low (UploadAndBindRootDescriptor >=2.45%). These inclusive sample
+shares are lower bounds, not additive frame times. Tracy's symbol worker
+ran for 5.735 s, versus race7's 3.007 s, and there are no GPU zones. The
+whole frame-time regression cannot be assigned entirely to one change.
+Evidence: `out/tracy-pgr4-race8/{analysis.json,stacks.jsonl,zone-evidence.json}`.
+
+The indexed bounds introduced a concrete cache regression. Source hints
+remember only one size at each address. Alternating draw prefixes therefore
+evict each other's revision hint and repeatedly hash unchanged bytes.
+A focused hash-count assertion reproduced this; an address-and-size hint
+experiment passed it. However, that experiment still retains multiple
+overlapping immutable payloads and performs the per-draw index scan.
+
+The new production-path benchmark uses the actual SDK and Windows physical
+write faults with 32 distinct 221,760-byte meshes, stride 28, a separate
+full palette, 384 indices per draw, and 20 timed frames of 1,024 draws.
+It checks all consumed vertex bytes and compares three alternating runs.
+Unlike the race7 benchmark, four ranges alternate at each mesh address:
+1,024 / 4,096 / 2,048 / 7,920 vertices. Median CPU times are:
+
+| Workload | Full snapshots | Indexed bounds | Bounds with per-size hints |
+| --- | ---: | ---: | ---: |
+| One range | 39.284 ms | 25.878 ms | 26.793 ms |
+| Four alternating ranges | 45.526 ms | 164.723 ms | 58.925 ms |
+
+For the mixed workload, hash calls are 680 / 20,520 / 2,600, covering
+146,423,680 / 2,167,512,960 / 274,874,240 bytes respectively. Checksums match.
+The fixed-size race7 benchmark missed this reuse pattern. These isolated
+CPU results reproduce a mechanism, not the exact game workload or GPU cost.
+`range-benchmark.py` retains the original and experimental headers/sources
+so all three variants remain reproducible after restoring production code.
+
+The indexed range optimization has been removed, restoring the exact
+race7 producer source. The per-size hint experiment is also excluded.
+Nonindexed bounds, physical write tracking, dirty shader constants and
+full palette/replay ownership remain. The existing upload-cache check
+passes normal and forced-collision variants; the render-queue check passes.
+Final logs use `*-final-test.log` in the evidence directory.
+
+The throttled Plume build compiled and linked successfully, producing
+`pgr4_recompiled.exe` at 2026-09-05 12:13:06 local time, 51,194,368 bytes
+(`performance-build.log`). Windowed startup and disabled native VSync
+remain. Race9 must establish recovered gameplay performance and confirm
+visuals/audio; no game was launched.
+
+## 2026-09-05: race9 follow-up saved as pgr4_race1.tracy
+
+The original `pgr4_race9.tracy` repeatedly failed to load with `bad allocation`;
+the user supplied the follow-up as `pgr4_race1.tracy` (36,354,259 bytes,
+modified 2026-09-05 12:37:51). This replaces the earlier race1 filename and
+loads successfully. Its 111 complete frames average 40.647 ms / 24.602 FPS,
+median 40.892 ms. Throughput recovered from race8's 13.500 FPS and is close
+to race6's 25.136 FPS. This is observed recovery after removing indexed
+bounds, not proof that all differences between captures came from that change.
+
+Representative frame 101 / GUI 866 contains 4,781 indexed draws totaling
+15.308 ms and 3,956 texture binds totaling 8.190 ms. Indexed hooks average
+3.303 us over 531,054 calls; SetTexture averages 2.109 us over 440,166 calls.
+Main thread 54880 has 29,629 samples; its top 500 stacks put at least 14.98%
+in QueueDrawGeometrySnapshot, 10.38% in CopyCached and 0.67% in
+ByteSnapshotCache::Find. Render thread 3208's constant-upload share stays
+low (UploadAndBindRootDescriptor >=3.08% of 22,202 samples); it ran for
+2.827 s and waited for 1.108 s. Geometry staging and texture binding remain
+useful CPU targets. Samples are inclusive lower bounds, not additive timings.
+There are no GPU zones, and the Tracy symbol worker ran for 3.287 s.
+
+Evidence is saved under `out/tracy-pgr4-race9/`, with `analyze-resaved.py`
+pointing to the user-confirmed race1 filename. No renderer changes or new
+build were made during this capture review; visual/audio QA remains separate.

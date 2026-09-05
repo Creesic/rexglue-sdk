@@ -34,11 +34,13 @@ class RecordedRenderBatch {
         for (size_t i = 0; i < std::size(command.setDrawGeometrySnapshot.streams); ++i) {
           command.setDrawGeometrySnapshot.streams[i].rawData =
               Copy(source.setDrawGeometrySnapshot.streams[i].rawData,
-                   source.setDrawGeometrySnapshot.streams[i].rawSize);
+                   source.setDrawGeometrySnapshot.streams[i].rawSize,
+                   &command.setDrawGeometrySnapshot.streams[i].rawIdentity);
         }
         command.setDrawGeometrySnapshot.rawIndexData =
             Copy(source.setDrawGeometrySnapshot.rawIndexData,
-                 source.setDrawGeometrySnapshot.rawIndexSize);
+                 source.setDrawGeometrySnapshot.rawIndexSize,
+                 &command.setDrawGeometrySnapshot.rawIndexIdentity);
         break;
       case RenderCommandType::DrawPrimitiveUP:
         command.drawPrimitiveUP.vertexData =
@@ -121,8 +123,8 @@ class RecordedRenderBatch {
     bool hasReplacement = false;
   };
 
-  uint8_t* Copy(const uint8_t* source, uint32_t size) {
-    return payloads_.Copy(source, size);
+  uint8_t* Copy(const uint8_t* source, uint32_t size, uint64_t* identity = nullptr) {
+    return payloads_.Copy(source, size, 0, identity);
   }
 
   std::vector<RenderCommand> commands_;

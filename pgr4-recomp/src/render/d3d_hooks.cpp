@@ -586,6 +586,7 @@ void UnlockResourceHook(uint32_t resourceAddr, uint32_t base, uint32_t mip) {
   auto* resource = ghp::ToHost<GuestResource>(resourceAddr);
   if (!rr::IsFm2Resource(resource)) {
     g_origUnlockResource(resourceAddr, base, mip);
+    rr::InvalidateGuestTexture(resource);
     return;
   }
   rr::UnlockGuestResource(resource);
@@ -669,6 +670,16 @@ REX_HOOK(D3DSurface_GetDesc, SurfaceGetDescHook);
 REX_HOOK(PGR4_D3D_CreateTextureFromMemoryBuffer, CreateTextureFromMemoryBufferHook);
 REX_HOOK(D3DResource_AddRef, D3DResourceAddRefHook);    // @ 0x82369D90
 REX_HOOK(D3DResource_Release, D3DResourceReleaseHook);  // @ 0x82369E08
+
+// PGR4's raw texture allocators reuse headers and assign backing memory here.
+// Invalidate after the original has written the new fetch addresses; defer the
+// upload until first use, since the caller may still be filling the payload.
+REX_EXTERN(__imp__XGOffsetResourceAddress);
+REX_HOOK_RAW(XGOffsetResourceAddress) {
+  const uint32_t resource = ctx.r3.u32;
+  __imp__XGOffsetResourceAddress(ctx, base);
+  rr::InvalidateGuestTexture(ghp::ToHost<void>(resource));
+}
 
 // ---------------------------------------------------------------------------
 // Phase 3: render state, clip planes, bool constants, vertex/index/surface
@@ -913,39 +924,58 @@ namespace {
 // PGR4 builds its main backbuffer / depth surfaces itself (XGSetSurfaceHeader
 // on game memory, e.g. dword_82A60EDC) and binds them through
 // D3DDevice_SetRenderTarget, so a raw XDK D3DSurface header has to be
-// materialized as a native surface once and reused. Layout (IDA D3DSurface,
+// materialized as a native surface for its current layout. Layout (IDA D3DSurface,
 // D3DSurface_GetDesc @ 0x82693730): +0x18 GPU_SURFACEINFO (msaa samples
 // bits 16-17), +0x24 packed size (width-1 << 18 | height-1 << 3), +0x28
 // D3DFORMAT. Common bit 30 marks a texture-level surface, whose parent
 // texture lives at +0x18 instead -- not handled yet.
 rr::GuestBaseTexture* TranslateRawSurface(uint32_t surfaceAddr) {
+  struct CachedSurface {
+    std::array<uint32_t, 5> layout;
+    rr::GuestBaseTexture* surface;
+  };
   static std::mutex s_mutex;
-  static std::unordered_map<uint32_t, rr::GuestBaseTexture*> s_translated;
+  static std::unordered_map<uint32_t, CachedSurface> s_translated;
   std::lock_guard lock(s_mutex);
-  if (auto it = s_translated.find(surfaceAddr); it != s_translated.end())
-    return it->second;
-
   const uint32_t common = ReadGuestU32At(surfaceAddr);
-  rr::GuestBaseTexture* surface = nullptr;
-  if ((common & 0x40000000u) == 0) {
-    const uint32_t surfaceInfo = ReadGuestU32At(surfaceAddr + 0x18u);
-    const uint32_t colorInfo = ReadGuestU32At(surfaceAddr + 0x1Cu);
-    const uint32_t size = ReadGuestU32At(surfaceAddr + 0x24u);
-    const uint32_t format = ReadGuestU32At(surfaceAddr + 0x28u);
-    const uint32_t width = (size >> 18) + 1u;
-    const uint32_t height = ((size >> 3) & 0x7FFFu) + 1u;
-    const uint32_t multiSample = 1u << ((surfaceInfo >> 16) & 3u);  // 1/2/4 samples
-    // EDRAM aliasing: PGR4's video player draws into its own surface headers
-    // that sit on the same EDRAM tiles as the main backbuffer, and the frame's
-    // final resolve reads the backbuffer. Surfaces with the same tile base,
-    // size and format share one host surface so that resolve sees the draw.
-    surface = rr::CreateSurface(width, height, format, multiSample > 1u ? multiSample : 0u,
-                                colorInfo & 0xFFFu);
-  } else {
+  if ((common & 0x40000000u) != 0) {
     REXGPU_WARN("TranslateRawSurface: 0x{:08X} is a texture-level surface -- not bound",
                 surfaceAddr);
+    return nullptr;
   }
-  s_translated.emplace(surfaceAddr, surface);
+
+  const uint32_t surfaceInfo = ReadGuestU32At(surfaceAddr + 0x18u);
+  const uint32_t colorInfo = ReadGuestU32At(surfaceAddr + 0x1Cu);
+  const uint32_t size = ReadGuestU32At(surfaceAddr + 0x24u);
+  const uint32_t format = ReadGuestU32At(surfaceAddr + 0x28u);
+  const uint32_t width = (size >> 18) + 1u;
+  const uint32_t height = ((size >> 3) & 0x7FFFu) + 1u;
+  const uint32_t samples = 1u << ((surfaceInfo >> 16) & 3u);
+  const uint32_t multiSample = samples > 1u ? samples : 0u;
+  const uint32_t edramBase = colorInfo & 0xFFFu;
+  const std::array<uint32_t, 5> layout{width, height, format, multiSample, edramBase};
+  const auto previous = s_translated.find(surfaceAddr);
+  if (previous != s_translated.end() && previous->second.layout == layout)
+    return previous->second.surface;
+
+  // PGR4's colour and depth allocators reuse headers from the same free list.
+  // Rebind changed layouts through CreateSurface's EDRAM registry; mutating
+  // the old native object would also change surfaces referenced by queued draws.
+  auto* surface = rr::CreateSurface(width, height, format, multiSample, edramBase);
+  if (surface == nullptr)
+    return nullptr;
+  if (previous != s_translated.end()) {
+    static uint32_t replacements = 0;
+    if (++replacements <= 16) {
+      REXGPU_INFO("TranslateRawSurface: recycled 0x{:08X} format=0x{:08X}->0x{:08X} "
+                  "{}x{} msaa={} edram=0x{:03X}",
+                  surfaceAddr, previous->second.layout[2], format, width, height,
+                  multiSample, edramBase);
+    }
+    // Drop the raw cache's reference. The EDRAM registry retains the old object.
+    D3DResourceReleaseHook(ghp::ToGuest(previous->second.surface));
+  }
+  s_translated.insert_or_assign(surfaceAddr, CachedSurface{layout, surface});
   return surface;
 }
 

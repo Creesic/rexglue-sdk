@@ -26,7 +26,12 @@ class Pgr4RecompiledApp : public rex::ReXApp {
   }
 
   // Override virtual hooks for customization:
-  // void OnPostInitLogging() override {}
+  void OnPostInitLogging() override {
+    // Config, environment and command-line settings are loaded before this hook.
+    if (rex::cvar::GetFlagSource("fullscreen") == rex::cvar::Source::kDefault) {
+      rex::cvar::SetFlagByName("fullscreen", "false");
+    }
+  }
   // PGR4 needs three settings that would otherwise have to be passed on every
   // launch. Baked in here so the exe runs standalone. game_data_root and
   // gpu_plugin are only defaulted when unset, so a command-line value still wins.

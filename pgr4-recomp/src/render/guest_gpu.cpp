@@ -142,6 +142,7 @@ void Pgr4GraphicsSystem::PublishReadPointer() {
   const uint32_t write_index = write_ptr_index_.load(std::memory_order_acquire);
   rex::memory::store_and_swap<uint32_t>(memory_->TranslatePhysical<uint8_t*>(writeback),
                                         write_index);
+  memory_->NotifyPhysicalMemoryWritten(writeback, 4);
 }
 
 // ---- GPU register window ---------------------------------------------------
@@ -290,6 +291,7 @@ void Pgr4GraphicsSystem::ApplyRegisterWrite(uint32_t reg, uint32_t value) {
     if (((1u << scratch) & g_registers[kRegScratchUmsk]) != 0 && memory_ != nullptr) {
       const uint32_t addr = g_registers[kRegScratchAddr] + scratch * 4;
       rex::memory::store_and_swap<uint32_t>(memory_->TranslatePhysical<uint8_t*>(addr), value);
+      memory_->NotifyPhysicalMemoryWritten(addr, 4);
       // Every writeback, not just the first: whether SCRATCH_REG4 is ever
       // rewritten from the 0x0BADF00D sentinel to a real callback is the whole
       // question. Low volume during bring-up.
@@ -362,6 +364,7 @@ void Pgr4GraphicsSystem::ExecutePackets(const uint8_t* buffer, uint32_t dword_co
           for (uint32_t k = 0; k + 2 < count + 1 && i + 2 + k < dword_count; ++k) {
             const uint32_t data = rex::graphics::xenos::GpuSwap(rd(i + 2 + k), endian);
             *reinterpret_cast<uint32_t*>(memory_->TranslatePhysical<uint8_t*>(write_addr)) = data;
+            memory_->NotifyPhysicalMemoryWritten(write_addr, 4);
             write_addr += 4;
           }
         }
@@ -379,6 +382,7 @@ void Pgr4GraphicsSystem::ExecutePackets(const uint8_t* buffer, uint32_t dword_co
           address &= ~0x3u;
           *reinterpret_cast<uint32_t*>(memory_->TranslatePhysical<uint8_t*>(address)) =
               rex::graphics::xenos::GpuSwap(data, endian);
+          memory_->NotifyPhysicalMemoryWritten(address, 4);
         }
         break;
       }

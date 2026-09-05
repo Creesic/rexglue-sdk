@@ -116,6 +116,8 @@ bool XmaContext::Work() {
       return true;
     }
     Consume(&output_rb, &data);
+    memory()->NotifyPhysicalMemoryWritten(data.output_buffer_ptr,
+                                         data.output_buffer_block_count * kOutputBytesPerBlock);
     data.output_buffer_write_offset = output_rb.write_offset() / kOutputBytesPerBlock;
     StoreContextMerged(data, initial_data, context_ptr);
     return true;
@@ -143,6 +145,8 @@ bool XmaContext::Work() {
 
   data.output_buffer_write_offset = output_rb.write_offset() / kOutputBytesPerBlock;
 
+  memory()->NotifyPhysicalMemoryWritten(data.output_buffer_ptr,
+                                       data.output_buffer_block_count * kOutputBytesPerBlock);
   if (output_rb.empty()) {
     data.output_buffer_valid = 0;
   }

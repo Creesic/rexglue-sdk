@@ -195,6 +195,7 @@ struct DrawStreamSnapshot {
   uint32_t stride;
   uint8_t* rawData;
   uint32_t rawSize;
+  uint64_t rawIdentity;  // Host immutable snapshot identity; 0 requires content validation.
 };
 
 struct DrawGeometrySnapshot {
@@ -203,6 +204,7 @@ struct DrawGeometrySnapshot {
   uint8_t* rawIndexData;
   uint32_t rawIndexSize;
   uint32_t rawIndexStride;
+  uint64_t rawIndexIdentity;
 };
 
 enum class RenderCommandType : uint32_t {
@@ -247,7 +249,12 @@ enum class RenderCommandType : uint32_t {
   CopyBufferFromUpload,
   CopyTextureFromUpload,
   CopyTextureSubresourcesFromUpload,
+  UploadTextureSubresources,
   CreateTranslatedTextureHost,
+  // Queue control, consumed inside render_queue.cpp: never recorded or
+  // dispatched.
+  Signal,
+  ReplayRecording,
 };
 
 struct TextureUploadRegion {
@@ -417,6 +424,16 @@ struct RenderCommand {
     // ExecuteCommandList / BeginCommandList / WaitForGpu / BeginRenderStateFrame:
     // no payload.
 
+    // Signal: RenderQueue::Run completion flag (std::atomic<bool>*).
+    struct {
+      void* done;
+    } signal;
+
+    // ReplayRecording: owning pointer to the queue's replay job.
+    struct {
+      void* job;
+    } replayRecording;
+
     struct {
       GuestTexture* texture;
       uint32_t width;
@@ -454,7 +471,8 @@ struct RenderCommand {
       uint64_t size;
     } copyBufferFromUpload;
 
-    // dst = plume::RenderTexture*, src = plume::RenderBuffer*.
+    // Texture copies transfer ownership of src (plume::RenderBuffer*) to the
+    // recording frame. Submit exactly once; dst is a borrowed RenderTexture*.
     struct {
       void* dst;
       void* src;
@@ -476,6 +494,16 @@ struct RenderCommand {
     } copyTextureSubresourcesFromUpload;
 
     struct {
+      void* dst;  // plume::RenderTexture*
+      const void* data;  // CPU staging, borrowed until synchronous Run returns
+      uint64_t size;
+      uint32_t format;
+      const TextureUploadRegion* regions;
+      uint32_t regionCount;
+      bool* success;
+    } uploadTextureSubresources;
+
+    struct {
       GuestTexture* texture;
       uint32_t width;
       uint32_t height;
@@ -489,6 +517,7 @@ struct RenderCommand {
 };
 
 void DispatchRenderCommand(const RenderCommand& cmd);
+void DispatchRenderCommands(const RenderCommand* commands, size_t count);
 void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
                                     const DeferredExecutionSnapshot* executionSnapshot);
 
@@ -503,12 +532,17 @@ void ProcUnlockTextureRect(GuestBaseTexture* texture);
 void ProcUnlockBuffer16(GuestBuffer* buffer, const uint8_t* data, uint32_t size);
 void ProcUnlockBuffer32(GuestBuffer* buffer, const uint8_t* data, uint32_t size);
 void ProcCopyBufferFromUpload(void* dst, void* src, uint64_t size);
+// Both texture-copy handlers consume src, including on failure. Region arrays
+// are borrowed only while the synchronous RenderQueue::Run records the copy.
 void ProcCopyTextureFromUpload(void* dst, void* src, uint32_t format, uint32_t width,
                                uint32_t height, uint32_t rowTexels, uint32_t mip,
                                uint32_t arrayIndex, uint64_t srcOffset);
 void ProcCopyTextureSubresourcesFromUpload(void* dst, void* src, uint32_t format,
                                            const TextureUploadRegion* regions,
                                            uint32_t regionCount);
+void ProcUploadTextureSubresources(void* dst, const void* data, uint64_t size, uint32_t format,
+                                   const TextureUploadRegion* regions, uint32_t regionCount,
+                                   bool* success);
 void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint32_t height,
                                      uint32_t format, uint32_t baseAddress, uint32_t levels,
                                      bool cube, bool* createdOut);
