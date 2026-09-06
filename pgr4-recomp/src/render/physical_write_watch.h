@@ -62,6 +62,10 @@ class PhysicalWriteWatch {
     return revision;
   }
 
+  // Bumped by every invalidation anywhere; unchanged means no watched page
+  // changed, so a range validated at this serial is still current.
+  uint64_t Serial() const { return serial_.load(std::memory_order_acquire); }
+
   // Guest write faults and decommits routed through the SDK callback.
   uint64_t Invalidations() const { return invalidations_.load(std::memory_order_relaxed); }
   uint64_t InvalidatedBytes() const { return invalidatedBytes_.load(std::memory_order_relaxed); }

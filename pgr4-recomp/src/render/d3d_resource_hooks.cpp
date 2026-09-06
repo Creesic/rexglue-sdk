@@ -358,7 +358,7 @@ void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t heigh
   texture->textureHolder = Device()->createTexture(desc);
   texture->texture = texture->textureHolder.get();
   if (texture->texture == nullptr) {
-    NoteDeviceLost("CreateTexture");
+    CheckDeviceLost("CreateTexture");
     REXGPU_ERROR(
         "CreateTexture: Plume createTexture failed ({}x{}x{} levels={} fmt=0x{:08X} type={} usage={})",
         width, height, depth, levels, format, volume ? 17 : 0, usage);
@@ -436,7 +436,7 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   if (texture->texture == nullptr) {
     static std::unordered_set<uint32_t> s_warned;
     if (s_warned.insert(baseAddress).second) {
-      NoteDeviceLost("TranslateGuestTexture");
+      CheckDeviceLost("TranslateGuestTexture");
       REXGPU_WARN("TranslateGuestTexture: failed to create {}x{} fmt={} texture (base=0x{:08X})",
                   width, height, int(fmt), baseAddress);
     }
@@ -1014,10 +1014,18 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
       return info;
     }
   }
-  if (info.pitchTexels == 0)
-    info.pitchTexels = info.width;
   info.mipLevels = TextureFetchMipLevelCount(fc4, fc5, info.width, info.height);
   info.mipMaxLevel = info.mipLevels - 1u;
+  // D3D12 only guarantees block-compressed textures whose top level is a
+  // multiple of the block (OPTIONS8 UnalignedBlockTexturesSupported is false
+  // on GTX 10xx, where PGR4's 32x1 DXT1 strip failed to create). The guest
+  // data holds whole blocks, so size the host texture to them.
+  // ponytail: padded rows sample the block's padding texels; decode to RGBA8
+  // like xenia if a 1-row LUT ever looks wrong.
+  info.width = (info.width + info.blockDim - 1u) / info.blockDim * info.blockDim;
+  info.height = (info.height + info.blockDim - 1u) / info.blockDim * info.blockDim;
+  if (info.pitchTexels == 0)
+    info.pitchTexels = info.width;
   info.valid = GuestTextureLayoutValid(info);
   return info;
 }
@@ -1118,6 +1126,17 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
   if (!texture->NeedsGuestUpload(true, frame))
     return true;
   SCOPE_profile_cpu_f("UploadGuestTextureData");
+  // The watched ranges' revisions are unchanged: the host image is current,
+  // without the layout computation or the page-access scan.
+  if (texture->guestUploadHashValid && texture->guestWatchRevision[0] != 0 &&
+      g_physicalWriteWatch.Revision(texture->watchedBase, texture->watchedBaseSize) ==
+          texture->guestWatchRevision[0] &&
+      (texture->watchedMipSize == 0 ||
+       g_physicalWriteWatch.Revision(texture->watchedMip, texture->watchedMipSize) ==
+           texture->guestWatchRevision[1])) {
+    texture->lastUploadFrame = frame;
+    return true;
+  }
   if (texture->width != info.width || texture->height != info.height ||
       texture->format != info.format || texture->levels != info.mipLevels) {
     return false;
@@ -1183,6 +1202,11 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
     texture->guestWatchRevision = armedRevision[0] != 0 && armedRevision == now
                                       ? armedRevision
                                       : std::array<uint64_t, 2>{};
+    const bool watched = texture->guestWatchRevision[0] != 0;
+    texture->watchedBase = watched ? baseSource.physical : 0;
+    texture->watchedBaseSize = watched ? baseSource.size : 0;
+    texture->watchedMip = watched ? mipSource.physical : 0;
+    texture->watchedMipSize = watched ? mipSource.size : 0;
   };
   // Native mirrors (reblue/Unleashed) upload at resource creation or update,
   // not on bind. Raw PGR4 headers can be written without Unlock, so use a full
@@ -1417,12 +1441,18 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
   if (uploadGuestData)
     UploadGuestTextureData(texture, info);
 
+  // alias: which physical page a watched upload read (mapped = 0xE alias
+  // +4 KB, direct = plain physical), see HeaderBaseToPhysicalForRead.
+  const char* alias = texture->watchedBase == 0 ? "unwatched"
+                      : texture->watchedBase == (info.baseAddress & 0x1FFFFFFFu) ? "direct"
+                                                                                  : "mapped";
   REXGPU_INFO(
       "TranslateGuestTexture: base=0x{:08X} mip=0x{:08X} {}x{} levels={} fmt={} cube={} "
-      "tiled={} endian={} upload={} -> desc {}",
+      "tiled={} endian={} upload={} -> desc {} alias={}",
       info.baseAddress, info.mipAddress, info.width, info.height, info.mipLevels,
       int(info.format), info.cube, info.tiled, info.endian, uploadGuestData,
-      texture->descriptorIndex);
+      texture->descriptorIndex,
+      alias);
 
   GuestTexture* result = texture;
   std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);

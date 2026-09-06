@@ -55,6 +55,7 @@ struct {
   unsigned arms = 0;
   template <class M> uint64_t BeginSnapshot(M*, uint32_t, uint32_t) { ++arms; return revision; }
   uint64_t Revision(uint32_t, uint32_t) const { return revision; }
+  uint64_t Serial() const { return revision; }
 } g_physicalWriteWatch;
 namespace RenderQueue {
 void Run(const RenderCommand& cmd) {
@@ -111,6 +112,14 @@ int main() {
   info.valid = true;
   auto header = Header(info);
   assert(GuestTextureLayoutKey(ParseTextureFetchConstant(header.data() + 7)) == GuestTextureLayoutKey(info));
+  // Block-compressed strips are padded to whole blocks for the host create.
+  XenosTextureInfo strip;
+  strip.gpuFormat = 18;  // k_DXT1
+  strip.width = strip.pitchTexels = 32;
+  strip.height = 1;
+  strip.baseAddress = 0x20000;
+  const auto padded = ParseTextureFetchConstant(Header(strip).data() + 7);
+  assert(padded.width == 32 && padded.height == 4 && padded.mipLevels == 1 && padded.valid);
   auto* texture = Bind(info);
   assert(texture && uploads == 1 && creates == 1);
   const auto original = uploadedBytes;

@@ -2067,3 +2067,288 @@ frame is now hooks 15.3 + guest 8.7 + present wait 1.0 + texture refresh 1.5.
 Remaining producer cost by hook: draw 8.1 (geometry snapshot 4.9, submit 1.3,
 constants 0.8), SetTexture 3.1, SetStreamSource 1.9, SetIndices 1.0; render
 thread busy 16.3 ms, so both threads need work for 60 fps.
+
+Commit 56508b3 is the no-throttle milestone. Next pass (items 1-4):
+(1) BindRawBufferMirror keeps `checkedSerial`; while PhysicalWriteWatch::Serial()
+is unchanged since the mirror was last confirmed, the draw re-check is O(1)
+with no page walk or thread-local lookup. (2) SetTextureHook memoizes the
+resolved raw binding per header pointer per frame (thread_local map keyed by
+header, retired by a generation the XGOffsetResourceAddress hook bumps), so
+the fetch-constant parse, alias lookup and refresh run once per texture per
+frame instead of once per bind. (3) SetStreamSource/SetIndices no longer
+enqueue commands when a device is known: the draw's geometry snapshot rebinds
+every slot on the render thread (the standalone commands only cleared raw
+slots and rebound the same buffers). (4) Render-thread zones RT::FlushRenderState,
+RT::SetTexture, RT::Geometry alongside RenderQueue::ExecuteBatch and
+ProcDrawIndexedPrimitive.
+
+`pgr4_race6.tracy` (16:58, items 1-4): 26.5 -> 22.2 ms mean (37.7 -> 45.1
+fps), hooks 15.3 -> 12.6, SetStreamSource+SetIndices 2.75 -> 1.65 (the
+original guest bodies and the hook marshalling remain), draw hook 8.1 -> 6.8
+with the geometry snapshot at 4.1 ms (~0.95 us/draw: three mirror map lookups
+under the mutex plus the 16-stream walk and two 640-byte copies), SetTexture
+3.0 ms of which 1.4 is the nested UploadGuestTextureData check (the memo
+saved little: most binds are cheap FM2 resources). Render thread 15.0 ms:
+ProcDrawIndexedPrimitive 6.95 of which RT::FlushRenderState 5.73 (1.3 us/draw,
+pipeline/state hashing), RT::SetTexture 2.25 (3685 binds, 0.6 us each),
+RT::Geometry 1.75, present 0.74, 3075 batches. Main thread still the limiter
+(hooks 12.6 + guest 7.4 + refresh 1.4 + present wait 0.8). To reach 60 fps
+both threads need ~5 ms off: producer geometry lookups (direct-mapped mirror
+cache or resolve at SetStreamSource), replace the SetStreamSource/SetIndices
+originals, and on the render thread FlushRenderState's per-draw hashing.
+
+Second pass: UploadGuestTextureData returns immediately while the watch
+serial is unchanged since the texture's revisions were confirmed
+(GuestTexture::checkedSerial), so the per-frame refresh no longer computes
+the layout or walks pages for untouched textures; the raw buffer mirror map
+has a 64K-slot direct-mapped front (FindMirror) so a draw's stream lookups
+are one probe each; FlushRenderState carries RT::GetPipeline, RT::Constants
+and RT::SharedConstants zones to split its 5.7 ms.
+
+`pgr4_race7.tracy` (17:12, pass 2) read slower everywhere (27.4 ms mean, guest
++18%, render thread 21.5 ms) while the game log at comparable race points
+showed 53 fps vs 47 for the previous build: with ~10 zones per draw (~50k a
+frame) Tracy's own cost and its client thread distort both threads. Captures
+must compare builds with the same zone set, and the game log's
+`D3DDevice_Swap: n=` intervals (or an unprofiled run) are the frame-rate
+truth. Pass 3: per-draw zones thinned back to DrawState::Geometry,
+DrawState::RawSnapshot, RT::FlushRenderState, RT::Geometry plus the draw and
+batch zones; the texture-refresh fast path now compares the stored base/mip
+ranges' revisions directly (the global-serial version never hit: ~120
+invalidations a frame change the serial between one frame's check and the
+next).
+
+## 2026-09-05 (evening): friend's GTX 1050 Ti run, no world
+
+Friend's log (pgr4_recompiled_001.log): identical 14 shader-cache misses to the
+local run, so the cache was not the difference. 56 s in, at race start,
+TranslateGuestTexture failed to create a 32x1 BC1 (DXT1) texture, base
+0xEF1F6000, GetDeviceRemovedReason=0 (device healthy). NoteDeviceLost latched
+anyway, so every later upload failed ("failed to reserve frame upload space")
+and no draw survived. On the RTX 4090 the same texture is the first and only
+block-compressed texture with a dimension under 4. D3D12 only guarantees
+block-aligned top levels (OPTIONS8 UnalignedBlockTexturesSupported; false on
+Pascal); xenia decompresses such textures. Fix: ParseTextureFetchConstant pads
+BC width/height to the block (upload block counts are unchanged), and the two
+texture-create failure sites use CheckDeviceLost so a healthy device keeps
+rendering with one null texture. Test: 32x1 DXT1 -> 32x4 in
+test_native_texture_cache.
+
+## 2026-09-05 (late): pgr4_bad1.rdc - guardrails, trees, fences
+
+All three draws (EID 22402 guardrails, 24032 trees, 50695-50864 fences) bound
+vertex stream 1 with stride 0; the buffer bytes vary per vertex (byte4 colour
+at 4 B, float2 lightmap UV at 8 B), so every vertex read element 0. Guest
+D3DDevice_SetStreamSource (0x82690618) stores stride/4 and, for stride 0,
+skips the vertex-shader re-patch, i.e. the shader keeps its own vfetch stride.
+Fix: DeclarationStreamStride() (packed end of the stream's declaration elements)
+is used when the device stride byte is 0. Harness: test_upload_cache extracts it.
+
+Trees/fences opaque: the linked PS DXIL at 24032 has no discard, so the PSO
+was built without SPEC_CONSTANT_ALPHA_TEST although FM2 enables the test
+(sub_82357108 / sub_8229EB70 call the hooked setter 0x8268E1F0, ColorControl
+bit 3) and the 0.328 threshold reaches SharedConstants. Every PS cache entry
+but 3 carries mask bit 1; pipelines and linked shaders key on the value. The
+plumbing (hook -> SetRenderState cmd -> ApplyRenderState -> SetAlphaTestMode ->
+FlushRenderState) reads correctly, so FrameTrace now logs
+alphaTest=+on/-off alphaTestDraws=N per frame to locate where the enable is lost.
+
+## 2026-09-05 (night): pgr4_bad2.rdc follow-up
+
+FrameTrace counters: in-race frames log alphaTest=+17..31/-20..28 and ~1100 of
+3000-5000 draws with the alpha-test spec constant, so the hook plumbing works;
+tree/fence fragments with alpha 0..0.3 still wrote (pixel history at 470,250 /
+740,300). Cause: PGR4 builds the world as a D3D command-buffer batch through a
+second D3DDevice (IDA 0x82401D30: swaps dword_82A60ED0 to the batch device,
+D3DCommandBuffer_CreateClone, resets RB_COLORCONTROL/BlendControl inline at
++0x293C/+0x2938 (the only direct ColorControl writes in game code, found via
+search_text "293C("), then RunCommandBuffer at sub_826A10A8). The recomp mirrors
+render states from both devices into one global state, so the batch device's
+alpha test is clobbered by the main device before its draws flush. Fix:
+QueueDrawStateSnapshots reads the issuing device's ColorControl (+0x293C, bits
+3/4) and AlphaRef (+0x2904 float) and enqueues ALPHATESTENABLE/ALPHAREF in the
+draw's own batch. Other per-device states (blend, depth, cull) still rely on
+hooks; mirror them the same way if they drift. Guardrail draw (EID 20423) still
+had stream 1 at stride 0: the producer fallback never fired because raw draws
+have no producer declaration; the fallback now runs in FlushRenderState after
+ResolveVertexDeclaration on g_inputSlots/g_vertexBufferViews.
+
+## 2026-09-05 (late night): pgr4_race4.rdc EID 56733, road decal z-fighting
+
+EID 56733 onward: tiny road-decal quads (4 indices each out of one shared
+index buffer; BC3 + BC5 + shadow map + lightmap array; alpha blend, depth
+GreaterEqual, no depth write) reach the PSO with depthBias 0 / slope 0. Road
+pixels have no second surface within precision, and one decal sat 9e-7 above
+the road, so the geometry is coplanar-with-offset and needs the bias. FM2 does
+set it: sub_8236BEF8 wraps a draw in DepthBias(flt_82A66314) / DepthBias(0),
+sub_82415028 resets both biases at frame start, and the XDK setters
+(0x8268ECB8 / 0x8268ED80) store scale*16 at +0x2A50/+0x2A58 and the offset at
++0x2A54/+0x2A5C with ModeControl (+0x2948) bits 11/12 as enables. The two-
+device batch race (see the alpha-test entry) drops it the same way, so
+QueueDrawStateSnapshots now mirrors ModeControl + the front pair per draw into
+SLOPESCALEDEPTHBIAS / DEPTHBIAS commands (existing conversions: slope raw,
+offset * 2^24). If decals still flicker after this, the remaining suspect is
+float24 depth precision (xenia depth_float24_round) rather than state.
+
+## 2026-09-05 (later): pgr4_race5.rdc EID 25612 / 25629, "bad shadows"
+
+EID 25612: untextured, alpha-blended, no-depth-write world mesh (798 indices,
+64 B stream 0 + two short4 elements on stream 1 feeding TEXCOORD4/5) still bound
+with stream 1 at stride 0 although the same 221760 B secondary stream logs
+stride=24 elsewhere. The render-thread fallback did run, but
+DeclarationStreamStride sized elements through DeclTypeByteSize, which returns
+0 for PGR4's non-canonical fetch dwords, so the helper gave up. It now sizes
+from the completed declaration's inputElements (host RenderFormatSize) and only
+falls back to raw types for uncompleted declarations. EID 25629 is the same
+road-decal draw as race4 56733 (bias still 0 there; its declaration has no
+stream-1 element, so stride 0 on that slot is harmless).
+
+## 2026-09-05 (night): pgr4_race6.rdc, adjacent meshes lit differently -- root cause
+
+EID 11446 vs 11476 (buildings, 320x180 mirror pass), 18840 vs 18870 (same meshes,
+main pass), 19307 vs 19322 (road slabs): identical shaders, textures, shared
+constants; the darker draw simply samples one lightmap texel because stream 1
+(lightmap UVs, short2) binds with D3D12 stride 0. The stride the recomp
+computes never reached D3D12 for any slot above 0: plume's
+D3D12CommandList::setVertexBuffers finds each view's stride by matching
+RenderInputSlot::index against the slot number, and g_inputSlots[] was never
+stamped with indices (only the UP path set slot 0), so the lookup failed and
+StrideInBytes stayed 0. FlushRenderState now stamps index = slot for the run
+it binds. This is the common root of the guardrail / fence / shadow-patch /
+lightmap-brightness bugs; the DeclarationStreamStride fallback remains for the
+draws whose device stride byte is genuinely 0.
+
+## 2026-09-05 (night): pgr4_race7.rdc, bike shadow edge + missing rider
+
+World lighting confirmed fixed by the input-slot index stamp. EID 25517 (the
+projected shadow mesh, stream 1 now stride 24) writes (900,400) but has no
+fragment at (900,390): the patch simply ends there. The log for this run shows
+14 new shader-cache misses (7 VS / 7 PS, motorcycle content) and 8 draws per
+race frame skipped with psofail, which is both the riderless bike and the
+missing part of the shadow. The 14 dumps were copied into
+assets/missed_shaders (967 now) and the cache regenerated.
+
+## 2026-09-05 (late): pgr4_race8.rdc -- rider, bike shadow, speedometer
+
+Run 208: 0 shader misses, 0 skipped draws, so the rider is no longer a cache
+problem. Pixel history at the rider position (640,420) shows no draw touching
+it at all: skinned geometry collapses, i.e. the documented empty bone-palette
+vertex textures (see "Vertex textures (2026-09-03)" and the 2026-09-04 memory-
+export ruling). The bike shadow (EID 46263, untextured blended mesh, stream 1
+stride 24 now correct) is the skinned shadow caster/mask of the same problem.
+Speedometer (EID 48573): HUD quad into RT 340 sampling the dial atlas RT
+26561 (dials render correctly there); DrawIndexedInstanced base vertex 44 with
+stream 1 a 144-byte raw snapshot (36 x 4 B): D3D12 reads elements 44..47 out
+of range -> zeros for the needle data. DrawIndexedVertices calls
+QueueDrawStateSnapshots without a vertex range, so raw streams keep the guest
+fetch size; check DecodeRawBufferSize for that stream and how the XDK applies
+BaseVertexIndex (VGT_INDX_OFFSET vs per-stream base) before changing sizing.
+
+## 2026-09-05 (end): status of the two open items
+
+Speedometer: EID 48573 is the RPM dial quad itself, NDC x 0.51..0.91, y
+-0.21..-0.92, atlas UV 0..0.423, and it lands correctly; its stream 1 is not
+read by the shader, so the base-vertex theory is void. The dial atlas (RT
+26561) holds both dials and the needle sprites correctly. What is missing on
+screen is the MPH dial and the needles: find the HUD draws after 48573 that
+sample RT 26561 (needle UVs at the atlas edges, MPH at u 0.5..0.92) and check
+their post-VS positions / VS constants (rotation). The white vertical object
+at x~970 is scene geometry composited by the fullscreen quad 48554, not a
+needle.
+Rider / bike shadow: not a cache problem any more (0 misses, 0 skips). Pixel
+history shows no draw at the rider; skinned geometry collapses because the
+vertex-texture bone palettes read zero (see 2026-09-03/04 entries). No 156x1
+RGBA16F resolve exists in the log, so the GPU does not render them. Next:
+arm the write watch on the palette base logged at SetTexture(16..19) and log
+the first fault per frame relative to the skinned draws; no fault at all means
+the parsed base is wrong, a fault after the draw means the game fills the
+palette late (then the upload must be deferred to the draw / re-read at Swap).
+
+## 2026-09-06: rider palette -- game side traced (IDA), memory mapping verified
+
+The rider is drawn by the character renderer (vtable 0x82248BD0..): sub_82468D68
+(Character.DecalDepthBias cvars) -> sub_82468770 sets the world rows into VS
+c48..c50 and calls sub_82466460(palette, 16), which is D3DDevice_SetTexture(16)
+plus point sampler state. The palette object (20 bytes) is double-buffered:
++4 counter, +8/+12 two textures made by sub_824664F0 through sub_82293E18 as
+XGSetTextureHeader(3*bones, 1, 1, LIN_A16B16G16R16F) over a 4 KB XPhysicalAlloc
+block (sub_822EB760), i.e. the 156x1 textures at 0xEAE12000/0xEAE13000 etc.
+Begin (sub_82466400) bumps the counter, waits on the texture's GPU fence
+(sub_82698DD8) and returns header dword +32 & 0xFFFFF000 -- the raw CPU
+pointer, which XGOffsetResourceAddress stores unconverted. End is sub_82466018.
+The character holds two palette objects (a1, a1+20); sub_8245A920/8245A968
+begin/end both and park the CPU pointers at +140/+144. The writer is
+sub_824712C0: VMX vpkd3d128 + stvewx, 24 bytes (3 x half4) per bone, into the
+Begin pointer. It is not in the manifest, so it cannot be hooked without a
+regeneration; the crowd writer sub_823DFAA0 (already hooked, BONEPALETTE) is a
+different routine with the same 24-byte row format.
+
+Mapping is consistent on both sides: the generated REX_STORE_U32 adds
+REX_PHYS_HOST_OFFSET (+0x1000 for 0xE0000000+), PhysicalHeap::GetPhysicalAddress
+adds the same 0x1000, and HeaderBaseToPhysicalForRead prefers that mapped page
+(direct fallback only when mapped is empty). So the port reads where the game
+writes; the earlier "reads all zero" cannot be an alias mistake.
+
+pgr4_race8.rdc EID 46263 (bike shadow) binds no vertex texture: stream 1 is
+the 221760-byte crowd palette table, so it is not the rider's skinned mesh
+and its own collapse needs a separate look. Probe added (VTEXBIND at every
+vertex-texture bind: data present through mapped/direct alias, upload state,
+first 24 bytes; VTEXSWAP re-reads the same palettes at Swap). Run it and read
+the log: data at Swap but not at bind means the game writes after the bind
+(defer the upload to the draw); no data at either means the writer never runs
+or writes elsewhere (then hook sub_824712C0 via the manifest).
+
+## 2026-09-06: rider root cause -- 1D denorm fetch never divided by the width
+
+Runs 209/210 (VTEXBIND/VTEXSWAP probe): the frontend rider's palettes
+(0xEBEBF000/0xEBEC3000) are bound every frame with an all-zero page and no
+write-watch fault, so that character's update never runs (separate, Apt UI
+path). The race rider's palette (0xEAE12000) is written every frame: bone 0
+reads as an identity rotation with a small translation in halves, the watch
+revision changes each frame and the upload runs each frame. So the palette
+data path was never the problem in the race.
+
+pgr4_race8.rdc, offline sweep (RenderDoc python, SharedConstants byte 512):
+the rider is 14 skinned parts drawn in a depth pre-pass (EIDs 9226..9421)
+and the main pass (16923..17118) with descriptor 968 at vertex sampler 16 =
+the 156x1 RGBA16F palette at 0xF2A86000, which analyze_texture confirms holds
+156 distinct rows. Vertex debug of 16923 vertex 0: BLENDINDICES (27,29,21,0),
+weights (0.93,0.07), six palette SampleLevels at u = 81 / 87 -- but the DXIL
+passes `3 * boneIndex + eps/width` straight to SampleLevel with v = 0.5, i.e.
+tfetch1D with no denorm division, so every fetch clamps to texel 155 and all
+891 vertices land on the bike's root translation (-613.76, 101.49, 68.02).
+The 2026-09-03 denorm fix only covered 2D/3D fetches; the rider's shader uses
+a 1D fetch with tx_coord_denorm. Fix: denormCoord1D (both shader_common.h
+variants, divides by the 2D heap texture's width) and the recompiler condition
+now includes Texture1D (1D uses the 2D heap name on the Metal path). Cache
+regenerated. Verify: rider visible in a race; the collapsed pre-pass casters
+should also give the bike its proper shadow.
+
+The frontend character (AptCharacterButtonInst, sub_82609880 update through
+sub_826072D8) is still unwritten in the recomp; separate item.
+
+## 2026-09-06 (later): rider second half, and the dial atlas alias
+
+pgr4_race1.rdc (build with the 1D denorm division): rider parts at EIDs
+10004.. (pre-pass) now fetch at u = 0.519 / 0.558 (bones 27 / 29), but all
+three row fetches of a bone return the same texel: the Xenos tfetch selects
+rows 1 and 2 with offset_x (1, 2 texels), and the recompiler only printed the
+instruction offset for 2D/3D fetches; tfetch1D had no offset parameter at all.
+Every bone matrix therefore had three identical rows and the mesh flattened
+to a line near screen centre. Fix: tfetch1D/1DL/1DCL (HLSL and Metal) take a
+float X offset, and the emitter prints offsetX * 0.5 for 1D. Cache regenerated
+(10 shaders carry denormCoord1D; none ever used the 2D variant).
+
+Speedometer (EID 72178 samples the 608x256 dial atlas at u 0..0.423): the
+atlas is a tiled 8888 guest texture at 0xEF717000 (not a render target) and
+its uploaded image is shifted by exactly one 32x32 tile with tile-row wrap:
+dials at 51..268 / 307..524 instead of 19..236 / 275..492, a 32x32 garbage
+block at the origin, the needle strips split across the edges one tile row
+apart. The needle quad (72192) is placed correctly at the dial centre but
+samples the shifted strip, hence invisible. HeaderBaseToPhysicalForRead chose
+the mapped page (+4 KB) because the texture's own second tile made it
+non-empty; the asset was written through its 0xA/0xC alias (no offset).
+HeaderBaseToPhysical now returns the direct page when the 0xE heap has no
+page for the header address (allocated through another heap). Unverified
+assumption: the 0xE heap's page table does not cover 0xA/0xC allocations.
+TranslateGuestTexture logs alias= and eheap= so the next run shows it.

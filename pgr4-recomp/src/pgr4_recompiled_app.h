@@ -4,7 +4,11 @@
 
 #pragma once
 
+#include <filesystem>
+#include <system_error>
+
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 
@@ -38,7 +42,14 @@ class Pgr4RecompiledApp : public rex::ReXApp {
 
   void OnConfigurePaths(rex::PathConfig& paths) override {
     if (paths.game_data_root.empty()) {
-      paths.game_data_root = R"(D:\Emulation\Games_Xbox_360\PGR4\Extracted)";
+      // Shareable layout: an "extracted" folder beside the exe wins; otherwise
+      // the local install path.
+      const std::filesystem::path beside = rex::filesystem::GetExecutableFolder() / "extracted";
+      std::error_code ec;
+      paths.game_data_root =
+          std::filesystem::is_directory(beside, ec)
+              ? beside
+              : std::filesystem::path(R"(D:\Emulation\Games_Xbox_360\PGR4\Extracted)");
     }
   }
 

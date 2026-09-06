@@ -64,7 +64,11 @@ static_assert([] {
 inline bool PhysicalRangeStartsWithData(uint32_t address, uint32_t size) {
   if (size == 0)
     return false;
-  const uint32_t sampleSize = size < 0x1000u ? size : 0x1000u;
+  // One page of a tiled texture is a single 32x32 tile, and a transparent
+  // corner tile is all zero: the HUD dial atlas (608x256 at 0xEF717000,
+  // pgr4_race1.rdc) failed this test on its mapped page and was read one
+  // tile early through the direct alias. Sample up to 256 KB.
+  const uint32_t sampleSize = size < 0x40000u ? size : 0x40000u;
   if (uint64_t(address) + sampleSize > 0x20000000ull)
     return false;
   auto* memory = GuestMemory();

@@ -174,6 +174,8 @@ struct GuestTexture : GuestBaseTexture {
   // Physical write-watch revisions of the base/mip ranges when the signature
   // was last validated (0 = unwatched: hash every frame).
   std::array<uint64_t, 2> guestWatchRevision{};
+  // Physical ranges the revisions above describe (0 = unwatched).
+  uint32_t watchedBase = 0, watchedBaseSize = 0, watchedMip = 0, watchedMipSize = 0;
   uint32_t depth = 0;
   plume::RenderTextureViewDimension viewDimension = plume::RenderTextureViewDimension::TEXTURE_2D;
   std::unique_ptr<plume::RenderFramebuffer> framebuffer;

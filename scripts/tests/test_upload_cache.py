@@ -698,7 +698,8 @@ def test_upload_cache():
     assert allocator is not None and intermediary is not None and snapshot is not None
     geometry = []
     for signature in ("struct ProducerGeometryState", "RenderFormat ConvertDeclType(",
-                      "uint32_t DeclTypeByteSize(", "bool DeclarationFitsStreamStride(",
+                      "uint32_t DeclTypeByteSize(", "uint32_t DeclarationStreamStride(",
+                      "bool DeclarationFitsStreamStride(",
                       "uint32_t NonIndexedVertexSnapshotSize(", "void SetVertexDeclaration(",
                       "struct LocalRenderCommandQueue", "void QueueDrawGeometrySnapshot("):
         if signature == "struct ProducerGeometryState":

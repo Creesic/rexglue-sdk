@@ -271,6 +271,12 @@ struct FrameTraceStats {
   // no vertex declaration, PSO previously failed, PSO creation failed.
   uint32_t skipReasons[4] = {};
   uint32_t issuedDraws = 0;
+  // Alpha-test plumbing (pgr4_bad1.rdc: trees/fences drew opaque although FM2
+  // enables D3DRS_ALPHATESTENABLE): enable/disable commands seen, draws whose
+  // PSO carried the alpha-test spec constant.
+  uint32_t alphaTestOn = 0;
+  uint32_t alphaTestOff = 0;
+  uint32_t alphaTestDraws = 0;
   uint32_t clears = 0;
   uint32_t resolves = 0;
   uint64_t shapeHash = 0xCBF29CE484222325ull;
@@ -425,7 +431,7 @@ void LogAndResetFrameTrace() {
         "tex=0x{:016X} shared=0x{:016X} vs=0x{:016X} ps=0x{:016X} "
         "vertex=0x{:016X} clear=0x{:016X} snapshotCacheMB={} entries={} suffixes={} "
         "+suffixHits={} +hintHits={} +contentHits={} +creates={} +createdMB={} +faults={} +faultMB={} "
-        "+mirrors={}",
+        "+mirrors={} alphaTest=+{}/-{} alphaTestDraws={}",
         g_frameTraceIndex, g_frameTrace.issuedDraws, g_frameTrace.attemptedDraws,
         g_frameTrace.attemptedDraws - g_frameTrace.issuedDraws, g_frameTrace.skipReasons[0],
         g_frameTrace.skipReasons[1], g_frameTrace.skipReasons[2], g_frameTrace.skipReasons[3],
@@ -437,7 +443,8 @@ void LogAndResetFrameTrace() {
         stats.suffixHits - lastStats.suffixHits, stats.hintHits - lastStats.hintHits,
         stats.contentHits - lastStats.contentHits, stats.creates - lastStats.creates,
         (stats.createdBytes - lastStats.createdBytes) >> 20, faults - lastFaults,
-        (faultBytes - lastFaultBytes) >> 20, mirrors - lastMirrors);
+        (faultBytes - lastFaultBytes) >> 20, mirrors - lastMirrors, g_frameTrace.alphaTestOn,
+        g_frameTrace.alphaTestOff, g_frameTrace.alphaTestDraws);
     lastMirrors = mirrors;
     lastStats = stats;
     lastFaults = faults;
@@ -1702,6 +1709,7 @@ void ApplyRenderState(uint32_t state, uint32_t value) {
       SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.zWriteEnable, value != 0);
       break;
     case D3DRS_ALPHATESTENABLE:
+      ++(value != 0 ? g_frameTrace.alphaTestOn : g_frameTrace.alphaTestOff);
       SetAlphaTestMode(value != 0);
       break;
     case D3DRS_SRCBLEND:
@@ -2185,6 +2193,7 @@ void ProcSetIndices(GuestBuffer* buffer) {
 }
 
 void ProcSetDrawGeometrySnapshot(const DrawGeometrySnapshot& snapshot) {
+  SCOPE_profile_cpu_f("RT::Geometry");
   for (uint32_t index = 0; index < std::size(snapshot.streams); ++index) {
     const DrawStreamSnapshot& stream = snapshot.streams[index];
     MixFrameTrace(g_frameTrace.vertexDataHash, reinterpret_cast<uintptr_t>(stream.buffer));
@@ -2439,11 +2448,32 @@ struct RawBufferMirror {
   uint32_t size = 0;
   uint64_t revision = 0;     // Write-watch revision of the uploaded payload; 0 = none.
   uint64_t uploadFrame = ~0ull;
+  uint64_t checkedSerial = 0;  // Watch serial when `revision` was last confirmed current.
 };
 
 std::mutex g_rawBufferMutex;
 std::unordered_map<uint32_t, RawBufferMirror> g_rawBuffers;  // by header guest address
 std::atomic<uint64_t> g_rawBufferCreates{0};
+
+// Direct-mapped front for the map: one probe per stream per draw, still
+// under g_rawBufferMutex. Map nodes never move, so the pointers stay valid.
+struct MirrorSlot {
+  uint32_t header = 0;
+  RawBufferMirror* mirror = nullptr;
+};
+constexpr size_t kMirrorSlots = size_t(1) << 16;
+std::array<MirrorSlot, kMirrorSlots> g_mirrorSlots{};
+size_t MirrorSlotIndex(uint32_t header) {
+  return (((header >> 2) * 2654435761u) >> 16) & (kMirrorSlots - 1);
+}
+RawBufferMirror* FindMirror(uint32_t header) {
+  MirrorSlot& slot = g_mirrorSlots[MirrorSlotIndex(header)];
+  if (slot.header == header && slot.mirror != nullptr) return slot.mirror;
+  const auto it = g_rawBuffers.find(header);
+  if (it == g_rawBuffers.end()) return nullptr;
+  slot = {header, &it->second};
+  return &it->second;
+}
 
 uint64_t RawBufferCreates() {
   return g_rawBufferCreates.load(std::memory_order_relaxed);
@@ -2470,6 +2500,7 @@ void RegisterRawBuffer(uint32_t headerAddress) {
 
   std::lock_guard lock(g_rawBufferMutex);
   RawBufferMirror& mirror = g_rawBuffers[headerAddress];
+  g_mirrorSlots[MirrorSlotIndex(headerAddress)] = {headerAddress, &mirror};
   if (mirror.buffer != nullptr &&
       (mirror.buffer->type != expected || mirror.buffer->dataSize < size ||
        (index && mirror.buffer->guestFormat != format))) {
@@ -2493,17 +2524,22 @@ bool BindRawBufferMirror(uint32_t headerAddress, uint32_t fetchBase, bool index,
   RawBufferMirror mirror;
   {
     std::lock_guard lock(g_rawBufferMutex);
-    const auto it = g_rawBuffers.find(headerAddress);
-    if (it == g_rawBuffers.end() || it->second.buffer == nullptr)
+    const RawBufferMirror* found = FindMirror(headerAddress);
+    if (found == nullptr || found->buffer == nullptr)
       return false;
-    mirror = it->second;
+    mirror = *found;
   }
   auto* memory = ghp::GuestMemory();
   const uint32_t physical =
       ghp::HeaderBaseToPhysical(fetchBase) & (index ? 0x1FFFFFFFu : 0x1FFFFFFCu);
   if (memory == nullptr || physical < mirror.physical || physical - mirror.physical >= mirror.size)
     return false;
-  uint64_t revision = g_physicalWriteWatch.ArmedRevision(memory, mirror.physical, mirror.size);
+  // Nothing anywhere was written since this mirror was last confirmed: the
+  // uploaded payload is still current, without a page walk.
+  const uint64_t serial = g_physicalWriteWatch.Serial();
+  uint64_t revision = mirror.revision != 0 && mirror.checkedSerial == serial ? mirror.revision : 0;
+  if (revision == 0)
+    revision = g_physicalWriteWatch.ArmedRevision(memory, mirror.physical, mirror.size);
   if (revision == 0) {
     if (memory->GetPhysicalHeap()->QueryRangeAccess(mirror.physical,
                                                     mirror.physical + mirror.size - 1u) ==
@@ -2540,11 +2576,17 @@ bool BindRawBufferMirror(uint32_t headerAddress, uint32_t fetchBase, bool index,
     cmd.unlockBuffer.size = mirror.size;
     RenderQueue::Enqueue(cmd);
     std::lock_guard lock(g_rawBufferMutex);
-    const auto it = g_rawBuffers.find(headerAddress);
-    if (it != g_rawBuffers.end() && it->second.buffer == mirror.buffer) {
-      it->second.revision = revision;
-      it->second.uploadFrame = frame;
+    RawBufferMirror* live = FindMirror(headerAddress);
+    if (live != nullptr && live->buffer == mirror.buffer) {
+      live->revision = revision;
+      live->uploadFrame = frame;
+      live->checkedSerial = serial;
     }
+  } else if (mirror.checkedSerial != serial) {
+    std::lock_guard lock(g_rawBufferMutex);
+    RawBufferMirror* live = FindMirror(headerAddress);
+    if (live != nullptr && live->buffer == mirror.buffer && live->revision == revision)
+      live->checkedSerial = serial;
   }
   *buffer = mirror.buffer;
   *offset = physical - mirror.physical;
@@ -2557,6 +2599,7 @@ void SetStreamSource(GuestDevice* device, uint32_t index, GuestBuffer* buffer, u
     std::lock_guard lock(g_producerGeometryMutex);
     DrawGeometrySnapshot& snapshot = g_producerGeometry[device].geometry;
     snapshot.streams[index] = {buffer, offset, stride};
+    return;  // Every draw's geometry snapshot rebinds the slot on the render thread.
   }
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetStreamSource;
@@ -2571,6 +2614,7 @@ void SetIndices(GuestDevice* device, GuestBuffer* buffer) {
   if (device != nullptr) {
     std::lock_guard lock(g_producerGeometryMutex);
     g_producerGeometry[device].geometry.indexBuffer = buffer;
+    return;  // Carried by the draw's geometry snapshot.
   }
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetIndices;
@@ -3042,6 +3086,44 @@ uint32_t DeclTypeByteSize(uint32_t type) {
 }
 
 // True when every stream-0 element of decl fits inside streamStride bytes.
+// Stride a declaration implies for one stream: the packed end of its elements,
+// dword-aligned like every Xenos vertex stride. FM2 binds its secondary streams
+// (lightmap UVs, vertex colours) with SetStreamSource stride 0, which the XDK
+// treats as "keep the shader's own vfetch stride" (it skips the re-patch, see
+// D3DDevice_SetStreamSource), and FM2's shaders are compiled for exactly this
+// packed layout. 0 = unknown.
+// ponytail: reads the declaration, not the vertex shader's vfetch stride; parse
+// the microcode if a stream ever shows up padded wider than its elements.
+uint32_t DeclarationStreamStride(const GuestVertexDeclaration* decl, uint32_t stream) {
+  if (decl == nullptr)
+    return 0;
+  uint32_t end = 0;
+  // A completed declaration carries the decoded host format per element, which
+  // also covers PGR4's non-canonical fetch dwords (pgr4_race5.rdc EID 25612:
+  // two short4 lightmap elements whose raw type DeclTypeByteSize cannot size).
+  if (decl->inputElements != nullptr) {
+    for (uint32_t i = 0; i < decl->inputElementCount; ++i) {
+      const RenderInputElement& e = decl->inputElements[i];
+      if (e.slotIndex != stream || e.format == RenderFormat::UNKNOWN)
+        continue;
+      end = std::max(end, e.alignedByteOffset + RenderFormatSize(e.format));
+    }
+    return (end + 3u) & ~3u;
+  }
+  if (decl->vertexElements == nullptr)
+    return 0;
+  for (uint32_t i = 0; i < decl->vertexElementCount; ++i) {
+    const GuestVertexElement& e = decl->vertexElements[i];
+    if (e.stream != stream)
+      continue;
+    const uint32_t size = DeclTypeByteSize(e.type);
+    if (size == 0)
+      return 0;
+    end = std::max(end, uint32_t(e.offset) + size);
+  }
+  return (end + 3u) & ~3u;
+}
+
 bool DeclarationFitsStreamStride(const GuestVertexDeclaration* decl, uint32_t streamStride) {
   if (decl == nullptr || decl->vertexElements == nullptr)
     return false;
@@ -3878,10 +3960,7 @@ struct LocalRenderCommandQueue {
     return commands[count++];
   }
 
-  void Submit() const {
-    SCOPE_profile_cpu_f("DrawState::Submit");
-    RenderQueue::EnqueueBulk(commands.data(), count);
-  }
+  void Submit() const { RenderQueue::EnqueueBulk(commands.data(), count); }
 };
 
 bool QueueConstantSnapshot(LocalRenderCommandQueue& queue, RenderCommandType type,
@@ -4019,6 +4098,58 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
     return;
 
   QueueDrawGeometrySnapshot(device, queue, startVertex, vertexCount);
+  // PGR4 records the world through a second D3DDevice (command-buffer batch,
+  // IDA 0x82401D30 swaps the global device and resets RB_COLORCONTROL before
+  // RunCommandBuffer), so render-state hooks from both devices interleave in
+  // the single mirrored state and foliage lost its alpha test. Read the
+  // issuing device's RB_COLORCONTROL (m_ControlPacket.ColorControl, +0x293C:
+  // bit 3 ALPHA_TEST_ENABLE, bit 4 ALPHA_TO_MASK_ENABLE) and RB_ALPHA_REF
+  // (m_ValuesPacket.AlphaRef, +0x2904) and carry them in the draw's batch.
+  // ponytail: alpha-to-mask maps to the alpha test at 1x MSAA; blend/depth
+  // states still come from the hooks, mirror them here too if they drift.
+  {
+    const auto* bytes = reinterpret_cast<const uint8_t*>(device);
+    const uint32_t colorControl =
+        reinterpret_cast<const rex::be<uint32_t>*>(bytes + 0x293Cu)->get();
+    const uint32_t alphaRefBits =
+        reinterpret_cast<const rex::be<uint32_t>*>(bytes + 0x2904u)->get();
+    const float alphaRef = std::bit_cast<float>(alphaRefBits);
+    RenderCommand& enable = queue.Enqueue();
+    enable.type = RenderCommandType::SetRenderState;
+    enable.setRenderState.state = D3DRS_ALPHATESTENABLE;
+    enable.setRenderState.value = (colorControl & 0x18u) != 0 ? 1u : 0u;
+    RenderCommand& ref = queue.Enqueue();
+    ref.type = RenderCommandType::SetRenderState;
+    ref.setRenderState.state = D3DRS_ALPHAREF;
+    ref.setRenderState.value =
+        uint32_t(std::clamp(alphaRef, 0.0f, 1.0f) * 256.0f + 0.5f);
+    // Same race for the decal depth bias (pgr4_race4.rdc EID 56733: road decals
+    // z-fight with bias 0). D3DDevice_SetRenderState_SlopeScaleDepthBias /
+    // DepthBias (0x8268ECB8 / 0x8268ED80) store scale*16 and the offset in
+    // m_PointPacket (+0x2A50 front scale, +0x2A54 front offset; back copies at
+    // +0x2A58/+0x2A5C) and set ModeControl (+0x2948) bits 11/12. Both setters
+    // write front and back alike, so the front pair covers either cull mode.
+    const uint32_t modeControl =
+        reinterpret_cast<const rex::be<uint32_t>*>(bytes + 0x2948u)->get();
+    const bool polyOffset = (modeControl & 0x1800u) != 0;
+    const float slopeScale =
+        polyOffset ? std::bit_cast<float>(
+                         reinterpret_cast<const rex::be<uint32_t>*>(bytes + 0x2A50u)->get()) /
+                         16.0f
+                   : 0.0f;
+    const float depthBias =
+        polyOffset ? std::bit_cast<float>(
+                         reinterpret_cast<const rex::be<uint32_t>*>(bytes + 0x2A54u)->get())
+                   : 0.0f;
+    RenderCommand& slope = queue.Enqueue();
+    slope.type = RenderCommandType::SetRenderState;
+    slope.setRenderState.state = D3DRS_SLOPESCALEDEPTHBIAS;
+    slope.setRenderState.value = std::bit_cast<uint32_t>(slopeScale);
+    RenderCommand& bias = queue.Enqueue();
+    bias.type = RenderCommandType::SetRenderState;
+    bias.setRenderState.state = D3DRS_DEPTHBIAS;
+    bias.setRenderState.value = std::bit_cast<uint32_t>(depthBias);
+  }
   thread_local GuestDevice* lastDevice = nullptr;
   const bool forceFullSnapshot = lastDevice != device || RenderQueue::IsRecording();
   lastDevice = device;
@@ -4065,7 +4196,6 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   }
   device->dirtyFlags[3] = samplerFlags;
 
-  SCOPE_profile_cpu_f("DrawState::Constants");
   uint64_t vsFlags = device->dirtyFlags[0].get();
   std::array<uint32_t, PendingShaderConstantFile::kRegisterCount *
                            PendingShaderConstantFile::kDwordsPerRegister>
@@ -4207,6 +4337,7 @@ bool HasBoundPipeline() {
 }
 
 void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
+  SCOPE_profile_cpu_f("RT::FlushRenderState");
   std::lock_guard lock(RecordingMutex());
   g_hasBoundPipeline = false;
   if (device == nullptr || CurrentUploadAllocator().Failed() || IsDeviceLost())
@@ -4343,6 +4474,23 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
     ApplyVertexDeclarationMetadata(decl);
     TraceVertexDeclarationChoice(device, queued, decl);
     SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexDeclaration, decl);
+    // Stride 0 = the shader's own vfetch stride (see DeclarationStreamStride).
+    // Binding 0 fed every vertex the stream's first element: black guardrails,
+    // one lightmap texel per fence (pgr4_bad1.rdc EID 22402 / 50695).
+    for (uint32_t slot = 1; slot < 15; ++slot) {
+      if (g_inputSlots[slot].stride != 0 || g_vertexBufferViews[slot].buffer.ref == nullptr)
+        continue;
+      const uint32_t stride = DeclarationStreamStride(decl, slot);
+      if (stride == 0)
+        continue;
+      g_inputSlots[slot].stride = stride;
+      SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.vertexStrides[slot],
+                    uint8_t(std::min(stride, 255u)));
+      g_dirtyStates.vertexStreamFirst =
+          std::min<uint8_t>(g_dirtyStates.vertexStreamFirst, uint8_t(slot));
+      g_dirtyStates.vertexStreamLast =
+          std::max<uint8_t>(g_dirtyStates.vertexStreamLast, uint8_t(slot));
+    }
   }
 
   PipelineState pipelineState = g_pipelineState;
@@ -4360,6 +4508,8 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   RenderPipeline* pipeline = GetPipeline(pipelineState);
   if (pipeline == nullptr)
     return;
+  if (pipelineState.specConstants & SPEC_CONSTANT_ALPHA_TEST)
+    ++g_frameTrace.alphaTestDraws;
   RenderPipelineLayout* layout = PipelineLayout();
   RenderCommandList* commandList = CommandList();
   if (layout == nullptr || commandList == nullptr)
@@ -4443,6 +4593,12 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
       uint32_t runEnd = i;
       while (runEnd < last && g_vertexBufferViews[runEnd + 1].buffer.ref != nullptr)
         ++runEnd;
+      // plume resolves each view's D3D12 stride by matching RenderInputSlot::index
+      // against the slot number (plume_d3d12.cpp setVertexBuffers). The array was
+      // never stamped, so every slot above 0 bound with stride 0: constant lightmap
+      // UVs / vertex colours per mesh (pgr4_race6.rdc EID 11446 vs 11476).
+      for (uint32_t k = i; k <= runEnd; ++k)
+        g_inputSlots[k].index = k;
       CommandList()->setVertexBuffers(i, &g_vertexBufferViews[i], runEnd - i + 1, &g_inputSlots[i]);
       i = runEnd + 1;
     }

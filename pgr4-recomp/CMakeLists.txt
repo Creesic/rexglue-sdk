@@ -102,6 +102,10 @@ if(PGR4_ENABLE_PLUME)
             "${CMAKE_CURRENT_BINARY_DIR}/XenosRecomp/thirdparty" EXCLUDE_FROM_ALL)
         add_subdirectory("${PGR4_XENOS_RECOMP_ROOT}/XenosRecomp"
             "${CMAKE_CURRENT_BINARY_DIR}/XenosRecomp/tool" EXCLUDE_FROM_ALL)
+        # The VS 14.51 STL emits calls to vectorised helpers (__std_replace_copy_2,
+        # __std_find_*_trivial) that lld-link cannot resolve against the msvcprt.lib
+        # on the link path; compile the tool without them.
+        target_compile_definitions(XenosRecomp PRIVATE _USE_STD_VECTOR_ALGORITHMS=0)
         add_custom_target(pgr4_regenerate_shader_cache
             COMMAND "${CMAKE_COMMAND}"
                 "-DXENOS_RECOMP=$<TARGET_FILE:XenosRecomp>"
