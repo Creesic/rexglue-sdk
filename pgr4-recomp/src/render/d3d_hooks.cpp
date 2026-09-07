@@ -97,16 +97,6 @@ namespace {
 // Bring-up frame trace: every state event during swaps [598, 600] is logged so
 // one frontend frame's render-target / resolve sequence can be read back.
 std::atomic<uint64_t> g_pgr4SwapIndex{0};
-// Diagnostic (rider palettes read zero, notes 2026-09-03..05): remember the
-// vertex-texture palettes bound this frame and re-read them at Swap, so the
-// log shows whether the game fills them before or after the bind.
-struct VertexTextureProbe {
-  uint32_t base = 0;
-  uint32_t bytes = 0;
-  bool dataAtBind = false;
-};
-std::array<VertexTextureProbe, 8> g_vertexTextureProbes{};
-uint32_t g_vertexTextureProbeCount = 0;
 
 bool InTraceWindow() {
   const uint64_t n = g_pgr4SwapIndex.load(std::memory_order_relaxed);
@@ -208,19 +198,6 @@ void Swap(uint32_t device, uint32_t arg4, uint32_t /*arg5*/, uint32_t caller) {
   static std::atomic<uint64_t> swapCallCount{0};
   const uint64_t swapIndex = swapCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
   g_pgr4SwapIndex.store(swapIndex, std::memory_order_relaxed);
-  if (g_vertexTextureProbeCount != 0) {
-    static std::atomic<uint32_t> s_lines{0};
-    const uint32_t line = s_lines.fetch_add(1, std::memory_order_relaxed);
-    for (uint32_t i = 0; i < g_vertexTextureProbeCount; ++i) {
-      const VertexTextureProbe& p = g_vertexTextureProbes[i];
-      const bool data = pgr4::ghp::PhysicalRangeStartsWithData(
-          pgr4::ghp::HeaderBaseToPhysical(p.base), p.bytes);
-      if (line < 240 || line % 600 == 0)
-        REXGPU_INFO("VTEXSWAP n={} base=0x{:08X} dataAtBind={} dataAtSwap={} head={}",
-                    swapIndex, p.base, p.dataAtBind, data, GuestBytesHex(p.base, 24));
-    }
-    g_vertexTextureProbeCount = 0;
-  }
   if (InTraceWindow())
     REXGPU_INFO("TRACE swap n={} descriptor=0x{:08X}", swapIndex, arg4);
   const char* callerKind = caller == 0x82381DDCu   ? "xps-timeout"
@@ -1409,34 +1386,6 @@ void SetTextureHook(GuestDevice* device, uint32_t sampler, rr::GuestBaseTexture*
     }
   }
 
-  if (sampler >= 16u && rawTexture && binding.texture != nullptr &&
-      binding.texture->width * binding.texture->height > 1u) {
-    auto* raw = static_cast<rr::GuestTexture*>(binding.texture);
-    const uint32_t base = ReadGuestU32At(guestAddress + 32u) & 0xFFFFF000u;
-    const uint32_t bytes =
-        binding.texture->width * std::max(binding.texture->height, 1u) * 8u;
-    const uint32_t directPhysical = base & 0x1FFFFFFFu;
-    const bool directReadable =
-        pgr4::ghp::GuestMemory()->GetPhysicalHeap()->QueryRangeAccess(
-            directPhysical, directPhysical + 23u) != rex::memory::PageAccess::kNoAccess;
-    const uint32_t directHead = directReadable ? pgr4::ghp::GuestMemory()->TranslatePhysical<const rex::be<uint32_t>*>(directPhysical)->get() : 0u;
-    const bool dataMapped = pgr4::ghp::PhysicalRangeStartsWithData(
-        pgr4::ghp::HeaderBaseToPhysical(base), bytes);
-    const bool dataDirect =
-        pgr4::ghp::PhysicalRangeStartsWithData(base & 0x1FFFFFFFu, bytes);
-    static std::atomic<uint32_t> s_lines{0};
-    const uint32_t line = s_lines.fetch_add(1, std::memory_order_relaxed);
-    if (line < 240 || line % 600 == 0) {
-      REXGPU_INFO("VTEXBIND n={} frame={} sampler={} header=0x{:08X} base=0x{:08X} {}x{} "
-                  "dataMapped={} dataDirect={} lastUpload={} hashValid={} watchRev={} head={} direct0=0x{:08X}",
-                  line, frame, sampler, guestAddress, base, binding.texture->width,
-                  binding.texture->height, dataMapped, dataDirect,
-                  raw->lastUploadFrame, raw->guestUploadHashValid,
-                  raw->guestWatchRevision[0], GuestBytesHex(base, 24), directHead);
-    }
-    if (g_vertexTextureProbeCount < g_vertexTextureProbes.size())
-      g_vertexTextureProbes[g_vertexTextureProbeCount++] = {base, bytes, dataMapped};
-  }
   if (binding.baseTexture) {
     rr::SetTextureBase(device, sampler, binding.texture, guestAddress);
   } else {
