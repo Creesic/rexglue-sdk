@@ -2463,3 +2463,62 @@ publishes stride/size/format/offset|stream<<16 per slot in
 SharedConstants.indexedElements (offset 624, +256 bytes) and binds streams
 0..3 as raw root SRVs t3..t6 (roots 6..9). POSITION1..3 keep their own path.
 Needs a shader-cache regeneration (the recompiler changed).
+
+## 2026-09-07 (evening): pgr4_race1.tracy (83 MB, 447 frames), where the time goes
+
+Log 232 (same run): 95-111 fps in the early section, 69-84 fps in the closing
+race window. Under Tracy the race frames (250-439) average 15.1 ms with 2831
+indexed draws, 3648 SetTexture, 3447 SetStreamSource and 1986 SetIndices per
+frame. No GPU zones in the capture, so GPU time is unmeasured.
+
+Main thread (the limiter): hooks 7.18 + unzoned guest 6.60 + present wait
+0.85 + texture refresh 0.46 + kernel waits 0.03. Hooks: draw 3.85 (of which
+DrawState::Geometry 2.54 and RawSnapshot 0.48), SetTexture 1.57,
+SetStreamSource 0.61, SetIndices 0.30. The costs are tail-heavy: the draw
+hook is 0.72 us at p50 but 2.6 us at p90, the geometry snapshot 0.20 us at p50
+and 2.0 us at p90, SetTexture 0.06 us at p50 (memo hit) with 0.55 ms/frame in
+calls over 5 us (raw-texture refresh, UploadGuestTextureData p99 8.5 us).
+
+Render thread: 11.2 ms busy (the ExecuteBatch zone excludes TakeBatch's
+wait). 1244 batches/frame, mean 2.28 draws each; a linear fit gives
+2.17 us fixed per batch + 2.74 us per draw, and 659 batches/frame carry no
+draw at all (2.2 ms/frame). ProcDrawIndexedPrimitive 4.94 = FlushRenderState
+4.37 (1.45 us/draw: GetPipeline hash + map lookup, layout + four descriptor
+sets + pipeline re-set, 880-byte shared-constants UploadCached hash and
+eight root descriptors, all every draw) + RT::Geometry 1.11.
+
+Next gains, in order: (1) skip the pipeline lookup/re-bind and the shared
+constants upload when their dirty bits are clear (~2 ms render thread);
+(2) coalesce producer pushes so a batch carries a whole draw's state (or N
+commands) instead of one command per Enqueue (~1.5-2 ms render thread, fewer
+mutex round-trips on the main thread); (3) incremental geometry snapshot,
+only dirty streams (~1-1.5 ms main); (4) raw-texture refresh tail (~0.4 ms
+main). The 6.6 ms of guest code is the floor for renderer work.
+
+### Pass applied (pgr4_race2.tracy, 17:05): render thread -14% per draw
+
+Changes: FlushRenderState keeps the bound pipeline while the PipelineState
+bytes match the last draw (memcmp; g_boundPipeline/g_boundPipelineState),
+re-uploads the shared constants only when their 880 bytes changed (memcmp
+against g_boundSharedConstantsCopy) and sets a root descriptor only when its
+reference changed (BindRootDescriptorIfChanged, also used by the VS/PS
+constant files); InvalidateCommandListBindings drops all of that at frame
+begin, after a replayed recording and after the blit pipeline.
+EnsureShaderResourceDescriptor rewrites a slot only when the host texture or
+view pointer changed (every recreation path writes its slot directly).
+TakeBatch lets a batch fill for up to 10 us / 32 commands. A producer-side
+"unchanged native buffer" shortcut in QueueDrawGeometrySnapshot was tried and
+reverted: SetStreamSource records the raw guest pointer for every buffer, so
+the match bypassed the mirror path and every mesh exploded (title screen).
+
+pgr4_race2.tracy is a heavier phase (3793 draws/frame vs 2831), so compare
+per draw. Main thread hooks 2.54 -> 2.52 us/draw (untouched, as expected):
+draw hook 1.49 us (DrawState::Geometry 1.01 us, p50 0.26 / p90 2.3 /
+p99 5.8), SetTexture 0.44 us, SetStreamSource 0.18 us; frame 19.0 ms =
+hooks 9.55 + unzoned guest 7.38 + present wait 1.46 + refresh 0.63. Render
+thread 3.96 -> 3.41 us/draw: FlushRenderState 1.45 -> 1.27 us, draw proc
+1.74 -> 1.58 us, non-draw 1.95 -> 1.47 us/draw; batches 1244 -> 799 a frame
+(4.75 draws each), fixed cost per batch 2.17 -> 0.93 us. The main thread
+remains the limiter; its next targets are the geometry snapshot tail
+(needs a diagnostic capture with zones on BindRawBufferMirror and the
+producer-state copy) and the guest code itself.

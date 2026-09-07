@@ -124,6 +124,10 @@ struct GuestBaseTexture : GuestResource {
   uint32_t height = 0;
   plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
   uint32_t descriptorIndex = 0;
+  // Host texture/view the descriptor slot was last written with; a bind
+  // rewrites the slot (a D3D12 CreateShaderResourceView) only when one changed.
+  const plume::RenderTexture* descriptorTexture = nullptr;
+  const plume::RenderTextureView* descriptorView = nullptr;
   plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
   bool requiresHostInitialization = false;
   bool hostInitialized = true;

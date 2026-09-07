@@ -138,6 +138,17 @@ bool TakeBatch(std::vector<RenderCommand>& batch) {
          std::chrono::steady_clock::now() < spinUntil) {
     std::this_thread::yield();
   }
+  // Let a batch fill before taking it: mid-frame the producer pushes one or
+  // two commands at a time and 1244 batches a frame each paid the fixed
+  // dispatch cost (pgr4_race1.tracy). Bounded so a Signal never waits long.
+  if (g_pendingCount.load(std::memory_order_acquire) != 0) {
+    const auto fillUntil = std::chrono::steady_clock::now() + std::chrono::microseconds(10);
+    while (g_pendingCount.load(std::memory_order_acquire) < 32 &&
+           g_running.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < fillUntil) {
+      std::this_thread::yield();
+    }
+  }
   std::unique_lock lock(g_mutex);
   if (g_pending.empty()) {
     g_parked = true;

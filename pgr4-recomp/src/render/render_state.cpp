@@ -160,6 +160,33 @@ static_assert(offsetof(SharedConstants, vertexTexture2DIndices) == 512);
 static_assert(offsetof(SharedConstants, vertexSamplerIndices) == 560);
 static_assert(offsetof(SharedConstants, packedTexcoordsLo) == 484);
 static_assert(offsetof(SharedConstants, packedBasis) == 492);
+
+// Bindings the current command list already carries (pgr4_race1.tracy,
+// 2026-09-07: the pipeline hash/lookup, six re-binds, the shared-constants
+// upload and ten root descriptor sets ran on all 2800 draws a frame).
+// Invalidated whenever the command list state is unknown: frame begin, a
+// replayed recording, a blit pipeline.
+RenderPipeline* g_boundPipeline = nullptr;
+PipelineState g_boundPipelineState{};
+RenderBufferReference g_boundSharedConstants{};
+SharedConstants g_boundSharedConstantsCopy{};
+RenderBufferReference g_boundRootDescriptors[10]{};
+
+void BindRootDescriptorIfChanged(RenderCommandList* commandList, const RenderBufferReference& ref,
+                                 uint32_t rootIndex) {
+  RenderBufferReference& bound = g_boundRootDescriptors[rootIndex];
+  if (bound.ref == ref.ref && bound.offset == ref.offset)
+    return;
+  commandList->setGraphicsRootDescriptor(ref, rootIndex);
+  bound = ref;
+}
+
+void InvalidateCommandListBindings() {
+  g_boundPipeline = nullptr;
+  g_boundSharedConstants = {};
+  for (RenderBufferReference& bound : g_boundRootDescriptors)
+    bound = {};
+}
 static_assert(offsetof(SharedConstants, ndcScale) == 496);
 static_assert(offsetof(SharedConstants, ndcOffset) == 504);
 static_assert(offsetof(SharedConstants, texture2DIndices) == 0);
@@ -617,9 +644,9 @@ class UploadAllocator {
     } else {
       reusedBytes_ += size;
     }
-    // Layout/command-list changes may invalidate bindings without changing
-    // bytes. Always rebind the retained allocation, even on a clean draw.
-    CommandList()->setGraphicsRootDescriptor(ref, rootIndex);
+    // Layout/command-list changes invalidate bindings without changing bytes;
+    // InvalidateCommandListBindings covers those, so a clean draw skips the set.
+    BindRootDescriptorIfChanged(CommandList(), ref, rootIndex);
     return true;
   }
 
@@ -1000,10 +1027,21 @@ bool AttachmentsCompatible(GuestBaseTexture* colorTarget, GuestSurface* depthTar
 void EnsureShaderResourceDescriptor(GuestBaseTexture* texture) {
   if (texture == nullptr || texture->texture == nullptr)
     return;
-  if (texture->descriptorIndex == 0)
+  if (texture->descriptorIndex == 0) {
     texture->descriptorIndex = AllocTextureDescriptor();
+    texture->descriptorTexture = nullptr;
+  }
+  // Rewriting the slot is a D3D12 CreateShaderResourceView (~1 us); 3600
+  // binds a frame did it unconditionally (pgr4_race1.tracy). Only the first
+  // bind, or a recreated host texture/view, needs it; every recreation path
+  // also writes the slot itself, so a reused pointer cannot leave it stale.
+  if (texture->descriptorTexture == texture->texture &&
+      texture->descriptorView == texture->textureView.get())
+    return;
   TextureDescriptorSet()->setTexture(texture->descriptorIndex, texture->texture,
                                      RenderTextureLayout::SHADER_READ, texture->textureView.get());
+  texture->descriptorTexture = texture->texture;
+  texture->descriptorView = texture->textureView.get();
 }
 
 void BindTextureDescriptor(uint32_t index, GuestBaseTexture* texture,
@@ -1135,6 +1173,7 @@ bool StretchRectShaderBlit(GuestSurface* surface, GuestTexture* texture) {
   const uint32_t descriptorIndex = surface->descriptorIndex;
   commandList->setGraphicsPipelineLayout(PipelineLayout());
   commandList->setPipeline(pipeline);
+  InvalidateCommandListBindings();
   commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 0);
   commandList->setGraphicsDescriptorSet(SamplerDescriptorSet(), 3);
   commandList->setGraphicsPushConstants(0, &descriptorIndex, 0, sizeof(descriptorIndex));
@@ -1657,6 +1696,7 @@ void ProcBeginRenderStateFrame() {
   ++g_frameIndex;
   g_framebuffer = nullptr;
   g_dirtyStates = DirtyStates(true);
+  InvalidateCommandListBindings();
   // Upload allocator reset happens in OnRecordingFrameReady after the
   // slot's fence retires -- do not Reset() here (would clobber in-flight
   // uploads from the other pipelined frame).
@@ -4584,25 +4624,33 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
     pipelineState.stencilEnable = false;
     pipelineState.depthStencilFormat = RenderFormat::UNKNOWN;
   }
-  RenderPipeline* pipeline = GetPipeline(pipelineState);
-  if (pipeline == nullptr)
-    return;
-  if (pipelineState.specConstants & SPEC_CONSTANT_ALPHA_TEST)
-    ++g_frameTrace.alphaTestDraws;
   RenderPipelineLayout* layout = PipelineLayout();
   RenderCommandList* commandList = CommandList();
   if (layout == nullptr || commandList == nullptr)
     return;
-  commandList->setGraphicsPipelineLayout(layout);
-  if (TextureDescriptorSet() != nullptr) {
-    commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 0);
-    commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 1);
-    commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 2);
+  RenderPipeline* pipeline = g_boundPipeline;
+  if (pipeline == nullptr ||
+      std::memcmp(&pipelineState, &g_boundPipelineState, sizeof(pipelineState)) != 0) {
+    pipeline = GetPipeline(pipelineState);
+    if (pipeline == nullptr) {
+      g_boundPipeline = nullptr;
+      return;
+    }
+    commandList->setGraphicsPipelineLayout(layout);
+    if (TextureDescriptorSet() != nullptr) {
+      commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 0);
+      commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 1);
+      commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 2);
+    }
+    if (SamplerDescriptorSet() != nullptr) {
+      commandList->setGraphicsDescriptorSet(SamplerDescriptorSet(), 3);
+    }
+    commandList->setPipeline(pipeline);
+    g_boundPipeline = pipeline;
+    g_boundPipelineState = pipelineState;
   }
-  if (SamplerDescriptorSet() != nullptr) {
-    commandList->setGraphicsDescriptorSet(SamplerDescriptorSet(), 3);
-  }
-  commandList->setPipeline(pipeline);
+  if (pipelineState.specConstants & SPEC_CONSTANT_ALPHA_TEST)
+    ++g_frameTrace.alphaTestDraws;
   g_dirtyStates.pipelineState = false;
 
   g_sharedConstants.swappedTexcoords = g_pipelineState.vertexDeclaration != nullptr
@@ -4666,21 +4714,33 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
       indexedStreamBuffers[element.stream] = view.buffer;
     }
   }
-  const auto sharedBuffer = CurrentUploadAllocator().UploadCached(&g_sharedConstants,
-                                                           sizeof(g_sharedConstants), false);
-  if (sharedBuffer.ref == nullptr) return;
-  commandList->setGraphicsRootDescriptor(sharedBuffer, 2);
+  // Re-upload only when the bytes changed since the last draw on this
+  // command list (a memcmp beats UploadCached's copy + content hash), and
+  // re-set a root descriptor only when its reference changed.
+  RenderBufferReference sharedBuffer = g_boundSharedConstants;
+  if (sharedBuffer.ref == nullptr ||
+      std::memcmp(&g_sharedConstants, &g_boundSharedConstantsCopy,
+                  sizeof(g_sharedConstants)) != 0) {
+    sharedBuffer = CurrentUploadAllocator().UploadCached(&g_sharedConstants,
+                                                         sizeof(g_sharedConstants), false);
+    if (sharedBuffer.ref == nullptr) return;
+    g_boundSharedConstants = sharedBuffer;
+    std::memcpy(&g_boundSharedConstantsCopy, &g_sharedConstants, sizeof(g_sharedConstants));
+  }
+  BindRootDescriptorIfChanged(commandList, sharedBuffer, 2);
   for (uint32_t slot = 0; slot < 3; ++slot) {
     // Keep every root initialized even if the declaration omits a matrix row.
     // Its zero size makes the shader return zero before touching this fallback.
-    commandList->setGraphicsRootDescriptor(indexedPositionBuffers[slot].ref != nullptr
-                                              ? indexedPositionBuffers[slot] : sharedBuffer,
-                                          3u + slot);
+    BindRootDescriptorIfChanged(commandList,
+                                indexedPositionBuffers[slot].ref != nullptr
+                                    ? indexedPositionBuffers[slot] : sharedBuffer,
+                                3u + slot);
   }
   for (uint32_t stream = 0; stream < 4; ++stream) {
-    commandList->setGraphicsRootDescriptor(indexedStreamBuffers[stream].ref != nullptr
-                                              ? indexedStreamBuffers[stream] : sharedBuffer,
-                                          6u + stream);
+    BindRootDescriptorIfChanged(commandList,
+                                indexedStreamBuffers[stream].ref != nullptr
+                                    ? indexedStreamBuffers[stream] : sharedBuffer,
+                                6u + stream);
   }
 
   if (g_dirtyStates.vertexStreamFirst <= g_dirtyStates.vertexStreamLast) {
@@ -5616,6 +5676,7 @@ void DispatchRecordedRenderCommands(const RenderCommand* commands, size_t count,
   g_hasBoundPipeline = false;
   g_pendingMsaaResolves.clear();
   g_dirtyStates = DirtyStates(true);
+  InvalidateCommandListBindings();
 }
 
 }  // namespace pgr4::render
