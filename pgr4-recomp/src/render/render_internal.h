@@ -107,6 +107,9 @@ plume::RenderShader* LoadShader(GuestShader* guestShader, uint32_t specConstants
 struct GuestDevice;
 struct GuestVertexDeclaration;
 std::vector<GuestVertexDeclaration*> SnapshotGameDeclarations();
+// A declaration object bound by the guest that the hooked creator never
+// produced: translated from the XDK object layout, cached per address.
+GuestVertexDeclaration* TranslateRawVertexDeclaration(void* guestObject);
 
 }  // namespace pgr4::render
 

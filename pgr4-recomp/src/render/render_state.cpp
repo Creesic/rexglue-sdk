@@ -149,8 +149,12 @@ struct SharedConstants {
   uint32_t vertexTextureCubeIndices[4]{};
   uint32_t vertexSamplerIndices[4]{};
   uint32_t indexedPositions[3][4]{};  // stride, size, format, element offset
+  // PGR4 computed-index fetches on other elements (XenosRecomp
+  // loadIndexedElement): stride, size, format, element offset | stream << 16.
+  uint32_t indexedElements[16][4]{};
 };
-static_assert(sizeof(SharedConstants) == 624);
+static_assert(sizeof(SharedConstants) == 880);
+static_assert(offsetof(SharedConstants, indexedElements) == 624);
 static_assert(offsetof(SharedConstants, indexedPositions) == 576);
 static_assert(offsetof(SharedConstants, vertexTexture2DIndices) == 512);
 static_assert(offsetof(SharedConstants, vertexSamplerIndices) == 560);
@@ -2148,9 +2152,26 @@ void ProcSetPixelShader(GuestShader* shader) {
   SetDirtyValue(g_dirtyStates.pipelineState, g_pipelineState.pixelShader, live);
 }
 
+// Mirror of XenosRecomp's indexedElementSlot: the g_IndexedElements entry a
+// computed-index vfetch on (usage, usageIndex) reads. -1 = none.
+int IndexedElementSlot(uint32_t usage, uint32_t usageIndex) {
+  switch (usage) {
+    case D3DDECLUSAGE_TEXCOORD: return usageIndex < 8u ? int(usageIndex) : -1;
+    case D3DDECLUSAGE_COLOR: return usageIndex < 2u ? int(8u + usageIndex) : -1;
+    case D3DDECLUSAGE_NORMAL: return usageIndex < 2u ? int(10u + usageIndex) : -1;
+    case D3DDECLUSAGE_TANGENT: return usageIndex == 0u ? 12 : -1;
+    case D3DDECLUSAGE_BINORMAL: return usageIndex == 0u ? 13 : -1;
+    case D3DDECLUSAGE_BLENDWEIGHT: return usageIndex == 0u ? 14 : -1;
+    case D3DDECLUSAGE_BLENDINDICES: return usageIndex == 0u ? 15 : -1;
+    default: return -1;
+  }
+}
+
 void ProcSetVertexDeclaration(GuestVertexDeclaration* declaration) {
   GuestVertexDeclaration* live =
       (declaration != nullptr && IsFm2Resource(declaration)) ? declaration : nullptr;
+  if (declaration != nullptr && live == nullptr)
+    live = TranslateRawVertexDeclaration(declaration);  // PGR4's own XDK-layout objects
   g_boundVertexDeclaration = live;
   // Tier A step 3: decl → swappedTexcoords / blendWeights + SPEC_CONSTANT_* bits.
   ApplyVertexDeclarationMetadata(live);
@@ -3459,6 +3480,39 @@ uint32_t EffectiveStream0Stride(GuestDevice* device) {
   return stride;
 }
 
+// PGR4 binds one declaration per vertex-format family and streams each mesh
+// at the stride of the elements it actually carries: the 5-element, 24-byte
+// track declaration also serves 20-byte meshes that lack the last element.
+// Hardware fetches that element past the vertex, and no shader that omits it
+// ever reads it, so the bound declaration stands whenever every element the
+// bound shader consumes fits the stride. Rejecting it sent the resolver to
+// MatchDeclarationForShader, which handed the position-only shadow shader a
+// one-element FLOAT3 declaration for SHORT4 positions (pgr4_badshadow1.rdc
+// EID 5606: the wedge across the car's shadow map).
+bool DeclarationFitsShaderInputs(const GuestVertexDeclaration* decl, const GuestShader* vs,
+                                 uint32_t streamStride) {
+  if (decl == nullptr || decl->vertexElements == nullptr || vs == nullptr ||
+      vs->headerElements.empty() || streamStride == 0)
+    return false;
+  for (const ShaderHeaderElement& input : vs->headerElements) {
+    const GuestVertexElement* match = nullptr;
+    for (uint32_t i = 0; i < decl->vertexElementCount && match == nullptr; ++i) {
+      const GuestVertexElement& e = decl->vertexElements[i];
+      if (e.usage == input.usage && e.usageIndex == input.usageIndex)
+        match = &e;
+    }
+    if (match == nullptr)
+      return false;
+    if (match->stream != 0)
+      continue;
+    const uint32_t size = DeclTypeByteSize(match->type);
+    if (uint32_t(match->offset) >= streamStride ||
+        (size != 0 && uint32_t(match->offset) + size > streamStride))
+      return false;
+  }
+  return true;
+}
+
 GuestVertexDeclaration* ResolveVertexDeclaration(GuestDevice* device) {
   const uint32_t streamStride = EffectiveStream0Stride(device);
 
@@ -3474,11 +3528,36 @@ GuestVertexDeclaration* ResolveVertexDeclaration(GuestDevice* device) {
   // draw-local bind.
   if (g_boundVertexDeclaration != nullptr && IsFm2Resource(g_boundVertexDeclaration) &&
       g_boundVertexDeclaration->type == ResourceType::VertexDeclaration &&
-      DeclarationFitsStreamStride(g_boundVertexDeclaration, streamStride)) {
+      (DeclarationFitsStreamStride(g_boundVertexDeclaration, streamStride) ||
+       DeclarationFitsShaderInputs(g_boundVertexDeclaration, g_pipelineState.vertexShader,
+                                   streamStride))) {
     return g_boundVertexDeclaration;
   }
 
-  return MatchDeclarationForShader(g_pipelineState.vertexShader, streamStride);
+  GuestVertexDeclaration* matched =
+      MatchDeclarationForShader(g_pipelineState.vertexShader, streamStride);
+  // Diagnostic (pgr4_badshadow1.rdc EID 5606, a SHORT4 track mesh drawn with a
+  // matched one-element FLOAT3 declaration): say once per case why the bound
+  // declaration was not used and what the matcher chose instead.
+  {
+    const GuestVertexDeclaration* bound = g_boundVertexDeclaration;
+    const uint64_t boundId = bound != nullptr ? VertexDeclarationTraceId(bound) : 0u;
+    const uint64_t shaderId = g_pipelineState.vertexShader != nullptr
+                                  ? ShaderTraceId(g_pipelineState.vertexShader)
+                                  : 0u;
+    static std::unordered_set<uint64_t> s_warned;
+    if (s_warned.insert(boundId ^ (uint64_t(streamStride) << 48) ^ shaderId).second) {
+      REXGPU_WARN(
+          "ResolveVertexDeclaration: bound decl {} hash=0x{:016X} elements={} end={} "
+          "stride={} vs=0x{:016X} -> matched hash=0x{:016X} elements={}",
+          bound == nullptr ? "none" : "overflows", boundId,
+          bound != nullptr ? bound->vertexElementCount : 0u,
+          bound != nullptr ? DeclarationStream0PackedEnd(bound) : 0u, streamStride, shaderId,
+          matched != nullptr ? VertexDeclarationTraceId(matched) : 0u,
+          matched != nullptr ? matched->vertexElementCount : 0u);
+    }
+  }
+  return matched;
 }
 
 void TraceVertexDeclarationChoice(GuestDevice* device, GuestVertexDeclaration* queued,
@@ -4564,6 +4643,29 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
       indexedPositionBuffers[slot] = view.buffer;
     }
   }
+  // Computed-index fetches on other elements (XenosRecomp loadIndexedElement):
+  // per-semantic slot metadata, streams 0..3 as raw roots 6..9 (decal shadow
+  // quads read their instance record at vertex/4, pgr4_badshadow2.rdc EID 26162).
+  std::memset(g_sharedConstants.indexedElements, 0, sizeof(g_sharedConstants.indexedElements));
+  RenderBufferReference indexedStreamBuffers[4]{};
+  if (declaration != nullptr) {
+    for (uint32_t i = 0; i < declaration->vertexElementCount; ++i) {
+      const auto& element = declaration->vertexElements[i];
+      const int slot = IndexedElementSlot(element.usage, element.usageIndex);
+      if (slot < 0 || element.stream >= 4u)
+        continue;
+      const auto& view = g_vertexBufferViews[element.stream];
+      const uint32_t stride = g_inputSlots[element.stream].stride;
+      if (view.buffer.ref == nullptr || (element.offset & 3u) != 0 || (stride & 3u) != 0)
+        continue;
+      auto& metadata = g_sharedConstants.indexedElements[slot];
+      metadata[0] = stride;
+      metadata[1] = view.size;
+      metadata[2] = element.type & 0x3Fu;
+      metadata[3] = uint32_t(element.offset) | (uint32_t(element.stream) << 16);
+      indexedStreamBuffers[element.stream] = view.buffer;
+    }
+  }
   const auto sharedBuffer = CurrentUploadAllocator().UploadCached(&g_sharedConstants,
                                                            sizeof(g_sharedConstants), false);
   if (sharedBuffer.ref == nullptr) return;
@@ -4574,6 +4676,11 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
     commandList->setGraphicsRootDescriptor(indexedPositionBuffers[slot].ref != nullptr
                                               ? indexedPositionBuffers[slot] : sharedBuffer,
                                           3u + slot);
+  }
+  for (uint32_t stream = 0; stream < 4; ++stream) {
+    commandList->setGraphicsRootDescriptor(indexedStreamBuffers[stream].ref != nullptr
+                                              ? indexedStreamBuffers[stream] : sharedBuffer,
+                                          6u + stream);
   }
 
   if (g_dirtyStates.vertexStreamFirst <= g_dirtyStates.vertexStreamLast) {
@@ -5165,7 +5272,8 @@ static void DispatchRenderCommandUnlocked(const RenderCommand& cmd) {
         cmd.createTranslatedTextureHost.texture, cmd.createTranslatedTextureHost.width,
         cmd.createTranslatedTextureHost.height, cmd.createTranslatedTextureHost.format,
         cmd.createTranslatedTextureHost.baseAddress, cmd.createTranslatedTextureHost.levels,
-        cmd.createTranslatedTextureHost.cube, cmd.createTranslatedTextureHost.createdOut);
+        cmd.createTranslatedTextureHost.cube, cmd.createTranslatedTextureHost.swizzle,
+        cmd.createTranslatedTextureHost.createdOut);
     return;
   }
 

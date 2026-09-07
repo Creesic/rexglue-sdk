@@ -2400,3 +2400,66 @@ GPU watchdog hang dump in guest_gpu.cpp. cdb tips: guest functions are
 pgr4_recompiled!__imp__sub_XXXXXXXX, rdi = PPCContext in recompiled frames
 (r3 at +0, r0 +8, r1 +0x10, r2 +0x18, r4.. at +0x20 + 8*(n-4)), rsi = guest
 base 0x100000000.
+
+## 2026-09-07 -- loading screen alpha, volume textures, two shadow bugs
+
+### Loading screen background black (fixed)
+
+`pgr4_blackloading1.rdc` EID 172 draws the poster render (the stylised
+red/white car-at-track image the game resolves into a 1280x720 X8R8G8B8
+texture before the load) as a full-screen quad. The texture's RGB was right
+but its alpha was 0 everywhere; the pixel shader multiplies sample by vertex
+colour and alpha-tests against 1/256 (SharedConstants byte 340), so every
+fragment was discarded. Hardware reads alpha 1 there because the fetch
+constant's swizzle (dword 3 bits 1..12, 3 bits per component: X Y Z W 0 1) is
+`0xA0A` = (Z, Y, X, ONE). ParseTextureFetchConstant now reads the swizzle, it
+travels through CreateTranslatedTextureHost, and constant selects (0/1)
+become ZERO/ONE in the host view's component mapping; permutations are left
+to the RenderFormat choice. The creation log prints `swz=`.
+
+### Volume (3D) textures (fixed)
+
+Three fetch constants were rejected as "invalid" (6176x7688 etc.): dimension
+2 without the stacked bit is a volume, size_3d packs width:11 height:11
+depth:10. The renderer now decodes them (32^3 RGBA8 colour LUT, 256x1024x3
+and 512x512x4 DXT1), lays them out with the SDK's k3D layout, untiles with
+GetTiledOffset3D and uploads one array slice per Z (the shaders sample every
+3D fetch as Texture2DArray with z * depth as the slice). Base level only;
+the 3D mip tail is not decoded. test_texture_upload_rows.py covers tiled and
+linear volume rows.
+
+### Car shadow wedge (fixed): declaration rejected for stride overflow
+
+`pgr4_badshadow1.rdc`: the shadow map (512x512 depth target 359, copied to
+texture 18834 at EID 6804) carried a triangle wedge from EID 5606 primitive
+237, a track mesh (VB 25639, 20-byte stride) drawn with a one-element FLOAT3
+position layout while the data is SHORT4. The game binds a 5-element
+declaration whose elements end at byte 24 and streams the mesh at 20 bytes
+(the mesh lacks the last element; hardware fetches it past the vertex and the
+shader never reads it). ResolveVertexDeclaration rejected the bound
+declaration as overflowing and MatchDeclarationForShader picked, for the
+position-only shadow shader, a one-element FLOAT3 declaration (exact element
+count scores highest). Fix: DeclarationFitsShaderInputs keeps the bound
+declaration when every element the bound shader consumes fits the stride.
+The resolver now warns once per case when it still falls back
+("ResolveVertexDeclaration: bound decl ..."), and SetVertexDeclaration
+translates declaration objects the hooked creator never produced from the
+XDK layout (Common type nibble 5, count at +24, elements at +52) -- the game
+binds one such 2-element object.
+
+### In-world decal shadows exploded (fix in this build, unverified)
+
+`pgr4_badshadow2.rdc` EID 26162/26163: each 64-byte vertex record is an
+instance (3x4 matrix in TEXCOORD0..2, an id in TEXCOORD3, half4 rows in a
+24-byte stream 1) and the index buffer builds a quad from four consecutive
+records. The guest shader derives corners from the vertex index and fetches
+the record at trunc((index + 0.5) * 0.25): a computed-index vfetch. The
+recompiler fed every vfetch from the input assembler at the raw index, so
+each corner took a different instance's transform. XenosRecomp now routes a
+computed-index vfetch on non-position elements through loadIndexedElement
+(indexedElementSlot: TEXCOORD0..7 = 0..7, COLOR0..1 = 8..9, NORMAL0..1 =
+10..11, TANGENT/BINORMAL/BLENDWEIGHT/BLENDINDICES 0 = 12..15); the runtime
+publishes stride/size/format/offset|stream<<16 per slot in
+SharedConstants.indexedElements (offset 624, +256 bytes) and binds streams
+0..3 as raw root SRVs t3..t6 (roots 6..9). POSITION1..3 keep their own path.
+Needs a shader-cache regeneration (the recompiler changed).

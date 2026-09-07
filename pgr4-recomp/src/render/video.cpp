@@ -564,8 +564,10 @@ bool Video::Init(void* nativeWindowHandle, uint32_t width, uint32_t height) {
                                     RenderRootDescriptorType::CONSTANT_BUFFER);
     layoutBuilder.addRootDescriptor(2, 4,
                                     RenderRootDescriptorType::CONSTANT_BUFFER);
-    // Indexed POSITION1..3 use the bound vertex streams as raw shader inputs.
-    for (uint32_t i = 0; i < 3; ++i)
+    // Indexed POSITION1..3 use the bound vertex streams as raw shader inputs
+    // (t0..t2); computed-index fetches on other elements read streams 0..3
+    // through t3..t6 (XenosRecomp loadIndexedElement).
+    for (uint32_t i = 0; i < 7; ++i)
       layoutBuilder.addRootDescriptor(i, 4, RenderRootDescriptorType::SHADER_RESOURCE);
     layoutBuilder.addPushConstant(3, 4, 4, RenderShaderStageFlag::PIXEL);
     layoutBuilder.end();

@@ -511,6 +511,7 @@ struct RenderCommand {
       uint32_t baseAddress;
       uint32_t levels;
       bool cube;
+      uint32_t swizzle;  // fetch constant swizzle, see XenosTextureInfo
       bool* createdOut;
     } createTranslatedTextureHost;
   };
@@ -545,7 +546,7 @@ void ProcUploadTextureSubresources(void* dst, const void* data, uint64_t size, u
                                    bool* success);
 void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint32_t height,
                                      uint32_t format, uint32_t baseAddress, uint32_t levels,
-                                     bool cube, bool* createdOut);
+                                     bool cube, uint32_t swizzle, bool* createdOut);
 void ProcSetViewportEnable(uint32_t value);
 void ProcSetClipPlaneState(uint32_t enabled, const float* plane);
 void ProcSetDepthState(uint32_t zEnable, uint32_t zWriteEnable, uint32_t cmpFunc);

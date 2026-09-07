@@ -410,7 +410,7 @@ void ProcCreateTextureHost(GuestTexture* texture, uint32_t width, uint32_t heigh
 
 void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint32_t height,
                                      uint32_t format, uint32_t baseAddress, uint32_t levels,
-                                     bool cube, bool* createdOut) {
+                                     bool cube, uint32_t swizzle, bool* createdOut) {
   if (createdOut != nullptr) *createdOut = false;
   if (texture == nullptr || IsDeviceLost()) return;
 
@@ -450,10 +450,24 @@ void ProcCreateTranslatedTextureHost(GuestTexture* texture, uint32_t width, uint
   viewDesc.dimension = cube ? RenderTextureViewDimension::TEXTURE_CUBE
                             : RenderTextureViewDimension::TEXTURE_2D;
   viewDesc.mipLevels = levels;
+  RenderSwizzle mapping[4] = {RenderSwizzle::R, RenderSwizzle::G, RenderSwizzle::B,
+                              RenderSwizzle::A};
   if (fmt == RenderFormat::R8_UNORM) {
-    viewDesc.componentMapping = RenderComponentMapping(RenderSwizzle::R, RenderSwizzle::R,
-                                                       RenderSwizzle::R, RenderSwizzle::ONE);
+    mapping[1] = mapping[2] = RenderSwizzle::R;
+    mapping[3] = RenderSwizzle::ONE;
   }
+  // Fetch swizzle constants: an X8R8G8B8-style header selects 1 for alpha,
+  // so a screen capture with alpha 0 in memory still passes the alpha test
+  // (loading screen background).
+  for (uint32_t c = 0; c < 4; ++c) {
+    const uint32_t select = (swizzle >> (3 * c)) & 7;
+    if (select == 4)
+      mapping[c] = RenderSwizzle::ZERO;
+    else if (select == 5)
+      mapping[c] = RenderSwizzle::ONE;
+  }
+  viewDesc.componentMapping =
+      RenderComponentMapping(mapping[0], mapping[1], mapping[2], mapping[3]);
   texture->textureView = texture->texture->createTextureView(viewDesc);
   texture->width = width;
   texture->height = height;
@@ -841,6 +855,15 @@ struct XenosTextureInfo {
   // for stacked textures (dimension 3D with the stacked bit; XenosRecomp
   // samples those as Texture2DArray through the 3D index table).
   uint32_t arraySize = 1;
+  // Volume (dimension 3D without the stacked bit): arraySize holds the
+  // depth. Guest data is tiled in 32x32x4 tiles (GetTiledOffset3D); each Z
+  // slice uploads as one array slice, which the Texture2DArray fetch then
+  // samples with z * depth as the slice index (PGR4's 32^3 colour LUT).
+  bool volume = false;
+  // Fetch constant swizzle (dword 3 bits 1..12, 3 bits per component: X Y Z
+  // W 0 1). Only the constant selects reach the host view; component order
+  // is already baked into the RenderFormat choice.
+  uint32_t swizzle = 0;
   bool tiled = false;
   bool packedMips = false;
   bool valid = false;
@@ -853,7 +876,8 @@ std::array<uint32_t, 17> GuestTextureLayoutKey(const XenosTextureInfo& info) {
   return {uint32_t(info.format), info.gpuFormat, info.width, info.height,
           info.baseAddress, info.mipAddress, info.mipMaxLevel, info.mipLevels,
           info.pitchTexels, info.blockDim, info.bytesPerBlock, info.endian,
-          info.expand16From, uint32_t(info.cube), info.arraySize,
+          info.expand16From,
+          uint32_t(info.cube) | (uint32_t(info.volume) << 1) | (info.swizzle << 2), info.arraySize,
           uint32_t(info.tiled), uint32_t(packed)};
 }
 
@@ -917,6 +941,7 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
   const uint32_t fc0 = fc[0].get();
   const uint32_t fc1 = fc[1].get();
   const uint32_t fc2 = fc[2].get();
+  const uint32_t fc3 = fc[3].get();
   const uint32_t fc4 = fc[4].get();
   const uint32_t fc5 = fc[5].get();
 
@@ -925,6 +950,7 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
   const uint32_t gpuFormat = fc1 & 0x3F;
   info.gpuFormat = gpuFormat;
   info.endian = (fc1 >> 6) & 0x3;
+  info.swizzle = (fc3 >> 1) & 0xFFF;
   info.baseAddress = ((fc1 >> 12) & 0xFFFFF) << 12;
   info.width = (fc2 & 0x1FFF) + 1;
   info.height = ((fc2 >> 13) & 0x1FFF) + 1;
@@ -937,6 +963,12 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
     info.arraySize = 6;
   else if (dimension == 2 && ((fc1 >> 10) & 0x1) != 0)  // stacked: size_stack.depth (6 bits)
     info.arraySize = ((fc2 >> 26) & 0x3F) + 1;
+  else if (dimension == 2) {  // volume: size_3d width:11 height:11 depth:10
+    info.volume = true;
+    info.width = (fc2 & 0x7FF) + 1;
+    info.height = ((fc2 >> 11) & 0x7FF) + 1;
+    info.arraySize = ((fc2 >> 22) & 0x3FF) + 1;
+  }
 
   switch (gpuFormat) {
     case 2:  // k_8 (L8/A8)
@@ -1016,6 +1048,12 @@ XenosTextureInfo ParseTextureFetchConstant(const rex::be<uint32_t>* fc) {
   }
   info.mipLevels = TextureFetchMipLevelCount(fc4, fc5, info.width, info.height);
   info.mipMaxLevel = info.mipLevels - 1u;
+  if (info.volume) {
+    // ponytail: base level only; the 3D mip tail (depth halving, packed
+    // tail) is not decoded. Add when a sampled volume looks aliased.
+    info.mipLevels = 1;
+    info.mipMaxLevel = 0;
+  }
   // D3D12 only guarantees block-compressed textures whose top level is a
   // multiple of the block (OPTIONS8 UnalignedBlockTexturesSupported is false
   // on GTX 10xx, where PGR4's 32x1 DXT1 strip failed to create). The guest
@@ -1146,8 +1184,9 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
     return true;  // content arrives through Resolve from the depth surface
   }
 
-  const auto dimension = info.cube ? rex::graphics::xenos::DataDimension::kCube
-                                   : rex::graphics::xenos::DataDimension::k2DOrStacked;
+  const auto dimension = info.volume ? rex::graphics::xenos::DataDimension::k3D
+                         : info.cube ? rex::graphics::xenos::DataDimension::kCube
+                                     : rex::graphics::xenos::DataDimension::k2DOrStacked;
   const auto guestFormat = static_cast<rex::graphics::xenos::TextureFormat>(info.gpuFormat);
   const auto guestLayout = rex::graphics::texture_util::GetGuestTextureLayout(
       dimension, (info.pitchTexels + 31u) / 32u, info.width, info.height, info.arraySize,
@@ -1284,8 +1323,11 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
       rex::graphics::texture_util::GetPackedMipOffset(
           info.width, info.height, 1u, guestFormat, mip, packedX, packedY, packedZ);
     }
+    // Volume Z slices live inside one array slice; the tiled and linear
+    // offsets below fold region.arrayIndex in as z.
     const uint64_t arrayOffset =
-        uint64_t(region.arrayIndex) * sourceLayout->array_slice_stride_bytes;
+        info.volume ? 0u
+                    : uint64_t(region.arrayIndex) * sourceLayout->array_slice_stride_bytes;
     sourceBaseOffset += arrayOffset;
     sourceData += arrayOffset;
     const uint32_t pitchBlocks = sourceLayout->row_pitch_bytes / info.bytesPerBlock;
@@ -1310,11 +1352,21 @@ bool UploadGuestTextureData(GuestTexture* texture, const XenosTextureInfo& info)
             // blocks, 16 bytes otherwise (texture_util's tiled layout contract).
             const uint32_t runBlocks = blockBytes == 1 ? 8u : 16u >> bytesPerBlockLog2;
             copyBlocks = std::min(copyBlocks, runBlocks - ((packedX + bx) & (runBlocks - 1u)));
-            sourceOffset = rex::graphics::texture_util::GetTiledOffset2D(
-                int32_t(packedX + bx), int32_t(packedY + by), pitchBlocks,
-                bytesPerBlockLog2);
+            sourceOffset =
+                info.volume
+                    ? rex::graphics::texture_util::GetTiledOffset3D(
+                          int32_t(packedX + bx), int32_t(packedY + by),
+                          int32_t(region.arrayIndex), pitchBlocks,
+                          sourceLayout->z_slice_stride_block_rows, bytesPerBlockLog2)
+                    : rex::graphics::texture_util::GetTiledOffset2D(
+                          int32_t(packedX + bx), int32_t(packedY + by), pitchBlocks,
+                          bytesPerBlockLog2);
           } else {
-            sourceOffset = int64_t(packedY + by) * sourceLayout->row_pitch_bytes +
+            const uint64_t zRows =
+                info.volume
+                    ? uint64_t(region.arrayIndex) * sourceLayout->z_slice_stride_block_rows
+                    : 0u;
+            sourceOffset = int64_t(zRows + packedY + by) * sourceLayout->row_pitch_bytes +
                            int64_t(packedX + bx) * blockBytes;
           }
           const auto canRead = [&](uint32_t bytes) {
@@ -1430,6 +1482,7 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
   cmd.createTranslatedTextureHost.baseAddress = info.baseAddress;
   cmd.createTranslatedTextureHost.levels = info.mipLevels;
   cmd.createTranslatedTextureHost.cube = info.cube;
+  cmd.createTranslatedTextureHost.swizzle = info.swizzle;
   cmd.createTranslatedTextureHost.createdOut = &created;
   RenderQueue::Run(cmd);
 
@@ -1447,10 +1500,11 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
                       : texture->watchedBase == (info.baseAddress & 0x1FFFFFFFu) ? "direct"
                                                                                   : "mapped";
   REXGPU_INFO(
-      "TranslateGuestTexture: base=0x{:08X} mip=0x{:08X} {}x{} levels={} fmt={} cube={} "
-      "tiled={} endian={} upload={} -> desc {} alias={}",
+      "TranslateGuestTexture: base=0x{:08X} mip=0x{:08X} {}x{} levels={} fmt={} cube={} volume={} depth={} "
+      "tiled={} endian={} swz=0x{:03X} upload={} -> desc {} alias={}",
       info.baseAddress, info.mipAddress, info.width, info.height, info.mipLevels,
-      int(info.format), info.cube, info.tiled, info.endian, uploadGuestData,
+      int(info.format), info.cube, info.volume, info.arraySize, info.tiled, info.endian,
+      info.swizzle, uploadGuestData,
       texture->descriptorIndex,
       alias);
 
@@ -1588,14 +1642,8 @@ std::vector<GuestVertexDeclaration*> SnapshotGameDeclarations() {
 }
 
 // Count guest vertex elements up to the D3DDECL_END terminator (stream 0xFF).
-GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestElements) {
-  uint32_t count = 0;
-  while (std::byteswap(guestElements[count].stream) != 0xFF) {
-    ++count;
-    if (count > 64)
-      break;  // safety
-  }
-
+GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestElements,
+                                                uint32_t count) {
   auto* decl = GuestNew<GuestVertexDeclaration>();
   decl->vertexElementCount = count;
   decl->vertexElements = std::make_unique<GuestVertexElement[]>(count + 1);
@@ -1631,6 +1679,52 @@ GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestE
     g_gameDeclarations.push_back(decl);
   }
   return decl;
+}
+
+GuestVertexDeclaration* CreateVertexDeclaration(const GuestVertexElement* guestElements) {
+  uint32_t count = 0;
+  while (std::byteswap(guestElements[count].stream) != 0xFF) {
+    ++count;
+    if (count > 64)
+      break;  // safety
+  }
+  return CreateVertexDeclaration(guestElements, count);
+}
+
+// PGR4 binds declaration objects the hooked creator never saw (built into
+// its data with XGSetVertexDeclaration's layout: Common type nibble 5, the
+// element count at +24, the D3DVERTEXELEMENT9 array at +52). Dropping such a
+// bind left the resolver matching by shader inputs, which handed a SHORT4
+// track mesh a one-element FLOAT3 declaration (pgr4_badshadow1.rdc EID 5606).
+GuestVertexDeclaration* TranslateRawVertexDeclaration(void* guestObject) {
+  const uint32_t guestAddress = ghp::ToGuest(guestObject);
+  const auto* words = reinterpret_cast<const rex::be<uint32_t>*>(guestObject);
+  const uint32_t common = words[0].get();
+  const uint32_t count = words[6].get();
+  if ((common & 0xFu) != 5u || count == 0 || count > 64) {
+    static std::unordered_set<uint32_t> s_warned;
+    if (s_warned.insert(guestAddress).second) {
+      REXGPU_WARN(
+          "SetVertexDeclaration: 0x{:08X} is neither a native nor an XDK declaration "
+          "(words {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}) -- bind dropped",
+          guestAddress, common, words[1].get(), words[2].get(), words[3].get(),
+          words[4].get(), words[5].get(), count);
+    }
+    return nullptr;
+  }
+  const auto* elements = reinterpret_cast<const GuestVertexElement*>(
+      static_cast<const uint8_t*>(guestObject) + 52);
+  const uint64_t contentHash = XXH3_64bits(elements, count * sizeof(GuestVertexElement));
+  static std::mutex s_mutex;
+  static std::unordered_map<uint32_t, std::pair<uint64_t, GuestVertexDeclaration*>> s_cache;
+  std::lock_guard<std::mutex> lock(s_mutex);
+  auto& entry = s_cache[guestAddress];
+  if (entry.second == nullptr || entry.first != contentHash) {
+    entry = {contentHash, CreateVertexDeclaration(elements, count)};
+    REXGPU_INFO("SetVertexDeclaration: raw XDK declaration 0x{:08X} ({} elements) translated",
+                guestAddress, count);
+  }
+  return entry.second;
 }
 
 // ---------------------------------------------------------------------------

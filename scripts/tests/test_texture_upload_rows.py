@@ -35,19 +35,19 @@ void CheckedSwap(uint8_t* data, size_t size, uint32_t endian) {
   assert(uintptr_t(data) + size <= uploadBegin || uintptr_t(data) >= uploadEnd);
   EndianSwapBuffer(data, size, endian);
 }
-struct Info { uint32_t bytesPerBlock, endian, expand16From; bool tiled; };
-struct Layout { uint32_t row_pitch_bytes; };
+struct Info { uint32_t bytesPerBlock, endian, expand16From; bool tiled, volume; };
+struct Layout { uint32_t row_pitch_bytes, z_slice_stride_block_rows; };
 void Convert(uint8_t* mapped, const uint8_t* sourceData, const Info& info,
              uint32_t widthBlocks, uint32_t heightBlocks, uint32_t packedX,
              uint32_t packedY, const GuestTextureSource* sourceRange,
-             uint64_t sourceBaseOffset, uint32_t sourceExtent) {
+             uint64_t sourceBaseOffset, uint32_t sourceExtent, uint32_t z) {
   const uint32_t guestRowBytes = widthBlocks * info.bytesPerBlock;
   const uint32_t hostRowBytes = widthBlocks * (info.expand16From ? 4 : info.bytesPerBlock);
   const uint32_t hostRowPitch = (hostRowBytes + 255u) & ~255u;
   const uint32_t pitchBlocks = 128, bytesPerBlockLog2 = std::countr_zero(info.bytesPerBlock);
-  Layout layout{pitchBlocks * info.bytesPerBlock};
+  Layout layout{pitchBlocks * info.bytesPerBlock, 32};
   const auto* sourceLayout = &layout;
-  struct { uint64_t srcOffset; } region{512};
+  struct { uint64_t srcOffset; uint32_t arrayIndex; } region{512, z};
   ROW_CONVERSION
 }
 int main() {
@@ -59,17 +59,20 @@ int main() {
   };
   unsigned cases = 0;
   for (bool tiled : {false, true})
+  for (bool volume : {false, true})
+  for (uint32_t z : {0u, 3u})
   for (uint32_t bytes : {1u, 2u, 4u, 8u, 16u})
   for (uint32_t endian : {0u, 1u, 2u})
   for (uint32_t expand : {0u, 4u, 5u}) {
     if (expand && bytes != 2) continue;
+    if (!volume && z) continue;
     for (bool holes : {false, true})
     for (const auto& layout : layouts) {
-      Info info{bytes, endian, expand, tiled};
+      Info info{bytes, endian, expand, tiled, volume};
       const auto [width, height, px, py, baseOffset, physical, truncate] = layout;
       const uint32_t rowBytes = width * bytes;
       const uint32_t hostPitch = (width * (expand ? 4 : bytes) + 255u) & ~255u;
-      GuestTextureSource range{physical, 128 * 128 * bytes, {}};
+      GuestTextureSource range{physical, 128 * (volume ? 512 : 128) * bytes, {}};
       range.readablePages.resize((range.size + physical + 4095) / 4096, 1);
       if (holes) range.readablePages[1] = 0;
       const uint32_t extent = truncate ? range.size / 2 : range.size - baseOffset;
@@ -77,14 +80,17 @@ int main() {
       for (size_t i = 0; i < source.size(); ++i) source[i] = uint8_t(i * 31 + (i >> 8));
       uploadBegin = uintptr_t(output.data()); uploadEnd = uploadBegin + output.size();
       Convert(output.data(), source.data() + baseOffset, info, width, height, px, py,
-              &range, baseOffset, extent);
+              &range, baseOffset, extent, z);
       std::vector<uint8_t> expected(output.size(), 0), row(rowBytes);
       for (uint32_t y = 0; y < height; ++y) {
         std::fill(row.begin(), row.end(), 0);
         for (uint32_t x = 0; x < width; ++x) {
+          // Volumes: z folds into the tiled address (32-row z stride) or the linear row.
           const uint32_t offset = tiled
-              ? rex::graphics::texture_util::GetTiledOffset2D(x+px, y+py, 128, std::countr_zero(bytes))
-              : ((y+py)*128 + x+px)*bytes;
+              ? uint32_t(volume
+                  ? rex::graphics::texture_util::GetTiledOffset3D(x+px, y+py, z, 128, 32, std::countr_zero(bytes))
+                  : rex::graphics::texture_util::GetTiledOffset2D(x+px, y+py, 128, std::countr_zero(bytes)))
+              : ((z*32 + y+py)*128 + x+px)*bytes;
           // Independent page-range check, including the unaligned physical base.
           bool readable = offset + bytes <= extent && baseOffset + offset + bytes <= source.size();
           for (uint32_t b = 0; b < bytes && readable; ++b)
@@ -114,7 +120,7 @@ int main() {
       ++cases;
     }
   }
-  std::printf("Texture uploads: %u linear/tiled, endian, expansion, packed/slice offset, partial extent, sparse-page and padding cases passed; no upload-memory byte swaps\n", cases);
+  std::printf("Texture uploads: %u linear/tiled, endian, expansion, packed/slice offset, volume Z slices, partial extent, sparse-page and padding cases passed; no upload-memory byte swaps\n", cases);
 }
 '''
 
@@ -126,7 +132,7 @@ def test_texture_upload_rows():
     assert rows is not None
     rows = rows.group().removesuffix("\n  }\n").replace("EndianSwapBuffer(", "CheckedSwap(")
     util = (ROOT / "src/graphics/pipeline/texture/util.cpp").read_text(encoding="utf-8")
-    tiled = util[util.index("int32_t GetTiledOffset2D("):util.index("int32_t GetTiledOffset3D(")]
+    tiled = util[util.index("int32_t GetTiledOffset2D("):util.index("uint32_t GetTiledAddressUpperBound2D(")]
     program = PREAMBLE.replace("TILED_FUNCTION", tiled).replace("SOURCE_HELPERS", helpers).replace("ROW_CONVERSION", rows)
     with tempfile.TemporaryDirectory(prefix="pgr4-texture-rows-") as folder:
         cpp, exe = Path(folder) / "test.cpp", Path(folder) / "test.exe"
