@@ -12,6 +12,8 @@
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 
+#include "crash_report.h"
+
 #if PGR4_ENABLE_PLUME
 #include <memory>
 
@@ -107,7 +109,10 @@ class Pgr4RecompiledApp : public rex::ReXApp {
   // void OnPreSetup(rex::RuntimeConfig& config) override {}
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
-  // void OnPostSetup() override {}
+  void OnPostSetup() override {
+    // After the runtime's memory-watch handler, so only unhandled faults reach it.
+    InstallCrashReporter();
+  }
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   std::unique_ptr<rex::ui::AchievementNotificationDialog>

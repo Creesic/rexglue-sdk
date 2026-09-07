@@ -23,6 +23,8 @@ option(PGR4_ENABLE_PLUME "Build the native Plume renderer instead of the xenos G
 set(PGR4RECOMPILED_SOURCES
     src/main.cpp
     src/pad_script.cpp
+    src/crash_report.cpp
+    src/game_fixes.cpp
 )
 
 if(PGR4_ENABLE_PLUME)
@@ -139,7 +141,7 @@ if(PGR4_ENABLE_PLUME)
     # unresolved without these. Matches what FM2 links.
     target_link_libraries(pgr4_recompiled PRIVATE plume libzstd_static)
     if(WIN32)
-        target_link_libraries(pgr4_recompiled PRIVATE d3d12 dxgi)
+        target_link_libraries(pgr4_recompiled PRIVATE d3d12 dxgi dbghelp)
     endif()
 
     # Use the same pinned DXC build XenosRecomp vendors (thirdparty/dxc-bin). DXC

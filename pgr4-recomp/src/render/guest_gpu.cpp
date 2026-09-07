@@ -1,6 +1,7 @@
 // render/guest_gpu.cpp
 
 #include "guest_gpu.h"
+#include "crash_report.h"
 
 #include <array>
 #include <chrono>
@@ -682,6 +683,16 @@ void Pgr4GraphicsSystem::WorkerMain() {
             "82A61280={}",
             fires, g_wptr_stores.load(std::memory_order_relaxed), field(16532), field(16528),
             field(16544), field(16552), gbyte(0x82A61024), gbyte(0x82B17F30), gbyte(0x82A61280));
+        // A guest that stops kicking the ring for seconds while its threads
+        // keep running is spinning somewhere (car select hang: main thread
+        // looping in sub_822A53E0). Dump every thread's stack once.
+        static uint64_t lastKicks = 0;
+        static uint32_t stalledSeconds = 0;
+        const uint64_t kicks = g_wptr_stores.load(std::memory_order_relaxed);
+        stalledSeconds = (kicks != 0 && kicks == lastKicks) ? stalledSeconds + 1 : 0;
+        lastKicks = kicks;
+        if (stalledSeconds == 5)
+          WriteHangDump(stalledSeconds);
         fires = 0;
         window = t;
 

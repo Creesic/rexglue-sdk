@@ -2352,3 +2352,51 @@ HeaderBaseToPhysical now returns the direct page when the 0xE heap has no
 page for the header address (allocated through another heap). Unverified
 assumption: the 0xE heap's page table does not cover 0xA/0xC allocations.
 TranslateGuestTexture logs alias= and eheap= so the next run shows it.
+
+## 2026-09-06 -- Lotus Esprit Essex Turbo car-select hang (fixed)
+
+Symptom: picking the Lotus Esprit Essex Turbo in car select freezes the game
+(no crash). The new hang watchdog (guest_gpu.cpp: 5 s without a ring kick ->
+crash_report.cpp WriteHangDump) wrote a full-memory minidump; cdb on it shows
+the guest main thread inside sub_822A53E0 (world grid height query) called
+from sub_8241BDA8 (per-attachment ground probe) <- sub_823F5318 (vehicle
+update) <- sub_82416078 <- sub_826074D8 (frontend update).
+
+Root cause (data, not emulation): the car package
+Game/Cars/Lotus_EspritEssexTurbo.pak_hrd is a chunk stream (LE 12-byte
+headers: tag, version, size; BE payload): ENDI, SCNE (scene), MISC (vehicle
+definition, version 16), TIME. sub_82428A20 dispatches the chunks;
+sub_8242A218 reads MISC through the buffered stream reader sub_822A4C80 and
+sub_82429380 builds the 272-byte attachment items from 148-byte records
+(u32 type, matrix A, matrix B, u32, float3). For types 2..5 it stores matrix
+B's translation at item+208 (sub_82429000) as the probe offset and sets
+item+224 so the probe runs. The Lotus's type-4 record holds uninitialised
+exporter memory as matrix B (0x0012E7F0-style pointers, 0x7FFFFFFD ...), so
+item+208 = (0x7D64370E = 1.9e37, 0x00000002, 0x0012E804). A scan of all 123
+car packages finds this exact record the only type 2..5 entry with a
+non-finite or huge matrix B translation; the recomp reads the file faithfully
+(dump bytes match the file), so this is the shipped data.
+
+Why it spins: the probe position becomes (1.76e37, 5e33, -7e36); the grid
+query converts (pos - origin +/- r) * scale with fctiwz, giving INT_MAX for
+both x bounds and INT_MIN for both z bounds, then loops
+`for (i = lo; i <= hi; ++i)` with a plain addi/cmpw/ble, so i wraps past
+INT_MAX and the outer loop runs 2^32 times per call, every frame. Dump
+evidence: stack slots lo_x = hi_x = 0x7FFFFFFF, lo_z = hi_z = 0x80000000,
+r30 (outer counter) = 0x844A0FD5 mid-wrap. The recompiler's fctiwz emitter
+(src/codegen/builders/floating_point.cpp) saturates exactly like hardware, so
+the difference to a real console is presumably in how the VMX128 NaN/INF
+propagation from the INF attachment length (item+148) reaches the probe
+position; not chased further.
+
+Fix: manifest names 0x822A53E0 World_GridHeightQuery and
+src/game_fixes.cpp hooks it. It recomputes the game's own float bounds for x
+and z and, if either would saturate at 2^31, returns the query's miss value
+(-10000.0) without entering the loop; otherwise it calls the original body.
+
+Tooling added alongside: src/crash_report.cpp (vectored fault reporter with
+symbolised backtrace + minidump in logs/, installed from OnPostSetup) and the
+GPU watchdog hang dump in guest_gpu.cpp. cdb tips: guest functions are
+pgr4_recompiled!__imp__sub_XXXXXXXX, rdi = PPCContext in recompiled frames
+(r3 at +0, r0 +8, r1 +0x10, r2 +0x18, r4.. at +0x20 + 8*(n-4)), rsi = guest
+base 0x100000000.

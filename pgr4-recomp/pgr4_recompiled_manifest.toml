@@ -150,3 +150,9 @@ includes = []
 # Input: the game's XInputGetState wrapper (tail-calls XamInputGetState); hooked
 # by src/pad_script.cpp to inject scripted presses for unattended testing.
 0x82673A90 = { name = "XInputGetState" }
+
+# World collision grid height query (IDA sub_822A53E0), called per attachment
+# by the vehicle ground probe. Hooked in src/game_fixes.cpp: a garbage position
+# (Lotus Esprit Essex Turbo's broken attachment record) saturates its loop
+# bounds and the game spins for 2^32 iterations every frame.
+0x822A53E0 = { name = "World_GridHeightQuery" }
