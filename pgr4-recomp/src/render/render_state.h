@@ -57,6 +57,10 @@ void InvalidateGuestTexture(void* guestHeader);
 void SetVertexShader(GuestDevice* device, GuestShader* shader);
 void SetPixelShader(GuestDevice* device, GuestShader* shader);
 void SetVertexDeclaration(GuestDevice* device, GuestVertexDeclaration* declaration);
+// Producer record only (rect-list expansion of user-pointer draws); the
+// render thread keeps resolving by shader inputs. For declarations the XDK
+// installs itself (D3DDevice_SetFVF).
+void RecordVertexDeclaration(GuestDevice* device, GuestVertexDeclaration* declaration);
 
 void SetStreamSource(GuestDevice* device, uint32_t index, GuestBuffer* buffer, uint32_t offset,
                      uint32_t stride);

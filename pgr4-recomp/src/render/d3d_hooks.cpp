@@ -692,12 +692,8 @@ REX_HOOK_RAW(XGOffsetResourceAddress) {
 
 // ---------------------------------------------------------------------------
 // Phase 3: render state, clip planes, bool constants, vertex/index/surface
-// binding, shader state. All full replacements EXCEPT these state setters
-// still call their original guest body first: unlike D3DDevice_Swap (which
-// crashes if its original runs, since it kicks a nonexistent GPU ring),
-// these setters are ordinary struct bit-packing with no GPU/OS calls, so
-// calling the original keeps any *other*, still-unhooked guest code that
-// queries render state (GetRenderState-style reads) internally consistent.
+// binding, shader state. All full replacements; the render-state setters are
+// not hooked at all (see below).
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -713,166 +709,10 @@ GuestDevice* DeviceForRenderContext(uint32_t renderContext) {
 
 }  // namespace
 
-#define PGR4_RS_IMPORT(guestName, callableName) \
-  REX_IMPORT(__imp__##guestName, callableName, void(uint32_t, uint32_t))
-
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_AlphaBlendEnable, g_origRsAlphaBlendEnable);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_AlphaTestEnable, g_origRsAlphaTestEnable);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_AlphaRef, g_origRsAlphaRef);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_ZEnable, g_origRsZEnable);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_ZWriteEnable, g_origRsZWriteEnable);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_ZFunc, g_origRsZFunc);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_ColorWriteEnable, g_origRsColorWriteEnable);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_BlendOp, g_origRsBlendOp);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_BlendOpAlpha, g_origRsBlendOpAlpha);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_SeparateAlphaBlendEnable, g_origRsSeparateAlphaBlendEnable);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_SrcBlend, g_origRsSrcBlend);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_DestBlend, g_origRsDestBlend);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_SrcBlendAlpha, g_origRsSrcBlendAlpha);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_DestBlendAlpha, g_origRsDestBlendAlpha);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_CullMode, g_origRsCullMode);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilEnable, g_origRsStencilEnable);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_TwoSidedStencilMode, g_origRsTwoSidedStencilMode);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilFunc, g_origRsStencilFunc);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilFail, g_origRsStencilFail);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilZFail, g_origRsStencilZFail);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilPass, g_origRsStencilPass);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilRef, g_origRsStencilRef);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilMask, g_origRsStencilMask);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_StencilWriteMask, g_origRsStencilWriteMask);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilFunc, g_origRsCcwStencilFunc);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilFail, g_origRsCcwStencilFail);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilZFail, g_origRsCcwStencilZFail);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilPass, g_origRsCcwStencilPass);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilRef, g_origRsCcwStencilRef);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilMask, g_origRsCcwStencilMask);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_CCWStencilWriteMask, g_origRsCcwStencilWriteMask);
-// PGR4: ScissorTestEnable not located in this IDB yet; stubbed (hook dormant).
-[[maybe_unused]] static Pgr4NoopGuestFn g_origRsScissorTestEnable;
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_SlopeScaleDepthBias, g_origRsSlopeScaleDepthBias);
-PGR4_RS_IMPORT(D3DDevice_SetRenderState_DepthBias, g_origRsDepthBias);
-
-#undef PGR4_RS_IMPORT
-
-namespace {
-
-void MirrorRenderState(uint32_t renderContext, uint32_t d3drs, uint32_t value) {
-  GuestDevice* device = DeviceForRenderContext(renderContext);
-  if (device == nullptr)
-    return;
-  rr::SetRenderState(device, d3drs, value);
-}
-
-#define PGR4_RS_HOOK(hookName, origCallable, d3drs) \
-  void hookName(uint32_t device, uint32_t value) { \
-    origCallable(device, value);                   \
-    MirrorRenderState(device, d3drs, value);       \
-  }
-
-PGR4_RS_HOOK(Pgr4RsAlphaBlendEnable, g_origRsAlphaBlendEnable, rr::D3DRS_ALPHABLENDENABLE)
-PGR4_RS_HOOK(Pgr4RsAlphaTestEnable, g_origRsAlphaTestEnable, rr::D3DRS_ALPHATESTENABLE)
-PGR4_RS_HOOK(Pgr4RsAlphaRef, g_origRsAlphaRef, rr::D3DRS_ALPHAREF)
-PGR4_RS_HOOK(Pgr4RsZEnable, g_origRsZEnable, rr::D3DRS_ZENABLE)
-PGR4_RS_HOOK(Pgr4RsZWriteEnable, g_origRsZWriteEnable, rr::D3DRS_ZWRITEENABLE)
-PGR4_RS_HOOK(Pgr4RsZFunc, g_origRsZFunc, rr::D3DRS_ZFUNC)
-PGR4_RS_HOOK(Pgr4RsColorWriteEnable, g_origRsColorWriteEnable, rr::D3DRS_COLORWRITEENABLE)
-PGR4_RS_HOOK(Pgr4RsBlendOp, g_origRsBlendOp, rr::D3DRS_BLENDOP)
-PGR4_RS_HOOK(Pgr4RsBlendOpAlpha, g_origRsBlendOpAlpha, rr::D3DRS_BLENDOPALPHA)
-PGR4_RS_HOOK(Pgr4RsSeparateAlphaBlendEnable, g_origRsSeparateAlphaBlendEnable,
-            rr::D3DRS_SEPARATEALPHABLENDENABLE)
-PGR4_RS_HOOK(Pgr4RsSrcBlend, g_origRsSrcBlend, rr::D3DRS_SRCBLEND)
-PGR4_RS_HOOK(Pgr4RsDestBlend, g_origRsDestBlend, rr::D3DRS_DESTBLEND)
-PGR4_RS_HOOK(Pgr4RsSrcBlendAlpha, g_origRsSrcBlendAlpha, rr::D3DRS_SRCBLENDALPHA)
-PGR4_RS_HOOK(Pgr4RsDestBlendAlpha, g_origRsDestBlendAlpha, rr::D3DRS_DESTBLENDALPHA)
-PGR4_RS_HOOK(Pgr4RsCullMode, g_origRsCullMode, rr::D3DRS_CULLMODE)
-PGR4_RS_HOOK(Pgr4RsStencilEnable, g_origRsStencilEnable, rr::D3DRS_STENCILENABLE)
-PGR4_RS_HOOK(Pgr4RsTwoSidedStencilMode, g_origRsTwoSidedStencilMode, rr::D3DRS_TWOSIDEDSTENCILMODE)
-PGR4_RS_HOOK(Pgr4RsStencilFunc, g_origRsStencilFunc, rr::D3DRS_STENCILFUNC)
-PGR4_RS_HOOK(Pgr4RsStencilFail, g_origRsStencilFail, rr::D3DRS_STENCILFAIL)
-PGR4_RS_HOOK(Pgr4RsStencilZFail, g_origRsStencilZFail, rr::D3DRS_STENCILZFAIL)
-PGR4_RS_HOOK(Pgr4RsStencilPass, g_origRsStencilPass, rr::D3DRS_STENCILPASS)
-PGR4_RS_HOOK(Pgr4RsStencilRef, g_origRsStencilRef, rr::D3DRS_STENCILREF)
-PGR4_RS_HOOK(Pgr4RsStencilMask, g_origRsStencilMask, rr::D3DRS_STENCILMASK)
-PGR4_RS_HOOK(Pgr4RsStencilWriteMask, g_origRsStencilWriteMask, rr::D3DRS_STENCILWRITEMASK)
-PGR4_RS_HOOK(Pgr4RsCcwStencilFunc, g_origRsCcwStencilFunc, rr::D3DRS_CCWSTENCILFUNC)
-PGR4_RS_HOOK(Pgr4RsCcwStencilFail, g_origRsCcwStencilFail, rr::D3DRS_CCWSTENCILFAIL)
-PGR4_RS_HOOK(Pgr4RsCcwStencilZFail, g_origRsCcwStencilZFail, rr::D3DRS_CCWSTENCILZFAIL)
-PGR4_RS_HOOK(Pgr4RsCcwStencilPass, g_origRsCcwStencilPass, rr::D3DRS_CCWSTENCILPASS)
-PGR4_RS_HOOK(Pgr4RsCcwStencilRef, g_origRsCcwStencilRef, rr::D3DRS_CCWSTENCILREF)
-PGR4_RS_HOOK(Pgr4RsCcwStencilMask, g_origRsCcwStencilMask, rr::D3DRS_CCWSTENCILMASK)
-PGR4_RS_HOOK(Pgr4RsCcwStencilWriteMask, g_origRsCcwStencilWriteMask, rr::D3DRS_CCWSTENCILWRITEMASK)
-PGR4_RS_HOOK(Pgr4RsScissorTestEnable, g_origRsScissorTestEnable, rr::D3DRS_SCISSORTESTENABLE)
-PGR4_RS_HOOK(Pgr4RsSlopeScaleDepthBias, g_origRsSlopeScaleDepthBias, rr::D3DRS_SLOPESCALEDEPTHBIAS)
-PGR4_RS_HOOK(Pgr4RsDepthBias, g_origRsDepthBias, rr::D3DRS_DEPTHBIAS)
-
-#undef PGR4_RS_HOOK
-
-}  // namespace
-
-REX_HOOK(D3DDevice_SetRenderState_AlphaBlendEnable, Pgr4RsAlphaBlendEnable);
-REX_HOOK(D3DDevice_SetRenderState_AlphaTestEnable, Pgr4RsAlphaTestEnable);
-REX_HOOK(D3DDevice_SetRenderState_AlphaRef, Pgr4RsAlphaRef);
-REX_HOOK(D3DDevice_SetRenderState_ZEnable, Pgr4RsZEnable);
-REX_HOOK(D3DDevice_SetRenderState_ZWriteEnable, Pgr4RsZWriteEnable);
-REX_HOOK(D3DDevice_SetRenderState_ZFunc, Pgr4RsZFunc);
-REX_HOOK(D3DDevice_SetRenderState_ColorWriteEnable, Pgr4RsColorWriteEnable);
-REX_HOOK(D3DDevice_SetRenderState_BlendOp, Pgr4RsBlendOp);
-REX_HOOK(D3DDevice_SetRenderState_BlendOpAlpha, Pgr4RsBlendOpAlpha);
-REX_HOOK(D3DDevice_SetRenderState_SeparateAlphaBlendEnable, Pgr4RsSeparateAlphaBlendEnable);
-REX_HOOK(D3DDevice_SetRenderState_SrcBlend, Pgr4RsSrcBlend);
-REX_HOOK(D3DDevice_SetRenderState_DestBlend, Pgr4RsDestBlend);
-REX_HOOK(D3DDevice_SetRenderState_SrcBlendAlpha, Pgr4RsSrcBlendAlpha);
-REX_HOOK(D3DDevice_SetRenderState_DestBlendAlpha, Pgr4RsDestBlendAlpha);
-REX_HOOK(D3DDevice_SetRenderState_CullMode, Pgr4RsCullMode);
-REX_HOOK(D3DDevice_SetRenderState_StencilEnable, Pgr4RsStencilEnable);
-REX_HOOK(D3DDevice_SetRenderState_TwoSidedStencilMode, Pgr4RsTwoSidedStencilMode);
-REX_HOOK(D3DDevice_SetRenderState_StencilFunc, Pgr4RsStencilFunc);
-REX_HOOK(D3DDevice_SetRenderState_StencilFail, Pgr4RsStencilFail);
-REX_HOOK(D3DDevice_SetRenderState_StencilZFail, Pgr4RsStencilZFail);
-REX_HOOK(D3DDevice_SetRenderState_StencilPass, Pgr4RsStencilPass);
-REX_HOOK(D3DDevice_SetRenderState_StencilRef, Pgr4RsStencilRef);
-REX_HOOK(D3DDevice_SetRenderState_StencilMask, Pgr4RsStencilMask);
-REX_HOOK(D3DDevice_SetRenderState_StencilWriteMask, Pgr4RsStencilWriteMask);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilFunc, Pgr4RsCcwStencilFunc);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilFail, Pgr4RsCcwStencilFail);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilZFail, Pgr4RsCcwStencilZFail);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilPass, Pgr4RsCcwStencilPass);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilRef, Pgr4RsCcwStencilRef);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilMask, Pgr4RsCcwStencilMask);
-REX_HOOK(D3DDevice_SetRenderState_CCWStencilWriteMask, Pgr4RsCcwStencilWriteMask);
-REX_HOOK(D3DDevice_SetRenderState_ScissorTestEnable, Pgr4RsScissorTestEnable);
-REX_HOOK(D3DDevice_SetRenderState_SlopeScaleDepthBias, Pgr4RsSlopeScaleDepthBias);
-REX_HOOK(D3DDevice_SetRenderState_DepthBias, Pgr4RsDepthBias);
-
-// ---------------------------------------------------------------------------
-// Clip planes.
-// ---------------------------------------------------------------------------
-
-REX_IMPORT(__imp__D3DDevice_SetRenderState_ClipPlaneEnable, g_origRsClipPlaneEnable,
-           void(uint32_t, uint32_t));
-REX_IMPORT(__imp__D3DDevice_SetRenderState_ViewportEnable, g_origRsViewportEnable,
-           void(uint32_t, uint32_t));
-
-namespace {
-
-void Pgr4RsClipPlaneEnable(uint32_t renderContext, uint32_t value) {
-  g_origRsClipPlaneEnable(renderContext, value);
-  GuestDevice* device = DeviceForRenderContext(renderContext);
-  if (device != nullptr)
-    rr::SetClipPlaneState(device, value);
-}
-
-void Pgr4RsViewportEnable(uint32_t renderContext, uint32_t value) {
-  g_origRsViewportEnable(renderContext, value);
-  GuestDevice* device = DeviceForRenderContext(renderContext);
-  if (device != nullptr)
-    rr::SetViewportEnable(device, value);
-}
-
-}  // namespace
-
-REX_HOOK(D3DDevice_SetRenderState_ClipPlaneEnable, Pgr4RsClipPlaneEnable);
-REX_HOOK(D3DDevice_SetRenderState_ViewportEnable, Pgr4RsViewportEnable);
+// No render-state setter is hooked. Their XDK bodies run natively (plain
+// struct bit-packing) and every draw reads the device back in
+// QueueDrawStateSnapshots: alpha test/ref, Z, cull, blend, colour mask, depth
+// bias, the stencil family, clip-plane enables and viewport enable.
 
 // PGR4: PGR4_RenderContext_SetVertexDeclaration is FM2-engine or not yet located in this IDB; the guest import is
 // stubbed so the ported code links. Its hook (if any) is dormant until mapped.
@@ -904,7 +744,12 @@ REX_IMPORT(__imp__D3DDevice_SetVertexDeclaration, g_origD3DSetVertexDeclaration,
 namespace {
 
 void D3DSetVertexDeclarationHook(GuestDevice* device, uint32_t declarationAddress) {
-  g_origD3DSetVertexDeclaration(ghp::ToGuest(device), declarationAddress);
+  // The XDK body stores device+0x2E24 and a shader-patch pending bit for its
+  // own draw path, which never runs; only command-buffer recording needs it.
+  if (pgr4::render::RenderQueue::IsRecording())
+    g_origD3DSetVertexDeclaration(ghp::ToGuest(device), declarationAddress);
+  else if (device != nullptr)
+    device->vertexDeclaration = declarationAddress;  // read back by GetVertexDeclaration
   rr::SetVertexDeclaration(device, declarationAddress != 0
                                        ? ghp::ToHost<rr::GuestVertexDeclaration>(declarationAddress)
                                        : nullptr);
@@ -912,6 +757,25 @@ void D3DSetVertexDeclarationHook(GuestDevice* device, uint32_t declarationAddres
 
 }  // namespace
 
+// D3DDevice_SetFVF (0x826953E8) builds a declaration inside the device
+// (+0x2F98) and stores it at +0x2E24 itself, never through
+// D3DDevice_SetVertexDeclaration. Bink's frame quad and the device's default
+// state use it; with the device field no longer read at draw time, record
+// the declaration it produced for the producer-side readers.
+REX_EXTERN(__imp__D3DDevice_SetFVF);
+REX_HOOK_RAW(D3DDevice_SetFVF) {
+  const uint32_t deviceAddress = ctx.r3.u32;
+  __imp__D3DDevice_SetFVF(ctx, base);
+  auto* device = ghp::ToHost<GuestDevice>(deviceAddress);
+  if (device == nullptr)
+    return;
+  // Record only: the render thread never saw FVF declarations (it resolves
+  // by shader inputs); binding this bare one there starves richer streams.
+  const uint32_t declarationAddress = device->vertexDeclaration.get();
+  rr::RecordVertexDeclaration(device, declarationAddress != 0
+                                          ? ghp::ToHost<rr::GuestVertexDeclaration>(declarationAddress)
+                                          : nullptr);
+}
 REX_HOOK(D3DDevice_SetVertexDeclaration, D3DSetVertexDeclarationHook);
 
 // ---------------------------------------------------------------------------
@@ -1245,8 +1109,9 @@ REX_HOOK(XGRegisterPixelShader, XGRegisterPixelShaderHook);
 // Stream / index binding also goes through the XDK entry points in PGR4
 // (D3DDevice_SetStreamSource @ 0x82690618 (device, stream, buffer, offset,
 // stride, pendingMask), D3DDevice_SetIndices @ 0x826907C0 (device, buffer)).
-// The originals keep the device slots QueueDrawStateSnapshots reads; the
-// native binding adds the byte offset the slots do not carry.
+// The hooks record buffer, byte offset and stride for the draw's geometry
+// snapshot; the XDK bodies (device slots, fetch-constant shadow, resource
+// fences on the ring) only matter to command-buffer recording.
 REX_IMPORT(__imp__D3DDevice_SetStreamSource, g_origD3DSetStreamSource,
            void(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t));
 REX_IMPORT(__imp__D3DDevice_SetIndices, g_origD3DSetIndices, void(uint32_t, uint32_t));
@@ -1255,12 +1120,36 @@ namespace {
 
 void D3DSetStreamSourceHook(GuestDevice* device, uint32_t stream, uint32_t bufferAddr,
                             uint32_t offset, uint32_t stride, uint32_t pendingMask) {
-  g_origD3DSetStreamSource(ghp::ToGuest(device), stream, bufferAddr, offset, stride, pendingMask);
+  if (pgr4::render::RenderQueue::IsRecording()) {
+    g_origD3DSetStreamSource(ghp::ToGuest(device), stream, bufferAddr, offset, stride,
+                             pendingMask);
+  } else if (device != nullptr && stream < 17u) {
+    // Keep what the XDK body stored and D3DDevice_GetStreamSource (0x82690738)
+    // reads back: PGR4's device state capture (IDA 0x8283BC10) saves all
+    // eight streams, the declaration and the indices around its UI, crowd
+    // and movie draws and rebinds them afterwards. Slot, stride/4 and the
+    // vertex fetch shadow (+0x778 - 8N base, +0x77C - 8N size) from the
+    // header, exactly as the body computes them; fences and pending bits
+    // only feed the XDK's own draw path.
+    if (bufferAddr != 0) {
+      const auto* header = ghp::ToHost<const rex::be<uint32_t>>(bufferAddr);
+      const uint32_t aliasPlusOffset = header[6].get() + offset;
+      auto* shadow = reinterpret_cast<rex::be<uint32_t>*>(
+          reinterpret_cast<uint8_t*>(device) + 0x778u - stream * 8u);
+      shadow[0] = (((aliasPlusOffset >> 20) + 512u) & 0x1000u) + (aliasPlusOffset & 0x1FFFFFFFu);
+      shadow[1] = header[7].get() - offset;
+    }
+    device->streamSources[stream] = bufferAddr;
+    device->streamStrideDwords[stream] = uint8_t(stride >> 2);
+  }
   rr::SetStreamSource(device, stream, ghp::ToHost<GuestBuffer>(bufferAddr), offset, stride);
 }
 
 void D3DSetIndicesHook(GuestDevice* device, uint32_t bufferAddr) {
-  g_origD3DSetIndices(ghp::ToGuest(device), bufferAddr);
+  if (pgr4::render::RenderQueue::IsRecording())
+    g_origD3DSetIndices(ghp::ToGuest(device), bufferAddr);
+  else if (device != nullptr)
+    device->indexBuffer = bufferAddr;  // read back by D3DDevice_GetIndices (0x82690850)
   rr::SetIndices(device, ghp::ToHost<GuestBuffer>(bufferAddr));
 }
 

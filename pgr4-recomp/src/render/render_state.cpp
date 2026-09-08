@@ -2434,13 +2434,17 @@ std::unordered_map<GuestDevice*, ProducerGeometryState> g_producerGeometry;
 
 }  // namespace
 
-void SetVertexDeclaration(GuestDevice* device, GuestVertexDeclaration* declaration) {
+void RecordVertexDeclaration(GuestDevice* device, GuestVertexDeclaration* declaration) {
   // Replay restores the live render state, so recorded binds must not change
   // the producer's live declaration mirror.
   if (device != nullptr && !RenderQueue::IsRecording()) {
     std::lock_guard lock(g_producerGeometryMutex);
     g_producerGeometry[device].declaration = declaration;
   }
+}
+
+void SetVertexDeclaration(GuestDevice* device, GuestVertexDeclaration* declaration) {
+  RecordVertexDeclaration(device, declaration);
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetVertexDeclaration;
   cmd.setVertexDeclaration.declaration = declaration;
@@ -2831,6 +2835,7 @@ void ResolveToTexture(GuestBaseTexture* destTexture, const GuestPoint* destPoint
 // Phase 4: draw dispatch + constant transport.
 // ---------------------------------------------------------------------------
 
+static DrawStreamSnapshot RecordedStream0(GuestDevice* device);
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -3511,12 +3516,8 @@ uint32_t EffectiveStream0Stride(GuestDevice* device) {
   uint32_t stride = g_inputSlots[0].stride;
   if (stride == 0)
     stride = g_pipelineState.vertexStrides[0];
-  if (stride == 0 && device != nullptr) {
-    // PGR4 stores stride/4 as one byte per stream in the guest device.
-    const uint8_t dwords = device->streamStrideDwords[0];
-    if (dwords != 0)
-      stride = uint32_t(dwords) * 4u;
-  }
+  if (stride == 0 && device != nullptr)
+    stride = RecordedStream0(device).stride;  // what SetStreamSource recorded
   return stride;
 }
 
@@ -4075,7 +4076,10 @@ struct LocalRenderCommandQueue {
   uint32_t count = 0;
 
   RenderCommand& Enqueue() {
-    assert(count < commands.size());
+    if (count == commands.size()) {  // a full state resend after a device switch
+      Submit();
+      count = 0;
+    }
     return commands[count++];
   }
 
@@ -4118,69 +4122,79 @@ void QueueDrawGeometrySnapshot(GuestDevice* device, LocalRenderCommandQueue& que
   // it too. Indexed draws and recordings keep full ranges (replay can inherit
   // a different declaration); UP draws can override stream-0 layout/stride.
   const GuestVertexDeclaration* declaration = state.declaration;
+  // The hooks record what the guest bound and no longer run the XDK setters,
+  // so the device's stream slots and fetch-constant shadow are never written:
+  // the producer state is the only source.
   if (vertexCount == 0 || RenderQueue::IsRecording() || declaration == nullptr ||
       !IsFm2Resource(declaration) || declaration->type != ResourceType::VertexDeclaration ||
-      !DeclarationFitsStreamStride(declaration, uint32_t(device->streamStrideDwords[0]) * 4u))
+      !DeclarationFitsStreamStride(declaration, geometry.streams[0].stride))
     declaration = nullptr;
   for (uint32_t index = 0; index < std::size(geometry.streams); ++index) {
-    const auto* address = &device->streamSources[index];
-    const uint8_t strideDwords = device->streamStrideDwords[index];
-    GuestBuffer* liveBuffer =
-        address->get() != 0 ? ghp::ToHost<GuestBuffer>(address->get()) : nullptr;
-    const uint32_t liveStride = uint32_t(strideDwords) * 4u;
     DrawStreamSnapshot& stream = geometry.streams[index];
+    // SetStreamSource recorded {buffer, byte offset, stride}; raw entries
+    // are re-derived below, so read the record before overwriting it.
+    const DrawStreamSnapshot recorded = stream;
+    GuestBuffer* liveBuffer = recorded.buffer;
+    const uint32_t liveStride = recorded.stride;
     if (liveBuffer == nullptr) {
       stream = {};
     } else if (!IsFm2Resource(liveBuffer)) {
-      // Vertex fetch constants count down from Fetch[31] (see GuestDevice).
-      // The fetch base includes the stream byte offset, but its size covers
-      // the entire remaining buffer, often much larger than this draw's slice.
-      const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
+      // Raw XG vertex buffer: the header keeps the data's CPU alias at +0x18
+      // and its size at +0x1C; the XDK made the fetch constant base + offset
+      // and size - offset. The size covers the entire remaining buffer,
+      // often much larger than this draw's slice.
+      const uint32_t headerAddress = ghp::ToGuest(liveBuffer);
+      // Bind-time values: the SetStreamSource hook stores the vertex fetch
+      // shadow (+0x778 - 8N base, +0x77C - 8N size) the way the XDK body
+      // did, so a header re-pointed after the bind (dynamic rings) does not
+      // move this draw's data.
+      const auto* shadow = reinterpret_cast<const rex::be<uint32_t>*>(
           reinterpret_cast<const uint8_t*>(device) + 0x778u - index * 8u);
-      const auto* fetchSize = fetchBase + 1;
+      const uint32_t fetchBase = shadow[0].get();
+      const uint32_t fetchSize = shadow[1].get();
       GuestBuffer* mirror = nullptr;
       uint32_t mirrorOffset = 0;
-      if (BindRawBufferMirror(address->get(), fetchBase->get(), false, &mirror, &mirrorOffset)) {
+      if (BindRawBufferMirror(headerAddress, fetchBase, false, &mirror, &mirrorOffset)) {
         stream = {mirror, mirrorOffset, liveStride};
         continue;
       }
       const uint32_t rawSize = NonIndexedVertexSnapshotSize(
-          declaration, index, liveStride, DecodeRawBufferSize(fetchSize->get()),
-          startVertex, vertexCount);
+          declaration, index, liveStride, DecodeRawBufferSize(fetchSize), startVertex,
+          vertexCount);
       uint64_t identity = 0;
       uint8_t* rawData;
       static std::atomic<uint32_t> s_dumpedStreams{0};
       if (s_dumpedStreams.fetch_add(1, std::memory_order_relaxed) < 96) {
         REXGPU_INFO("raw stream range: slot={} base=0x{:08X} size={} end=0x{:08X} stride={}",
-                    index, fetchBase->get(), rawSize, fetchBase->get() + rawSize, liveStride);
+                    index, fetchBase, rawSize, fetchBase + rawSize, liveStride);
       }
       {
         SCOPE_profile_cpu_f("DrawState::RawSnapshot");
-        rawData = SnapshotRawPhysicalBuffer(fetchBase->get(), rawSize, 4u, false, &identity);
+        rawData = SnapshotRawPhysicalBuffer(fetchBase, rawSize, 4u, false, &identity);
       }
       stream = {nullptr, 0, liveStride, rawData, rawData != nullptr ? rawSize : 0u, identity};
-    } else if (stream.buffer != liveBuffer || stream.stride != liveStride) {
-      stream = {liveBuffer, 0, liveStride};
     }
+    // Native buffers stay exactly as recorded: buffer, byte offset, stride.
   }
-  const auto* indexAddress = &device->indexBuffer;
+  GuestBuffer* liveIndexBuffer = geometry.indexBuffer;
+  const uint32_t indexHeaderAddress =
+      liveIndexBuffer != nullptr ? ghp::ToGuest(liveIndexBuffer) : 0u;
   geometry.indexBuffer = nullptr;
   geometry.rawIndexData = nullptr;
   geometry.rawIndexSize = 0;
   geometry.rawIndexStride = 0;
   geometry.rawIndexIdentity = 0;
-  if (indexAddress->get() != 0) {
-    GuestBuffer* liveIndexBuffer = ghp::ToHost<GuestBuffer>(indexAddress->get());
+  if (liveIndexBuffer != nullptr) {
     if (IsFm2Resource(liveIndexBuffer)) {
       geometry.indexBuffer = liveIndexBuffer;
     } else {
-      const auto* common = ghp::ToHost<const rex::be<uint32_t>>(indexAddress->get());
-      const auto* fetchBase = ghp::ToHost<const rex::be<uint32_t>>(indexAddress->get() + 0x18u);
-      const auto* fetchSize = ghp::ToHost<const rex::be<uint32_t>>(indexAddress->get() + 0x1Cu);
+      const auto* common = ghp::ToHost<const rex::be<uint32_t>>(indexHeaderAddress);
+      const auto* fetchBase = ghp::ToHost<const rex::be<uint32_t>>(indexHeaderAddress + 0x18u);
+      const auto* fetchSize = ghp::ToHost<const rex::be<uint32_t>>(indexHeaderAddress + 0x1Cu);
       GuestBuffer* mirror = nullptr;
       uint32_t mirrorOffset = 0;
       if (common != nullptr && fetchBase != nullptr &&
-          BindRawBufferMirror(indexAddress->get(), fetchBase->get(), true, &mirror,
+          BindRawBufferMirror(indexHeaderAddress, fetchBase->get(), true, &mirror,
                               &mirrorOffset) &&
           mirrorOffset == 0) {
         geometry.indexBuffer = mirror;
@@ -4219,59 +4233,118 @@ void QueueDrawStateSnapshots(GuestDevice* device, LocalRenderCommandQueue& queue
   QueueDrawGeometrySnapshot(device, queue, startVertex, vertexCount);
   // PGR4 records the world through a second D3DDevice (command-buffer batch,
   // IDA 0x82401D30 swaps the global device and resets RB_COLORCONTROL before
-  // RunCommandBuffer), so render-state hooks from both devices interleave in
-  // the single mirrored state and foliage lost its alpha test. Read the
-  // issuing device's RB_COLORCONTROL (m_ControlPacket.ColorControl, +0x293C:
-  // bit 3 ALPHA_TEST_ENABLE, bit 4 ALPHA_TO_MASK_ENABLE) and RB_ALPHA_REF
-  // (m_ValuesPacket.AlphaRef, +0x2904) and carry them in the draw's batch.
-  // ponytail: alpha-to-mask maps to the alpha test at 1x MSAA; blend/depth
-  // states still come from the hooks, mirror them here too if they drift.
-  {
-    const auto* bytes = reinterpret_cast<const uint8_t*>(device);
-    const uint32_t colorControl =
-        reinterpret_cast<const rex::be<uint32_t>*>(bytes + 0x293Cu)->get();
-    const uint32_t alphaRefBits =
-        reinterpret_cast<const rex::be<uint32_t>*>(bytes + 0x2904u)->get();
-    const float alphaRef = std::bit_cast<float>(alphaRefBits);
-    RenderCommand& enable = queue.Enqueue();
-    enable.type = RenderCommandType::SetRenderState;
-    enable.setRenderState.state = D3DRS_ALPHATESTENABLE;
-    enable.setRenderState.value = (colorControl & 0x18u) != 0 ? 1u : 0u;
-    RenderCommand& ref = queue.Enqueue();
-    ref.type = RenderCommandType::SetRenderState;
-    ref.setRenderState.state = D3DRS_ALPHAREF;
-    ref.setRenderState.value =
-        uint32_t(std::clamp(alphaRef, 0.0f, 1.0f) * 256.0f + 0.5f);
-    // Same race for the decal depth bias (pgr4_race4.rdc EID 56733: road decals
-    // z-fight with bias 0). D3DDevice_SetRenderState_SlopeScaleDepthBias /
-    // DepthBias (0x8268ECB8 / 0x8268ED80) store scale*16 and the offset in
-    // m_PointPacket (+0x2A50 front scale, +0x2A54 front offset; back copies at
-    // +0x2A58/+0x2A5C) and set ModeControl (+0x2948) bits 11/12. Both setters
-    // write front and back alike, so the front pair covers either cull mode.
-    const uint32_t modeControl =
-        reinterpret_cast<const rex::be<uint32_t>*>(bytes + 0x2948u)->get();
-    const bool polyOffset = (modeControl & 0x1800u) != 0;
-    const float slopeScale =
-        polyOffset ? std::bit_cast<float>(
-                         reinterpret_cast<const rex::be<uint32_t>*>(bytes + 0x2A50u)->get()) /
-                         16.0f
-                   : 0.0f;
-    const float depthBias =
-        polyOffset ? std::bit_cast<float>(
-                         reinterpret_cast<const rex::be<uint32_t>*>(bytes + 0x2A54u)->get())
-                   : 0.0f;
-    RenderCommand& slope = queue.Enqueue();
-    slope.type = RenderCommandType::SetRenderState;
-    slope.setRenderState.state = D3DRS_SLOPESCALEDEPTHBIAS;
-    slope.setRenderState.value = std::bit_cast<uint32_t>(slopeScale);
-    RenderCommand& bias = queue.Enqueue();
-    bias.type = RenderCommandType::SetRenderState;
-    bias.setRenderState.state = D3DRS_DEPTHBIAS;
-    bias.setRenderState.value = std::bit_cast<uint32_t>(depthBias);
-  }
+  // RunCommandBuffer), so per-setter hooks from both devices interleaved in
+  // one mirrored state. The hot setters are therefore not hooked at all:
+  // their XDK bodies run natively and each draw reads the issuing device
+  // back, so a state set a hundred times between draws costs nothing. Each
+  // value is the setter's own argument, recovered from where its body stored
+  // it (IDA 0x8268E190..0x8268EE78):
+  //   +0x293C RB_COLORCONTROL     bit 3 alpha test, bit 4 alpha-to-mask
+  //   +0x2904 RB_ALPHA_REF        float
+  //   +0x2934 RB_DEPTHCONTROL     bit 1 z enable, bit 2 z write, bits 4..6 func
+  //   +0x2948 PA_SU_SC_MODE_CNTL  bits 0..2 cull, bits 11/12 poly offset
+  //   +0x2E44                     bit 31 AlphaBlendEnable, bit 30 SeparateAlpha
+  //   +0x2E40                     blend factors/ops as requested, RB_BLENDCONTROL
+  //                               layout (the register holds a transformed copy:
+  //                               alpha fields rewritten, ONE/ZERO while off)
+  //   +0x28DC RB_COLOR_MASK       bits 0..3
+  // The setters also keep request shadows (+0x2E5C ZEnable, +0x2E4C colour
+  // mask) that the registers derive from, gated on a depth surface / render
+  // target being bound. Device creation fills only the registers, so the
+  // shadows read 0 until the first explicit call (black intro movies, the
+  // crowd flashing on frames drawn through the second device): the registers
+  // are the truth, OR-ed with the shadow so an explicit request survives the
+  // gate the way the hooked path did.
+  //   +0x2A50/+0x2A54             slope scale * 16 / depth bias (front; the
+  //                               setters write back the same, pgr4_race4.rdc)
+  //   +0x2934 RB_DEPTHCONTROL     bit 0 stencil enable (request shadow +0x2E60),
+  //                               bit 7 two-sided, func/fail/pass/zfail in 3-bit
+  //                               fields from bit 8, back face from bit 20
+  //   +0x2900 RB_STENCILREFMASK   ref / mask / write mask in bytes 0..2;
+  //   +0x28FC                     the back-face copy
+  //   +0x2944 PA_CL_CLIP_CNTL     bits 0..5 clip-plane enables, bit 16 set
+  //                               while ViewportEnable is off
+  // Only values that changed since this thread's last draw are sent; a
+  // device switch or a recording pass resends them all.
   thread_local GuestDevice* lastDevice = nullptr;
   const bool forceFullSnapshot = lastDevice != device || RenderQueue::IsRecording();
   lastDevice = device;
+  {
+    const auto* bytes = reinterpret_cast<const uint8_t*>(device);
+    const auto rd = [bytes](uint32_t offset) {
+      return reinterpret_cast<const rex::be<uint32_t>*>(bytes + offset)->get();
+    };
+    thread_local std::array<uint32_t, 35> lastSent{};
+    uint32_t slot = 0;
+    const auto emit = [&](uint32_t d3drs, uint32_t value) {
+      const uint32_t i = slot++;
+      if (!forceFullSnapshot && lastSent[i] == value)
+        return;
+      lastSent[i] = value;
+      RenderCommand& cmd = queue.Enqueue();
+      cmd.type = RenderCommandType::SetRenderState;
+      cmd.setRenderState.state = d3drs;
+      cmd.setRenderState.value = value;
+    };
+    const uint32_t colorControl = rd(0x293Cu);
+    const float alphaRef = std::bit_cast<float>(rd(0x2904u));
+    emit(D3DRS_ALPHATESTENABLE, (colorControl & 0x18u) != 0 ? 1u : 0u);
+    emit(D3DRS_ALPHAREF, uint32_t(std::clamp(alphaRef, 0.0f, 1.0f) * 256.0f + 0.5f));
+    const uint32_t depthControl = rd(0x2934u);
+    emit(D3DRS_ZENABLE, (rd(0x2E5Cu) | ((depthControl >> 1) & 1u)) != 0 ? 1u : 0u);
+    emit(D3DRS_ZWRITEENABLE, (depthControl >> 2) & 1u);
+    emit(D3DRS_ZFUNC, (depthControl >> 4) & 7u);
+    const uint32_t modeControl = rd(0x2948u);
+    emit(D3DRS_CULLMODE, modeControl & 7u);
+    const uint32_t blendFlags = rd(0x2E44u);
+    const uint32_t blend = rd(0x2E40u);
+    emit(D3DRS_ALPHABLENDENABLE, blendFlags >> 31);
+    emit(D3DRS_SEPARATEALPHABLENDENABLE, (blendFlags >> 30) & 1u);
+    emit(D3DRS_SRCBLEND, blend & 0x1Fu);
+    emit(D3DRS_BLENDOP, (blend >> 5) & 7u);
+    emit(D3DRS_DESTBLEND, (blend >> 8) & 0x1Fu);
+    emit(D3DRS_SRCBLENDALPHA, (blend >> 16) & 0x1Fu);
+    emit(D3DRS_BLENDOPALPHA, (blend >> 21) & 7u);
+    emit(D3DRS_DESTBLENDALPHA, (blend >> 24) & 0x1Fu);
+    emit(D3DRS_COLORWRITEENABLE, rd(0x2E4Cu) | (rd(0x28DCu) & 0xFu));
+    emit(D3DRS_STENCILENABLE, (rd(0x2E60u) | (depthControl & 1u)) != 0 ? 1u : 0u);
+    emit(D3DRS_TWOSIDEDSTENCILMODE, (depthControl >> 7) & 1u);
+    emit(D3DRS_STENCILFUNC, (depthControl >> 8) & 7u);
+    emit(D3DRS_STENCILFAIL, (depthControl >> 11) & 7u);
+    emit(D3DRS_STENCILPASS, (depthControl >> 14) & 7u);
+    emit(D3DRS_STENCILZFAIL, (depthControl >> 17) & 7u);
+    emit(D3DRS_CCWSTENCILFUNC, (depthControl >> 20) & 7u);
+    emit(D3DRS_CCWSTENCILFAIL, (depthControl >> 23) & 7u);
+    emit(D3DRS_CCWSTENCILPASS, (depthControl >> 26) & 7u);
+    emit(D3DRS_CCWSTENCILZFAIL, (depthControl >> 29) & 7u);
+    const uint32_t stencilRefMask = rd(0x2900u);
+    const uint32_t stencilRefMaskBack = rd(0x28FCu);
+    emit(D3DRS_STENCILREF, stencilRefMask & 0xFFu);
+    emit(D3DRS_STENCILMASK, (stencilRefMask >> 8) & 0xFFu);
+    emit(D3DRS_STENCILWRITEMASK, (stencilRefMask >> 16) & 0xFFu);
+    emit(D3DRS_CCWSTENCILREF, stencilRefMaskBack & 0xFFu);
+    emit(D3DRS_CCWSTENCILMASK, (stencilRefMaskBack >> 8) & 0xFFu);
+    emit(D3DRS_CCWSTENCILWRITEMASK, (stencilRefMaskBack >> 16) & 0xFFu);
+    // Clip planes and viewport enable have their own commands; same cache.
+    const uint32_t clipControl = rd(0x2944u);
+    const uint32_t clipPlanes = clipControl & 0x3Fu;
+    const uint32_t clipSlot = slot++;
+    if (forceFullSnapshot || lastSent[clipSlot] != clipPlanes) {
+      lastSent[clipSlot] = clipPlanes;
+      SetClipPlaneState(device, clipPlanes);
+    }
+    const uint32_t viewportEnable = (clipControl & 0x10000u) != 0 ? 0u : 1u;
+    const uint32_t viewportSlot = slot++;
+    if (forceFullSnapshot || lastSent[viewportSlot] != viewportEnable) {
+      lastSent[viewportSlot] = viewportEnable;
+      SetViewportEnable(device, viewportEnable);
+    }
+    const bool polyOffset = (modeControl & 0x1800u) != 0;
+    const float slopeScale = polyOffset ? std::bit_cast<float>(rd(0x2A50u)) / 16.0f : 0.0f;
+    const float depthBias = polyOffset ? std::bit_cast<float>(rd(0x2A54u)) : 0.0f;
+    emit(D3DRS_SLOPESCALEDEPTHBIAS, std::bit_cast<uint32_t>(slopeScale));
+    emit(D3DRS_DEPTHBIAS, std::bit_cast<uint32_t>(depthBias));
+  }
 
   // PGR4's Set*ShaderConstantB/I rotate 1 left by 56 into
   // m_Pending.m_Mask[4] (IDA 0x82694608 / 0x82694758).
@@ -5092,30 +5165,42 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
 // Guest-thread readback of vertex stream 0 (FM2 buffer or raw fetch), for
 // the rect-list expansion of vertex-buffer draws. Returns nullptr when the
 // stream cannot be read.
+static DrawStreamSnapshot RecordedStream0(GuestDevice* device) {
+  std::lock_guard lock(g_producerGeometryMutex);
+  const auto it = g_producerGeometry.find(device);
+  return it != g_producerGeometry.end() ? it->second.geometry.streams[0] : DrawStreamSnapshot{};
+}
+
 static const uint8_t* ReadStream0(GuestDevice* device, uint32_t& stride, uint64_t& size) {
-  stride = uint32_t(device->streamStrideDwords[0]) * 4u;
+  const DrawStreamSnapshot recorded = RecordedStream0(device);
+  stride = recorded.stride;
   size = 0;
-  const uint32_t address = device->streamSources[0].get();
-  if (address == 0 || stride == 0) return nullptr;
-  auto* buffer = ghp::ToHost<GuestBuffer>(address);
+  GuestBuffer* buffer = recorded.buffer;
+  if (buffer == nullptr || stride == 0) return nullptr;
   if (IsFm2Resource(buffer)) {
-    size = buffer->dataSize;
-    return static_cast<const uint8_t*>(buffer->mappedMemory);
+    if (recorded.offset >= buffer->dataSize) return nullptr;
+    size = buffer->dataSize - recorded.offset;
+    return static_cast<const uint8_t*>(buffer->mappedMemory) + recorded.offset;
   }
-  const auto* fetchBase = reinterpret_cast<const rex::be<uint32_t>*>(
-      reinterpret_cast<const uint8_t*>(device) + 0x778u);
-  const auto* fetchSize = fetchBase + 1;
-  size = DecodeRawBufferSize(fetchSize->get());
-  return SnapshotRawPhysicalBuffer(fetchBase->get(), uint32_t(size), 4u, false);
+  // Raw header: data alias at +0x18, size at +0x1C (see QueueDrawGeometrySnapshot).
+  const auto* shadow = reinterpret_cast<const rex::be<uint32_t>*>(
+      reinterpret_cast<const uint8_t*>(device) + 0x778u);  // stream 0, bind-time
+  size = DecodeRawBufferSize(shadow[1].get());
+  return SnapshotRawPhysicalBuffer(shadow[0].get(), uint32_t(size), 4u, false);
 }
 
 // Same for the bound index buffer; indexStride is 2 or 4.
 static const uint8_t* ReadIndexBuffer(GuestDevice* device, uint32_t& indexStride, uint64_t& size) {
   indexStride = 0;
   size = 0;
-  const uint32_t address = device->indexBuffer.get();
-  if (address == 0) return nullptr;
-  auto* buffer = ghp::ToHost<GuestBuffer>(address);
+  GuestBuffer* buffer = nullptr;
+  {
+    std::lock_guard lock(g_producerGeometryMutex);
+    const auto it = g_producerGeometry.find(device);
+    if (it != g_producerGeometry.end()) buffer = it->second.geometry.indexBuffer;
+  }
+  if (buffer == nullptr) return nullptr;
+  const uint32_t address = ghp::ToGuest(buffer);
   if (IsFm2Resource(buffer)) {
     indexStride = buffer->format == RenderFormat::R32_UINT ? 4u : 2u;
     size = buffer->dataSize;
@@ -5214,7 +5299,12 @@ static std::vector<uint8_t> ExpandRectList(GuestDevice* device, const uint8_t* d
                                            uint32_t vertexCount, uint32_t stride) {
   const uint32_t rects = vertexCount / 3;
   std::vector<uint8_t> out(size_t(rects) * 6 * stride);
-  const auto* decl = ghp::ToHost<GuestVertexDeclaration>(device->vertexDeclaration.get());
+  const GuestVertexDeclaration* decl = nullptr;
+  {
+    std::lock_guard lock(g_producerGeometryMutex);
+    const auto it = g_producerGeometry.find(device);
+    if (it != g_producerGeometry.end()) decl = it->second.declaration;
+  }
   for (uint32_t r = 0; r < rects; ++r) {
     const uint8_t* v0 = data + size_t(r * 3 + 0) * stride;
     const uint8_t* v1 = v0 + stride;

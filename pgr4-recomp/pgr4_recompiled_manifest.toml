@@ -58,6 +58,7 @@ includes = []
 0x82699F80 = { name = "D3D_UnlockResource" }
 0x826DEE98 = { name = "XGOffsetResourceAddress" }
 0x82694E38 = { name = "D3DDevice_SetVertexDeclaration" }
+0x826953E8 = { name = "D3DDevice_SetFVF" }
 0x82694B28 = { name = "XGRegisterVertexShader" }
 0x826948E8 = { name = "XGRegisterPixelShader" }
 0x8269C6D0 = { name = "D3DDevice_BeginTiling" }

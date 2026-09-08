@@ -2522,3 +2522,117 @@ thread 3.96 -> 3.41 us/draw: FlushRenderState 1.45 -> 1.27 us, draw proc
 remains the limiter; its next targets are the geometry snapshot tail
 (needs a diagnostic capture with zones on BindRawBufferMirror and the
 producer-state copy) and the guest code itself.
+
+## XDK bodies out of the hot path (stage A/B, 2026-09-07)
+
+Goal: the reblue / Unleashed pattern -- no per-setter marshalling for the hot
+D3D setters; the draw reads what it needs from the guest device.
+
+Stage A (streams / indices / declaration): the SetStreamSource, SetIndices and
+SetVertexDeclaration hooks no longer call their XDK bodies (only while a
+recording pass runs). What the bodies stored is still needed, and the hooks
+store it themselves with plain host writes: the stream slot, stride/4 and the
+vertex fetch shadow (+0x778 - 8N base, +0x77C - 8N size, folded from the raw
+header exactly as the body does), the index buffer pointer, the declaration
+pointer. Two things depend on those fields:
+
+- PGR4 captures the whole device state through the XDK getters (IDA
+  0x8283BC10: 17 render states, 16 samplers, 8 streams with an AddRef each,
+  declaration, indices, shaders; called from 0x8249FE48) around its UI, crowd
+  and Bink movie draws and rebinds it afterwards. With the fields stale the
+  restore rebound null streams and a stale declaration: black intro movies,
+  flashing crowd flags, broken UI.
+- The draw's geometry snapshot reads the fetch shadow for raw streams (bind
+  time), not the header at draw time: dynamic rings re-point a header after
+  the bind.
+
+D3DDevice_SetFVF (0x826953E8, named in the manifest) builds a declaration
+inside the device (+0x2F98) and stores it at +0x2E24 without SetVertexDecl-
+aration; Bink's frame quad and device init use it. Its hook records the
+declaration for the producer-side readers (rect-list expansion) only. Binding
+it on the render thread as well starved richer streams: the bare XYZ
+declaration installed at init "fits" every stream, and colour / texcoord
+inputs vanished.
+
+Stage B (render state): 17 setters unhooked entirely -- alpha test / ref,
+Z enable / write / func, cull, alpha blend and separate-alpha enables, src /
+dest blend, blend op (and the alpha variants), colour write, slope scale /
+depth bias. Their XDK bodies run natively and QueueDrawStateSnapshots recovers
+each setter's own argument from where the body stored it (register map in the
+code: +0x293C colour control, +0x2904 alpha ref, +0x2934 depth control,
++0x2E5C requested ZEnable, +0x2948 mode control, +0x2E44 blend enables,
++0x2E40 packed blend factors / ops, +0x2E4C requested colour mask,
++0x2A50/54 poly offset). Only values that changed since the thread's last draw
+are sent; a device switch or a recording pass resends all 17. That cache is
+only sound while the readback is the sole writer of those states: with the
+hooks restored for a bisect, a setter call on the command-buffer device
+changed the render thread's alpha test between two main-device draws and
+the cache saw no change (trees lost their alpha, the rider's body vanished).
+HEAD resent alpha test and ref every draw for that reason. The per-draw
+local queue now flushes instead of overrunning when a resend plus geometry
+exceeds its 32 slots (its assert is compiled out in RelWithDebInfo).
+race2 baseline for what this removes: 3,788 state hook calls / frame
+(0.60 ms main thread) plus their render-thread commands; ~7,000 stream /
+index / declaration hook calls per frame no longer run XDK bodies.
+
+Stage B, second half (2026-09-08): the remaining 19 state setters went the
+same way -- stencil enable (RB_DEPTHCONTROL bit 0, request shadow +0x2E60),
+two-sided (bit 7), front func / fail / pass / zfail (3-bit fields from bit 8),
+back face from bit 20, ref / mask / write mask in bytes 0..2 of
+RB_STENCILREFMASK +0x2900 and the back-face copy +0x28FC, clip-plane enables
+in PA_CL_CLIP_CNTL +0x2944 bits 0..5, viewport enable as the inverse of its
+bit 16. The two engine-level hooks (ClipPlaneEnable / ViewportEnable) and the
+dormant ScissorTestEnable stub are gone with them; no D3DDevice_SetRenderState_*
+function is hooked any more. Clip planes and viewport enable keep their own
+commands, emitted from the same 35-slot last-value cache.
+
+Still hooked with their originals (all cold, under 60 calls / frame
+combined): Present, VB / IB Lock, Surface / Texture LockRect, UnlockResource,
+SurfaceGetDesc, AddRef / Release, XGOffsetResourceAddress, SetFVF,
+the Fm2 stream / index / surface binds, SetRenderTarget /
+DepthStencilSurface, XGRegister*Shader, Draw* (recording only). Their bodies
+keep bookkeeping the game reads back (surface bindings, lock pointers,
+refcounts); replacing them buys no measurable time.
+
+Item 3 (mirrors at load, push invalidation) assessed and not done: mirrors are
+already registered at header assignment (XGOffsetResourceAddress ->
+RegisterRawBuffer); the per-draw poll is one mutex pass plus ArmedRevision
+(block loads and an unordered_map find whenever the watch serial moved, which
+in a race is every draw because each raw snapshot bumps it). Estimated
+0.3-0.5 ms / frame. The 1,684 raw snapshots per frame are small dynamic UI /
+index ranges rewritten each frame and stay copies either way.
+
+Rider body missing after the 2026-09-07 cache regeneration (pgr4_nobiker1.rdc):
+the body's ten shaders (1EE93F05..., 3D0D4B30..., 408416BC..., 6B7CAA81...,
+6DBF023A..., 992941EB..., 9E5874EE..., B5947FA0..., C5EAA757..., E11F4BE3...)
+were dropped by XenosRecomp -- "shader generated too much HLSL", the runaway
+guard at 1024 instructions / 96 KB -- because every computed-index fetch now
+carries its raw-stream form and these emit 98-100 KB. The run logged them as
+cache misses and one pipeline rejected; a skipped draw never reaches a
+capture, so the body only showed in the shadow depth. Guard raised to 4096 /
+512 KB; the recompiler's SEH wrapper now reports the C++ exception text
+instead of "structured exception 0xE06D7363"; relative-addressed computed
+index fetches fall back to the input-assembler path instead of throwing.
+When a regeneration logs "Skipping N of M shaders", treat it as a failure.
+
+pgr4_race3.tracy (all state setters and the stream / index / declaration
+bodies gone), against pgr4_race2.tracy, per draw because race3 is a heavier
+scene (4,942 vs 3,825 draws / frame, 25.2 vs 19.0 ms):
+main-thread D3D hooks 2.63 vs 2.50 us / draw, render-thread ExecuteBatch 3.16
+vs 3.02 us / draw, state-setter hooks 0 vs 2,775 calls (0.41 ms) / frame,
+SetStreamSource 0.14 vs 0.18 us / call, geometry snapshot 1.03 vs 1.01 us /
+draw, SetTexture 0.79 vs 0.44 us / call (more distinct textures in race3).
+The removed bodies were not where the time was: per-draw cost is flat. What
+remains per draw is the geometry snapshot (~1.0 us), the draw hook itself
+(~0.45 us), texture binds, and RT::FlushRenderState at ~1.4 us / draw.
+tracy-csvexport for these traces must be the build in
+C:/Users/Tera/Documents/GitHub/tracy/csvexport/build_ninja_014_msvc; the
+downloaded 0.13-era exporter fail-fasts on them.
+
+Next candidate: sizeof(RenderCommand) is dominated by the 16-slot
+DrawGeometrySnapshot in the union, so every SetRenderState / SetTexture
+command is copied at that size three times (local queue, Push, TakeBatch), and
+the render thread walks 16 slots (three hash mixes each) per draw. PGR4 binds
+slots 0-1 (raw streams are limited to 4 by design). A 4-slot snapshot with
+slots >= 4 routed through the legacy SetStreamSource command shrinks commands
+several times over.
