@@ -198,8 +198,13 @@ struct DrawStreamSnapshot {
   uint64_t rawIdentity;  // Host immutable snapshot identity; 0 requires content validation.
 };
 
+// PGR4 binds streams 0..3 (its computed-index fetches are limited to four);
+// higher slots go through the SetStreamSource command. Keeping the snapshot
+// at four slots keeps every RenderCommand small: the union carries this.
+constexpr uint32_t kDrawSnapshotStreams = 4;
+
 struct DrawGeometrySnapshot {
-  DrawStreamSnapshot streams[16];
+  DrawStreamSnapshot streams[kDrawSnapshotStreams];
   GuestBuffer* indexBuffer;
   uint8_t* rawIndexData;
   uint32_t rawIndexSize;

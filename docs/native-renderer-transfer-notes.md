@@ -2629,6 +2629,64 @@ tracy-csvexport for these traces must be the build in
 C:/Users/Tera/Documents/GitHub/tracy/csvexport/build_ninja_014_msvc; the
 downloaded 0.13-era exporter fail-fasts on them.
 
+2026-09-08, items 1-3 first pass (pgr4_race4.tracy vs race3, per draw):
+DrawGeometrySnapshot holds 4 stream slots (sizeof(RenderCommand) 680 -> 200,
+slots >= 4 use the SetStreamSource command); binds and draws use a per-thread
+cached ProducerGeometryState pointer (no mutex / hash); shader constants are
+swapped once per applied range and uploaded host-endian. Result: main-thread
+hooks 2.63 -> 2.44 us / draw, SetStreamSource 0.14 -> 0.09 us / call,
+RT::Geometry 0.42 -> 0.30 us / draw. Flat: main geometry snapshot 1.04 us,
+RT::FlushRenderState 1.46 us. ExecuteBatch minus Flush / Geometry / draw
+leaves ~1.3 us / draw of command dispatch (SetTexture, constants, the switch).
+Temporary TSC attribution (FlushRenderState blocks, geometry snapshot blocks,
+ticks per RenderCommandType) logs every 65536 draws / 262144 commands; enum
+order for the type ids: 6 SetRenderState 11 SetTexture 12 SetTextureBase
+13 SetSamplerState 14 SetBooleans 16/17 VS/PS constants 18/19 shaders
+23 SetDrawGeometrySnapshot 27 DrawIndexedPrimitive 36/37 UnlockBuffer.
+
+Attribution runs (TSC ticks, ~3150 per us, logs 252 / 253):
+FlushRenderState 4600 -> 3100 ticks / draw after the shared-constants upload
+stopped going through the hashed byte cache (block 2200 -> 900); the pipeline
+block (state copy + memcmp + occasional GetPipeline) is now the largest at
+950-1550. Geometry snapshot: streams 1650-2300 -> 950-1380, index 950-1150 ->
+740-900 ticks / draw with the mirror fast path (unchanged block revision ->
+current, no serial / armed lookup / second lock). Dispatch per command is
+small: SetTexture ~120, VS constants ~150-270, SetDrawGeometrySnapshot ~540.
+
+Present split per frame: swap-chain present ~0.4 ms, fence wait on the
+previous slot 9.5-10.5 ms. With ~10 ms of render-thread recording and the
+2-deep pipeline that puts GPU time near 20 ms / frame: the GPU is the
+bottleneck now, and further CPU work on either thread will not move the
+frame time until GPU time drops.
+
+The GPU-bound conclusion was wrong in its cause and right in its effect.
+GPU timestamp queries (frame open / every 512 draws / frame close) put the
+GPU frame at 5 ms, and the fence wait at 10-15 us, once FlushRenderState
+stopped re-issuing the root layout and the four descriptor sets on every
+pipeline lookup: plume's setGraphicsPipelineLayout is SetGraphicsRootSignature,
+which resets every root argument and drains the GPU pipeline, and the port
+did it 400-6000 times a frame (once per resolved-pipeline lookup, whether or
+not the pipeline object changed). Now the layout and descriptor sets are set
+only after InvalidateCommandListBindings and setPipeline only when the object
+differs. Frame cadence went from 21 ms to 8.7 ms (115 fps, log 255) in the
+same race section; the main-thread hook times of earlier captures were mostly
+render-queue back-pressure from a render thread waiting on that GPU. The
+root-descriptor cache from the perf pass had also been assuming those
+bindings survived the root signature reset, which D3D12 does not promise.
+
+## 2026-09-08: mirrors (pgr4_mirror.rdc EIDs 15500/15514, 16048/16059)
+
+The mirror strip is a 424x96 RGBA16F texture at 0xEED1B000 that PGR4 resolves
+into every frame and then samples. The resolve destination header carries
+Xenos format 32 (k_16_16_16_16_FLOAT); the sampler's fetch constant carries 29
+(k_16_16_16_16_EXPAND). Same bytes, same host format (plume 10), but
+GuestTextureLayoutKey included the raw code, so every frame the sampler-side
+FindAndRefreshGuestTexture evicted the resolved texture and
+CreateAndRegisterGuestTexture uploaded the strip from guest memory, which
+nothing on the host ever writes: raw tiled bytes as half floats (65504s and
+NaNs, the rainbow noise). The key no longer carries the raw code. The
+TranslateGuestTexture log line now prints the remaining key fields.
+
 Next candidate: sizeof(RenderCommand) is dominated by the 16-slot
 DrawGeometrySnapshot in the union, so every SetRenderState / SetTexture
 command is copied at that size three times (local queue, Push, TakeBatch), and

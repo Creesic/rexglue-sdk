@@ -2432,15 +2432,27 @@ struct ProducerGeometryState {
 std::mutex g_producerGeometryMutex;
 std::unordered_map<GuestDevice*, ProducerGeometryState> g_producerGeometry;
 
+// Binds and draws for a device come from one guest thread; map nodes never
+// move, so after the first lookup the thread keeps the node pointer and the
+// hot path takes neither the mutex nor the hash.
+ProducerGeometryState& ProducerState(GuestDevice* device) {
+  thread_local GuestDevice* lastDevice = nullptr;
+  thread_local ProducerGeometryState* lastState = nullptr;
+  if (device == lastDevice && lastState != nullptr)
+    return *lastState;
+  std::lock_guard lock(g_producerGeometryMutex);
+  lastState = &g_producerGeometry[device];
+  lastDevice = device;
+  return *lastState;
+}
+
 }  // namespace
 
 void RecordVertexDeclaration(GuestDevice* device, GuestVertexDeclaration* declaration) {
   // Replay restores the live render state, so recorded binds must not change
   // the producer's live declaration mirror.
-  if (device != nullptr && !RenderQueue::IsRecording()) {
-    std::lock_guard lock(g_producerGeometryMutex);
-    g_producerGeometry[device].declaration = declaration;
-  }
+  if (device != nullptr && !RenderQueue::IsRecording())
+    ProducerState(device).declaration = declaration;
 }
 
 void SetVertexDeclaration(GuestDevice* device, GuestVertexDeclaration* declaration) {
@@ -2601,6 +2613,16 @@ bool BindRawBufferMirror(uint32_t headerAddress, uint32_t fetchBase, bool index,
     return false;
   // Nothing anywhere was written since this mirror was last confirmed: the
   // uploaded payload is still current, without a page walk.
+  // Fast path: the block revision only moves on a write fault, and a fault
+  // is what disarms a page, so an unchanged revision means the upload is
+  // current and the range is still armed. Everything below (watch serial,
+  // armed-range lookup, second lock) is only needed when it moved.
+  if (mirror.revision != 0 &&
+      g_physicalWriteWatch.Revision(mirror.physical, mirror.size) == mirror.revision) {
+    *buffer = mirror.buffer;
+    *offset = physical - mirror.physical;
+    return true;
+  }
   const uint64_t serial = g_physicalWriteWatch.Serial();
   uint64_t revision = mirror.revision != 0 && mirror.checkedSerial == serial ? mirror.revision : 0;
   if (revision == 0)
@@ -2660,11 +2682,15 @@ bool BindRawBufferMirror(uint32_t headerAddress, uint32_t fetchBase, bool index,
 
 void SetStreamSource(GuestDevice* device, uint32_t index, GuestBuffer* buffer, uint32_t offset,
                      uint32_t stride) {
-  if (device != nullptr && index < 16u) {
-    std::lock_guard lock(g_producerGeometryMutex);
-    DrawGeometrySnapshot& snapshot = g_producerGeometry[device].geometry;
-    snapshot.streams[index] = {buffer, offset, stride};
+  if (device != nullptr && index < kDrawSnapshotStreams) {
+    ProducerState(device).geometry.streams[index] = {buffer, offset, stride};
     return;  // Every draw's geometry snapshot rebinds the slot on the render thread.
+  }
+  if (buffer != nullptr && !IsFm2Resource(buffer)) {
+    static std::atomic<bool> s_warned{false};
+    if (!s_warned.exchange(true))
+      REXGPU_WARN("SetStreamSource: raw buffer bound at stream {} (only 0..{} are mirrored)",
+                  index, kDrawSnapshotStreams - 1u);
   }
   RenderCommand cmd{};
   cmd.type = RenderCommandType::SetStreamSource;
@@ -2677,8 +2703,7 @@ void SetStreamSource(GuestDevice* device, uint32_t index, GuestBuffer* buffer, u
 
 void SetIndices(GuestDevice* device, GuestBuffer* buffer) {
   if (device != nullptr) {
-    std::lock_guard lock(g_producerGeometryMutex);
-    g_producerGeometry[device].geometry.indexBuffer = buffer;
+    ProducerState(device).geometry.indexBuffer = buffer;
     return;  // Carried by the draw's geometry snapshot.
   }
   RenderCommand cmd{};
@@ -4063,8 +4088,13 @@ void ProcSetShaderConstants(bool vertex, const uint8_t* memory, uint32_t index, 
       size / sizeof(uint32_t) > capacity - index) {
     return;
   }
-  if (std::memcmp(destination + index, memory, size) != 0) {
-    std::memcpy(destination + index, memory, size);
+  // The files are kept host-endian: the swap happens once here on the range
+  // the guest wrote (a few registers) rather than on all 4 KB of both files
+  // at every dirty draw's upload.
+  alignas(16) static thread_local uint32_t swapped[0x400];
+  rex::memory::copy_and_swap_32_unaligned(swapped, memory, size / sizeof(uint32_t));
+  if (std::memcmp(destination + index, swapped, size) != 0) {
+    std::memcpy(destination + index, swapped, size);
     (vertex ? g_dirtyStates.vertexShaderConstants : g_dirtyStates.pixelShaderConstants) = true;
   }
 }
@@ -4110,13 +4140,7 @@ void QueueDrawGeometrySnapshot(GuestDevice* device, LocalRenderCommandQueue& que
   // constants. Capture them on the producer thread so a later unbind cannot
   // reach the render thread before this draw is flushed. Keep the exact offset
   // observed by SetStreamSource when the live guest pointer/stride still match.
-  ProducerGeometryState state{};
-  {
-    std::lock_guard lock(g_producerGeometryMutex);
-    const auto it = g_producerGeometry.find(device);
-    if (it != g_producerGeometry.end())
-      state = it->second;
-  }
+  ProducerGeometryState state = ProducerState(device);
   DrawGeometrySnapshot& geometry = state.geometry;
   // Only use the explicit declaration when ResolveVertexDeclaration will use
   // it too. Indexed draws and recordings keep full ranges (replay can inherit
@@ -4709,16 +4733,24 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
       g_boundPipeline = nullptr;
       return;
     }
-    commandList->setGraphicsPipelineLayout(layout);
-    if (TextureDescriptorSet() != nullptr) {
-      commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 0);
-      commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 1);
-      commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 2);
+    // The layout and descriptor sets outlive pipeline switches (one root
+    // signature); they are re-issued only after InvalidateCommandListBindings.
+    if (g_boundPipeline == nullptr) {
+      commandList->setGraphicsPipelineLayout(layout);
+      if (TextureDescriptorSet() != nullptr) {
+        commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 0);
+        commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 1);
+        commandList->setGraphicsDescriptorSet(TextureDescriptorSet(), 2);
+      }
+      if (SamplerDescriptorSet() != nullptr) {
+        commandList->setGraphicsDescriptorSet(SamplerDescriptorSet(), 3);
+      }
     }
-    if (SamplerDescriptorSet() != nullptr) {
-      commandList->setGraphicsDescriptorSet(SamplerDescriptorSet(), 3);
+    // Many state changes resolve to the pipeline object already bound (the
+    // key carries fields the PSO does not); only a different object is set.
+    if (pipeline != g_boundPipeline) {
+      commandList->setPipeline(pipeline);
     }
-    commandList->setPipeline(pipeline);
     g_boundPipeline = pipeline;
     g_boundPipelineState = pipelineState;
   }
@@ -4734,10 +4766,10 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   // persistent render-thread files. Never dereference mutable guest state here:
   // the producer may already be preparing the next draw.
   if (!CurrentUploadAllocator().UploadAndBindRootDescriptor(g_vertexShaderConstants,
-                                                            kVsFloatConstantBytes, 0, true,
+                                                            kVsFloatConstantBytes, 0, false,
                                                             g_dirtyStates.vertexShaderConstants) ||
       !CurrentUploadAllocator().UploadAndBindRootDescriptor(g_pixelShaderConstants,
-                                                            kPsFloatConstantBytes, 1, true,
+                                                            kPsFloatConstantBytes, 1, false,
                                                             g_dirtyStates.pixelShaderConstants))
     return;
   // Reuse the immutable geometry uploads. Each semantic may use a different
@@ -4794,8 +4826,10 @@ void FlushRenderState(GuestDevice* device, uint32_t primitiveType) {
   if (sharedBuffer.ref == nullptr ||
       std::memcmp(&g_sharedConstants, &g_boundSharedConstantsCopy,
                   sizeof(g_sharedConstants)) != 0) {
-    sharedBuffer = CurrentUploadAllocator().UploadCached(&g_sharedConstants,
-                                                         sizeof(g_sharedConstants), false);
+    // Plain ring copy: the memcmp above already skips unchanged draws, and the
+    // hashed byte cache cost more per draw than the 880-byte copy it saved.
+    sharedBuffer = CurrentUploadAllocator().Upload(&g_sharedConstants,
+                                                   sizeof(g_sharedConstants), false);
     if (sharedBuffer.ref == nullptr) return;
     g_boundSharedConstants = sharedBuffer;
     std::memcpy(&g_boundSharedConstantsCopy, &g_sharedConstants, sizeof(g_sharedConstants));
@@ -5166,9 +5200,7 @@ void ProcDrawPrimitiveUP(GuestDevice* device, uint32_t primitiveType, uint32_t v
 // the rect-list expansion of vertex-buffer draws. Returns nullptr when the
 // stream cannot be read.
 static DrawStreamSnapshot RecordedStream0(GuestDevice* device) {
-  std::lock_guard lock(g_producerGeometryMutex);
-  const auto it = g_producerGeometry.find(device);
-  return it != g_producerGeometry.end() ? it->second.geometry.streams[0] : DrawStreamSnapshot{};
+  return device != nullptr ? ProducerState(device).geometry.streams[0] : DrawStreamSnapshot{};
 }
 
 static const uint8_t* ReadStream0(GuestDevice* device, uint32_t& stride, uint64_t& size) {
@@ -5193,12 +5225,7 @@ static const uint8_t* ReadStream0(GuestDevice* device, uint32_t& stride, uint64_
 static const uint8_t* ReadIndexBuffer(GuestDevice* device, uint32_t& indexStride, uint64_t& size) {
   indexStride = 0;
   size = 0;
-  GuestBuffer* buffer = nullptr;
-  {
-    std::lock_guard lock(g_producerGeometryMutex);
-    const auto it = g_producerGeometry.find(device);
-    if (it != g_producerGeometry.end()) buffer = it->second.geometry.indexBuffer;
-  }
+  GuestBuffer* buffer = device != nullptr ? ProducerState(device).geometry.indexBuffer : nullptr;
   if (buffer == nullptr) return nullptr;
   const uint32_t address = ghp::ToGuest(buffer);
   if (IsFm2Resource(buffer)) {
@@ -5299,12 +5326,7 @@ static std::vector<uint8_t> ExpandRectList(GuestDevice* device, const uint8_t* d
                                            uint32_t vertexCount, uint32_t stride) {
   const uint32_t rects = vertexCount / 3;
   std::vector<uint8_t> out(size_t(rects) * 6 * stride);
-  const GuestVertexDeclaration* decl = nullptr;
-  {
-    std::lock_guard lock(g_producerGeometryMutex);
-    const auto it = g_producerGeometry.find(device);
-    if (it != g_producerGeometry.end()) decl = it->second.declaration;
-  }
+  const GuestVertexDeclaration* decl = device != nullptr ? ProducerState(device).declaration : nullptr;
   for (uint32_t r = 0; r < rects; ++r) {
     const uint8_t* v0 = data + size_t(r * 3 + 0) * stride;
     const uint8_t* v1 = v0 + stride;

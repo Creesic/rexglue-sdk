@@ -873,7 +873,13 @@ std::array<uint32_t, 17> GuestTextureLayoutKey(const XenosTextureInfo& info) {
   // A packed-mip flag has no effect on a large single-level base image.
   const bool packed = info.packedMips &&
                       (info.mipLevels > 1 || std::min(info.width, info.height) <= 16);
-  return {uint32_t(info.format), info.gpuFormat, info.width, info.height,
+  // The raw Xenos format stays out of the key: PGR4 resolves its mirror strip
+  // as k_16_16_16_16_FLOAT (32) and samples it as k_16_16_16_16_EXPAND (29),
+  // identical bytes and host format, and keying on the code re-created the
+  // texture every frame from stale guest memory (pgr4_mirror.rdc EID 15514).
+  // Host format, block size and the expand source already separate every
+  // decoding that differs.
+  return {uint32_t(info.format), 0u, info.width, info.height,
           info.baseAddress, info.mipAddress, info.mipMaxLevel, info.mipLevels,
           info.pitchTexels, info.blockDim, info.bytesPerBlock, info.endian,
           info.expand16From,
@@ -1501,12 +1507,14 @@ GuestTexture* CreateAndRegisterGuestTexture(const XenosTextureInfo& info, bool u
                                                                                   : "mapped";
   REXGPU_INFO(
       "TranslateGuestTexture: base=0x{:08X} mip=0x{:08X} {}x{} levels={} fmt={} cube={} volume={} depth={} "
-      "tiled={} endian={} swz=0x{:03X} upload={} -> desc {} alias={}",
+      "tiled={} endian={} swz=0x{:03X} upload={} -> desc {} alias={} "
+      "key[gpuFmt={} maxLevel={} pitch={} block={} bpb={} expand={} packed={}]",
       info.baseAddress, info.mipAddress, info.width, info.height, info.mipLevels,
       int(info.format), info.cube, info.volume, info.arraySize, info.tiled, info.endian,
       info.swizzle, uploadGuestData,
       texture->descriptorIndex,
-      alias);
+      alias, info.gpuFormat, info.mipMaxLevel, info.pitchTexels, info.blockDim,
+      info.bytesPerBlock, info.expand16From, info.packedMips);
 
   GuestTexture* result = texture;
   std::lock_guard<std::mutex> lock(g_guestTextureAliasMutex);
