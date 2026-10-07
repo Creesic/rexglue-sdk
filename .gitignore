@@ -424,3 +424,6 @@ FodyWeavers.xsd
 
 # CMake User Overrides
 CMakeUserPresets.json
+
+# Independently tested RexNet dependency patches.
+/src/rexnet/thirdparty/**/target/

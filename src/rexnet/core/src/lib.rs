@@ -19,12 +19,17 @@
 //!
 //! The public surface is the C ABI in [`ffi`]; everything else is internal.
 
+pub mod clubs;
 pub mod crypto;
+pub mod diagnostics;
 pub mod engine;
 pub mod ffi;
 pub mod friends;
 pub mod game_plane;
 pub mod identity;
+pub mod mailbox;
+pub mod notice;
+pub mod population;
 pub mod shard;
 pub mod stream;
 pub mod subnet;
@@ -36,6 +41,17 @@ pub mod protocol {
     pub const PRESENCE: &str = "/rexnet/presence/1.0.0";
     pub const FRIEND: &str = "/rexnet/friend/1.0.0";
     pub const INVITE: &str = "/rexnet/invite/1.0.0";
+    /// Store-and-forward title messages (MC3 Live step 2).
+    pub const MESSAGE: &str = "/rexnet/message/1.0.0";
+
+    /// Club records between a club's owner and its members (MC3 Live step 3).
+    pub const CLUB: &str = "/rexnet/club/1.0.0";
+
+    /// The DHT key a club's owner provides for its name: per title, ignoring
+    /// case and surrounding spaces.
+    pub fn club_name_key(title_id: u32, name: &str) -> String {
+        format!("rexnet/v1/club-name/{title_id:08x}/{}", name.trim().to_lowercase())
+    }
     pub const SESSION: &str = "/rexnet/session/1.0.0";
     /// Punch signalling, and the X25519 key agreement for the game plane
     /// (§6). 2.0.0 because the offer/answer now carry public keys: a peer
@@ -54,7 +70,14 @@ pub mod protocol {
     pub const TUNNEL: &str = "/rexnet/tunnel/2.0.0";
 
     /// Ambient title-shard descriptor query (§17.3.1).
+    ///
+    /// Also how runners tell a RexNet node: they close inbound connections from
+    /// peers that don't advertise it, so bumping it, or dropping it from any
+    /// RexNet node including the notice panel, cuts those nodes off.
     pub const SHARD: &str = "/rexnet/shard/1.0.0";
+
+    /// Signed developer notices and roster asks (docs/technical/rexnet-notices.md).
+    pub const NOTICE: &str = "/rexnet/notice/1.0.0";
 
     /// Guest TCP carried as a libp2p stream (§18).
     ///
@@ -77,6 +100,12 @@ pub mod protocol {
     /// search would find a 255-member shard and try to join it as a game.
     pub fn shard_key(title_id: u32) -> String {
         format!("rexnet/v1/title/{title_id:08x}/shards")
+    }
+
+    /// DHT provider-record namespace for one peer's reachability. Every node
+    /// provides its own key; friends look it up to find and dial it.
+    pub fn peer_key(peer: &libp2p::PeerId) -> String {
+        format!("rexnet/v1/peer/{peer}")
     }
 
     /// Gossipsub topic carrying one shard's ambient presence (§17.3.4).

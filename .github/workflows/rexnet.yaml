@@ -65,6 +65,8 @@ jobs:
 
   sdk:
     name: SDK with REXGLUE_ENABLE_REXNET
+    # This review branch exports the original-Xbox core; the C++ XAM port is separate.
+    if: github.ref != 'refs/heads/codex/rexnet-original-xbox' && github.head_ref != 'codex/rexnet-original-xbox'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6

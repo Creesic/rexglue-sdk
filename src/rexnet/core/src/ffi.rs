@@ -15,6 +15,7 @@
 //! keep them in sync until cbindgen generation is wired into the build
 //! (`cbindgen.toml` is already present).
 
+use std::collections::VecDeque;
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -76,6 +77,16 @@ impl tracing::field::Visit for LogVisitor {
     }
 }
 
+/// Shared timestamps for the engine and the game adapter, on Windows and Wine.
+/// UTC milliseconds let testers correlate files; elapsed time survives clock changes.
+pub fn diagnostic_line(message: &str) -> String {
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+    static START: OnceLock<Instant> = OnceLock::new();
+    let utc_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
+    let elapsed_ms = START.get_or_init(Instant::now).elapsed().as_millis();
+    format!("utc_ms={utc_ms} elapsed_ms={elapsed_ms} {message}")
+}
+
 struct SinkLayer;
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SinkLayer {
@@ -88,7 +99,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SinkLayer {
         event.record(&mut visitor);
         // Debug-formatted values can contain interior nuls; drop the line
         // rather than truncating it into something misleading.
-        let Ok(text) = CString::new(visitor.0) else { return };
+        let Ok(text) = CString::new(diagnostic_line(&format!("level={} target={} {}", event.metadata().level(), event.metadata().target(), visitor.0))) else { return };
         // SAFETY: pointer came from a `RexNetLogSink` in set_log_sink.
         let sink: RexNetLogSink = unsafe { std::mem::transmute(raw) };
         let level = match *event.metadata().level() {
@@ -225,6 +236,30 @@ pub const REXNET_EVENT_PEER_RTT: u32 = 21;
 /// A directly dialable public endpoint for us was confirmed (UPnP/AutoNAT).
 /// data = UTF-8 bare `host:port` to hand a peer for a direct connect.
 pub const REXNET_EVENT_EXTERNAL_ADDRESS: u32 = 22;
+/// Echo answer: `peer`, `flag` 1 on success, `data[0..4]` RTT in ms (LE).
+pub const REXNET_EVENT_ECHO_RESULT: u32 = 23;
+/// `peer` asked for our session descriptor; `flag` 1 when we served one.
+pub const REXNET_EVENT_SESSION_QUERIED: u32 = 24;
+/// Our friend request reached `peer`; `data` is their display name (UTF-8).
+pub const REXNET_EVENT_FRIEND_REQUEST_SENT: u32 = 25;
+/// Our friend request to `peer` could not be delivered and was dropped.
+pub const REXNET_EVENT_FRIEND_REQUEST_FAILED: u32 = 26;
+/// The host withdrew its invite; data is the 16-byte session id.
+pub const REXNET_EVENT_INVITE_REVOKED: u32 = 27;
+/// A title message arrived from `peer`; data is the blob length (u32 LE).
+/// Fetch the blob with rexnet_message_take.
+pub const REXNET_EVENT_MESSAGE_RECEIVED: u32 = 28;
+/// A club we own or belong to changed (or is replayed at startup); peer is
+/// its owner, data is the team (u64 LE) and the payload length (u32 LE).
+/// Fetch the payload with rexnet_club_take.
+pub const REXNET_EVENT_CLUB_UPDATED: u32 = 29;
+/// A club we belonged to is gone; data is the team (u64 LE) and 1 if deleted.
+pub const REXNET_EVENT_CLUB_GONE: u32 = 30;
+/// A member's change reached us, the owner; data is the payload length
+/// (u32 LE). Fetch the request with rexnet_club_take.
+pub const REXNET_EVENT_CLUB_REQUEST: u32 = 31;
+/// A club name check finished; data is its id (u32 LE) and 1 if taken.
+pub const REXNET_EVENT_CLUB_NAME_RESULT: u32 = 32;
 
 /// Rust-side view of the same numbering.
 #[repr(u32)]
@@ -253,6 +288,16 @@ pub enum RexNetEventKind {
     StreamConnectFailed = REXNET_EVENT_STREAM_CONNECT_FAILED,
     PeerRtt = REXNET_EVENT_PEER_RTT,
     ExternalAddress = REXNET_EVENT_EXTERNAL_ADDRESS,
+    EchoResult = REXNET_EVENT_ECHO_RESULT,
+    SessionQueried = REXNET_EVENT_SESSION_QUERIED,
+    FriendRequestSent = REXNET_EVENT_FRIEND_REQUEST_SENT,
+    FriendRequestFailed = REXNET_EVENT_FRIEND_REQUEST_FAILED,
+    InviteRevoked = REXNET_EVENT_INVITE_REVOKED,
+    MessageReceived = REXNET_EVENT_MESSAGE_RECEIVED,
+    ClubUpdated = REXNET_EVENT_CLUB_UPDATED,
+    ClubGone = REXNET_EVENT_CLUB_GONE,
+    ClubRequest = REXNET_EVENT_CLUB_REQUEST,
+    ClubNameResult = REXNET_EVENT_CLUB_NAME_RESULT,
 }
 
 /// Fixed-size POD event, drained once per frame via [`rexnet_poll_event`].
@@ -277,6 +322,7 @@ pub struct RexNetEvent {
 }
 
 pub struct RexNetHandle {
+    diagnostics: Arc<crate::diagnostics::Recorder>,
     runtime: tokio::runtime::Runtime,
     cmd_tx: mpsc::UnboundedSender<Command>,
     /// Drained only by rexnet_poll_event; Mutex because the C side gives no
@@ -287,6 +333,13 @@ pub struct RexNetHandle {
     /// Sends to ready peers bypass the engine loop entirely.
     plane: Arc<GamePlane>,
     pub peer_id: PeerId,
+    /// Message blobs too large for an event, oldest first, until taken.
+    messages: Mutex<VecDeque<(PeerId, Vec<u8>)>>,
+    /// Club payloads too large for an event, one per CLUB_UPDATED or
+    /// CLUB_REQUEST event, in order, until taken.
+    clubs: Mutex<VecDeque<(PeerId, Vec<u8>)>>,
+    /// Developer notices, read by the runtime without the event queue.
+    notices: Arc<Mutex<crate::notice::Slots>>,
 }
 
 fn cstr_owned(ptr: *const c_char) -> String {
@@ -407,19 +460,67 @@ fn fill_event(out: &mut RexNetEvent, event: Event) {
             data.extend_from_slice(note.as_bytes());
             set_data(out, &data);
         }
-        Event::FriendAccepted { peer } => {
+        Event::FriendAccepted { peer, display_name } => {
             out.kind = RexNetEventKind::FriendAccepted as u32;
+            out.peer = RexNetPeerId::from_peer(&peer);
+            set_data(out, display_name.as_bytes());
+        }
+        Event::FriendRequestSent { peer, display_name } => {
+            out.kind = RexNetEventKind::FriendRequestSent as u32;
+            out.peer = RexNetPeerId::from_peer(&peer);
+            set_data(out, display_name.as_bytes());
+        }
+        Event::FriendRequestFailed { peer } => {
+            out.kind = RexNetEventKind::FriendRequestFailed as u32;
             out.peer = RexNetPeerId::from_peer(&peer);
         }
         Event::FriendRemoved { peer } => {
             out.kind = RexNetEventKind::FriendRemoved as u32;
             out.peer = RexNetPeerId::from_peer(&peer);
         }
-        Event::InviteReceived { peer, title_id, session_id } => {
+        Event::InviteReceived { peer, title_id, session_id, note } => {
             out.kind = RexNetEventKind::InviteReceived as u32;
             out.peer = RexNetPeerId::from_peer(&peer);
             out.virtual_ip = title_id; // repurposed: title id
+            // data = [session_id 16][note]
+            let mut data = session_id.to_vec();
+            data.extend_from_slice(note.as_bytes());
+            set_data(out, &data);
+        }
+        Event::InviteRevoked { peer, session_id } => {
+            out.kind = RexNetEventKind::InviteRevoked as u32;
+            out.peer = RexNetPeerId::from_peer(&peer);
             set_data(out, &session_id);
+        }
+        Event::MessageReceived { peer, blob } => {
+            // rexnet_poll_event queued the blob and passes its length here.
+            out.kind = RexNetEventKind::MessageReceived as u32;
+            out.peer = RexNetPeerId::from_peer(&peer);
+            set_data(out, &blob);
+        }
+        Event::ClubUpdated { owner, record, .. } => {
+            // rexnet_poll_event queued the payload; `record` is team + length here.
+            out.kind = RexNetEventKind::ClubUpdated as u32;
+            out.peer = RexNetPeerId::from_peer(&owner);
+            set_data(out, &record);
+        }
+        Event::ClubGone { team, deleted } => {
+            out.kind = RexNetEventKind::ClubGone as u32;
+            let mut data = team.to_le_bytes().to_vec();
+            data.push(u8::from(deleted));
+            set_data(out, &data);
+        }
+        Event::ClubRequest { peer, blob } => {
+            // rexnet_poll_event queued the request; `blob` is its length here.
+            out.kind = RexNetEventKind::ClubRequest as u32;
+            out.peer = RexNetPeerId::from_peer(&peer);
+            set_data(out, &blob);
+        }
+        Event::ClubNameResult { id, taken } => {
+            out.kind = RexNetEventKind::ClubNameResult as u32;
+            let mut data = id.to_le_bytes().to_vec();
+            data.push(u8::from(taken));
+            set_data(out, &data);
         }
         Event::InviteReplied { peer, reply } => {
             out.kind = RexNetEventKind::InviteReplied as u32;
@@ -431,13 +532,26 @@ fn fill_event(out: &mut RexNetEvent, event: Event) {
             out.peer = RexNetPeerId::from_peer(&peer);
             out.flag = ok as u8;
         }
-        Event::SessionFound { host, session_id, slots_total, slots_open, requires_invite } => {
+        Event::SessionFound { host, session_id, slots_total, slots_open, requires_invite, data } => {
             out.kind = RexNetEventKind::SessionFound as u32;
             out.peer = RexNetPeerId::from_peer(&host);
             out.port = u16::from(slots_total);
             out.src_port = u16::from(slots_open);
             out.flag = requires_invite as u8;
-            set_data(out, &session_id);
+            let mut payload = session_id.to_vec();
+            payload.extend_from_slice(&data);
+            set_data(out, &payload);
+        }
+        Event::EchoResult { peer, rtt_ms } => {
+            out.kind = RexNetEventKind::EchoResult as u32;
+            out.peer = RexNetPeerId::from_peer(&peer);
+            out.flag = rtt_ms.is_some() as u8;
+            set_data(out, &rtt_ms.unwrap_or(0).to_le_bytes());
+        }
+        Event::SessionQueried { peer, served } => {
+            out.kind = RexNetEventKind::SessionQueried as u32;
+            out.peer = RexNetPeerId::from_peer(&peer);
+            out.flag = u8::from(served);
         }
         Event::Datagram { virtual_ip, src_port, dst_port, data } => {
             out.kind = RexNetEventKind::Datagram as u32;
@@ -458,6 +572,12 @@ fn fill_event(out: &mut RexNetEvent, event: Event) {
             out.kind = RexNetEventKind::ExternalAddress as u32;
             set_data(out, addr.as_bytes());
         }
+        // Panel-only (the rexnet-notice binary); the runtime never asks for
+        // them, so they stay REXNET_EVENT_NONE, which it ignores.
+        Event::NoticeDelivered { .. }
+        | Event::RosterEntry { .. }
+        | Event::RosterOldBuild { .. }
+        | Event::RosterGone { .. } => {}
     }
 }
 
@@ -522,6 +642,7 @@ pub unsafe extern "C" fn rexnet_init(cfg: *const RexNetConfig) -> *mut RexNetHan
                 game_port: cfg.game_port,
                 relays,
                 force_tunnel: cfg.force_tunnel,
+                notice_key: crate::notice::NOTICE_PUBLIC_KEY,
             },
         )) {
             Ok(handles) => handles,
@@ -532,12 +653,16 @@ pub unsafe extern "C" fn rexnet_init(cfg: *const RexNetConfig) -> *mut RexNetHan
         };
 
         Box::into_raw(Box::new(RexNetHandle {
+            diagnostics: handles.diagnostics,
             runtime,
             cmd_tx: handles.cmd_tx,
             evt_rx: Mutex::new(handles.evt_rx),
             evt_notify: handles.evt_notify,
             plane: handles.plane,
             peer_id: handles.peer_id,
+            messages: Mutex::new(VecDeque::new()),
+            clubs: Mutex::new(VecDeque::new()),
+            notices: handles.notices,
         }))
     }))
     .unwrap_or(std::ptr::null_mut())
@@ -555,6 +680,20 @@ pub unsafe extern "C" fn rexnet_shutdown(handle: *mut RexNetHandle) {
         let _ = handle.cmd_tx.send(Command::Shutdown);
         // Dropping the runtime joins its worker threads.
     }));
+}
+
+/// The notice slots behind `handle`, for a reader that must not wait on
+/// the event queue: the runner's overlay. Rust-level.
+///
+/// # Safety
+/// `handle` is null or from [`rexnet_init`].
+pub unsafe fn notice_slots(handle: *mut RexNetHandle) -> Option<Arc<Mutex<crate::notice::Slots>>> {
+    handle.as_ref().map(|handle| handle.notices.clone())
+}
+
+/// Local metadata recorder, independent of event draining and visible overlays.
+pub unsafe fn diagnostics(handle: *mut RexNetHandle) -> Option<Arc<crate::diagnostics::Recorder>> {
+    handle.as_ref().map(|h| h.diagnostics.clone())
 }
 
 unsafe fn with_handle(handle: *mut RexNetHandle, f: impl FnOnce(&RexNetHandle)) {
@@ -602,6 +741,33 @@ pub unsafe extern "C" fn rexnet_poll_event(
         }
         let Ok(mut rx) = handle.evt_rx.lock() else { return false };
         match rx.try_recv() {
+            Ok(Event::MessageReceived { peer, blob }) => {
+                let len = (blob.len() as u32).to_le_bytes();
+                if let Ok(mut queue) = handle.messages.lock() {
+                    queue.push_back((peer, blob));
+                }
+                fill_event(&mut *out, Event::MessageReceived { peer, blob: len.to_vec() });
+                true
+            }
+            Ok(Event::ClubUpdated { team, owner, version, owned, record, members }) => {
+                let payload = club_payload(team, version, owned, &members, &record);
+                let mut data = team.to_le_bytes().to_vec();
+                data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                if let Ok(mut queue) = handle.clubs.lock() {
+                    queue.push_back((owner, payload));
+                }
+                let event = Event::ClubUpdated { team, owner, version, owned, record: data, members: Vec::new() };
+                fill_event(&mut *out, event);
+                true
+            }
+            Ok(Event::ClubRequest { peer, blob }) => {
+                let len = (blob.len() as u32).to_le_bytes();
+                if let Ok(mut queue) = handle.clubs.lock() {
+                    queue.push_back((peer, blob));
+                }
+                fill_event(&mut *out, Event::ClubRequest { peer, blob: len.to_vec() });
+                true
+            }
             Ok(event) => {
                 fill_event(&mut *out, event);
                 true
@@ -836,19 +1002,281 @@ pub unsafe extern "C" fn rexnet_connect_manual(
 }
 
 /// # Safety
-/// `handle` from [`rexnet_init`]; `peer` valid. Invites `peer` to the
-/// current local session (§8.3); the reply arrives as an InviteReplied
-/// event, and an accepting invitee fetches our session descriptor.
+/// `handle` from [`rexnet_init`]; `peer` valid; `note` NUL-terminated or
+/// null. Invites `peer` to the current local session (§8.3); the reply
+/// arrives as an InviteReplied event, and an accepting invitee fetches our
+/// session descriptor.
 #[no_mangle]
 pub unsafe extern "C" fn rexnet_send_invite(
     handle: *mut RexNetHandle,
     peer: *const RexNetPeerId,
+    note: *const c_char,
 ) {
     with_handle(handle, |h| {
         if let Some(peer) = peer.as_ref().and_then(RexNetPeerId::to_peer) {
-            let _ = h.cmd_tx.send(Command::SendInvite { peer });
+            let _ = h.cmd_tx.send(Command::SendInvite { peer, note: cstr_owned(note) });
         }
     });
+}
+
+/// # Safety
+/// `handle` from [`rexnet_init`]; `peer` valid. Withdraws our invite; the
+/// peer sees REXNET_EVENT_INVITE_REVOKED.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_revoke_invite(handle: *mut RexNetHandle, peer: *const RexNetPeerId) {
+    with_handle(handle, |h| {
+        if let Some(peer) = peer.as_ref().and_then(RexNetPeerId::to_peer) {
+            let _ = h.cmd_tx.send(Command::RevokeInvite { peer });
+        }
+    });
+}
+
+/// # Safety
+/// `handle` from [`rexnet_init`]; `peer` valid. Asks that peer for its
+/// session; an answer arrives as REXNET_EVENT_SESSION_FOUND. Private
+/// sessions answer friends and invitees only.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_session_query(handle: *mut RexNetHandle, peer: *const RexNetPeerId) {
+    with_handle(handle, |h| {
+        if let Some(peer) = peer.as_ref().and_then(RexNetPeerId::to_peer) {
+            let _ = h.cmd_tx.send(Command::SessionQuery { peer });
+        }
+    });
+}
+
+/// The oldest queued message: its length, copied and removed when it fits
+/// `cap`, else left queued. 0 when none.
+unsafe fn take_from(
+    queue: &Mutex<VecDeque<(PeerId, Vec<u8>)>>,
+    peer_out: *mut RexNetPeerId,
+    buf: *mut u8,
+    cap: u32,
+) -> u32 {
+    let Ok(mut queue) = queue.lock() else { return 0 };
+    let Some((peer, blob)) = queue.front() else { return 0 };
+    let len = blob.len() as u32;
+    if len <= cap && !buf.is_null() {
+        std::ptr::copy_nonoverlapping(blob.as_ptr(), buf, blob.len());
+        if !peer_out.is_null() {
+            *peer_out = RexNetPeerId::from_peer(peer);
+        }
+        queue.pop_front();
+    }
+    len
+}
+
+/// What rexnet_club_take hands over for a CLUB_UPDATED event:
+/// `[team u64][version u64][owned u8][count u16]([len u8][peer])*[record len u32][record]`.
+fn club_payload(team: u64, version: u64, owned: bool, members: &[PeerId], record: &[u8]) -> Vec<u8> {
+    let mut out = team.to_le_bytes().to_vec();
+    out.extend_from_slice(&version.to_le_bytes());
+    out.push(u8::from(owned));
+    out.extend_from_slice(&(members.len() as u16).to_le_bytes());
+    for member in members {
+        let bytes = member.to_bytes();
+        out.push(bytes.len() as u8);
+        out.extend_from_slice(&bytes);
+    }
+    out.extend_from_slice(&(record.len() as u32).to_le_bytes());
+    out.extend_from_slice(record);
+    out
+}
+
+/// # Safety
+/// `handle` from [`rexnet_init`]; `peer_out` a [`RexNetPeerId`] or null;
+/// `buf` has room for `cap` bytes. Takes the oldest received message blob
+/// (see [`take_from`]).
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_message_take(
+    handle: *mut RexNetHandle,
+    peer_out: *mut RexNetPeerId,
+    buf: *mut u8,
+    cap: u32,
+) -> u32 {
+    catch_unwind(AssertUnwindSafe(|| match handle.as_ref() {
+        Some(handle) => take_from(&handle.messages, peer_out, buf, cap),
+        None => 0,
+    }))
+    .unwrap_or(0)
+}
+
+/// # Safety
+/// `handle` from [`rexnet_init`]; `peer` valid; `id` points to 16 bytes;
+/// `blob`/`len` describe caller-owned bytes. Queues a title message for
+/// `peer`, kept until delivered. False when over 64 KB.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_message_send(
+    handle: *mut RexNetHandle,
+    peer: *const RexNetPeerId,
+    id: *const u8,
+    blob: *const u8,
+    len: u32,
+) -> bool {
+    if len as usize > crate::mailbox::MAX_BLOB || id.is_null() || (blob.is_null() && len != 0) {
+        return false;
+    }
+    let mut message_id = [0u8; 16];
+    message_id.copy_from_slice(std::slice::from_raw_parts(id, 16));
+    let bytes = if len == 0 { Vec::new() } else { std::slice::from_raw_parts(blob, len as usize).to_vec() };
+    let mut queued = false;
+    with_handle(handle, |h| {
+        if let Some(peer) = peer.as_ref().and_then(RexNetPeerId::to_peer) {
+            queued = h.cmd_tx.send(Command::MessageSend { peer, id: message_id, blob: bytes }).is_ok();
+        }
+    });
+    queued
+}
+
+unsafe fn peers_from(members: *const RexNetPeerId, count: u32) -> Vec<PeerId> {
+    if members.is_null() {
+        return Vec::new();
+    }
+    std::slice::from_raw_parts(members, count as usize).iter().filter_map(RexNetPeerId::to_peer).collect()
+}
+
+unsafe fn id_from(id: *const u8) -> Option<[u8; 16]> {
+    (!id.is_null()).then(|| {
+        let mut out = [0u8; 16];
+        out.copy_from_slice(std::slice::from_raw_parts(id, 16));
+        out
+    })
+}
+
+unsafe fn send_command(handle: *mut RexNetHandle, cmd: Command) -> bool {
+    let mut sent = false;
+    with_handle(handle, |h| sent = h.cmd_tx.send(cmd).is_ok());
+    sent
+}
+
+/// # Safety
+/// `handle` from [`rexnet_init`]; `record`/`len` and `members`/`count`
+/// describe caller-owned memory; `name` is a C string or null. We own
+/// `team`: save this version, push it, advertise `name`. False over 64 KB.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_club_publish(
+    handle: *mut RexNetHandle,
+    team: u64,
+    version: u64,
+    record: *const u8,
+    len: u32,
+    members: *const RexNetPeerId,
+    count: u32,
+    name: *const c_char,
+) -> bool {
+    if len as usize > crate::clubs::MAX_RECORD {
+        return false;
+    }
+    let name = (!name.is_null()).then(|| cstr_owned(name));
+    let cmd = Command::ClubPublish { team, version, record: slice_owned(record, len), members: peers_from(members, count), name };
+    send_command(handle, cmd)
+}
+
+/// # Safety
+/// As [`rexnet_club_publish`]. Joined `team`, not yet confirmed by `owner`.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_club_track(
+    handle: *mut RexNetHandle,
+    team: u64,
+    owner: *const RexNetPeerId,
+    record: *const u8,
+    len: u32,
+) -> bool {
+    let Some(owner) = owner.as_ref().and_then(RexNetPeerId::to_peer) else { return false };
+    if len as usize > crate::clubs::MAX_RECORD {
+        return false;
+    }
+    send_command(handle, Command::ClubTrack { team, owner, record: slice_owned(record, len) })
+}
+
+/// # Safety
+/// `handle` from [`rexnet_init`]. We left `team`.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_club_forget(handle: *mut RexNetHandle, team: u64) {
+    send_command(handle, Command::ClubForget { team });
+}
+
+/// # Safety
+/// `handle` from [`rexnet_init`]. We deleted `team`.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_club_delete(handle: *mut RexNetHandle, team: u64) {
+    send_command(handle, Command::ClubDelete { team });
+}
+
+/// # Safety
+/// As [`rexnet_club_publish`]; `id` points to 16 bytes. Hands `team` to
+/// `new_owner`; we become a member.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_club_handover(
+    handle: *mut RexNetHandle,
+    team: u64,
+    new_owner: *const RexNetPeerId,
+    id: *const u8,
+    version: u64,
+    record: *const u8,
+    len: u32,
+    members: *const RexNetPeerId,
+    count: u32,
+) -> bool {
+    let (Some(new_owner), Some(id)) = (new_owner.as_ref().and_then(RexNetPeerId::to_peer), id_from(id)) else {
+        return false;
+    };
+    if len as usize > crate::clubs::MAX_RECORD {
+        return false;
+    }
+    let cmd = Command::ClubHandover {
+        team,
+        new_owner,
+        id,
+        version,
+        record: slice_owned(record, len),
+        members: peers_from(members, count),
+    };
+    send_command(handle, cmd)
+}
+
+/// # Safety
+/// `handle` from [`rexnet_init`]; `owner` valid; `id` points to 16 bytes;
+/// `blob`/`len` caller-owned. Queues a club request for `owner`. False over 64 KB.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_club_request(
+    handle: *mut RexNetHandle,
+    owner: *const RexNetPeerId,
+    id: *const u8,
+    blob: *const u8,
+    len: u32,
+) -> bool {
+    if len as usize > crate::mailbox::MAX_BLOB {
+        return false;
+    }
+    let (Some(owner), Some(id)) = (owner.as_ref().and_then(RexNetPeerId::to_peer), id_from(id)) else {
+        return false;
+    };
+    send_command(handle, Command::ClubRequest { owner, id, blob: slice_owned(blob, len) })
+}
+
+/// # Safety
+/// `handle` from [`rexnet_init`]; `name` a C string. Answered by
+/// REXNET_EVENT_CLUB_NAME_RESULT with `id`.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_club_name_check(handle: *mut RexNetHandle, id: u32, name: *const c_char) {
+    send_command(handle, Command::ClubNameCheck { id, name: cstr_owned(name) });
+}
+
+/// # Safety
+/// As [`rexnet_message_take`], for club payloads: one per CLUB_UPDATED or
+/// CLUB_REQUEST event.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_club_take(
+    handle: *mut RexNetHandle,
+    peer_out: *mut RexNetPeerId,
+    buf: *mut u8,
+    cap: u32,
+) -> u32 {
+    catch_unwind(AssertUnwindSafe(|| match handle.as_ref() {
+        Some(handle) => take_from(&handle.clubs, peer_out, buf, cap),
+        None => 0,
+    }))
+    .unwrap_or(0)
 }
 
 /// # Safety
@@ -911,6 +1339,22 @@ pub unsafe extern "C" fn rexnet_friend_remove(
 }
 
 /// # Safety
+/// `handle` from [`rexnet_init`]; `peer` valid. Declines a received request;
+/// `block` also drops every later request from that peer.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_friend_decline(
+    handle: *mut RexNetHandle,
+    peer: *const RexNetPeerId,
+    block: bool,
+) {
+    with_handle(handle, |h| {
+        if let Some(peer) = peer.as_ref().and_then(RexNetPeerId::to_peer) {
+            let _ = h.cmd_tx.send(Command::FriendDecline { peer, block });
+        }
+    });
+}
+
+/// # Safety
 /// `handle` from [`rexnet_init`]; `session_id` must point to 16 bytes
 /// (allocated by the shim; surfaced to the guest as XNKID+XNKEY).
 #[no_mangle]
@@ -937,6 +1381,43 @@ pub unsafe extern "C" fn rexnet_session_create(
 pub unsafe extern "C" fn rexnet_session_delete(handle: *mut RexNetHandle) {
     with_handle(handle, |h| {
         let _ = h.cmd_tx.send(Command::SessionDelete);
+    });
+}
+
+/// # Safety
+/// `handle` from [`rexnet_init`]; `data`/`data_len` describe caller-owned
+/// bytes. Replaces the hosted session's slots and data block (queriers see
+/// it on their next query). False when the data is over 1024 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_session_update(
+    handle: *mut RexNetHandle,
+    slots_total: u8,
+    slots_open: u8,
+    data: *const u8,
+    data_len: u32,
+) -> bool {
+    if data_len as usize > engine::SESSION_DATA_MAX || (data.is_null() && data_len != 0) {
+        return false;
+    }
+    let bytes = if data_len == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(data, data_len as usize).to_vec()
+    };
+    with_handle(handle, |h| {
+        let _ = h.cmd_tx.send(Command::SessionUpdate { slots_total, slots_open, data: bytes });
+    });
+    true
+}
+
+/// # Safety
+/// `handle` from [`rexnet_init`]; `peer` a peer id from an event. The answer
+/// arrives as REXNET_EVENT_ECHO_RESULT.
+#[no_mangle]
+pub unsafe extern "C" fn rexnet_echo(handle: *mut RexNetHandle, peer: *const RexNetPeerId) {
+    let Some(peer) = peer.as_ref().and_then(RexNetPeerId::to_peer) else { return };
+    with_handle(handle, |h| {
+        let _ = h.cmd_tx.send(Command::EchoProbe { peer });
     });
 }
 
@@ -1067,5 +1548,64 @@ unsafe fn slice_owned(ptr: *const u8, len: u32) -> Vec<u8> {
         Vec::new()
     } else {
         std::slice::from_raw_parts(ptr, len as usize).to_vec()
+    }
+}
+
+#[cfg(test)]
+mod message_tests {
+    use super::*;
+
+    #[test]
+    fn take_hands_over_a_large_blob_whole_or_leaves_it_queued() {
+        let peer = libp2p::identity::Keypair::generate_ed25519().public().to_peer_id();
+        let blob: Vec<u8> = (0..10_240u32).map(|i| (i % 251) as u8).collect();
+        let queue = Mutex::new(std::collections::VecDeque::from([(peer, blob.clone())]));
+        let mut out_peer = RexNetPeerId::default();
+        let mut small = vec![0u8; 100];
+        // Too small: the length comes back and the blob stays.
+        assert_eq!(unsafe { take_from(&queue, &mut out_peer, small.as_mut_ptr(), 100) }, 10_240);
+        assert_eq!(queue.lock().unwrap().len(), 1);
+        let mut big = vec![0u8; 64 * 1024];
+        assert_eq!(unsafe { take_from(&queue, &mut out_peer, big.as_mut_ptr(), big.len() as u32) }, 10_240);
+        assert_eq!(&big[..10_240], &blob[..]);
+        assert_eq!(out_peer.to_peer(), Some(peer));
+        assert_eq!(unsafe { take_from(&queue, &mut out_peer, big.as_mut_ptr(), big.len() as u32) }, 0);
+    }
+}
+
+#[cfg(test)]
+mod club_tests {
+    use super::*;
+
+    fn peer() -> PeerId {
+        libp2p::identity::Keypair::generate_ed25519().public().to_peer_id()
+    }
+
+    #[test]
+    fn a_club_update_payload_carries_team_version_members_and_record() {
+        let (a, b) = (peer(), peer());
+        let payload = club_payload(0xFE00_0000_0000_0007, 3, true, &[a, b], b"rec");
+        let mut expected = 0xFE00_0000_0000_0007u64.to_le_bytes().to_vec();
+        expected.extend_from_slice(&3u64.to_le_bytes());
+        expected.push(1);
+        expected.extend_from_slice(&2u16.to_le_bytes());
+        for p in [a, b] {
+            let bytes = p.to_bytes();
+            expected.push(bytes.len() as u8);
+            expected.extend_from_slice(&bytes);
+        }
+        expected.extend_from_slice(&3u32.to_le_bytes());
+        expected.extend_from_slice(b"rec");
+        assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn records_and_requests_over_their_limits_are_refused() {
+        let null = std::ptr::null_mut();
+        let id = [1u8; 16];
+        unsafe {
+            assert!(!rexnet_club_publish(null, 1, 1, std::ptr::null(), 70_000, std::ptr::null(), 0, std::ptr::null()));
+            assert!(!rexnet_club_request(null, std::ptr::null(), id.as_ptr(), std::ptr::null(), 70_000));
+        }
     }
 }

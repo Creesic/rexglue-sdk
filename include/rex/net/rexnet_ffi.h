@@ -118,6 +118,60 @@
  */
 #define REXNET_EVENT_EXTERNAL_ADDRESS 22
 
+/**
+ * Echo answer: `peer`, `flag` 1 on success, `data[0..4]` RTT in ms (LE).
+ */
+#define REXNET_EVENT_ECHO_RESULT 23
+
+/**
+ * `peer` asked for our session descriptor; `flag` 1 when we served one.
+ */
+#define REXNET_EVENT_SESSION_QUERIED 24
+
+/**
+ * Our friend request reached `peer`; `data` is their display name (UTF-8).
+ */
+#define REXNET_EVENT_FRIEND_REQUEST_SENT 25
+
+/**
+ * Our friend request to `peer` could not be delivered and was dropped.
+ */
+#define REXNET_EVENT_FRIEND_REQUEST_FAILED 26
+
+/**
+ * The host withdrew its invite; data is the 16-byte session id.
+ */
+#define REXNET_EVENT_INVITE_REVOKED 27
+
+/**
+ * A title message arrived from `peer`; data is the blob length (u32 LE).
+ * Fetch the blob with rexnet_message_take.
+ */
+#define REXNET_EVENT_MESSAGE_RECEIVED 28
+
+/**
+ * A club we own or belong to changed (or is replayed at startup); peer is
+ * its owner, data is the team (u64 LE) and the payload length (u32 LE).
+ * Fetch the payload with rexnet_club_take.
+ */
+#define REXNET_EVENT_CLUB_UPDATED 29
+
+/**
+ * A club we belonged to is gone; data is the team (u64 LE) and 1 if deleted.
+ */
+#define REXNET_EVENT_CLUB_GONE 30
+
+/**
+ * A member's change reached us, the owner; data is the payload length
+ * (u32 LE). Fetch the request with rexnet_club_take.
+ */
+#define REXNET_EVENT_CLUB_REQUEST 31
+
+/**
+ * A club name check finished; data is its id (u32 LE) and 1 if taken.
+ */
+#define REXNET_EVENT_CLUB_NAME_RESULT 32
+
 typedef struct RexNetHandle RexNetHandle;
 
 typedef struct RexNetConfig {
@@ -359,11 +413,132 @@ void rexnet_connect_manual(struct RexNetHandle *handle, const char *multiaddr);
 
 /**
  * # Safety
- * `handle` from [`rexnet_init`]; `peer` valid. Invites `peer` to the
- * current local session (§8.3); the reply arrives as an InviteReplied
- * event, and an accepting invitee fetches our session descriptor.
+ * `handle` from [`rexnet_init`]; `peer` valid; `note` NUL-terminated or
+ * null. Invites `peer` to the current local session (§8.3); the reply
+ * arrives as an InviteReplied event, and an accepting invitee fetches our
+ * session descriptor.
  */
-void rexnet_send_invite(struct RexNetHandle *handle, const struct RexNetPeerId *peer);
+void rexnet_send_invite(struct RexNetHandle *handle,
+                        const struct RexNetPeerId *peer,
+                        const char *note);
+
+/**
+ * # Safety
+ * `handle` from [`rexnet_init`]; `peer` valid. Withdraws our invite; the
+ * peer sees REXNET_EVENT_INVITE_REVOKED.
+ */
+void rexnet_revoke_invite(struct RexNetHandle *handle, const struct RexNetPeerId *peer);
+
+/**
+ * # Safety
+ * `handle` from [`rexnet_init`]; `peer` valid. Asks that peer for its
+ * session; an answer arrives as REXNET_EVENT_SESSION_FOUND. Private
+ * sessions answer friends and invitees only.
+ */
+void rexnet_session_query(struct RexNetHandle *handle, const struct RexNetPeerId *peer);
+
+/**
+ * # Safety
+ * `handle` from [`rexnet_init`]; `peer_out` a [`RexNetPeerId`] or null;
+ * `buf` has room for `cap` bytes. Takes the oldest received message blob
+ * (see [`take_from`]).
+ */
+uint32_t rexnet_message_take(struct RexNetHandle *handle,
+                             struct RexNetPeerId *peer_out,
+                             uint8_t *buf,
+                             uint32_t cap);
+
+/**
+ * # Safety
+ * `handle` from [`rexnet_init`]; `peer` valid; `id` points to 16 bytes;
+ * `blob`/`len` describe caller-owned bytes. Queues a title message for
+ * `peer`, kept until delivered. False when over 64 KB.
+ */
+bool rexnet_message_send(struct RexNetHandle *handle,
+                         const struct RexNetPeerId *peer,
+                         const uint8_t *id,
+                         const uint8_t *blob,
+                         uint32_t len);
+
+/**
+ * # Safety
+ * `handle` from [`rexnet_init`]; `record`/`len` and `members`/`count`
+ * describe caller-owned memory; `name` is a C string or null. We own
+ * `team`: save this version, push it, advertise `name`. False over 64 KB.
+ */
+bool rexnet_club_publish(struct RexNetHandle *handle,
+                         uint64_t team,
+                         uint64_t version,
+                         const uint8_t *record,
+                         uint32_t len,
+                         const struct RexNetPeerId *members,
+                         uint32_t count,
+                         const char *name);
+
+/**
+ * # Safety
+ * As [`rexnet_club_publish`]. Joined `team`, not yet confirmed by `owner`.
+ */
+bool rexnet_club_track(struct RexNetHandle *handle,
+                       uint64_t team,
+                       const struct RexNetPeerId *owner,
+                       const uint8_t *record,
+                       uint32_t len);
+
+/**
+ * # Safety
+ * `handle` from [`rexnet_init`]. We left `team`.
+ */
+void rexnet_club_forget(struct RexNetHandle *handle, uint64_t team);
+
+/**
+ * # Safety
+ * `handle` from [`rexnet_init`]. We deleted `team`.
+ */
+void rexnet_club_delete(struct RexNetHandle *handle, uint64_t team);
+
+/**
+ * # Safety
+ * As [`rexnet_club_publish`]; `id` points to 16 bytes. Hands `team` to
+ * `new_owner`; we become a member.
+ */
+bool rexnet_club_handover(struct RexNetHandle *handle,
+                          uint64_t team,
+                          const struct RexNetPeerId *new_owner,
+                          const uint8_t *id,
+                          uint64_t version,
+                          const uint8_t *record,
+                          uint32_t len,
+                          const struct RexNetPeerId *members,
+                          uint32_t count);
+
+/**
+ * # Safety
+ * `handle` from [`rexnet_init`]; `owner` valid; `id` points to 16 bytes;
+ * `blob`/`len` caller-owned. Queues a club request for `owner`. False over 64 KB.
+ */
+bool rexnet_club_request(struct RexNetHandle *handle,
+                         const struct RexNetPeerId *owner,
+                         const uint8_t *id,
+                         const uint8_t *blob,
+                         uint32_t len);
+
+/**
+ * # Safety
+ * `handle` from [`rexnet_init`]; `name` a C string. Answered by
+ * REXNET_EVENT_CLUB_NAME_RESULT with `id`.
+ */
+void rexnet_club_name_check(struct RexNetHandle *handle, uint32_t id, const char *name);
+
+/**
+ * # Safety
+ * As [`rexnet_message_take`], for club payloads: one per CLUB_UPDATED or
+ * CLUB_REQUEST event.
+ */
+uint32_t rexnet_club_take(struct RexNetHandle *handle,
+                          struct RexNetPeerId *peer_out,
+                          uint8_t *buf,
+                          uint32_t cap);
 
 /**
  * # Safety
@@ -394,6 +569,15 @@ void rexnet_friend_remove(struct RexNetHandle *handle, const struct RexNetPeerId
 
 /**
  * # Safety
+ * `handle` from [`rexnet_init`]; `peer` valid. Declines a received request;
+ * `block` also drops every later request from that peer.
+ */
+void rexnet_friend_decline(struct RexNetHandle *handle,
+                           const struct RexNetPeerId *peer,
+                           bool block);
+
+/**
+ * # Safety
  * `handle` from [`rexnet_init`]; `session_id` must point to 16 bytes
  * (allocated by the shim; surfaced to the guest as XNKID+XNKEY).
  */
@@ -408,6 +592,25 @@ void rexnet_session_create(struct RexNetHandle *handle,
  * `handle` from [`rexnet_init`].
  */
 void rexnet_session_delete(struct RexNetHandle *handle);
+
+/**
+ * # Safety
+ * `handle` from [`rexnet_init`]; `data`/`data_len` describe caller-owned
+ * bytes. Replaces the hosted session's slots and data block (queriers see
+ * it on their next query). False when the data is over 1024 bytes.
+ */
+bool rexnet_session_update(struct RexNetHandle *handle,
+                           uint8_t slots_total,
+                           uint8_t slots_open,
+                           const uint8_t *data,
+                           uint32_t data_len);
+
+/**
+ * # Safety
+ * `handle` from [`rexnet_init`]; `peer` a peer id from an event. The answer
+ * arrives as REXNET_EVENT_ECHO_RESULT.
+ */
+void rexnet_echo(struct RexNetHandle *handle, const struct RexNetPeerId *peer);
 
 /**
  * Guest TCP connect to a peer's virtual IP (§18). Result arrives as a

@@ -1,3 +1,8 @@
+> [!NOTE]
+> **RexNet original-Xbox review branch:** see the
+> [change and validation guide](docs/technical/rexnet-original-xbox-review.md)
+> for the core exported from xrecomp and its comparison with Loreaxe's `netplay` base.
+
 > [!CAUTION]
 > This project is in early development. Expect things to not work quite right and there to be significant changes and breaking public API updates as development progresses. Contributions and feedback are welcome, but please be aware that the codebase is still evolving rapidly.
 

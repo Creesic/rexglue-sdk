@@ -50,6 +50,7 @@ async fn spawn_node(dir: &std::path::Path) -> EngineHandles {
             game_port: 0,
             relays: dead_relays(),
             force_tunnel: false,
+            notice_key: [0; 32],
         },
     )
     .await

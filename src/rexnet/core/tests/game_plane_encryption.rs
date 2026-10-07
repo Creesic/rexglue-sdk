@@ -45,6 +45,7 @@ async fn spawn_node(dir: &std::path::Path, game_port: u16) -> EngineHandles {
             game_port,
             relays: Vec::new(),
             force_tunnel: false,
+            notice_key: [0; 32],
         },
     )
     .await

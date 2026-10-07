@@ -32,7 +32,12 @@ pub enum IdentityError {
 /// Load `identity.key` from `data_dir`, generating (and persisting, mode
 /// 0600) a fresh ed25519 keypair on first run.
 pub fn load_or_generate(data_dir: &Path) -> Result<Keypair, IdentityError> {
-    let path = data_dir.join(IDENTITY_FILE);
+    load_or_generate_file(&data_dir.join(IDENTITY_FILE))
+}
+
+/// [`load_or_generate`] for a file of any name, such as the notice panel
+/// daemon's network identity.
+pub fn load_or_generate_file(path: &Path) -> Result<Keypair, IdentityError> {
     if path.exists() {
         let bytes = std::fs::read(&path)?;
         return Ok(Keypair::from_protobuf_encoding(&bytes)?);
@@ -43,7 +48,9 @@ pub fn load_or_generate(data_dir: &Path) -> Result<Keypair, IdentityError> {
         .to_protobuf_encoding()
         .expect("ed25519 keys are always encodable");
 
-    std::fs::create_dir_all(data_dir)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -211,6 +218,16 @@ pub fn friend_code(keypair: &Keypair) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_named_identity_file_is_made_once_and_then_kept() {
+        let dir = std::env::temp_dir().join(format!("rexnet-identity-{}-{}", std::process::id(), rand::random::<u64>()));
+        let path = dir.join("xrecomp").join("rexnet-notice-daemon.identity");
+        let made = load_or_generate_file(&path).unwrap().public().to_peer_id();
+        assert_eq!(load_or_generate_file(&path).unwrap().public().to_peer_id(), made, "a restart keeps the peer id");
+        assert!(!dir.join("xrecomp").join(IDENTITY_FILE).exists(), "only the named file");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn friend_code_round_trips() {
