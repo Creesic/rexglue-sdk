@@ -189,6 +189,11 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
   /// no overlay (SDK presenter mode; this hook is never reached).
   virtual std::unique_ptr<ui::ImmediateDrawer> OnCreateImmediateDrawer() { return nullptr; }
 
+  /// True while an app-owned UI (for example the Guide) should have the
+  /// controller to itself: the guest then reads no input. Polled from the
+  /// guest's input reads, so keep it cheap and thread-safe. Default: false.
+  virtual bool WantsUIInputMode() const { return false; }
+
   // --- Window event hooks (delivered on the UI thread) ---
 
   /// Logical (DPI-independent) client size changed.

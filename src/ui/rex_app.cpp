@@ -252,6 +252,8 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     auto* input_sys = static_cast<rex::input::InputSystem*>(runtime_->input_system());
     if (input_sys) {
       input_sys->SetActiveCallback([this]() {
+        if (WantsUIInputMode())
+          return false;
         if (!debug_overlay_ && !console_overlay_ && !settings_overlay_ && !achievements_overlay_)
           return true;
         return !imgui_drawer_->GetIO().WantCaptureMouse;
@@ -370,9 +372,11 @@ bool ReXApp::SetupPresentation() {
       }
     }
     window_->SetPresenter(presenter);
-  } else if (!graphics_system) {
+  } else {
     // Detached mode: the app brings its own renderer and drives its own paint
-    // loop. ReXApp owns the returned drawer via immediate_drawer_.
+    // loop. ReXApp owns the returned drawer via immediate_drawer_. Also taken
+    // when the app supplies a graphics system without a presenter (one that
+    // only keeps the Vd* exports alive), which would otherwise get no overlays.
     immediate_drawer_ = OnCreateImmediateDrawer();
     if (immediate_drawer_) {
       SetupOverlays(/*presenter=*/nullptr, immediate_drawer_.get());
