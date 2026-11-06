@@ -65,6 +65,11 @@ inline AppNameParts parse_app_name(const std::string& input) {
   bool at_new_word = true;
   for (char c : input) {
     if (is_separator(c)) {
+      // An underscore is valid in file names and identifiers alike, so the
+      // name keeps it ("pgr4_recompiled" stays itself); spaces and dashes go.
+      if (c == '_') {
+        parts.original += c;
+      }
       at_new_word = true;
       continue;
     }
