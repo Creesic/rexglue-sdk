@@ -956,6 +956,39 @@ void KernelState::SignalAllWaitableObjects() {
   }
 }
 
+size_t KernelState::NudgeGuestThreadsToExit() {
+  terminating_title_.store(true, std::memory_order_release);
+  size_t running = 0;
+  auto global_lock = global_critical_region_.Acquire();
+  for (auto& obj : object_table_.GetAllObjects()) {
+    switch (obj->type()) {
+      case XObject::Type::Event:
+        static_cast<XEvent*>(obj.get())->Set(0, false);
+        break;
+      case XObject::Type::Semaphore: {
+        auto* sem = static_cast<XSemaphore*>(obj.get());
+        (void)sem->ReleaseSemaphore(sem->maximum_count(), nullptr);
+        break;
+      }
+      case XObject::Type::Timer:
+        // Fired, not cancelled: a cancelled timer leaves its waiter asleep.
+        static_cast<XTimer*>(obj.get())->SetTimer(-1, 0, 0, 0, false);
+        break;
+      case XObject::Type::Thread: {
+        auto* thread = static_cast<XThread*>(obj.get());
+        if (thread->is_guest_thread() && thread->is_running()) {
+          ++running;
+          thread->thread()->QueueUserCallback([] {});
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return running;
+}
+
 void KernelState::WaitForThreadsToExit(const std::vector<object_ref<XThread>>& threads,
                                        uint32_t timeout_ms) {
   using clock = std::chrono::steady_clock;

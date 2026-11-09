@@ -10,6 +10,7 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -38,13 +39,15 @@ class XmpApp : public system::xam::App {
     kSystem = 0,
     kTitle = 1,
   };
+  // XMP_PLAYBACKMODE_* / XMP_REPEATMODE_* (PGR4 asks for shuffle, repeat
+  // playlist).
   enum class PlaybackMode : uint32_t {
-    // kInOrder = ?,
-    kUnknown = 0,
+    kInOrder = 0,
+    kShuffle = 1,
   };
   enum class RepeatMode : uint32_t {
-    // kNoRepeat = ?,
-    kUnknown = 0,
+    kPlaylist = 0,
+    kNoRepeat = 1,
   };
   struct Song {
     enum class Format : uint32_t {
@@ -95,6 +98,15 @@ class XmpApp : public system::xam::App {
   static const uint32_t kMsgPlaybackControllerChanged = 0x0A000003;
 
   void OnStateChanged();
+  // Starts decoding and playing song `index` of `playlist` (the playlist and
+  // song become active at once; the audio follows once decoded).
+  void PlaySong(Playlist* playlist, size_t index);
+  // The song after (step 1) or before (-1) the active one, by the playback
+  // and repeat modes; -1 when the playlist has ended.
+  int StepSongIndex(int step);
+  // Plays the next song once the active one has played out (real XMP moves
+  // through the playlist by itself; titles only wait for the next song).
+  void WatchForTrackEnd();
 
   State state_;
   PlaybackClient playback_client_;
@@ -104,6 +116,19 @@ class XmpApp : public system::xam::App {
   float volume_;
   Playlist* active_playlist_;
   int active_song_index_;
+  // Set once a decoded track is queued for output, cleared on stop, so the
+  // watcher only advances after a track that really played.
+  std::atomic<bool> track_queued_{false};
+  uint32_t shuffle_state_ = 0x9E3779B9u;
+  // Shuffle plays every song of the playlist once, in a random order, before
+  // any plays again (a fresh pick per song kept repeating a few of them).
+  // Previous walks back through it.
+  uint32_t NextRandom();
+  // A new random order of the active playlist with `first` at its start.
+  void Reshuffle(int first);
+  Playlist* shuffle_playlist_ = nullptr;
+  std::vector<int> shuffle_order_;
+  size_t shuffle_pos_ = 0;
 
   rex::thread::global_critical_region global_critical_region_;
   std::unordered_map<uint32_t, Playlist*> playlists_;

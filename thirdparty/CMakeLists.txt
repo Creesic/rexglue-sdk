@@ -416,6 +416,7 @@ set(FFMPEG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/FFmpeg")
 set(FFMPEG_OVERLAY_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg-overlay")
 set(FFMPEG_OVERLAY_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-overlay")
 file(MAKE_DIRECTORY "${FFMPEG_OVERLAY_BUILD_DIR}/libavcodec")
+file(MAKE_DIRECTORY "${FFMPEG_OVERLAY_BUILD_DIR}/libavformat")
 configure_file(
   "${FFMPEG_OVERLAY_SRC_DIR}/codec_list.c" "${FFMPEG_OVERLAY_BUILD_DIR}/libavcodec/codec_list.c"
   COPYONLY
@@ -428,6 +429,13 @@ configure_file(
   "${FFMPEG_OVERLAY_SRC_DIR}/bsf_list.c" "${FFMPEG_OVERLAY_BUILD_DIR}/libavcodec/bsf_list.c"
   COPYONLY
 )
+foreach(list_file demuxer_list.c muxer_list.c protocol_list.c)
+  configure_file(
+    "${FFMPEG_OVERLAY_SRC_DIR}/libavformat/${list_file}"
+    "${FFMPEG_OVERLAY_BUILD_DIR}/libavformat/${list_file}"
+    COPYONLY
+  )
+endforeach()
 
 # Common defines for both libraries
 set(FFMPEG_COMMON_DEFINES
@@ -701,6 +709,62 @@ endif()
 # PC-relative addressing (movrel) for symbols like ff_cos_*, which the linker
 # only accepts against locally bound symbols when emitting a shared object.
 set_target_properties(libavutil libavcodec PROPERTIES
+    C_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    FOLDER "FFmpeg")
+
+# libavformat - FFmpeg container/demuxing library
+# Minimal set needed by XMP/WMA ASF decoding (src/kernel/xam/apps/xmp_app.cpp).
+add_library(libavformat STATIC
+    ${FFMPEG_DIR}/libavformat/asfdec_f.c
+    ${FFMPEG_DIR}/libavformat/asf.c
+    ${FFMPEG_DIR}/libavformat/riff.c
+    ${FFMPEG_DIR}/libavformat/avlanguage.c
+    ${FFMPEG_DIR}/libavformat/id3v1.c
+    ${FFMPEG_DIR}/libavformat/asfcrypt.c
+
+    ${FFMPEG_DIR}/libavformat/avio.c
+    ${FFMPEG_DIR}/libavformat/aviobuf.c
+    ${FFMPEG_DIR}/libavformat/format.c
+    ${FFMPEG_DIR}/libavformat/metadata.c
+    ${FFMPEG_DIR}/libavformat/options.c
+    ${FFMPEG_DIR}/libavformat/utils.c
+
+    ${FFMPEG_DIR}/libavformat/riffdec.c
+    ${FFMPEG_DIR}/libavformat/id3v2.c
+
+    ${FFMPEG_DIR}/libavformat/allformats.c
+    ${FFMPEG_DIR}/libavformat/url.c
+    ${FFMPEG_DIR}/libavformat/protocols.c
+    ${FFMPEG_DIR}/libavformat/file.c
+    ${FFMPEG_DIR}/libavformat/dump.c
+    ${FFMPEG_DIR}/libavformat/replaygain.c
+    ${FFMPEG_DIR}/libavformat/mp3dec.c
+)
+
+# allformats.c and protocols.c include the overlay's list files.
+target_include_directories(libavformat BEFORE PRIVATE "${FFMPEG_OVERLAY_BUILD_DIR}")
+target_include_directories(libavformat
+    PUBLIC
+        $<BUILD_INTERFACE:${FFMPEG_DIR}>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE ${FFMPEG_ATOMICS_INCLUDE}
+)
+
+target_compile_definitions(libavformat PRIVATE ${FFMPEG_COMMON_DEFINES})
+target_compile_options(libavformat PRIVATE -w)
+
+target_link_libraries(libavformat
+    PUBLIC
+        libavcodec
+        libavutil
+)
+
+if(WIN32)
+    target_link_libraries(libavformat PRIVATE bcrypt)
+endif()
+
+set_target_properties(libavformat PROPERTIES
     C_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
     FOLDER "FFmpeg")

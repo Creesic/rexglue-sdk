@@ -70,6 +70,10 @@ struct RuntimeConfig {
   std::string gpu_plugin;
   std::function<std::unique_ptr<system::IAudioSystem>(runtime::FunctionDispatcher*)> audio_factory;
   std::function<std::unique_ptr<system::IInputSystem>(bool tool_mode)> input_factory;
+  // An input system already set up (and attached to the window) by an earlier
+  // runtime, taken over instead of calling input_factory: on a title switch
+  // the drivers stay registered with the window.
+  std::unique_ptr<system::IInputSystem> input;
   std::function<void(Runtime*, system::KernelState*)> kernel_init;
   bool tool_mode = false;
 };
@@ -163,6 +167,10 @@ class Runtime {
   bool is_tool_mode() const { return tool_mode_; }
 
   void Shutdown();
+
+  // Detach the input system so it outlives this runtime (title switch); pass
+  // it to the next runtime as RuntimeConfig::input.
+  std::unique_ptr<system::IInputSystem> ReleaseInputSystem() { return std::move(input_system_); }
 
   // Load XEX image into guest memory
   X_STATUS LoadXexImage(const std::string_view module_path);

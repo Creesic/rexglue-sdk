@@ -359,11 +359,11 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
 
     std::string name;
     if (base() == ctx.entryPoint) {
-      name = "xstart";
+      name = ctx.config.symbolPrefix + "xstart";
     } else if (!name_.empty()) {
       name = name_;
     } else {
-      name = fmt::format("sub_{:08X}", base());
+      name = fmt::format("{}sub_{:08X}", ctx.config.symbolPrefix, base());
     }
 
     emit_println(out, "// STUB: Function at 0x{:08X} has no discovered code blocks", base());
@@ -471,11 +471,11 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
   // --- Function name ---
   std::string name;
   if (base() == ctx.entryPoint) {
-    name = "xstart";
+    name = ctx.config.symbolPrefix + "xstart";
   } else if (!name_.empty()) {
     name = name_;
   } else {
-    name = fmt::format("sub_{:08X}", base());
+    name = fmt::format("{}sub_{:08X}", ctx.config.symbolPrefix, base());
   }
 
   // Function signature with weak/alias pattern
@@ -617,8 +617,9 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
     for (auto it = sehInfo->scopes.rbegin(); it != sehInfo->scopes.rend(); ++it) {
       const auto& scope = *it;
       if (scope.filter == 0 && scope.handler != 0) {
-        ctx.reference(fmt::format("sub_{:08X}", scope.handler));
-        emit_println(body, "\t\t\tsub_{:08X}(ctx, base);  // __finally handler", scope.handler);
+        ctx.reference(fmt::format("{}sub_{:08X}", ctx.config.symbolPrefix, scope.handler));
+        emit_println(body, "\t\t\t{}sub_{:08X}(ctx, base);  // __finally handler",
+                     ctx.config.symbolPrefix, scope.handler);
       }
     }
 

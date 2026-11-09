@@ -389,14 +389,37 @@ object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state, void* na
   }
 
   if (header->wait_list_flink == kXObjSignature) {
-    // Already initialized.
-    // TODO: assert if the type of the object != as_type
+    // Already initialized: the struct holds our handle.
     uint32_t handle = header->wait_list_blink;
     auto object = kernel_state->object_table()->LookupObject<XObject>(handle);
-
-    // TODO(benvanik): assert nothing has been changed in the struct.
-    return object;
-  } else {
+    // The handle can be gone and its number reused by another kind of object (the struct
+    // freed and its memory reused for a new one, or our object released): handing that back
+    // as an XEvent called Set on a mutant or a thread and crashed (PGR4 tester log 040, in
+    // RtlLeaveCriticalSection). Then the struct is set up afresh, as on first use.
+    Type expected = Type::Undefined;
+    switch (as_type) {
+      case 0:
+      case 1:
+        expected = Type::Event;
+        break;
+      case 2:
+        expected = Type::Mutant;
+        break;
+      case 5:
+        expected = Type::Semaphore;
+        break;
+      default:
+        break;
+    }
+    if (object && (expected == Type::Undefined || object->type() == expected)) {
+      return object;
+    }
+    REXKRNL_WARN("XObject: native object at {} has handle {:08X} ({}), expected type {}; recreating",
+                 native_ptr, handle, object ? uint32_t(object->type()) : 0xFFFFFFFFu, uint32_t(expected));
+    header->wait_list_flink = 0;
+    header->wait_list_blink = 0;
+  }
+  {
     // First use, create new.
     // https://www.nirsoft.net/kernel_struct/vista/KOBJECTS.html
     XObject* object = nullptr;

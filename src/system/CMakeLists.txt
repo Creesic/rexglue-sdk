@@ -91,6 +91,10 @@ target_link_libraries(rexruntime
         aes128
         mspack
         xxHash::xxhash
+        # XMP music: WMA decoding (kernel/xam/apps/xmp_app.cpp)
+        libavformat
+        libavcodec
+        libavutil
 )
 
 if(REXGLUE_ENABLE_TRACY)

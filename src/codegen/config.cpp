@@ -119,6 +119,9 @@ void ApplyToml(const toml::table& toml, RecompilerConfig& cfg, const std::string
   if (hasBool("is_dll")) {
     cfg.isDll = toml["is_dll"].value_or(false);
   }
+  if (auto v = toml["symbol_prefix"].value<std::string>()) {
+    cfg.symbolPrefix = *v;
+  }
 
   // Integer scalars (only override if present)
   if (auto v = toml["longjmp_address"].value<int64_t>()) {

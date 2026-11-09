@@ -7,12 +7,12 @@
 void RegisterRecompiledModules(rex::system::KernelState*);
 {% endif %}
 
-const rex::PPCImageInfo PPCImageConfig = {
+const rex::PPCImageInfo {{ symbol_prefix }}PPCImageConfig = {
     .code_base = REX_CODE_BASE,
     .code_size = REX_CODE_SIZE,
     .image_base = REX_IMAGE_BASE,
     .image_size = REX_IMAGE_SIZE,
-    .func_mappings = PPCFuncMappings,
+    .func_mappings = {{ symbol_prefix }}PPCFuncMappings,
     .rexcrt_heap = REXCRT_HEAP,
 {% if has_dll_modules and not is_dll %}
     .register_modules = RegisterRecompiledModules,
@@ -29,7 +29,7 @@ const rex::PPCImageInfo PPCImageConfig = {
     },
 };
 
-PPCFuncMapping PPCFuncMappings[] = {
+PPCFuncMapping {{ symbol_prefix }}PPCFuncMappings[] = {
 {% for fn in functions %}{% if not fn.below_code_base or fn.is_import %}	{ {{ fn.address }}, {{ fn.name }} },
 {% endif %}{% endfor %}	{ 0, nullptr }
 };

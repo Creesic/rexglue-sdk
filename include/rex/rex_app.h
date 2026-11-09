@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <thread>
 
@@ -169,6 +170,23 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
   /// Use for cleanup that depends on runtime resources.
   virtual void OnGuestThreadExit(system::XThread* thread) { (void)thread; }
 
+  /// The title launched another one (XamLoaderLaunchTitle) and has stopped.
+  /// `xex_image` is the guest path it asked for (e.g. "GAME:\gw.xex"; an
+  /// empty name is "game:\default.xex"). Return that title's recompiled
+  /// image to switch to it in-process, as the console does: the runtime is
+  /// torn down and rebuilt for it, the XAM launch data carries over, and
+  /// OnLoadXexImage / OnPreLaunchModule / OnPostLaunchModule run again.
+  /// Return std::nullopt to quit (the default). UI thread.
+  virtual std::optional<PPCImageInfo> OnResolveTitle(const std::string& xex_image) {
+    (void)xex_image;
+    return std::nullopt;
+  }
+
+  /// Called on the UI thread during a title switch, once every guest thread of
+  /// the old title has stopped and before its runtime is destroyed: release
+  /// anything that holds guest memory or kernel objects of that title.
+  virtual void OnTitleSwitch(const std::string& next_xex_image) { (void)next_xex_image; }
+
   /// Detached overlay mode ("bring your own renderer"). Called once from
   /// SetupPresentation when the SDK has no graphics backend
   /// (config.graphics == nullptr, typically cleared in OnPreSetup) and the app
@@ -272,6 +290,14 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
  private:
   std::function<void(PathConfig)> MakeResumeCallback();
 
+  // Backend config for Runtime::Setup (moved into the runtime, so rebuilt for
+  // each title).
+  void BuildRuntimeConfig();
+
+  // XamLoaderLaunchTitle path: stop, tear down and relaunch with the next
+  // title (OnResolveTitle). Returns false when the app should quit instead.
+  bool SwitchTitle();
+
   // Stand up the ImGui overlay stack (drawer, F3/Backtick/F4 binds, dialogs)
   // independently of how the presenter/drawer were obtained. `presenter` may be
   // null (detached mode).
@@ -296,6 +322,9 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
 
   PPCImageInfo ppc_info_;
   PathConfig resolved_defaults_;
+  PathConfig runtime_paths_;
+  // Guest path of the title being switched to; empty for the first one.
+  std::string next_xex_image_;
   RuntimeConfig config_;
   std::filesystem::path game_data_root_;
   std::filesystem::path user_data_root_;

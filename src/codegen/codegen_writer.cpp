@@ -63,11 +63,11 @@ nlohmann::json buildTemplateData(const rex::codegen::CodegenContext& ctx,
       funcName = crtIt->second;
       isRexcrt = true;
     } else if (fn->base() == ctx.analysisState().entryPoint) {
-      funcName = "xstart";
+      funcName = cfg.symbolPrefix + "xstart";
     } else if (!fn->name().empty()) {
       funcName = fn->name();
     } else {
-      funcName = fmt::format("sub_{:08X}", fn->base());
+      funcName = fmt::format("{}sub_{:08X}", cfg.symbolPrefix, fn->base());
     }
 
     functionsJson.push_back({
@@ -93,6 +93,7 @@ nlohmann::json buildTemplateData(const rex::codegen::CodegenContext& ctx,
 
   return {
       {"project", cfg.projectName},
+      {"symbol_prefix", cfg.symbolPrefix},
       {"image_base", fmt::format("0x{:X}", ctx.binary().baseAddress())},
       {"image_size", fmt::format("0x{:X}", ctx.binary().imageSize())},
       {"code_base", fmt::format("0x{:X}", codeMin)},
@@ -199,6 +200,18 @@ bool CodegenWriter::write(bool force) {
     rexcrtByAddr[addr] = crtName;
     if (auto* node = graph().getFunction(addr)) {
       node->setName(std::move(crtName));
+    }
+  }
+
+  // Prefix this title's own functions (see RecompilerConfig::symbolPrefix).
+  if (const std::string& prefix = config().symbolPrefix; !prefix.empty()) {
+    for (const auto& [addr, node] : graph().functions()) {
+      const std::string& name = node->name();
+      if (node->authority() == FunctionAuthority::IMPORT || name.starts_with("rexcrt_") ||
+          name.starts_with(prefix)) {
+        continue;
+      }
+      node->setName(prefix + name);
     }
   }
 

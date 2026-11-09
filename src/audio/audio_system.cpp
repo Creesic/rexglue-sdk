@@ -227,6 +227,19 @@ void AudioSystem::Shutdown() {
   }
 }
 
+bool AudioSystem::PlayMusicPcm(std::span<const float> /*samples*/,
+                               int /*sample_rate*/, int /*channels*/) {
+  return false;
+}
+
+void AudioSystem::StopMusic() {}
+
+void AudioSystem::PauseMusic() {}
+
+void AudioSystem::ResumeMusic() {}
+
+void AudioSystem::SetMusicVolume(float /*volume*/) {}
+
 X_STATUS AudioSystem::RegisterClient(uint32_t callback, uint32_t callback_arg, size_t* out_index) {
   REXAPU_DEBUG("AudioSystem::RegisterClient: callback={:08X} callback_arg={:08X}", callback,
                callback_arg);
@@ -392,3 +405,5 @@ void AudioSystem::Resume() {
 }
 
 }  // namespace rex::audio
+
+

@@ -402,6 +402,9 @@ u32 MmAllocatePhysicalMemoryEx_entry(u32 flags, u32 region_size, u32 protect_bit
     // Failed - assume no memory available.
     return 0;
   }
+  // Release keeps the old contents here; titles can read allocations they
+  // never wrote (PGR4's car damage control mesh, written only on damage).
+  REX_KERNEL_MEMORY()->Zero(base_address, adjusted_size);
   REXKRNL_IMPORT_RESULT("MmAllocatePhysicalMemoryEx", "addr={:#x}", base_address);
 
   return base_address;

@@ -107,6 +107,12 @@ struct RecompilerConfig {
   // from the module's position in the manifest (entrypoint = false, modules = true).
   std::optional<bool> isDll;
 
+  // Prefix for the generated guest function symbols and image tables
+  // (PPCImageConfig, PPCFuncMappings), so a second title can be linked into
+  // the same executable as the first (in-process title switching). Imports
+  // and rexcrt functions are host code and keep their names.
+  std::string symbolPrefix;
+
   // === Manual overrides ===
   std::unordered_map<uint32_t, FunctionConfig> functions;  ///< Function/chunk configuration
   std::unordered_map<uint32_t, JumpTable> switchTables;

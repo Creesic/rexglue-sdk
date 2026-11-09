@@ -44,6 +44,12 @@ class AudioSystem : public system::IAudioSystem {
   virtual X_STATUS Setup(system::KernelState* kernel_state);
   virtual void Shutdown();
 
+  virtual bool PlayMusicPcm(std::span<const float> samples, int sample_rate, int channels);
+  virtual void StopMusic();
+  virtual void PauseMusic();
+  virtual void ResumeMusic();
+  virtual void SetMusicVolume(float volume);
+
   X_STATUS RegisterClient(uint32_t callback, uint32_t callback_arg, size_t* out_index);
   void UnregisterClient(size_t index);
   void SubmitFrame(size_t index, uint32_t samples_ptr);
@@ -99,3 +105,7 @@ class AudioSystem : public system::IAudioSystem {
 };
 
 }  // namespace rex::audio
+
+
+
+

@@ -12,6 +12,7 @@
 #pragma once
 
 #include <rex/system/xtypes.h>
+#include <span>
 
 namespace rex::system {
 class KernelState;
@@ -24,6 +25,18 @@ class IAudioSystem {
   virtual ~IAudioSystem() = default;
   virtual X_STATUS Setup(KernelState* kernel_state) = 0;
   virtual void Shutdown() = 0;
+
+  virtual bool PlayMusicPcm(std::span<const float> samples,
+                            int sample_rate,
+                            int channels) = 0;
+  virtual void StopMusic() = 0;
+  virtual void PauseMusic() = 0;
+  virtual void ResumeMusic() = 0;
+  virtual void SetMusicVolume(float volume) = 0;
+  // Bytes of music still queued for output, or -1 if the backend can't tell.
+  // (Near) 0 while a track was playing means it has finished.
+  virtual int64_t MusicQueuedBytes() { return -1; }
 };
 
 }  // namespace rex::system
+

@@ -31,11 +31,13 @@
 #include <rex/audio/sdl/sdl_audio_system.h>
 #include <rex/input/input_system.h>
 #include <rex/kernel/init.h>
+#include <rex/kernel/xam/module.h>
 #include <rex/string/numeric.h>
 #include <rex/system.h>
 #include <rex/system/achievement_manager.h>
 #include <rex/system/gpu_plugin.h>
 #include <rex/system/kernel_state.h>
+#include <rex/system/user_module.h>
 #include <rex/system/xthread.h>
 #include <rex/ui/graphics_provider.h>
 #include <rex/ui/keybinds.h>
@@ -45,8 +47,11 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <string_view>
+#include <thread>
 
 REXCVAR_DEFINE_STRING(gpu_plugin, "", "GPU",
                       "GPU emulation plugin to load at startup (e.g. 'xenos'); empty disables "
@@ -217,6 +222,10 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
   update_data_root_ = paths.update_data_root;
   cache_root_ = paths.cache_root;
   metadata_root_ = paths.metadata_root;
+  runtime_paths_ = paths;
+
+  // An input system carried over from the previous title is still attached.
+  const bool attach_input = !config_.input;
 
   runtime_ =
       std::make_unique<rex::Runtime>(paths.game_data_root, paths.user_data_root,
@@ -238,7 +247,7 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     return false;
   }
 
-  if (window_ && runtime_->input_system()) {
+  if (attach_input && window_ && runtime_->input_system()) {
     static_cast<rex::input::InputSystem*>(runtime_->input_system())->AttachWindow(window_.get());
   }
 
@@ -259,17 +268,24 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     });
   }
 
-  std::string xex_image = "game:\\default.xex";
+  std::string xex_image = next_xex_image_.empty() ? "game:\\default.xex" : next_xex_image_;
   OnLoadXexImage(xex_image);
 
   // Mirrors the game:\ / d:\ -> game_data_root mapping in Runtime::SetupVfs.
+  // Device names are case-insensitive (titles launch "GAME:\...").
   {
+    auto has_device = [](std::string_view path, std::string_view device) {
+      return path.size() >= device.size() &&
+             std::equal(device.begin(), device.end(), path.begin(), [](char a, char b) {
+               return a == std::tolower(static_cast<unsigned char>(b));
+             });
+    };
     constexpr std::string_view kGameDevice = "game:\\";
     constexpr std::string_view kDDevice = "d:\\";
     std::string_view tail = xex_image;
-    if (tail.starts_with(kGameDevice)) {
+    if (has_device(tail, kGameDevice)) {
       tail.remove_prefix(kGameDevice.size());
-    } else if (tail.starts_with(kDDevice)) {
+    } else if (has_device(tail, kDDevice)) {
       tail.remove_prefix(kDDevice.size());
     }
     std::string host_tail{tail};
@@ -305,13 +321,17 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
   return true;
 }
 
-bool ReXApp::SetupPresentation() {
+void ReXApp::BuildRuntimeConfig() {
   config_.gpu_plugin = REXCVAR_GET(gpu_plugin);
   config_.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
   config_.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
   config_.kernel_init = rex::kernel::InitializeKernel;
 
   OnPreSetup(config_);
+}
+
+bool ReXApp::SetupPresentation() {
+  BuildRuntimeConfig();
 
   if (!config_.graphics && !config_.gpu_plugin.empty()) {
     config_.graphics = rex::system::LoadGpuPlugin(config_.gpu_plugin);
@@ -504,10 +524,128 @@ void ReXApp::LaunchModule() {
       OnGuestThreadExit(main_thread.get());
       REXLOG_INFO("Execution complete");
       if (!shutting_down_.load(std::memory_order_acquire)) {
-        app_context().CallInUIThread([this]() { app_context().QuitFromUIThread(); });
+        app_context().CallInUIThread([this]() {
+          if (!SwitchTitle()) {
+            app_context().QuitFromUIThread();
+          }
+        });
       }
     });
   });
+}
+
+bool ReXApp::SwitchTitle() {
+  if (shutting_down_.load(std::memory_order_acquire) || !runtime_ || !runtime_->kernel_state()) {
+    return false;
+  }
+  auto* kernel_state = runtime_->kernel_state();
+  rex::kernel::xam::XamModule::LoaderData loader;
+  {
+    // Copied, and the reference dropped: the XamModule goes with this runtime.
+    auto xam = kernel_state->GetKernelModule<rex::kernel::xam::XamModule>("xam.xex");
+    if (!xam) {
+      return false;
+    }
+    loader = xam->loader_data();
+  }
+  if (loader.launch_path.empty()) {
+    return false;  // The title exited (or asked for the dashboard).
+  }
+  const std::string next = loader.launch_path;
+  auto next_info = OnResolveTitle(next);
+  if (!next_info) {
+    REXLOG_INFO("Title launched {}, which this app has no recompiled code for; exiting", next);
+    return false;
+  }
+  if (!config_.gpu_plugin.empty()) {
+    // The SDK GPU plugin and its presenter are built once with the window. An
+    // app's own graphics system (OnPreSetup) is rebuilt with the runtime.
+    REXLOG_WARN("Title switch to {} needs the app's own renderer; exiting", next);
+    return false;
+  }
+  {
+    // Scoped: the module must be released before its runtime is.
+    auto current = kernel_state->GetExecutableModule();
+    REXLOG_INFO("Switching title: {} -> {}", current ? current->path() : std::string("?"), next);
+  }
+
+  if (module_thread_.joinable()) {
+    module_thread_.join();
+  }
+
+  // XamLoaderLaunchTitle's TerminateTitle stops the other guest threads, then
+  // the caller; all of them must be gone before their memory is. Threads that
+  // blocked again after its short drain are woken again every 50 ms with the
+  // termination flag kept up. Pending UI calls run meanwhile, as a guest
+  // thread may be parked on one (Present).
+  constexpr auto kGuestExitTimeout = std::chrono::seconds(5);
+  constexpr auto kNudgeInterval = std::chrono::milliseconds(50);
+  const auto start = std::chrono::steady_clock::now();
+  auto next_nudge = start;
+  size_t running = 0;
+  for (;;) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_nudge) {
+      running = kernel_state->NudgeGuestThreadsToExit();
+      next_nudge = now + kNudgeInterval;
+    } else {
+      running = 0;
+      for (auto& thread : kernel_state->object_table()->GetObjectsByType<system::XThread>()) {
+        if (thread->is_guest_thread() && thread->is_running()) {
+          ++running;
+        }
+      }
+    }
+    if (!running || now - start >= kGuestExitTimeout) {
+      break;
+    }
+    app_context().ExecutePendingFunctionsFromUIThread();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  if (running) {
+    REXLOG_WARN("Title switch: {} guest thread(s) of the old title still running", running);
+  } else {
+    REXLOG_INFO("Title switch: old title stopped after {} ms",
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start)
+                    .count());
+  }
+
+  OnTitleSwitch(next);
+
+  if (achievement_notification_listener_ != 0) {
+    achievements().UnregisterCallback(achievement_notification_listener_);
+    achievement_notification_listener_ = 0;
+  }
+  achievements_overlay_.reset();
+
+  // The window, ImGui overlays and input drivers stay; the guest memory,
+  // kernel, audio and function table are rebuilt for the title.
+  auto input = runtime_->ReleaseInputSystem();
+  runtime_->set_display_window(nullptr);
+  runtime_->set_imgui_drawer(nullptr);
+  runtime_.reset();
+
+  BuildRuntimeConfig();
+  if (config_.graphics && XFAILED(config_.graphics->SetupPresentation(&app_context()))) {
+    REXLOG_ERROR("Title switch: graphics presentation setup failed");
+    return false;
+  }
+  config_.input = std::move(input);
+  ppc_info_ = *next_info;
+  next_xex_image_ = next;
+  if (!ConstructRuntime(runtime_paths_)) {
+    return false;
+  }
+  if (auto next_xam =
+          runtime_->kernel_state()->GetKernelModule<rex::kernel::xam::XamModule>("xam.xex")) {
+    auto& data = next_xam->loader_data();
+    data.launch_data_present = loader.launch_data_present;
+    data.launch_data = loader.launch_data;
+    data.launch_flags = loader.launch_flags;
+  }
+  LaunchModule();
+  return true;
 }
 
 std::function<void(PathConfig)> ReXApp::MakeResumeCallback() {

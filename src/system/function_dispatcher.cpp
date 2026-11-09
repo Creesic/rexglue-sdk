@@ -70,6 +70,14 @@ bool FunctionDispatcher::Execute(ThreadState* thread_state, uint32_t address) {
   auto* ctx = thread_state->context();
   auto* previous_thread_state = ThreadState::Get();
 
+  // Host threads (audio worker, interrupts, ...) never pass through
+  // XThread::Execute, so their FPSCR shadow can still be 0. Generated code
+  // writes that shadow straight into MXCSR, which would unmask every host FP
+  // exception (STATUS_FLOAT_INEXACT_RESULT crash). Seed host policy first.
+  if (ctx->fpscr.csr == 0) {
+    ctx->fpscr.InitHost();
+  }
+
   // Rebind the active guest thread for cross-module callbacks.
   ThreadState::Bind(thread_state);
 

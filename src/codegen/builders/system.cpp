@@ -61,8 +61,9 @@ bool build_eieio(BuilderContext& ctx) {
 }
 
 bool build_db16cyc(BuilderContext& ctx) {
-  // Xenon-specific 16-cycle delay hint, no effect in recompiled code
-  (void)ctx;
+  // Xenon's 16-cycle delay hint sits in spin-wait loops. PAUSE is the host's spin-wait hint: the
+  // loop draws less power and leaves the core to its SMT sibling.
+  ctx.println("\tsimde_mm_pause();");
   return true;
 }
 

@@ -134,7 +134,9 @@ X_STATUS Runtime::Setup(RuntimeConfig config) {
   kernel_state_ = std::make_unique<system::KernelState>(this);
 
   // Initialize input from injected config
-  if (config.input_factory) {
+  if (config.input) {
+    input_system_ = std::move(config.input);
+  } else if (config.input_factory) {
     input_system_ = config.input_factory(tool_mode_);
     if (input_system_) {
       X_STATUS input_status = input_system_->Setup();

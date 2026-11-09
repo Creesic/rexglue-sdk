@@ -276,6 +276,13 @@ class KernelState {
   void TerminateTitle();
   bool is_terminating_title() const { return terminating_title_.load(std::memory_order_acquire); }
 
+  // Title switch: TerminateTitle raises the termination flag only for its
+  // short drain, so a guest thread that blocks again afterwards (a timer
+  // wait, say) never exits. This raises it for good (the KernelState is torn
+  // down next) and wakes every guest wait again; called repeatedly from a
+  // host thread until no guest thread runs. Returns how many still run.
+  size_t NudgeGuestThreadsToExit();
+
   void RegisterThread(XThread* thread);
   void UnregisterThread(XThread* thread);
   void OnThreadExecute(XThread* thread);

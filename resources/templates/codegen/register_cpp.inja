@@ -25,6 +25,6 @@ void {{ project }}_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) 
 // constants used by this module's REX_LOOKUP_FUNC macro.
 extern "C" REX_MODULE_EXPORT
 const rex::PPCImageInfo* ReXModule_GetImageInfo() {
-  return &PPCImageConfig;
+  return &{{ symbol_prefix }}PPCImageConfig;
 }
 {% endif %}

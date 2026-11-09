@@ -37,5 +37,6 @@ target_include_directories(rexaudio PUBLIC
 
 target_link_libraries(rexaudio
     PUBLIC rexcore SDL3::SDL3
-    PRIVATE libavcodec libavutil
+    PRIVATE libavformat libavcodec libavutil
 )
+

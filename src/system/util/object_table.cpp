@@ -51,6 +51,12 @@ X_STATUS ObjectTable::FindFreeSlot(uint32_t* out_slot) {
     ObjectTableEntry& entry = table_[slot];
     if (!entry.object) {
       *out_slot = slot;
+      // Hand slots out round-robin, as the kernel does: reusing the lowest free slot gave a
+      // just-closed handle's number straight to the next object, so a title closing or waiting on
+      // a stale handle hit an unrelated object (PGR4: its audio lock mutex closed under it, the
+      // lock's event recycled; hangs, and audio threads racing without the lock).
+      last_free_entry_ = (slot + 1) % table_capacity_;
+      if (last_free_entry_ == 0) last_free_entry_ = 1;
       return X_STATUS_SUCCESS;
     }
     scan_count++;
@@ -71,6 +77,7 @@ X_STATUS ObjectTable::FindFreeSlot(uint32_t* out_slot) {
   // Never allow 0 handles.
   slot = ++last_free_entry_;
   *out_slot = slot;
+  last_free_entry_ = slot + 1;
 
   return X_STATUS_SUCCESS;
 }

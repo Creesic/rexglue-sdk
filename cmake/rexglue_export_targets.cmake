@@ -11,7 +11,7 @@ set(REXGLUE_INSTALL_TARGETS
     rexgpu-xenos
     disruptorplus renderdoc simde tomlplusplus
     aes128 mspack o1heap disasm xxhash
-    libavcodec libavutil
+    libavformat libavcodec libavutil
 )
 
 if(REXGLUE_USE_VULKAN)
